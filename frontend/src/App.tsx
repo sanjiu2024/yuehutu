@@ -80,19 +80,25 @@ function Shell() {
   // 健康检查 + 系统信息（无鉴权，用于判断后端是否在线）
   useEffect(() => {
     let alive = true
-    api
-      .raw<SystemInfo>('/api/system/info', { anonymous: true })
-      .then((info) => {
-        if (alive) setSystemInfo(info)
-      })
-      .catch(() => {
-        api
-          .raw<{ ok?: boolean; version?: string }>('/api/health', { anonymous: true })
-          .then((health) => {
-            if (alive && health) setSystemInfo({ version: health.version, frontend_built: true })
-          })
-          .catch(() => undefined)
-      })
+    const viaHealth = () =>
+      api
+        .raw<{ ok?: boolean; version?: string }>('/api/health', { anonymous: true })
+        .then((health) => {
+          if (alive && health) setSystemInfo({ version: health.version, frontend_built: true })
+        })
+        .catch(() => undefined)
+
+    // `/api/system/info` 是要鉴权的，匿名打必然 401 —— 没 token 时直接问 /api/health
+    if (getToken()) {
+      api
+        .raw<SystemInfo>('/api/system/info')
+        .then((info) => {
+          if (alive) setSystemInfo(info)
+        })
+        .catch(() => viaHealth())
+    } else {
+      viaHealth()
+    }
     return () => {
       alive = false
     }

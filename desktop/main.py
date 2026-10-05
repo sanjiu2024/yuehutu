@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -197,7 +198,6 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     _configure_logging()
-    URL = f'http://{config.HOST}:{port}/'
 
     start_backend(port)
     if not wait_health(port):
@@ -205,15 +205,16 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     TOKEN = desktop_login(port)
-    _log(f'[desktop] 后端就绪: {URL} 前端目录={_frontend_dist()}')
+    # token 必须写在**首次导航的 URL 上**：pywebview 的 `events.loaded` 要等前端 bundle
+    # 执行完才触发，那会儿 React 已经用空的 localStorage 渲染出登录页了（实测 window 里
+    # 就一直停在登录页）。前端在 `api.ts` 模块加载时同步把 desktop_token 收进 localStorage
+    # 并从地址栏抹掉，早于首屏渲染。
+    URL = f'http://{config.HOST}:{port}/'
+    if TOKEN:
+        URL = f'{URL}?desktop_token={urllib.parse.quote(TOKEN)}'
+    _log(f'[desktop] 后端就绪: {URL.split("?")[0]} 前端目录={_frontend_dist()} 自动登录={"是" if TOKEN else "否"}')
 
     window = webview.create_window(config.APP_TITLE, URL, width=1440, height=920, min_size=(1024, 700))
-
-    def on_loaded():
-        if TOKEN:
-            window.evaluate_js(f'window.localStorage.setItem("xywb_token", {TOKEN!r});')
-
-    window.events.loaded += on_loaded
 
     def show_window():
         try:

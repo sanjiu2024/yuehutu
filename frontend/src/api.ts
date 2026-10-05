@@ -15,6 +15,36 @@ import type { Envelope } from './types'
 
 export const TOKEN_KEY = 'xywb_token'
 
+/**
+ * 桌面外壳自动登录：把 URL 上的 `?desktop_token=` 收进 localStorage **并在首屏渲染前清掉**。
+ *
+ * 为什么必须走 URL 而不是让外壳 `window.evaluate_js` 写 localStorage：
+ * pywebview 的 `events.loaded` 在**前端 bundle 执行完之后**才触发，而 `App` 的
+ * `authed` 初值是在 bundle 执行时读 `getToken()` 的 —— 等外壳再写就晚了，
+ * 界面已经渲染成登录页，用户看到「请登录」而不知道密码（实测打包产物就是这个症状）。
+ * 查询串在文档解析前就存在，所以这里在模块加载时同步取一次。
+ */
+export function adoptDesktopToken(): void {
+  try {
+    const params = new URLSearchParams(window.location.search)
+    const token = params.get('desktop_token')
+    if (!token) return
+    localStorage.setItem(TOKEN_KEY, token)
+    params.delete('desktop_token')
+    const query = params.toString()
+    window.history.replaceState(
+      null,
+      '',
+      `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`,
+    )
+  } catch {
+    // 隐私模式 / 无 window：静默跳过，用户仍可手工登录
+  }
+}
+
+// 模块副作用：任何页面 import 到 api.ts 就已经生效，早于 App 首屏渲染。
+if (typeof window !== 'undefined') adoptDesktopToken()
+
 /** 后端路由还没写出来时给的提示（前端页面仍可用，只是数据为空）。 */
 export const NOT_READY_HINT = '该功能的后端接口还没就绪，请稍后再试或联系管理员'
 
@@ -129,9 +159,13 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   const { method = 'GET', body, query, anonymous = false, signal } = options
   const headers: Record<string, string> = {}
   if (body !== undefined) headers['Content-Type'] = 'application/json'
+  let sentToken = false
   if (!anonymous) {
     const token = getToken()
-    if (token) headers['Authorization'] = `Bearer ${token}`
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`
+      sentToken = true
+    }
   }
 
   let response: Response
@@ -158,8 +192,13 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   }
 
   if (response.status === 401) {
-    clearToken()
-    onUnauthorized?.()
+    // 只有「真的带了 token 出去的请求」才说明会话失效。
+    // 匿名请求（anonymous: true）收到 401 只意味着「这个接口需要登录」，
+    // 不能据此清掉用户的会话 —— 否则挂载时那次匿名的探测会把刚登录的用户立刻踢回登录页。
+    if (!anonymous && sentToken) {
+      clearToken()
+      onUnauthorized?.()
+    }
     throw new ApiError('登录状态已失效，请重新登录', 'unauthorized', 401)
   }
 
