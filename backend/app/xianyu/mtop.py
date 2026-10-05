@@ -163,8 +163,16 @@ def generate_uuid() -> str:
 def generate_device_id(user_id: str) -> str:
     """IM 设备 ID：标准 36 位 UUID + ``-<user_id>``。
 
-    旧项目实测这个形状能被服务端接受；纯随机 UUID 也可以，但保持与旧实现
-    一致可以少一个变量。用标准 UUID 而不是自己拼十六进制：自己拼出来的
-    分段长度不对（8-4-4-4-N），看着像 UUID 但位数不对，服务端可能校验。
+    形状照旧项目实测值（标准 UUID 而不是自己拼十六进制：自己拼的分段长度不对，
+    看着像 UUID 但位数不对，服务端可能校验）。
+
+    **必须是确定性的**（这里用 uuid5 而不是 uuid4），原因有二：
+
+    1. 服务端会拿 ``/reg`` 帧里的 ``did`` 与**取 IM token 时用的 deviceId**
+       比对，不一致直接回
+       ``401 {"code": "4000001", "reason": "device id or appkey is not equal",
+       "developerMessage": "#reg error : refers to auth"}``；
+    2. token 会缓存在库里、跨进程复用，只有 device id 稳定，重启后重连才不会
+       突然「设备对不上」。
     """
-    return f'{uuid.uuid4()}-{user_id}'
+    return f'{uuid.uuid5(uuid.NAMESPACE_URL, f"xywb-im-device:{user_id}")}-{user_id}'

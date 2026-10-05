@@ -137,6 +137,7 @@ class XianyuClient:
         # 报 `TypeError: 'NoneType' object is not callable`。真机后果是账号明明登录着，
         # 后端启动却永远只打一行「IM 入站未挂载」，一条买家消息都收不到。
         self._im_access_token: Optional[str] = None
+        self._im_did = ''
         # 「新 IM 会话建好」的钩子。协议层不认识 services，由服务层
         # （`services.im_service.bind`）在这里挂回调，把入站 handler 注入会话。
         self._im_session_hooks: List[Callable[[im.ImSession], Any]] = []
@@ -635,10 +636,9 @@ class XianyuClient:
         """取 IM 的 accessToken（走 mtop，带缓存）。"""
         if self._im_access_token:
             return self._im_access_token
-        device_id = mtop.generate_device_id(self.cookie_id)
         result = await self.mtop(
             IM_TOKEN_API,
-            {'appKey': im.IM_APP_KEY, 'deviceId': device_id},
+            {'appKey': im.IM_APP_KEY, 'deviceId': self._im_device_id()},
             v=IM_TOKEN_VERSION, spm_cnt=IM_TOKEN_SPM,
         )
         token = ((result.get('data') or {}).get('accessToken')) or ''
@@ -647,11 +647,24 @@ class XianyuClient:
         self._im_access_token = token
         return token
 
+    def _im_device_id(self) -> str:
+        """本账号的 IM 设备 ID。
+
+        取 token 时发给平台的 ``deviceId`` 与 ``/reg`` 帧里的 ``did`` **必须是
+        同一个值** —— 服务端比对二者，不一致就回
+        ``401 device id or appkey is not equal``，表现为「IM 挂载成功但一条消息
+        都收不到」。所以这里缓存一次、两处共用。
+        """
+        if not self._im_did:
+            self._im_did = mtop.generate_device_id(self.cookie_id)
+        return self._im_did
+
     async def _ensure_im(self) -> im.ImSession:
         if self._im is not None and self._im.connected:
             return self._im
         token = await self._im_token()
-        session = im.ImSession(self.cookie_str, token, self.cookie_id)
+        session = im.ImSession(self.cookie_str, token, self.cookie_id,
+                               device_id=self._im_device_id())
         await session.connect()
         self._im = session
         # 会话能收帧了再通知钩子。放在赋值之后：钩子通过 on_im_session 拿到句柄时，
@@ -692,8 +705,13 @@ class XianyuClient:
         session = await self._ensure_im()
         return await session.fetch_messages(cid, start_timestamp, limit)
 
-    async def fetch_conversations(self, start_timestamp: int = 0,
+    async def fetch_conversations(self, start_timestamp: int = im.LATEST_TIMESTAMP,
                                   limit: int = 50) -> List[Dict[str, Any]]:
+        """拉会话列表（默认从最新往回）。
+
+        ``start_timestamp=0`` 在平台的语义里不是「最新」，旧项目用的是
+        ``9007199254740991``（``im.LATEST_TIMESTAMP``），所以默认值就用它。
+        """
         session = await self._ensure_im()
         return await session.fetch_conversations(start_timestamp, limit)
 
