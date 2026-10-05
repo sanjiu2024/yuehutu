@@ -253,6 +253,11 @@ function QrLoginModal({
   const [error, setError] = useState('')
   const pollRef = useRef<number | null>(null)
   const doneRef = useRef(false)
+  // 连续失败计数。轮询要跑满二维码有效期（默认每 2 秒一次 ≈ 150 次），中间
+  // 偶发一次网络抖动/后端瞬时 5xx 就弹错并停轮询的话，用户明明扫上了也白扫 ——
+  // 一次抖动不该让整次登录失败，连续失败才判死。
+  const failRef = useRef(0)
+  const MAX_POLL_FAILURES = 5
 
   const start = useCallback(async () => {
     setStarting(true)
@@ -261,6 +266,7 @@ function QrLoginModal({
     setState('pending')
     setMessage('')
     doneRef.current = false
+    failRef.current = 0
     try {
       if (reloginAccount) {
         // 后端在这里已经清掉旧 Cookie 并置 need_relogin，返回的新二维码可直接用
@@ -292,6 +298,7 @@ function QrLoginModal({
       try {
         const result = await api.get<QrPoll>(`/api/accounts/qr/${encodeURIComponent(ticket)}`)
         if (doneRef.current) return
+        failRef.current = 0
         setState(result.state)
         if (result.message) setMessage(result.message)
         if (result.state === 'confirmed') {
@@ -303,6 +310,12 @@ function QrLoginModal({
         }
       } catch (err) {
         if (doneRef.current) return
+        failRef.current += 1
+        if (failRef.current < MAX_POLL_FAILURES) {
+          // 还没到判死线：继续下一轮，只是提示一下，不清空二维码也别停轮询。
+          setError(`状态查询暂时失败，正在重试（第 ${failRef.current} 次）：${errorText(err)}`)
+          return
+        }
         doneRef.current = true
         setError(errorText(err))
       }
