@@ -41,6 +41,7 @@ def use_temp_app_dir(root: str | Path) -> Path:
     config.SECRET_PATH = config.DATA_DIR / 'local_secret.txt'
     config.CRED_PATH = config.DATA_DIR / 'desktop_credentials.json'
     config.MCP_TOKEN_PATH = config.DATA_DIR / 'mcp_token.txt'
+    config.PORT_PATH = config.DATA_DIR / 'backend_port.txt'
     config.ensure_dirs()
 
     db.reset_connection()

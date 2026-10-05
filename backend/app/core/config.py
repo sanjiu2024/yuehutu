@@ -26,6 +26,8 @@ LOG_PATH = LOGS_DIR / 'app.log'
 SECRET_PATH = DATA_DIR / 'local_secret.txt'
 CRED_PATH = DATA_DIR / 'desktop_credentials.json'
 MCP_TOKEN_PATH = DATA_DIR / 'mcp_token.txt'
+# 桌面形态后端端口是随机挑的，MCP 插件靠这个文件找到它（固定 8080 连不上）。
+PORT_PATH = DATA_DIR / 'backend_port.txt'
 
 # 开发态（未打包）时前端源码目录，用于提示构建
 REPO_ROOT = Path(__file__).resolve().parents[3]

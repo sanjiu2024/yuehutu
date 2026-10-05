@@ -73,8 +73,26 @@ async def lifespan(app: FastAPI):
     logger.info('管理员账号: {}', username)
     if password:
         logger.info('首次运行已生成随机密码，见 {}', config.CRED_PATH)
+    _write_port_file()
     yield
     logger.info('后端退出')
+
+
+def _write_port_file() -> None:
+    """把实际监听端口写盘，供 MCP 插件/脚本发现随机端口的后端。
+
+    桌面形态 `--port 0` 由内核挑端口，插件不可能猜中；`XYWB_BASE_URL` 也没法由
+    用户填（每次启动都变）。所以由后端主动把端口写进 `data/backend_port.txt`。
+    """
+    port = os.environ.get('XYWB_PORT', '')
+    if not port:
+        return
+    try:
+        config.ensure_dirs()
+        config.PORT_PATH.write_text(str(port), encoding='utf-8')
+        logger.debug('端口已写盘: {} -> {}', config.PORT_PATH, port)
+    except OSError as exc:  # pragma: no cover - 写不了端口文件不该拦住启动
+        logger.warning('端口文件写入失败: {}', exc)
 
 
 def create_app() -> FastAPI:
@@ -137,6 +155,9 @@ def run_server(host: str = config.HOST, port: int = 0) -> int:
     """阻塞式启动；返回实际监听的端口调用方可先传 0 再用 `pick_free_port()`。"""
     import uvicorn
 
+    # 桌面外壳直接调 run_server(port=...)，不经过 main() 的 argparse，所以这里也要
+    # 记一次端口 —— 否则 lifespan 里的 _write_port_file() 拿不到值。
+    os.environ['XYWB_PORT'] = str(port)
     uvicorn.run(app, host=host, port=port, log_level='info', access_log=False)
     return port
 
