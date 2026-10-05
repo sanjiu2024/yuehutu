@@ -272,12 +272,34 @@ class BackendClient:
 
     # -- HTTP ------------------------------------------------------------
 
+    def _rediscover(self) -> bool:
+        """后端换端口后重新发现地址：改动了自身就返回 True。
+
+        桌面形态每次启动都换随机端口，而插件进程可能比后端先起 —— 地址只在
+        `__init__` 解析一次的话，插件会一直指向死端口直到进程重启。这里在**连接
+        失败时**重解析一次（只对自动发现的地址做，显式传入的地址不擅自改）。
+        """
+        if self.base_url_source == 'explicit':
+            return False
+        changed = False
+        new_url, new_source = resolve_base_url(None)
+        if new_url != self.base_url:
+            self.base_url, self.base_url_source = new_url, new_source
+            changed = True
+        if not self._token:
+            new_token, new_token_source = _read_token()
+            if new_token:
+                self._token, self.token_source = new_token, new_token_source
+                changed = True
+        return changed
+
     def request(
         self,
         method: str,
         path: str,
         query: Optional[Dict[str, Any]] = None,
         body: Optional[Dict[str, Any]] = None,
+        _retried: bool = False,
     ) -> Dict[str, Any]:
         url = self.base_url + path
         if query:
@@ -306,6 +328,8 @@ class BackendClient:
             return _http_error_result(exc.code, raw, url)
         except urllib_error.URLError as exc:             # 连不上 / DNS / 超时
             reason = getattr(exc, 'reason', exc)
+            if not _retried and self._rediscover():
+                return self.request(method, path, query, body, _retried=True)
             code = 'backend_timeout' if 'timed out' in str(reason).lower() else 'backend_unreachable'
             return error(
                 code,
@@ -314,6 +338,8 @@ class BackendClient:
                 base_url=self.base_url, url=url,
             )
         except OSError as exc:                           # socket 层
+            if not _retried and self._rediscover():
+                return self.request(method, path, query, body, _retried=True)
             return error('backend_unreachable', f'连接后端失败：{exc}', base_url=self.base_url, url=url)
         except Exception as exc:                         # 兜底：绝不抛栈
             return error('client_error', f'{type(exc).__name__}: {exc}', url=url)
