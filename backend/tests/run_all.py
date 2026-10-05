@@ -10,12 +10,24 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
 
 TESTS_DIR = pathlib.Path(__file__).resolve().parent
 ROOT = TESTS_DIR.parent.parent
+
+_RAN_RE = re.compile(r"^Ran (\d+) tests?", re.M)
+_SKIP_RE = re.compile(r"skipped=(\d+)")
+
+
+def _parse_counts(output: str) -> tuple[int, int]:
+    """从 unittest 输出里取（用例数, 跳过数）。取不到用例数就当 0。"""
+    ran = _RAN_RE.search(output)
+    cases = int(ran.group(1)) if ran else 0
+    skipped = sum(int(n) for n in _SKIP_RE.findall(output))
+    return cases, skipped
 
 
 def main() -> int:
@@ -33,6 +45,8 @@ def main() -> int:
 
     passed: list[str] = []
     failed: list[tuple[str, str]] = []
+    total_cases = 0
+    total_skipped = 0
     # 每个测试给一个独立的数据目录：否则测试里的临时库会往真实 %APPDATA% 写
     # desktop_credentials.json，把生产管理员的密码覆盖掉（PACKAGING.md 6.5）。
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as sandbox:
@@ -51,15 +65,28 @@ def main() -> int:
                 env=env,
             )
             tail = (proc.stdout or "").strip().splitlines()[-1:] or [""]
-            if proc.returncode == 0:
-                passed.append(rel)
-                print(f"PASS  {rel}  ({tail[0]})")
-            else:
+            # 只按 returncode 记账会漏掉两类"假绿"：文件里一个用例都没有
+            # （unittest 在 3.10 下 0 个用例仍 exit 0），以及根本没调 unittest.main()
+            # 的文件（什么都不跑也 exit 0）。所以必须解析出真实用例数。
+            # 注意：unittest 把 "Ran N tests" 那行写到 **stderr**，不是 stdout。
+            cases, skipped = _parse_counts((proc.stdout or "") + (proc.stderr or ""))
+            if proc.returncode != 0:
                 failed.append((rel, (proc.stdout or "") + (proc.stderr or "")))
                 print(f"FAIL  {rel}  (exit {proc.returncode})")
+            elif cases == 0:
+                failed.append((rel, (proc.stdout or "") + (proc.stderr or "")
+                               + "\n该文件没有跑任何用例（0 tests）—— unittest 在这种情况下依然 exit 0。"))
+                print(f"FAIL  {rel}  (0 个用例)")
+            else:
+                passed.append(rel)
+                extra = f", skipped {skipped}" if skipped else ""
+                print(f"PASS  {rel}  ({cases} 用例{extra}, {tail[0]})")
+                total_cases += cases
+                total_skipped += skipped
 
     print("-" * 60)
-    print(f"TOTAL {len(files)}  PASS {len(passed)}  FAIL {len(failed)}")
+    print(f"TOTAL {len(files)}  PASS {len(passed)}  FAIL {len(failed)}"
+          f"  CASES {total_cases}  SKIPPED {total_skipped}")
     for rel, out in failed:
         print("=" * 60)
         print(f"----- {rel} -----")
