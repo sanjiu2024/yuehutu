@@ -9,6 +9,8 @@
 
 `POST /{id}/mode` 是契约名，`PUT /{id}/ai` 是等价别名（{enabled} -> mode）。
 `POST /classify` 是给人工回复台的额外辅助路由（意图 + 快捷回复）。
+`POST /incoming` 是**买家来信入口**：平台侧消息（IM 推送 / 桥接回放）从这条进来触发 AI，
+   与 `services.chats.dispatch_im_message` 共用同一个服务层函数。
 
 人工接管语义见 `services.chats.send_manual` / `set_ai_enabled`。
 """
@@ -65,6 +67,73 @@ def list_conversations_contract(
 def classify(payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
     """给人工回复台：一段买家消息 -> 意图 + 候选快捷回复。"""
     return _envelope(cs.suggest(str(payload.get('text') or payload.get('content') or '')))
+
+
+# --------------------------------------------------------------------------- 买家来信入口
+
+
+@router.post('/incoming')
+def incoming(payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
+    """**买家来信入口**：把一条平台侧消息送进会话流水线（落库 -> 触发 AI 回复）。
+
+    这条是「买家说话 -> AI 接话」的唯一 HTTP 入口，IM 入站分发
+    （`services.chats.dispatch_im_message`）走的是同一个服务层函数。
+
+    body:
+      - `account_id`  必填，接收账号
+      - `content`     必填，买家原文
+      - `buyer_id`    必填（除非给了 `conversation_id`），买家 user id
+      - `item_id`     选填，买家问的那个商品；决定了 AI 用哪个角色（item / cs）
+      - `conversation_id` 选填，直接指定已有会话（免去 buyer_id 反查）
+      - `msg_id`      选填，平台消息 id；给了就**幂等**，重复送达不重复落库、不重复触发 AI
+      - `peer_nickname` 选填，买家昵称
+      - `direction`   选填，默认 `in`；传 `out` 表示这条其实是卖家自己发的（转人工回复）
+
+    成功：`{"success": true, "data": {"message": {...}, "ai_reply": {...}|null,
+    "ai_result": {...}|null, "mode": "auto", "duplicate": false}}`
+    失败：`{"success": false, "message": "...", "code": "invalid_fields"|"not_found"|...}`
+    """
+    account_id = str(payload.get('account_id') or '').strip()
+    content = str(payload.get('content') or payload.get('text') or '').strip()
+    buyer_id = str(payload.get('buyer_id') or payload.get('peer_user_id') or '').strip()
+    conversation_id = payload.get('conversation_id')
+    item_id = str(payload.get('item_id') or '').strip()
+    direction = str(payload.get('direction') or 'in').strip().lower()
+
+    missing = [
+        name for name, value in (
+            ('account_id', account_id),
+            ('content', content),
+            ('buyer_id', buyer_id if conversation_id in (None, '', 0) else 'x'),
+        ) if not value
+    ]
+    if missing:
+        return _envelope(common.fail(f'缺少必填字段: {", ".join(missing)}', 'invalid_fields'))
+    if direction not in ('in', 'out'):
+        return _envelope(common.fail("direction 只能是 'in' 或 'out'", 'invalid_fields'))
+
+    if direction == 'out':
+        # 卖家自己回消息：走既有的 send_manual（会落 out/human 并把会话切到 manual）
+        if conversation_id in (None, '', 0):
+            return _envelope(common.fail('direction=out 时必须提供 conversation_id', 'invalid_fields'))
+        return _envelope(chats.send_manual(conversation_id, content))
+
+    if conversation_id not in (None, '', 0):
+        # 明确给了会话 id 就必须存在：不拿它当「找不到就新建」的提示符（typo 会静默造会话）
+        existing = chats.get_conversation(conversation_id)
+        if common.is_failure(existing):
+            return _envelope(existing)
+
+    return _envelope(chats.handle_incoming(
+        conversation_id if conversation_id not in (None, '', 0) else 0,
+        content,
+        item_id=item_id,
+        peer_nickname=str(payload.get('peer_nickname') or ''),
+        account_id=account_id,
+        peer_user_id=buyer_id,
+        msg_id=str(payload.get('msg_id') or ''),
+        meta={'source': str(payload.get('source') or 'api')},
+    ))
 
 
 # --------------------------------------------------------------------------- 单会话
