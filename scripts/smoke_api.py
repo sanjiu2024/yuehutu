@@ -14,7 +14,12 @@ import urllib.request
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 18090
 BASE = f"http://127.0.0.1:{PORT}"
 
-CRED = pathlib.Path.home() / "AppData" / "Roaming" / "xianyu-ai-workbench" / "data" / "desktop_credentials.json"
+# 凭据路径要跟着后端走：带 XIANYU_APP_DIR 起后端（临时数据目录，CI/冒烟常用）时，
+# 硬编码 %APPDATA% 会读到**别的库**的密码，表现成莫名 401 unauthorized。
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from backend.app.core import config as _config  # noqa: E402
+
+CRED = _config.CRED_PATH
 
 
 def call(method: str, path: str, token: str = "", body: dict | None = None):
