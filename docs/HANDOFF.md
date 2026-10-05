@@ -22,7 +22,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 13  PASS 13  FAIL 0
+-> TOTAL 14  PASS 14  FAIL 0
 ```
 
 ```text
@@ -86,7 +86,9 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：13 个测试文件全绿，含真实子进程 MCP 冒烟。
+- 全部后端逻辑：14 个测试文件全绿，含真实子进程 MCP 冒烟与真实 WS 事件投递
+  （`test_ws_events.py` 4 项：无 token/错 token 拒连 4401、publish 能推到客户端、
+  PATCH 账号必须发 `accounts.changed`）。
 - 真实 HTTP：只读 17 条 + 写路径 11 条，均结构化信封、无 500。
 - 真实 WebSocket 事件投递。
 - 前端构建产物被后端托管（`GET /` 返回真 `index.html`）；`npx tsc --noEmit` 0 error。
