@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from loguru import logger
 
@@ -82,6 +82,9 @@ class XianyuClient:
         self._transport = transport
         self._im: Optional[im.ImSession] = None
         self._im_token: Optional[str] = None
+        # 「新 IM 会话建好」的钩子。协议层不认识 services，由服务层
+        # （`services.im_service.bind`）在这里挂回调，把入站 handler 注入会话。
+        self._im_session_hooks: List[Callable[[im.ImSession], Any]] = []
 
     # -- 基础设施 ---------------------------------------------------------
 
@@ -311,7 +314,33 @@ class XianyuClient:
         session = im.ImSession(self.cookie_str, token, self.cookie_id)
         await session.connect()
         self._im = session
+        # 会话能收帧了再通知钩子。放在赋值之后：钩子通过 on_im_session 拿到句柄时，
+        # 这条会话已经是 `self._im`，重复注册不会造出第二条会话。
+        self._notify_im_session(session)
         return session
+
+    async def ensure_im(self) -> im.ImSession:
+        """拿（必要时建）IM 会话。服务层用它，避免去调私有名 `_ensure_im`。"""
+        return await self._ensure_im()
+
+    def on_im_session(self, hook: Callable[[im.ImSession], Any]) -> Callable[[im.ImSession], Any]:
+        """注册「新 IM 会话建好」回调，返回 hook 本身。
+
+        同一个 hook 重复注册只保留一份：钩子是幂等注册入站 handler 的入口，
+        重复触发会变成「一封来信触发多次 AI」。
+        """
+        if hook not in self._im_session_hooks:
+            self._im_session_hooks.append(hook)
+        return hook
+
+    def _notify_im_session(self, session: im.ImSession) -> None:
+        """逐个通知钩子。钩子抛异常只记日志 —— 不能让入站 handler 注册失败连带
+        把「建 IM 会话」本身搞挂（那会退化成一条消息都收不到）。"""
+        for hook in list(self._im_session_hooks):
+            try:
+                hook(session)
+            except Exception as exc:  # noqa: BLE001 - 钩子是外部注入的，什么都能抛
+                logger.warning(f'IM 会话钩子抛异常，已跳过: {exc}')
 
     async def send_message(self, cid: str, text: str, toid: Optional[str] = None) -> Dict[str, Any]:
         """给会话发文本。``toid`` 省略时用 ``cid``（单聊里两者相同）。"""

@@ -17,7 +17,10 @@ topic 清单（前端订阅用，改这里要同步 CONTRACTS）：
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import importlib
+import inspect
 import json
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -141,24 +144,71 @@ def protocol_module(name: str):
         return None
 
 
+def _cookie_for(account_id: str) -> str:
+    """从库里取出该账号的 Cookie 串。
+
+    懒导入：`services` 在最底层，而 `xianyu.store` 依赖 `core.db`，模块级导入会把
+    「协议层没装」这种情况变成 import 期的循环/失败，而不是 `not_ready` 信封。
+    """
+    try:
+        store = protocol_module('store')
+        if store is None:
+            return ''
+        return str(store.get_cookie(account_id) or '')
+    except Exception:
+        return ''
+
+
+def _bind_im_service(account_id: str, client: Any) -> Any:
+    """给刚构造出来的协议层客户端挂 IM 会话钩子，返回 client 本身。
+
+    这是 IM 入站链路的接线点（详见 `services/im_service.py` 的模块说明）：协议层
+    `_ensure_im()` 建好会话后回调钩子，服务层据此注册入站 handler；没有这一步，
+    买家真的说话时帧会落到一个空 handler 列表上。
+
+    **只加不改语义**：服务层没就绪 / 客户端不支持钩子 / 钩子自己抛异常，都只是少收
+    几条私信，绝不允许影响 `get_client` 的返回值。
+    """
+    try:
+        module = importlib.import_module('backend.app.services.im_service')
+        bind = getattr(module, 'bind', None)
+        if callable(bind):
+            bind(account_id, client)
+    except Exception:  # noqa: BLE001 - 接线失败不能影响拿客户端
+        pass
+    return client
+
+
 def get_client(account_id: str) -> Tuple[Any, Optional[Dict[str, Any]]]:
     """拿协议层客户端。返回 (client, None) 或 (None, 失败信封)。
 
-    协议层只要提供下面任一种形状即可：
-      - `client.py` 里的 `get_client(account_id)` 工厂
-      - `client.py` 里的 `XianyuClient(account_id)` 类
+    **必须先用 account_id 取 cookie**：`XianyuClient.__init__(self, cookie_str, ...)`
+    收的是 Cookie 串、且要求里面含 `unb`，直接把 account_id 当 cookie 传进去必然抛
+    「Cookie 里缺少 unb」。这条断链会让同步/发布/改价/上下架/发消息全部静默退化成
+    「只写本地库」，所以这里是唯一正确的构造顺序：
+
+        account_id -> store.get_cookie(account_id) -> XianyuClient(cookie_str)
+
+    协议层另有可选的 `client.py::get_client(account_id)` 工厂，存在就优先用（测试与
+    未来的连接池会注入它）。
     """
     module = protocol_module('client')
     if module is None:
         return None, not_ready()
     factory = getattr(module, 'get_client', None)
+    if callable(factory):
+        try:
+            return _bind_im_service(account_id, factory(account_id)), None
+        except Exception as exc:
+            return None, not_ready(f'协议层客户端创建失败: {exc}')
+    cls = getattr(module, 'XianyuClient', None)
+    if cls is None:
+        return None, not_ready('协议层缺少 XianyuClient')
+    cookie = _cookie_for(account_id)
+    if not cookie:
+        return None, not_ready(f'账号 {account_id} 还没有 Cookie，请先在「账号」页完成扫码登录')
     try:
-        if callable(factory):
-            return factory(account_id), None
-        cls = getattr(module, 'XianyuClient', None)
-        if cls is None:
-            return None, not_ready('协议层缺少 XianyuClient')
-        return cls(account_id), None
+        return _bind_im_service(account_id, cls(cookie)), None
     except Exception as exc:
         return None, not_ready(f'协议层客户端创建失败: {exc}')
 
@@ -168,17 +218,40 @@ CALL_MISSING = 'missing'
 CALL_ERROR = 'error'
 
 
+def run_awaitable(value: Any) -> Any:
+    """跑一个可能是协程的返回值，返回其结果。
+
+    服务层是同步的，但协议层与编排层有 `async def` 方法。三种情况：
+    - 不是 awaitable（测试里的同步假实现）-> 原样返回
+    - 没有正在跑的事件循环 -> `asyncio.run()`
+    - 已经在 async 路由的事件循环里 -> 另开线程跑，避免 "loop already running"
+    """
+    if not inspect.isawaitable(value):
+        return value
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(value)  # type: ignore[arg-type]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, value).result()
+
+
 def call_method(client: Any, names: Sequence[str], *args: Any, **kwargs: Any) -> Tuple[str, Any]:
     """按候选名字依次找方法调用。
 
     返回 (状态, 结果)，状态 ∈ {'ok','missing','error'}。
     `missing` 表示协议层还没实现这个方法（当作未就绪），`error` 是调用抛异常。
+
+    **协程必须跑完再算 ok**：协议层方法大量是 `async def`，只 `return fn(...)` 会把
+    一个还没执行的协程当成成功结果返回 —— 调用方看到 ok 却没发生任何事（假成功），
+    协程还会因为没人 await 而泄漏。
     """
     for name in names:
         fn = getattr(client, name, None)
         if callable(fn):
             try:
-                return CALL_OK, fn(*args, **kwargs)
+                return CALL_OK, run_awaitable(fn(*args, **kwargs))
             except Exception as exc:
                 return CALL_ERROR, exc
     return CALL_MISSING, None

@@ -8,18 +8,27 @@
 - **AI 回复走懒导入**：`backend.app.agents.runtime.reply_for_message` 未就绪时只落消息、
   不调 AI，绝不让会话服务因为编排层还没写完而报错。
 - **编排层是 async**：`runtime.reply_for_message(conversation_id, message_id)` 是协程
-  （只生成、不发送）。这里统一用 `_run_awaitable()` 跑它：没有事件循环就直接
+  （只生成、不发送）。这里统一用 `common.run_awaitable()` 跑它：没有事件循环就直接
   `asyncio.run`，已经在 async 路由里就另开线程跑，避免 "loop already running"。
 - **AI 草稿**：`ai_draft()` 只生成建议文本、**不落库不发送**，给人工回复台用。
+- **买家来信入口**：`handle_incoming()` 是唯一入口（`POST /api/chats/incoming` 与
+  IM 入站分发都汇到它）。带 `msg_id` 时**幂等**：同一平台消息 id 重复送达只落一次、
+  不会再触发一次 AI（去重标记落 `messages.meta.external_id`，不动 SCHEMA）。
+- **IM 入站分发**：协议层 `xianyu.im.ImSession` 只提供 `on_message()` 回调点，
+  由服务层 `attach_im_session()` 注入 `im_handler_for()` —— 协议层不 import services。
+  注册是**幂等**的（同一会话同一账号只挂一份 handler），否则一封来信会触发多次 AI。
+- **AI 回复真的发出去**：AI 回复落库后由 `deliver_ai_reply()` 经协议层
+  `send_message` 发回闲鱼，并把结果如实回写 `messages.sent_ok` + 失败原因；
+  `mode != 'auto'`（人工接管/关闭）**绝不自动发送**。
 """
 
 from __future__ import annotations
 
-import asyncio
-import concurrent.futures
 import importlib
-import inspect
+import json
 from typing import Any, Dict, List, Optional, Sequence
+
+from loguru import logger
 
 from ..core import db
 from . import common
@@ -53,6 +62,46 @@ def _find_conversation(conversation_id: Any) -> Optional[Any]:
     text = str(conversation_id)
     row = db.query_one('SELECT * FROM conversations WHERE id = ?', (text,)) if text.isdigit() else None
     return row
+
+
+# --------------------------------------------------------------------------- 幂等
+
+#: 平台侧消息 id 存在 `messages.meta` 里的键名。
+#: 用 meta 而不是新列，是为了不改 SCHEMA —— 幂等只需要「查得到」，不需要索引。
+EXTERNAL_ID_KEY = 'external_id'
+
+
+def default_agent_role(item_id: Any) -> str:
+    """新会话该用哪个角色：有商品上下文 -> `item`（商品专家），没有 -> `cs`（客服）。
+
+    与 `agents.roles.role_for_conversation()` 的兜底规则对齐；只在**建会话**时生效，
+    已存在的会话不会被悄悄改角色（人工设置的 `agent_role` 优先）。
+    """
+    return 'item' if str(item_id or '').strip() else 'cs'
+
+
+def find_incoming_by_external_id(conversation_id: Any, external_id: str) -> Optional[Dict[str, Any]]:
+    """按平台消息 id 找**已落库的买家消息**；没有就返回 None。
+
+    只认 `direction='in'`：同一条 msg_id 被回显成出站消息时不算重复来信。
+    """
+    external_id = str(external_id or '')
+    if not external_id:
+        return None
+    rows = db.query(
+        "SELECT * FROM messages WHERE conversation_id = ? AND direction = 'in' "
+        "AND meta LIKE ? ORDER BY id ASC",
+        (str(conversation_id), f'%{external_id}%'),
+    )
+    for row in rows:
+        try:
+            stored = json.loads(row['meta'] or '{}') or {}
+        except (TypeError, ValueError):
+            continue
+        # LIKE 只是粗筛（`abc` 会命中 `xabc` / 正文里出现的同一个词），最终以 meta 为准
+        if str(stored.get(EXTERNAL_ID_KEY) or '') == external_id:
+            return _row_to_message(row)
+    return None
 
 
 # --------------------------------------------------------------------------- 会话
@@ -218,13 +267,43 @@ def append_message(
     return result
 
 
+def _platform_cid(conversation: Any) -> str:
+    """尽力取平台会话 id（cid）。
+
+    `conversations` 表没有 cid 列 —— cid 只出现在 IM 帧里，跟着消息落进 `messages.meta`。
+    单聊里 cid 与买家 id（toid）相同（见 `xianyu/client.py::send_message` 的注释），
+    所以取不到就退回 `peer_user_id`。
+    """
+    try:
+        row = db.query_one(
+            "SELECT meta FROM messages WHERE conversation_id = ? AND meta LIKE '%cid%' "
+            "ORDER BY id DESC LIMIT 1",
+            (conversation['id'],),
+        )
+        raw = row['meta'] if row is not None else None
+        if raw:
+            meta = json.loads(raw) if isinstance(raw, str) else raw
+            cid = str((meta or {}).get('cid') or '')
+            if cid:
+                return cid
+    except Exception as exc:  # noqa: BLE001 - 取不到 cid 不该让发送整条失败
+        logger.debug(f'从 messages.meta 取 cid 失败，退回买家 id: {exc}')
+    return str(conversation.get('peer_user_id') or '')
+
+
 def _push_message(client: Any, conversation: Any, text: str) -> Optional[str]:
-    """尽力把人工回复推给协议层；返回警告文本或 None。"""
-    status, value = common.call_method(
-        client, ('send_message', 'send_im', 'send_text', 'send'),
-        conversation['account_id'], conversation['peer_user_id'], text,
-    )
-    if status == common.CALL_OK:
+    """尽力把人工回复推给协议层；返回警告文本或 None。
+
+    真客户端签名是 `send_message(cid, text, toid=None)`（`xianyu/client.py:345`）。
+    这里原来传的是 `(account_id, peer_user_id, text)` —— 三个位置全错位，
+    等于把**账号 id** 当会话、把**买家 id** 当消息正文发出去；人工接管看起来「发出去了」，
+    实际发的内容和对象都是错的。现在按真签名传 cid + 正文。
+    """
+    cid = _platform_cid(conversation)
+    if not cid:
+        return '拿不到平台会话 id，消息仅本地留存'
+    status, value = common.call_method(client, ('send_message',), cid, text)
+    if status == common.CALL_OK and not (isinstance(value, dict) and value.get('success') is False):
         return None
     if status == common.CALL_MISSING:
         return '协议层尚未实现发送消息，消息仅本地留存'
@@ -327,25 +406,6 @@ def _load_runtime():
         return None
 
 
-def _run_awaitable(value: Any) -> Any:
-    """跑一个可能是协程的返回值，返回其结果。
-
-    编排层的 `reply_for_message` 是 `async def`。三种情况：
-    - 不是 awaitable（测试里的同步假实现）-> 原样返回
-    - 没有正在跑的事件循环 -> `asyncio.run()`
-    - 已经在 async 路由的事件循环里 -> 另开线程跑，避免 "loop already running"
-    """
-    if not inspect.isawaitable(value):
-        return value
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(value)  # type: ignore[arg-type]
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, value).result()
-
-
 def _normalize_ai_result(raw: Any) -> Dict[str, Any]:
     """把编排层的返回统一成 `{'success', 'reply', 'role', ...}`。
 
@@ -381,7 +441,7 @@ def _ai_reply(conversation: Dict[str, Any], message_id: Any) -> Optional[Dict[st
     if not callable(handler):
         return None
     try:
-        return _normalize_ai_result(_run_awaitable(handler(int(conversation['id']), int(message_id))))
+        return _normalize_ai_result(common.run_awaitable(handler(int(conversation['id']), int(message_id))))
     except Exception as exc:  # AI 出错绝不能影响买家消息落库
         return {'success': False, 'reply': '', 'message': f'AI 回复失败: {exc}', 'code': 'ai_error'}
 
@@ -432,24 +492,49 @@ def handle_incoming(
     peer_nickname: str = '',
     account_id: str = '',
     peer_user_id: str = '',
+    msg_id: str = '',
+    meta: Optional[Dict[str, Any]] = None,
 ) -> Any:
     """买家来信入口：落消息 -> 若会话是 auto 且 AI 可用，生成并落一条 AI 回复。
 
-    编排层（`backend.app.agents.runtime.reply_for_message`，async）未就绪时只落买家消息。
+    - `msg_id`（平台消息 id）给了就**幂等**：同一条消息重复送达不会重复落库、
+      也不会重复触发 AI，返回里带 `duplicate: true` 和已存在的那条消息。
+      去重标记写进 `messages.meta.external_id`，**不新增列**。
+    - 编排层（`backend.app.agents.runtime.reply_for_message`，async）未就绪时只落买家消息。
     """
     if _find_conversation(conversation_id) is None:
         if not (account_id and peer_user_id):
             return common.fail(f'会话不存在: {conversation_id}', 'not_found')
-        conversation = ensure_conversation(account_id, peer_user_id, peer_nickname, item_id)
+        conversation = ensure_conversation(
+            account_id, peer_user_id, peer_nickname, item_id,
+            agent_role=default_agent_role(item_id),
+        )
     else:
         conversation = get_conversation(conversation_id)
 
-    incoming = append_message(conversation['id'], 'buyer', content, item_id=item_id)
+    duplicate = find_incoming_by_external_id(conversation['id'], msg_id)
+    if duplicate is not None:
+        return {
+            'message': duplicate,
+            'ai_reply': None,
+            'ai_result': None,
+            'mode': conversation['mode'],
+            'duplicate': True,
+        }
+
+    incoming_meta = dict(meta or {})
+    if msg_id:
+        incoming_meta[EXTERNAL_ID_KEY] = str(msg_id)
+    incoming = append_message(
+        conversation['id'], 'buyer', content, item_id=item_id,
+        meta=incoming_meta or None,
+    )
     if common.is_failure(incoming):
         return incoming
 
     reply_info: Optional[Dict[str, Any]] = None
     ai_message = None
+    ai_send: Optional[Dict[str, Any]] = None
     if conversation['mode'] == 'auto':
         # 编排层签名：async reply_for_message(conversation_id, message_id) —— 只生成不发送
         reply = _ai_reply(conversation, incoming['id'])
@@ -464,10 +549,280 @@ def handle_incoming(
                 common.publish('chats.ai_reply', {
                     'conversation_id': conversation['id'], 'content': reply_text,
                 })
+                # 生成即投递：AI 回复必须真的发回闲鱼，而不是停在库里 sent_ok=0。
+                cid = str(incoming_meta.get('cid') or '')
+                ai_send = deliver_ai_reply(
+                    conversation['id'], ai_message['id'], reply_text, cid=cid,
+                )
+                refreshed = ai_send.pop('message_row', None)
+                if refreshed is not None:
+                    ai_message = refreshed
 
     return {
         'message': incoming,
         'ai_reply': ai_message,
         'ai_result': reply_info,
+        'ai_send': ai_send,
         'mode': conversation['mode'],
+        'duplicate': False,
     }
+
+
+# --------------------------------------------------------------------------- AI 回复投递
+
+
+def _set_message_meta(message_id: Any, key: str, value: Any) -> None:
+    """改 `messages.meta` 里的一个键（值给空串就删掉这个键）。不动 SCHEMA。"""
+    row = db.query_one('SELECT meta FROM messages WHERE id = ?', (message_id,))
+    if row is None:
+        return
+    try:
+        stored = json.loads(row['meta'] or '{}') or {}
+    except (TypeError, ValueError):
+        stored = {}
+    if not isinstance(stored, dict):
+        stored = {}
+    if value in (None, ''):
+        stored.pop(key, None)
+    else:
+        stored[key] = value
+    db.execute('UPDATE messages SET meta = ? WHERE id = ?', (json.dumps(stored, ensure_ascii=False), message_id))
+
+
+def _account_in_risk_cooldown(account_id: str) -> bool:
+    """协议层内存风控锁是否锁着这个账号（cookie_id 就是 account_id）。
+
+    协议层只在 mtop 链路开头查锁，`send_message` 不走 mtop —— 服务层不先查一遍，
+    冷却期内会继续往外发消息，把风控从 60s 拖到更长的档位。
+    """
+    if not account_id:
+        return False
+    module = common.protocol_module('risk')
+    registry = getattr(module, 'registry', None) if module is not None else None
+    guard = registry.get(account_id) if registry is not None else None
+    return bool(guard is not None and guard.is_blocked)
+
+
+def _looks_like_risk_error(value: Any) -> bool:
+    module = common.protocol_module('risk')
+    checker = getattr(module, 'is_risk_control_error', None) if module is not None else None
+    return bool(callable(checker) and checker(str(value)))
+
+
+def _finish_ai_send(
+    conversation: Dict[str, Any],
+    message_id: Any,
+    *,
+    sent: bool,
+    code: str,
+    message: str,
+    risk: bool = False,
+) -> Dict[str, Any]:
+    """把发送结果如实落库 + 留痕，并返回投递结果。
+
+    失败**不许静默**：AI 回复停在 `sent_ok=0` 而不写原因，UI 上就是
+    「AI 好像回了、买家又说没收到」这类最难查的问题。
+    """
+    account_id = str(conversation.get('account_id') or '')
+    message_row: Optional[Dict[str, Any]] = None
+    if message_id not in (None, '', 0):
+        db.execute('UPDATE messages SET sent_ok = ? WHERE id = ?', (1 if sent else 0, message_id))
+        _set_message_meta(message_id, 'send_error', '' if sent else message)
+        row = db.query_one('SELECT * FROM messages WHERE id = ?', (message_id,))
+        if row is not None:
+            message_row = _row_to_message(row)
+
+    common.log_operation(
+        account_id, 'ai_reply_send', str(conversation.get('item_id') or ''), sent,
+        {
+            'conversation_id': conversation.get('id'),
+            'message_id': message_id,
+            'code': code,
+            'message': message,
+        },
+    )
+    if risk:
+        common.add_risk_event(account_id, 'ai_reply_blocked', message or code)
+    return {'sent': sent, 'code': code, 'message': message, 'message_row': message_row}
+
+
+def deliver_ai_reply(
+    conversation_id: Any,
+    message_id: Any,
+    text: str,
+    *,
+    cid: str = '',
+) -> Dict[str, Any]:
+    """把一条已落库的 AI 回复真的发回闲鱼，并如实回写结果。
+
+    返回 `{'sent','code','message','message_row'}`（`message_row` 是刷新后的消息行，
+    调用方用它覆盖落库时那条 `sent_ok=False` 的旧快照）。
+
+    不发送的三种情况都必须留下原因：`mode != 'auto'`（人工接管 / 关闭）、
+    缺平台会话 id（HTTP 手动灌入的来信没有 cid）、账号正在风控冷却中。
+    """
+    row = _find_conversation(conversation_id)
+    if row is None:
+        return {'sent': False, 'code': 'not_found', 'message': f'会话不存在: {conversation_id}',
+                'message_row': None}
+    conversation = _row_to_conversation(row)
+    account_id = str(conversation.get('account_id') or '')
+    text = str(text or '').strip()
+
+    if conversation.get('mode') != 'auto':
+        return _finish_ai_send(
+            conversation, message_id, sent=False, code='mode_not_auto',
+            message=f'会话处于 {conversation.get("mode")} 模式，AI 回复不自动发送',
+        )
+    if not text:
+        return _finish_ai_send(
+            conversation, message_id, sent=False, code='empty_text', message='AI 回复为空，未发送',
+        )
+    if not str(cid or ''):
+        return _finish_ai_send(
+            conversation, message_id, sent=False, code='missing_cid',
+            message='缺少平台会话 id（cid），AI 回复未发送',
+        )
+    if _account_in_risk_cooldown(account_id):
+        return _finish_ai_send(
+            conversation, message_id, sent=False, code='risk_cooldown', risk=True,
+            message='账号处于风控冷却中，AI 回复未发送（不自动重试）',
+        )
+
+    client, err = common.get_client(account_id)
+    if client is None:
+        failure = err or common.not_ready()
+        return _finish_ai_send(
+            conversation, message_id, sent=False,
+            code=str(failure.get('code') or 'xianyu_not_ready'),
+            message=str(failure.get('message') or '协议层尚未就绪，AI 回复未发送'),
+        )
+
+    # 真客户端签名是 send_message(cid, text, toid=None)，toid 省略时=cid。
+    status, value = common.call_method(client, ('send_message',), cid, text)
+    if status == common.CALL_OK and not (isinstance(value, dict) and value.get('success') is False):
+        return _finish_ai_send(conversation, message_id, sent=True, code='ok', message='')
+
+    if status == common.CALL_MISSING:
+        code, message = 'xianyu_not_ready', '协议层尚未实现 send_message，AI 回复未发送'
+    else:
+        code, message = 'protocol_error', f'AI 回复发送失败: {value}'
+    risk = _looks_like_risk_error(value)
+    if risk:
+        code = 'risk_blocked'
+    return _finish_ai_send(
+        conversation, message_id, sent=False, code=code, message=message, risk=risk,
+    )
+
+
+# --------------------------------------------------------------------------- IM 入站分发
+
+#: account_id -> 入站 handler。按账号缓存同一函数对象，保证 attach 幂等（见下）。
+_IM_HANDLERS: Dict[str, Any] = {}
+
+
+def im_handler_for(account_id: str):
+    """造一个「一帧 IM 推送 -> 落库 + 触发 AI」的回调，交给协议层注册。
+
+    回调必须是**无状态、不抛异常**的：它跑在 IM 读循环里，抛异常会被协议层吞掉
+    （见 `xianyu.im.ImSession.dispatch`），但不能因此让后续消息也收不到。
+
+    按 account_id 缓存**同一个函数对象**：回调无状态，而 `ImSession.on_message`
+    按对象去重 —— 每次 attach 都造新闭包的话，同一会话会被挂上多份 handler，
+    一封来信就会触发多次 AI。
+    """
+    account_id = str(account_id or '')
+    handler = _IM_HANDLERS.get(account_id)
+    if handler is None:
+        def handler(payload: Any) -> Any:  # noqa: F811 - 有意复用上面查到的名字
+            return dispatch_im_message(account_id, payload)
+
+        _IM_HANDLERS[account_id] = handler
+    return handler
+
+
+def _warn_unparsed_frame(im_module: Any, payload: Any, reason: str) -> None:
+    """认不出的入站帧留一条 WARNING：type + 截断 body。
+
+    宁可漏落一条买家消息，也不要凭空造出 buyer_id 为空的会话；但**静默跳过是不行的**
+    —— 真机上唯一的线索就是这条日志（首次上线只能靠它反推真实帧形状）。
+    """
+    summarize = getattr(im_module, 'frame_summary', None) if im_module is not None else None
+    info: Dict[str, Any] = {}
+    if callable(summarize):
+        try:
+            info = summarize(payload) or {}
+        except Exception:  # noqa: BLE001 - 记日志本身不许把读循环搞挂
+            info = {}
+    if not info:
+        info = {'type': type(payload).__name__, 'body': repr(payload)[:200]}
+    logger.warning(
+        'IM 入站帧已跳过（{}）: type={} body={}',
+        reason, info.get('type', ''), info.get('body', ''),
+    )
+
+
+def dispatch_im_message(account_id: str, payload: Any) -> Optional[Any]:
+    """一帧 IM 推送 -> `handle_incoming`。
+
+    不是买家文本消息（心跳/协议回帧/字段不全）时返回 None —— 宁可漏落一条，
+    也不要凭空造出一个 buyer_id 为空的会话。
+    """
+    im_module = common.protocol_module('im')
+    parse = getattr(im_module, 'parse_incoming_message', None) if im_module is not None else None
+    if not callable(parse):
+        _warn_unparsed_frame(im_module, payload, '协议层 IM 未就绪')
+        return None
+    parsed = parse(payload)
+    if not parsed:
+        _warn_unparsed_frame(im_module, payload, '不是可处理的买家文本消息')
+        return None
+
+    buyer_id = str(parsed.get('buyer_id') or '')
+    content = str(parsed.get('content') or '')
+    if not (account_id and buyer_id and content):
+        _warn_unparsed_frame(im_module, payload, '缺少 account_id/buyer_id/content')
+        return None
+
+    item_id = str(parsed.get('item_id') or '')
+    conversation = ensure_conversation(
+        account_id, buyer_id, item_id=item_id, agent_role=default_agent_role(item_id),
+    )
+    return handle_incoming(
+        conversation['id'], content,
+        item_id=item_id,
+        msg_id=str(parsed.get('msg_id') or ''),
+        meta={'source': 'im', 'cid': str(parsed.get('cid') or '')},
+    )
+
+
+#: session 上记「已给哪些账号挂过 handler」的属性名（不依赖 on_message 的去重语义）。
+ATTACHED_ACCOUNTS_KEY = '_xianyu_ai_attached_accounts'
+
+
+def attach_im_session(session: Any, account_id: str) -> Any:
+    """把服务层入站 handler 注册到一条 `ImSession` 上（**幂等**）。
+
+    协议层只负责「收到非配对帧就调回调」，业务归属（account_id）由服务层带上 ——
+    这是「协议层不 import services」的反向注入点。同一个会话重复 attach（例如
+    `im_service.start()` 与客户端钩子各来一次）只保留一份 handler。
+    """
+    register = getattr(session, 'on_message', None)
+    if not callable(register):
+        return session
+
+    account_id = str(account_id or '')
+    attached = getattr(session, ATTACHED_ACCOUNTS_KEY, None)
+    if not isinstance(attached, set):
+        attached = set()
+        try:
+            setattr(session, ATTACHED_ACCOUNTS_KEY, attached)
+        except Exception:  # noqa: BLE001 - 挂不上属性（__slots__ 会话）时退回 on_message 去重
+            attached = None
+    if attached is not None:
+        if account_id in attached:
+            return session
+        attached.add(account_id)
+
+    register(im_handler_for(account_id))
+    return session

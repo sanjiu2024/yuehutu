@@ -30,8 +30,11 @@ class FakeClient:
         self.account_id = account_id
         self.sent = []
 
-    def send_message(self, account_id, peer_user_id, text):
-        self.sent.append((account_id, peer_user_id, text))
+    def send_message(self, cid, text, toid=None):
+        # 真签名见 backend/app/xianyu/client.py:345 —— 老 FakeClient 照着错误调用点
+        # 抄成了 (account_id, peer_user_id, text)，所以「人工接管发错对象和正文」这个
+        # 缺陷在 297 条全绿里也抓不到。
+        self.sent.append((cid, text, toid))
         return {'ok': True}
 
 
@@ -180,7 +183,23 @@ class ChatsServiceTest(unittest.TestCase):
         result = chats.send_manual(conv['id'], '人工回复')
         self.assertTrue(result['sent'])
         self.assertNotIn('warning', result)
-        self.assertEqual(self.client.sent[0][2], '人工回复')
+        # 回归：老代码传的是 (account_id, peer_user_id, text)，按真签名
+        # send_message(cid, text, toid=None) 解出来就是「cid=账号 id、正文=买家 id」——
+        # 所以这里必须同时钉住「第一个位置是会话 id、第二个位置才是正文」。
+        cid, text, _toid = self.client.sent[0]
+        self.assertNotEqual(cid, 'acc1', '第一个位置不能是账号 id')
+        self.assertEqual(cid, 'buyer1', '单聊里 cid 与买家 id 相同')
+        self.assertEqual(text, '人工回复')
+
+    def test_send_manual_prefers_cid_from_im_meta(self):
+        """IM 帧带来的 cid 优先于 peer_user_id（两者不等时不能发错会话）。"""
+        install_client(self.client)
+        conv = self.make_conversation()
+        chats.append_message(conv['id'], 'buyer', '在吗', meta={'source': 'im', 'cid': 'cid-from-im'})
+        result = chats.send_manual(conv['id'], '人工回复')
+        self.assertTrue(result['sent'])
+        self.assertEqual(self.client.sent[0][0], 'cid-from-im')
+        self.assertEqual(self.client.sent[0][1], '人工回复')
 
     def test_send_manual_rejects_empty_and_missing(self):
         conv = self.make_conversation()

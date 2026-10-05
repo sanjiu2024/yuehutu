@@ -12,11 +12,15 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import json
+import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from . import fingerprint, mtop
+
+logger = logging.getLogger(__name__)
 
 # 生产域名。注意 ws 的 Host 头必须是这个，写 www.goofish.com 会被拒。
 WS_URL = 'wss://wss-goofish.dingtalk.com/'
@@ -45,6 +49,134 @@ def _with_goofish(value: str) -> str:
     """补 ``@goofish`` 后缀。cid / toid 有时带有时不带，统一一次。"""
     value = str(value or '')
     return value if '@goofish' in value else f'{value}@goofish'
+
+
+def _strip_goofish(value: Any) -> str:
+    """去掉 ``@goofish`` 后缀（入库的 buyer_id / item_id 不要带它）。"""
+    return str(value or '').split('@goofish')[0].strip()
+
+
+def _first_str(source: Dict[str, Any], *keys: str) -> str:
+    """按顺序取第一个非空字段（不同版本推送的键名不一样）。"""
+    for key in keys:
+        value = source.get(key)
+        if value not in (None, ''):
+            return str(value)
+    return ''
+
+
+def _decode_content(raw: Any) -> str:
+    """把 LWP 消息的 ``content`` 归一化成纯文本。
+
+    三种在线上都出现过：``{"text": {"text": "..."}}``、直接字符串、以及
+    ``{"custom": {"data": base64(json)}}``（和 ``build_send_frame`` 对称）。
+    """
+    if isinstance(raw, str):
+        return raw
+    if not isinstance(raw, dict):
+        return ''
+    text = raw.get('text')
+    if isinstance(text, dict):
+        return str(text.get('text') or '')
+    if isinstance(text, str):
+        return text
+    custom = raw.get('custom')
+    if isinstance(custom, dict) and isinstance(custom.get('data'), str):
+        try:
+            decoded = base64.b64decode(custom['data']).decode('utf-8')
+        except Exception:  # 不是合法 base64 -> 当作解析不出
+            return ''
+        try:
+            return _decode_content(json.loads(decoded))
+        except (TypeError, ValueError):
+            return decoded
+    return ''
+
+
+def parse_incoming_message(payload: Any) -> Optional[Dict[str, Any]]:
+    """从一帧 IM 推送里抠出一条买家消息。
+
+    返回 ``{'msg_id','cid','buyer_id','seller_id','content','item_id'}``；
+    **返回 None 表示这一帧不是可处理的买家文本消息**（心跳回帧、纯协议回帧等），
+    调用方据此跳过，不要凭空造会话。
+
+    `msg_id` 是平台侧的幂等键，服务层拿它去重（见 `services.chats.handle_incoming`）。
+    """
+    if not isinstance(payload, dict):
+        return None
+
+    body = payload.get('body')
+    item: Any = None
+    if isinstance(body, list):
+        item = next((entry for entry in body if isinstance(entry, dict)), None)
+    elif isinstance(body, dict):
+        inner = body.get('message')
+        item = inner if isinstance(inner, dict) else body
+    if not isinstance(item, dict):
+        item = payload  # 有些推送把字段直接摊在顶层
+
+    content = _decode_content(item.get('content'))
+    if not content:
+        raw_text = item.get('text')
+        content = raw_text if isinstance(raw_text, str) else ''
+    content = content.strip()
+    if not content:
+        return None
+
+    extension = item.get('extension')
+    item_id = ''
+    if isinstance(extension, dict):
+        item_id = _first_str(extension, 'itemId', 'item_id')
+        if not item_id and isinstance(extension.get('extJson'), str):
+            try:
+                item_id = _first_str(json.loads(extension['extJson']) or {}, 'itemId', 'item_id')
+            except (TypeError, ValueError):
+                item_id = ''
+    if not item_id:
+        item_id = _first_str(item, 'itemId', 'item_id')
+
+    return {
+        'msg_id': _first_str(item, 'msgId', 'msg_id', 'messageId', 'message_id', 'uuid', 'id'),
+        'cid': _strip_goofish(_first_str(item, 'cid', 'conversationId', 'conversation_id')),
+        'buyer_id': _strip_goofish(
+            _first_str(item, 'senderId', 'sender_id', 'sender', 'from', 'userId', 'user_id')
+        ),
+        'seller_id': _strip_goofish(
+            _first_str(item, 'receiverId', 'receiver_id', 'to', 'targetId')
+        ),
+        'content': content,
+        'item_id': item_id,
+    }
+
+
+def frame_summary(payload: Any, limit: int = 200) -> Dict[str, str]:
+    """给「认不出的入站帧」做一条可检索的摘要：原始 type + 截断后的 body。
+
+    首次上线只能靠它反推真实帧形状（`parse_incoming_message` 返回 None 的帧里混着
+    心跳回帧、协议回帧，也可能混着还没适配的买家消息形状）。**只落 type 与截断 body**：
+    整帧可能很大，也可能带 cookie / token 一类字段。
+    """
+    if not isinstance(payload, dict):
+        return {'type': type(payload).__name__, 'body': repr(payload)[:limit]}
+
+    headers = payload.get('headers')
+    frame_type = ''
+    if isinstance(headers, dict):
+        frame_type = str(headers.get('lwp') or '')
+    if not frame_type:
+        frame_type = str(payload.get('lwp') or payload.get('type') or '')
+    if not frame_type and isinstance(headers, str):
+        frame_type = headers
+
+    body = payload.get('body')
+    if isinstance(body, str):
+        text = body
+    else:
+        try:
+            text = json.dumps(body, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            text = repr(body)
+    return {'type': frame_type, 'body': text[:limit]}
 
 
 def build_reg_frame(token: str, device_id: str) -> Dict[str, Any]:
@@ -223,10 +355,14 @@ def _connect_kwargs(headers: Dict[str, str]) -> Dict[str, Any]:
 
 
 class ImSession:
-    """一条 IM WebSocket 会话：注册 → 请求/响应配对 → 心跳。
+    """一条 IM WebSocket 会话：注册 → 请求/响应配对 → 心跳 → 入站分发。
 
     请求/响应靠 ``headers.mid`` 配对：服务端回帧会原样带回 mid，据此唤醒
     对应的 future。没有这层，多个并发调用会互相吃掉响应。
+
+    **入站分发**：买家主动发来的消息不配对任何 pending future，这类帧交给
+    `on_message()` 注册的回调（`dispatch()`）。回调由**服务层**注册
+    （`services.chats.attach_im_session`）——协议层不认识 services，保持层次。
     """
 
     def __init__(self, cookie_str: str, token: str, my_id: str,
@@ -241,10 +377,46 @@ class ImSession:
         self._pending: Dict[str, asyncio.Future] = {}
         self._reader: Optional[asyncio.Task] = None
         self._heartbeat: Optional[asyncio.Task] = None
+        self._handlers: List[Callable[[Dict[str, Any]], Any]] = []
 
     @property
     def connected(self) -> bool:
         return self._ws is not None
+
+    # -------------------------------------------------------------- 入站回调
+
+    def on_message(self, handler: Callable[[Dict[str, Any]], Any]) -> Callable:
+        """注册入站消息回调（也可当装饰器用），返回 handler 本身。"""
+        if handler not in self._handlers:
+            self._handlers.append(handler)
+        return handler
+
+    def off_message(self, handler: Callable[[Dict[str, Any]], Any]) -> None:
+        if handler in self._handlers:
+            self._handlers.remove(handler)
+
+    def dispatch(self, payload: Any) -> int:
+        """把一帧**非配对**推送交给所有注册的 handler，返回成功投递数。
+
+        单个 handler 抛异常只记日志，绝不让读循环断掉（否则一条坏消息会让
+        整条 IM 连接静默失聪）。
+        """
+        delivered = 0
+        for handler in list(self._handlers):
+            try:
+                result = handler(payload)
+            except Exception as exc:
+                logger.warning('IM 入站 handler 抛异常，已跳过: %s', exc)
+                continue
+            if inspect.isawaitable(result):
+                try:
+                    asyncio.ensure_future(result)
+                except RuntimeError:  # 没有事件循环：关掉协程，避免 "never awaited" 警告
+                    close = getattr(result, 'close', None)
+                    if callable(close):
+                        close()
+            delivered += 1
+        return delivered
 
     async def connect(self) -> None:
         import websockets
@@ -288,6 +460,9 @@ class ImSession:
                 future = self._pending.pop(mid, None)
                 if future is not None and not future.done():
                     future.set_result(payload)
+                else:
+                    # 不配对任何 pending 请求 -> 服务端主动推来的买家消息
+                    self.dispatch(payload)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # 连接断开
