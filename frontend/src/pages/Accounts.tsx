@@ -5,7 +5,7 @@ import { api, errorText } from '../api'
 import { AsyncBox, Badge, ConfirmDialog, Modal, Notice, Switch, useToast } from '../components'
 import { useAsync } from '../hooks/useAsync'
 import { bool, formatTime, loginStateLabel, runtimeStateLabel } from '../format'
-import type { Account, QrPoll, QrStart, QrState } from '../types'
+import type { Account, CaptchaResult, QrPoll, QrStart, QrState } from '../types'
 
 const QR_STATE_TEXT: Record<QrState, string> = {
   pending: '请用闲鱼 App 扫描二维码',
@@ -15,10 +15,13 @@ const QR_STATE_TEXT: Record<QrState, string> = {
   failed: '登录失败，请重新获取二维码',
 }
 
+/** 二维码有效期到期后自动重新拉一张（后端默认 300 秒）。 */
 export function AccountsPage() {
   const toast = useToast()
   const accounts = useAsync<Account[]>(() => api.get<Account[]>('/api/accounts'), [])
   const [qrOpen, setQrOpen] = useState(false)
+  /** 点「重新登录」时带上账号，弹窗直接显示该账号的新二维码。 */
+  const [reloginTarget, setReloginTarget] = useState<Account | null>(null)
   const [editing, setEditing] = useState<Account | null>(null)
   const [removing, setRemoving] = useState<Account | null>(null)
   const [busyId, setBusyId] = useState('')
@@ -39,24 +42,18 @@ export function AccountsPage() {
     }
   }
 
-  const relogin = async (account: Account) => {
-    setBusyId(account.id)
-    try {
-      await api.post(`/api/accounts/${encodeURIComponent(account.id)}/relogin`)
-      toast.success('已触发重新登录，请留意扫码窗口')
-      accounts.reload()
-    } catch (err) {
-      toast.error(errorText(err))
-    } finally {
-      setBusyId('')
-    }
-  }
-
+  /**
+   * 手动过验证。后端路由是 `POST /api/accounts/{id}/captcha`
+   * （**不是** `/verify`），异步触发、立刻返回，真实结果写进操作日志。
+   */
   const captcha = async (account: Account) => {
     setBusyId(account.id)
     try {
-      await api.post(`/api/accounts/${encodeURIComponent(account.id)}/captcha`)
-      toast.success('已打开人工验证窗口，请在弹出的浏览器里完成滑块')
+      const result = await api.post<CaptchaResult>(
+        `/api/accounts/${encodeURIComponent(account.id)}/captcha`,
+        { headless: false },
+      )
+      toast.success(result?.message || '已打开人工验证窗口，请在弹出的浏览器里完成滑块')
     } catch (err) {
       toast.error(errorText(err))
     } finally {
@@ -142,20 +139,20 @@ export function AccountsPage() {
                         <Switch
                           checked={bool(account.enabled)}
                           disabled={rowBusy}
-                          onChange={(next) => patchAccount(account, { enabled: next ? 1 : 0 })}
+                          onChange={(next) => patchAccount(account, { enabled: next })}
                         />
                       </td>
                       <td>
                         <Switch
                           checked={bool(account.auto_reply)}
                           disabled={rowBusy}
-                          onChange={(next) => patchAccount(account, { auto_reply: next ? 1 : 0 })}
+                          onChange={(next) => patchAccount(account, { auto_reply: next })}
                         />
                       </td>
                       <td className="dim">{account.remark || '-'}</td>
                       <td className="nowrap">
                         <div className="row" style={{ gap: 5 }}>
-                          <button className="btn sm" disabled={rowBusy} onClick={() => relogin(account)}>
+                          <button className="btn sm" disabled={rowBusy} onClick={() => setReloginTarget(account)}>
                             重新登录
                           </button>
                           <button className="btn sm" disabled={rowBusy} onClick={() => captcha(account)} title="打开浏览器窗口手动完成滑块验证">
@@ -181,6 +178,16 @@ export function AccountsPage() {
       {qrOpen && (
         <QrLoginModal
           onClose={() => setQrOpen(false)}
+          onSuccess={() => {
+            accounts.reload()
+          }}
+        />
+      )}
+
+      {reloginTarget && (
+        <QrLoginModal
+          reloginAccount={reloginTarget}
+          onClose={() => setReloginTarget(null)}
           onSuccess={() => {
             accounts.reload()
           }}
@@ -221,7 +228,24 @@ export function AccountsPage() {
 
 /* ---------------- 扫码登录 ---------------- */
 
-function QrLoginModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
+/**
+ * 扫码登录弹窗。
+ *
+ * 两种入口共用这一个组件：
+ *  - 新增账号：`POST /api/accounts/qr/start` 拿一张新二维码；
+ *  - 重新登录：`POST /api/accounts/{id}/relogin` —— 后端**直接把新二维码内联返回**
+ *    （`{id, login_state, ticket, qr_image_b64, expires_in}`），所以不用再调一次 qr/start。
+ *    两者拿到的 ticket 都用同一个 `GET /api/accounts/qr/{ticket}` 轮询。
+ */
+function QrLoginModal({
+  reloginAccount,
+  onClose,
+  onSuccess,
+}: {
+  reloginAccount?: Account
+  onClose: () => void
+  onSuccess: () => void
+}) {
   const [qr, setQr] = useState<QrStart | null>(null)
   const [state, setState] = useState<QrState>('pending')
   const [message, setMessage] = useState('')
@@ -238,14 +262,22 @@ function QrLoginModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: 
     setMessage('')
     doneRef.current = false
     try {
-      const result = await api.post<QrStart>('/api/accounts/qr/start')
-      setQr(result)
+      if (reloginAccount) {
+        // 后端在这里已经清掉旧 Cookie 并置 need_relogin，返回的新二维码可直接用
+        const result = await api.post<QrStart>(
+          `/api/accounts/${encodeURIComponent(reloginAccount.id)}/relogin`,
+        )
+        setQr(result)
+      } else {
+        const result = await api.post<QrStart>('/api/accounts/qr/start')
+        setQr(result)
+      }
     } catch (err) {
       setError(errorText(err))
     } finally {
       setStarting(false)
     }
-  }, [])
+  }, [reloginAccount])
 
   useEffect(() => {
     void start()
@@ -288,7 +320,7 @@ function QrLoginModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: 
 
   return (
     <Modal
-      title="扫码添加闲鱼账号"
+      title={reloginAccount ? `重新登录 · ${reloginAccount.nickname || reloginAccount.id}` : '扫码添加闲鱼账号'}
       onClose={onClose}
       footer={
         <>
@@ -355,8 +387,8 @@ function EditAccountModal({
     try {
       await api.patch(`/api/accounts/${encodeURIComponent(account.id)}`, {
         remark,
-        enabled: enabled ? 1 : 0,
-        auto_reply: autoReply ? 1 : 0,
+        enabled,
+        auto_reply: autoReply,
       })
       toast.success('已保存')
       onSaved()

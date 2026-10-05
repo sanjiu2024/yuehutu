@@ -1,14 +1,71 @@
 /** 共享 UI 组件（原生 CSS，无第三方库）。 */
 
 import {
+  Component,
   createContext,
   useCallback,
   useContext,
   useEffect,
   useMemo,
   useState,
+  type ErrorInfo,
   type ReactNode,
 } from 'react'
+
+/* ---------------- 错误边界 ---------------- */
+
+/**
+ * 兜底错误边界。
+ *
+ * 硬要求是「任何 404/失败都要显示友好提示，绝不白屏」——接口层已经用 AsyncBox 兜住了，
+ * 但渲染期抛错（后端返回了预期外的形状、undefined 取属性等）会直接炸掉整棵树变白屏。
+ * 这里把整页包住，至少让用户看到发生了什么、能重试。
+ */
+export class ErrorBoundary extends Component<
+  { children: ReactNode; onReset?: () => void },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null }
+
+  static getDerivedStateFromError(error: Error) {
+    return { error }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    // 留在控制台便于排查，但不打扰用户
+    console.error('[xywb] 页面渲染出错:', error, info.componentStack)
+  }
+
+  reset = () => {
+    this.setState({ error: null })
+    this.props.onReset?.()
+  }
+
+  render() {
+    const { error } = this.state
+    if (!error) return this.props.children
+    return (
+      <div className="empty" style={{ padding: '48px 20px' }}>
+        <div style={{ fontSize: 34, marginBottom: 8 }}>⚠️</div>
+        <div style={{ fontWeight: 600, marginBottom: 6 }}>这个页面出了点问题</div>
+        <div className="dim" style={{ fontSize: 12.5, maxWidth: 520, margin: '0 auto 14px' }}>
+          不影响其它页面。可以点下面的按钮重试，或换到左侧其它菜单。
+        </div>
+        <div className="code-block" style={{ maxWidth: 640, margin: '0 auto 14px', textAlign: 'left' }}>
+          {String(error?.message || error)}
+        </div>
+        <div className="row" style={{ justifyContent: 'center' }}>
+          <button className="btn primary" onClick={this.reset}>
+            重试
+          </button>
+          <button className="btn" onClick={() => window.location.reload()}>
+            刷新页面
+          </button>
+        </div>
+      </div>
+    )
+  }
+}
 
 /* ---------------- 徽标 ---------------- */
 

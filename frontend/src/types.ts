@@ -91,14 +91,12 @@ export interface Item {
   synced_at?: string | null
 }
 
-/** 包一层对象的列表返回（items / chats / prompts / risk events 都是这种）。 */
-export interface Paged<T> {
+/** 列表分页元信息（items / chats / prompts / risk events 的包对象都有这几个键）。 */
+export interface PageMeta {
   total?: number
   page?: number
   size?: number
   pages?: number
-  /** 具体列表键名各接口不同，见各专用类型。 */
-  [key: string]: unknown
 }
 
 export interface ItemListResult {

@@ -1,7 +1,7 @@
 /** 会话：左列表右聊天窗；人工接管输入框 + 本会话 AI 开关 + 消息流。 */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, errorText } from '../api'
+import { api, errorText, isNotReady } from '../api'
 import { AsyncBox, Badge, Notice, Switch, useToast } from '../components'
 import { useAsync } from '../hooks/useAsync'
 import { formatClock, formatTime, modeLabel, senderLabel, truncate } from '../format'
@@ -262,20 +262,38 @@ function ChatWindow({
 
   /**
    * 「AI 帮我拟一条」。
-   * 后端**没有** `/api/chats/{id}/ai-draft`；真实可用的是
-   * `POST /api/chats/classify`（客服意图分类 + 快捷回复建议，纯规则、不花钱）。
+   *
+   * 首选 `POST /api/chats/{id}/ai-draft`（真 AI 生成，只生成不发送、不落库）。
+   * 若 AI 编排层还没就绪（后端返回 `xianyu_not_ready`），退回到
+   * `POST /api/chats/classify`（客服意图分类 + 快捷回复建议，纯规则、不花钱），
+   * 至少让用户拿到一条可用的话术，而不是干瞪眼。
    */
   const draft = async () => {
     setDrafting(true)
     try {
+      try {
+        const result = await api.post<{ draft?: string }>(
+          `/api/chats/${conversation.id}/ai-draft`,
+          {},
+        )
+        if (result?.draft) {
+          setInput(result.draft)
+          toast.info('AI 已拟好草稿，确认后再发送')
+          return
+        }
+      } catch (err) {
+        if (!isNotReady(err)) throw err
+      }
+
+      // 兜底：规则版建议回复
       const text = input.trim() || lastInboundText(list) || '你好'
       const result = await api.post<ClassifyResult>('/api/chats/classify', { text })
       const suggestions = collectSuggestions(result)
       if (suggestions.length > 0) {
         setInput(suggestions[0])
-        toast.info(`已填入建议回复（意图：${result?.intent || '未知'}），确认后再发送`)
+        toast.info(`AI 暂不可用，已用规则话术填入（意图：${result?.intent || '未知'}），确认后再发送`)
       } else {
-        toast.info('后端没有给出建议回复')
+        toast.info('暂时没有可用的建议回复')
       }
     } catch (err) {
       toast.error(errorText(err))
@@ -345,7 +363,7 @@ function ChatWindow({
                 {senderLabel(message.sender)} · {formatTime(message.created_at)}
               </div>
               <div className="bubble">{message.content || '(空消息)'}</div>
-              {message.sent_ok === 0 && <div className="failed">发送失败</div>}
+              {message.sent_ok === false && <div className="failed">发送失败</div>}
             </div>
           )
         })}

@@ -5,7 +5,7 @@ import { api, errorText } from '../api'
 import { AsyncBox, Badge, ConfirmDialog, Field, Modal, Notice, Switch, useToast } from '../components'
 import { useAsync } from '../hooks/useAsync'
 import { bool, formatMoney, formatTime, itemStatusLabel, parseImages, truncate } from '../format'
-import type { Account, Item, OperationLog } from '../types'
+import type { Account, Item, ItemListResult, OperationLog } from '../types'
 
 export function ItemsPage() {
   const toast = useToast()
@@ -23,9 +23,9 @@ export function ItemsPage() {
 
   const accountList = accounts.data ?? []
 
-  const items = useAsync<Item[]>(
+  const items = useAsync<ItemListResult>(
     () =>
-      api.get<Item[]>('/api/items', {
+      api.get<ItemListResult>('/api/items', {
         account_id: accountId || undefined,
         status: status || undefined,
         q: query || undefined,
@@ -34,7 +34,7 @@ export function ItemsPage() {
     [accountId, status, query],
   )
 
-  const list = items.data ?? []
+  const list = items.data?.items ?? []
 
   const selectedItems = useMemo(() => list.filter((item) => selected.has(item.item_id)), [list, selected])
   const selectedAccounts = useMemo(() => new Set(selectedItems.map((item) => item.account_id)), [selectedItems])
@@ -465,46 +465,89 @@ function BatchEditModal({
     return parts.length ? parts.join('；') : '不修改'
   }
 
-  const buildPatch = (): Record<string, unknown> => {
+  /** 只用来判断「用户到底勾了没有」，不参与请求体构造。 */
+  const hasSelection = (): boolean => {
+    if (priceOn && priceValue !== '' && !Number.isNaN(Number(priceValue))) return true
+    if (titleOn && titleValue.trim()) return true
+    if (descOn && descValue.trim()) return true
+    return false
+  }
+
+  /**
+   * 把 UI 上的「百分比 / 查找替换 / 追加前置」这些**后端不认**的意图，
+   * 逐条算成后端真正支持的字段（`price` / `title` / `description`）。
+   *
+   * 后端 `services/items.py:48 PATCH_KEYS` 只认
+   * `price_delta|price_set|title_tpl|title_prefix|title_suffix|stock_set`，
+   * 其余字段名会被 `normalize_fields` 判为「不支持的字段」**整批 400**。
+   * 百分比与查找替换没有对应的补丁键，所以在客户端按每条商品的当前值算好。
+   */
+  const patchFor = (item: Item): Record<string, unknown> => {
     const patch: Record<string, unknown> = {}
     if (priceOn && priceValue !== '') {
       const value = Number(priceValue)
       if (!Number.isNaN(value)) {
-        if (priceMode === 'set') patch.price_set = value
-        else if (priceMode === 'delta') patch.price_delta = value
-        else patch.price_percent = value
+        const base = Number(item.price) || 0
+        const next = priceMode === 'set' ? value : priceMode === 'delta' ? base + value : base * (1 + value / 100)
+        patch.price = Math.max(0, Math.round(next * 100) / 100)
       }
     }
     if (titleOn && titleValue) {
+      const current = item.title || ''
       if (titleMode === 'set') patch.title = titleValue
-      else if (titleMode === 'prefix') patch.title_prefix = titleValue
-      else if (titleMode === 'suffix') patch.title_suffix = titleValue
+      else if (titleMode === 'prefix') patch.title = `${titleValue}${current}`
+      else if (titleMode === 'suffix') patch.title = `${current}${titleValue}`
       else {
         const [from, to] = titleValue.split('=>')
-        patch.title_replace = { from: (from || '').trim(), to: (to || '').trim() }
+        const find = (from || '').trim()
+        patch.title = find ? current.split(find).join((to || '').trim()) : current
       }
     }
     if (descOn && descValue) {
+      const current = item.description || ''
       if (descMode === 'replace') patch.description = descValue
-      else if (descMode === 'append') patch.description_append = descValue
-      else patch.description_prepend = descValue
+      else if (descMode === 'append') patch.description = `${current}${descValue}`
+      else patch.description = `${descValue}${current}`
     }
     return patch
   }
 
   const submit = async () => {
-    const patch = buildPatch()
-    if (Object.keys(patch).length === 0) {
+    if (!hasSelection()) {
       toast.info('请至少勾选一项要修改的内容')
       return
     }
     setSaving(true)
     try {
-      await api.post(`/api/items/${encodeURIComponent(accountId)}/batch-edit`, {
-        item_ids: items.map((item) => item.item_id),
-        patch,
-      })
-      toast.success(`已提交批量修改（${items.length} 个商品）`)
+      const perItem = items.map((item) => ({ item, patch: patchFor(item) }))
+      const first = JSON.stringify(perItem[0]?.patch ?? {})
+      const uniform = perItem.every((entry) => JSON.stringify(entry.patch) === first)
+
+      if (uniform) {
+        // 所有商品的最终值一致 → 走一次批量接口
+        await api.post(`/api/items/${encodeURIComponent(accountId)}/batch-edit`, {
+          item_ids: items.map((item) => item.item_id),
+          patch: perItem[0].patch,
+        })
+        toast.success(`已批量修改 ${items.length} 个商品`)
+      } else {
+        // 每条商品的最终值不同（百分比/替换）→ 逐条走单条编辑接口
+        let ok = 0
+        const failed: string[] = []
+        for (const entry of perItem) {
+          try {
+            await api.post(
+              `/api/items/${encodeURIComponent(entry.item.account_id)}/${encodeURIComponent(entry.item.item_id)}/edit`,
+              entry.patch,
+            )
+            ok += 1
+          } catch (err) {
+            failed.push(`${entry.item.item_id}: ${errorText(err)}`)
+          }
+        }
+        if (failed.length === 0) toast.success(`已修改 ${ok} 个商品`)
+        else toast.error(`成功 ${ok} 个，失败 ${failed.length} 个：${failed[0]}`)
+      }
       onDone()
     } catch (err) {
       toast.error(errorText(err))
@@ -733,11 +776,11 @@ function PublishItemModal({
 /* ---------------- 操作日志 ---------------- */
 
 function OperationLogsModal({ accountId, onClose }: { accountId: string; onClose: () => void }) {
-  const logs = useAsync<OperationLog[]>(
-    () => api.get<OperationLog[]>(`/api/items/${encodeURIComponent(accountId)}/operation-logs`, { limit: 100 }),
+  const logs = useAsync<{ logs: OperationLog[] }>(
+    () => api.get<{ logs: OperationLog[] }>(`/api/items/${encodeURIComponent(accountId)}/operation-logs`, { limit: 100 }),
     [accountId],
   )
-  const list = logs.data ?? []
+  const list = logs.data?.logs ?? []
 
   return (
     <Modal

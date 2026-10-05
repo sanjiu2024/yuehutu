@@ -65,7 +65,7 @@ export function AgentsPage() {
       }
       result.push({
         key,
-        conversationId: group[0]?.conversation_id,
+        conversationId: group[0]?.conversation_id ?? undefined,
         topic: group[0]?.topic,
         messages: group,
         roles: [...roles],

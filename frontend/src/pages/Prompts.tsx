@@ -5,7 +5,7 @@ import { api, errorText } from '../api'
 import { AsyncBox, Badge, ConfirmDialog, Field, Modal, Notice, Switch, useToast } from '../components'
 import { useAsync } from '../hooks/useAsync'
 import { formatTime, roleName } from '../format'
-import type { Account, AiPrompt, Item } from '../types'
+import type { Account, AiPrompt, Item, ItemListResult, PromptListResult } from '../types'
 
 const SCOPES = [
   { value: 'global', label: '全局', tone: 'ok' as const, desc: '对所有账号、所有商品生效，优先级最低' },
@@ -18,9 +18,10 @@ const ROLE_OPTIONS = ['', 'master', 'item', 'cs', 'bargain', 'cross', 'vision']
 interface PromptForm {
   id?: number
   scope: string
-  scope_id: string
+  /** scope=account 时是账号 id，scope=item 时是商品 item_id */
+  ownerId: string
   role: string
-  title: string
+  name: string
   content: string
   priority: string
   enabled: boolean
@@ -28,9 +29,9 @@ interface PromptForm {
 
 const EMPTY: PromptForm = {
   scope: 'global',
-  scope_id: '',
+  ownerId: '',
   role: '',
-  title: '',
+  name: '',
   content: '',
   priority: '0',
   enabled: true,
@@ -38,18 +39,19 @@ const EMPTY: PromptForm = {
 
 export function PromptsPage() {
   const toast = useToast()
-  const prompts = useAsync<AiPrompt[]>(() => api.get<AiPrompt[]>('/api/agents/prompts'), [])
+  // 后端返回 {items, scopes, roles}，不是裸数组
+  const prompts = useAsync<PromptListResult>(() => api.get<PromptListResult>('/api/agents/prompts'), [])
   const accounts = useAsync<Account[]>(() => api.get<Account[]>('/api/accounts'), [])
-  const items = useAsync<Item[]>(() => api.get<Item[]>('/api/items', { limit: 300 }), [])
+  const items = useAsync<ItemListResult>(() => api.get<ItemListResult>('/api/items', { limit: 300 }), [])
 
   const [form, setForm] = useState<PromptForm | null>(null)
   const [removing, setRemoving] = useState<AiPrompt | null>(null)
   const [scopeFilter, setScopeFilter] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const list = prompts.data ?? []
+  const list = prompts.data?.items ?? []
   const accountList = accounts.data ?? []
-  const itemList = items.data ?? []
+  const itemList = items.data?.items ?? []
 
   const grouped = useMemo(() => {
     const filtered = scopeFilter ? list.filter((p) => p.scope === scopeFilter) : list
@@ -82,21 +84,23 @@ export function PromptsPage() {
   const toggleEnabled = async (prompt: AiPrompt, enabled: boolean) => {
     if (!prompt.id) return
     try {
-      await api.put(`/api/agents/prompts/${prompt.id}`, { enabled: enabled ? 1 : 0 })
+      // 后端收真 bool（prompts.py 里 1 if enabled else 0）
+      await api.put(`/api/agents/prompts/${prompt.id}`, { enabled })
       prompts.reload()
     } catch (err) {
       toast.error(errorText(err))
     }
   }
 
-  const scopeName = (scope: string, scopeId?: string | null): string => {
-    if (scope === 'global') return '全部'
-    if (scope === 'account') {
-      const account = accountList.find((a) => a.id === scopeId)
-      return account ? account.nickname || account.id : scopeId || '（未指定）'
+  /** 提示词作用对象的显示名：后端把 owner 放在 account_id 或 item_id 上。 */
+  const scopeName = (prompt: AiPrompt): string => {
+    if (prompt.scope === 'global') return '全部'
+    if (prompt.scope === 'account') {
+      const account = accountList.find((a) => a.id === prompt.account_id)
+      return account ? account.nickname || account.id : prompt.account_id || '（未指定）'
     }
-    const item = itemList.find((i) => i.item_id === scopeId)
-    return item ? item.title || item.item_id : scopeId || '（未指定）'
+    const item = itemList.find((i) => i.item_id === prompt.item_id)
+    return item ? item.title || item.item_id : prompt.item_id || '（未指定）'
   }
 
   return (
@@ -151,14 +155,14 @@ export function PromptsPage() {
               <div className="col">
                 {group.items.map((prompt) => (
                   <div
-                    key={prompt.id ?? `${prompt.scope}-${prompt.scope_id}-${prompt.title}`}
+                    key={prompt.id ?? `${prompt.scope}-${prompt.account_id}-${prompt.item_id}-${prompt.name}`}
                     style={{ border: '1px solid var(--border-soft)', borderRadius: 'var(--radius-sm)', padding: 12 }}
                   >
                     <div className="row wrap">
-                      <strong>{prompt.title || '(未命名提示词)'}</strong>
+                      <strong>{prompt.name || '(未命名提示词)'}</strong>
                       <Badge tone="muted">priority {Number(prompt.priority) || 0}</Badge>
                       {prompt.role && <Badge tone="muted">{roleName(prompt.role)}</Badge>}
-                      <span className="dim" style={{ fontSize: 11.5 }}>作用于：{scopeName(prompt.scope || 'global', prompt.scope_id)}</span>
+                      <span className="dim" style={{ fontSize: 11.5 }}>作用于：{scopeName(prompt)}</span>
                       <span className="spacer" />
                       <Switch checked={prompt.enabled === undefined ? true : Boolean(prompt.enabled)} onChange={(next) => toggleEnabled(prompt, next)} />
                       <button
@@ -167,9 +171,9 @@ export function PromptsPage() {
                           setForm({
                             id: prompt.id,
                             scope: prompt.scope || 'global',
-                            scope_id: prompt.scope_id || '',
+                            ownerId: prompt.scope === 'item' ? prompt.item_id || '' : prompt.account_id || '',
                             role: prompt.role || '',
-                            title: prompt.title || '',
+                            name: prompt.name || '',
                             content: prompt.content || '',
                             priority: String(prompt.priority ?? 0),
                             enabled: prompt.enabled === undefined ? true : Boolean(prompt.enabled),
@@ -215,7 +219,7 @@ export function PromptsPage() {
           confirmText="确认删除"
           message={
             <>
-              确定删除 <strong>{removing.title || '(未命名)'}</strong> 吗？删除后 AI 不再使用这条规则。
+              确定删除 <strong>{removing.name || '(未命名)'}</strong> 吗？删除后 AI 不再使用这条规则。
             </>
           }
           onCancel={() => setRemoving(null)}
@@ -251,21 +255,25 @@ function PromptModal({
       toast.info('提示词内容不能为空')
       return
     }
-    if (draft.scope !== 'global' && !draft.scope_id) {
+    if (draft.scope !== 'global' && !draft.ownerId) {
       toast.info(draft.scope === 'account' ? '请选择要作用到哪个账号' : '请选择要作用到哪个商品')
       return
     }
     setSaving(true)
     try {
+      // 后端 create/update 从 `account_id` / `item_id` 取 owner（agents.py:93/115），
+      // 标题字段名是 `name`，不是 `title`。
       const payload: Record<string, unknown> = {
         scope: draft.scope,
-        scope_id: draft.scope === 'global' ? null : draft.scope_id,
-        role: draft.role || null,
-        title: draft.title.trim() || '未命名提示词',
+        role: draft.role || '',
+        name: draft.name.trim() || '未命名提示词',
         content: draft.content,
         priority: Number(draft.priority) || 0,
-        enabled: draft.enabled ? 1 : 0,
+        enabled: draft.enabled,
       }
+      if (draft.scope === 'account') payload.account_id = draft.ownerId
+      else if (draft.scope === 'item') payload.item_id = draft.ownerId
+
       if (isEdit) await api.put(`/api/agents/prompts/${form.id}`, payload)
       else await api.post('/api/agents/prompts', payload)
       toast.success(isEdit ? '已保存' : '已创建')
@@ -296,7 +304,7 @@ function PromptModal({
       <div className="split">
         <div className="left">
           <Field label="作用级别 *">
-            <select value={draft.scope} onChange={(e) => setDraft({ ...draft, scope: e.target.value, scope_id: '' })}>
+            <select value={draft.scope} onChange={(e) => setDraft({ ...draft, scope: e.target.value, ownerId: '' })}>
               {SCOPES.map((scope) => (
                 <option key={scope.value} value={scope.value}>
                   {scope.label}级 —— {scope.desc}
@@ -307,7 +315,7 @@ function PromptModal({
 
           {draft.scope === 'account' && (
             <Field label="账号 *">
-              <select value={draft.scope_id} onChange={(e) => setDraft({ ...draft, scope_id: e.target.value })}>
+              <select value={draft.ownerId} onChange={(e) => setDraft({ ...draft, ownerId: e.target.value })}>
                 <option value="">请选择账号</option>
                 {accounts.map((account) => (
                   <option key={account.id} value={account.id}>
@@ -320,7 +328,7 @@ function PromptModal({
 
           {draft.scope === 'item' && (
             <Field label="商品 *">
-              <select value={draft.scope_id} onChange={(e) => setDraft({ ...draft, scope_id: e.target.value })}>
+              <select value={draft.ownerId} onChange={(e) => setDraft({ ...draft, ownerId: e.target.value })}>
                 <option value="">请选择商品</option>
                 {items.map((item) => (
                   <option key={`${item.account_id}-${item.item_id}`} value={item.item_id}>
@@ -344,8 +352,8 @@ function PromptModal({
           <Field label="标题">
             <input
               type="text"
-              value={draft.title}
-              onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+              value={draft.name}
+              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
               placeholder="例如：议价底线"
             />
           </Field>

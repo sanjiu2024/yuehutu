@@ -26,11 +26,14 @@ const EMPTY_FORM: ProviderForm = {
   enabled: true,
 }
 
-/** 只显示 Key 的头尾，避免整串暴露在界面上。 */
-function maskKey(key?: string): string {
-  if (!key) return '未设置'
-  if (key.length <= 10) return '••••••'
-  return `${key.slice(0, 4)}••••••${key.slice(-4)}`
+/**
+ * 后端从不下发明文 api_key，只给 `api_key_masked`（例如 `sk-a••••••z9`）和 `has_key`。
+ * 这里优先用后端掩码；万一后端只给了 has_key，就自己画个占位。
+ */
+function maskKey(provider: Provider): string {
+  if (provider.api_key_masked) return provider.api_key_masked
+  if (provider.has_key) return '••••••（已保存）'
+  return '未设置'
 }
 
 export function ProvidersPage() {
@@ -182,7 +185,7 @@ export function ProvidersPage() {
                             {provider.base_url || '-'}
                           </td>
                           <td className="mono" style={{ fontSize: 11.5 }}>
-                            {maskKey(provider.api_key)}
+                            {maskKey(provider)}
                           </td>
                           <td className="mono" style={{ fontSize: 11.5 }}>
                             {provider.default_model || '-'}
@@ -373,7 +376,7 @@ function RolesPanel({
   const merged = useMemo(() => {
     return ROLES.map((role) => {
       const found = roles.find((r) => r.role === role)
-      return found ?? { role, provider_id: null, model: '', temperature: 0.7, system_prompt: '', enabled: 1 }
+      return found ?? { role, provider_id: null, model: '', temperature: 0.7, system_prompt: '', enabled: true }
     })
   }, [roles])
 

@@ -65,11 +65,40 @@ export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): voi
   onUnauthorized = handler
 }
 
+/**
+ * 把后端的失败信封翻成人话。
+ *
+ * 后端用语义状态码（`backend/app/services/common.py` 的 FAIL_STATUS）：
+ *  - 503 `xianyu_not_ready` —— 协议层依赖不可用（闲鱼客户端没起来/没登录）
+ *  - 409 `verification_required` —— 没检测到人工验证，拒绝清除冷却
+ *  - 502 `protocol_error` / 模型调用失败 —— 上游没配合
+ * 这些**都不是**「后端崩了」，要显示成可读的业务提示，绝不能只说「请求失败」。
+ */
 function friendlyMessage(status: number, message: string, code: string): string {
   if (status === 401 || code === 'unauthorized') return '登录状态已失效，请重新登录'
   if (status === 403) return '没有权限执行该操作'
-  if (status === 422) return '参数校验失败：' + message
-  if (status >= 500) return '后端内部错误：' + message
+
+  // 先按业务 code 判，比状态码更精确
+  if (code === 'xianyu_not_ready') {
+    return message || '闲鱼协议层还没就绪（客户端未启动或未登录），请先在「账号」页完成扫码登录'
+  }
+  if (code === 'verification_required') {
+    return message || '还没检测到人工验证成功，暂时不能解除冷却'
+  }
+  if (code === 'protocol_error') {
+    return message || '和闲鱼通信失败，请稍后重试'
+  }
+  if (code === 'ai_error') {
+    return message || 'AI 调用失败，请到「AI 配置」检查 API Key 与模型'
+  }
+  if (code === 'not_found') return message || '没找到对应的数据'
+  if (code === 'invalid_fields' || code === 'bad_request') return message || '参数不合法'
+
+  if (status === 503) return message || '依赖的服务暂时不可用，请稍后重试'
+  if (status === 502) return message || '上游服务返回异常，请稍后重试'
+  if (status === 409) return message || '当前状态下不能执行该操作'
+  if (status === 422) return '参数校验失败：' + (message || '请检查填写内容')
+  if (status >= 500) return '后端内部错误：' + (message || `HTTP ${status}`)
   return message || `请求失败（HTTP ${status}）`
 }
 

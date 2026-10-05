@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, clearToken, errorText, getToken, isNotReady, setToken, setUnauthorizedHandler } from './api'
-import { Badge, Notice, ToastProvider, useToast } from './components'
+import { Badge, ErrorBoundary, Notice, ToastProvider, useToast } from './components'
 import { wsClient } from './ws'
 import { OverviewPage } from './pages/Overview'
 import { AccountsPage } from './pages/Accounts'
@@ -44,7 +44,10 @@ function readHash(): string {
 export default function App() {
   return (
     <ToastProvider>
-      <Shell />
+      {/* 外壳自身崩了也不能白屏 */}
+      <ErrorBoundary>
+        <Shell />
+      </ErrorBoundary>
     </ToastProvider>
   )
 }
@@ -186,15 +189,18 @@ function Shell() {
           <Badge tone={connected ? 'ok' : 'muted'}>{connected ? '实时在线' : '离线'}</Badge>
         </header>
         <div className="content">
-          {page === 'overview' && <OverviewPage onGoto={goto} />}
-          {page === 'accounts' && <AccountsPage />}
-          {page === 'items' && <ItemsPage />}
-          {page === 'chats' && <ChatsPage />}
-          {page === 'agents' && <AgentsPage />}
-          {page === 'master' && <MasterPage />}
-          {page === 'providers' && <ProvidersPage />}
-          {page === 'prompts' && <PromptsPage />}
-          {page === 'risk' && <RiskPage />}
+          {/* key=page 让切页面时错误边界自动复位；否则一个页面崩了会一直卡在错误态 */}
+          <ErrorBoundary key={page} onReset={() => goto(page)}>
+            {page === 'overview' && <OverviewPage onGoto={goto} />}
+            {page === 'accounts' && <AccountsPage />}
+            {page === 'items' && <ItemsPage />}
+            {page === 'chats' && <ChatsPage />}
+            {page === 'agents' && <AgentsPage />}
+            {page === 'master' && <MasterPage />}
+            {page === 'providers' && <ProvidersPage />}
+            {page === 'prompts' && <PromptsPage />}
+            {page === 'risk' && <RiskPage />}
+          </ErrorBoundary>
         </div>
       </main>
     </div>
