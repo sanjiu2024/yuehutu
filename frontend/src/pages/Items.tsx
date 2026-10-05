@@ -5,7 +5,44 @@ import { api, errorText } from '../api'
 import { AsyncBox, Badge, ConfirmDialog, Field, Modal, Notice, Switch, useToast } from '../components'
 import { useAsync } from '../hooks/useAsync'
 import { bool, formatMoney, formatTime, itemStatusLabel, parseImages, truncate } from '../format'
-import type { Account, Item, ItemListResult, OperationLog } from '../types'
+import type { Account, BatchResult, Item, ItemListResult, OperationLog } from '../types'
+
+/**
+ * 把批量接口的逐条结果翻成一句人话。
+ *
+ * 后端约定（`backend/app/services/items.py` 的 `_batch_summary`）：
+ *   ok / synced = 本地已改 **且** 已推到闲鱼 —— 协议层没就绪时**恒为 0**；
+ *   warnings    = 本地改了但没推出去（**不能当成功吞掉**，这就是本次修的缺陷）；
+ *   failed      = 完全没改（商品不存在 / 字段非法 / 跨账号）。
+ * 后端对批量结果是 200 + 逐条成败，HTTP 200 不代表改成功，必须看 body。
+ * `label` 只影响提示前缀（批量 / 单个），单条接口返回的是同样形状的逐条汇总。
+ */
+function showBatchNotice(
+  toast: { success: (text: string) => void; error: (text: string) => void; info: (text: string) => void },
+  result: BatchResult | undefined,
+  verb: string,
+  label = '批量',
+): void {
+  const ok = Number(result?.ok) || 0
+  const warnings = result?.warnings ?? []
+  const failed = result?.failed ?? []
+  const parts: string[] = []
+  if (ok > 0) parts.push(`已${verb}并同步 ${ok} 个`)
+  if (warnings.length > 0) {
+    parts.push(`${warnings.length} 个仅本地生效（未同步到闲鱼：${warnings[0]?.message ?? '未知原因'}）`)
+  }
+  if (failed.length > 0) parts.push(`${failed.length} 个没成功（${failed[0]?.message ?? '未知原因'}）`)
+  const text = `${label}${verb}：${parts.join('；') || `没有可处理的商品（共 ${Number(result?.total) || 0} 个）`}`
+  if (failed.length > 0) toast.error(text)
+  else if (warnings.length > 0) toast.info(text)
+  else if (ok > 0) toast.success(text)
+  else toast.info(text)
+}
+
+/** 把多次单条调用（批量上下架是逐条打接口）的返回合并成一个批量结果。 */
+function mergeBatch(): BatchResult & { warnings: NonNullable<BatchResult['warnings']> } {
+  return { total: 0, ok: 0, synced: 0, local_only: 0, warnings: [], failed: [] }
+}
 
 export function ItemsPage() {
   const toast = useToast()
@@ -81,8 +118,13 @@ export function ItemsPage() {
         </>
       ),
       run: async () => {
-        await api.post(`/api/items/${encodeURIComponent(item.account_id)}/${encodeURIComponent(item.item_id)}/${action}`)
-        toast.success(action === 'delist' ? '已下架' : '已上架')
+        const verb = action === 'delist' ? '下架' : '上架'
+        // 单条上下架也返回 {ok, warnings, failed}：协议层没推成功时是个 warning，
+        // 直接报「已下架」会让用户以为闲鱼上真的下架了。
+        const result = await api.post<BatchResult>(
+          `/api/items/${encodeURIComponent(item.account_id)}/${encodeURIComponent(item.item_id)}/${action}`,
+        )
+        showBatchNotice(toast, result, verb, '商品')
         items.reload()
       },
     })
@@ -99,18 +141,26 @@ export function ItemsPage() {
         </>
       ),
       run: async () => {
-        let ok = 0
-        const failed: string[] = []
+        const verb = action === 'delist' ? '下架' : '上架'
+        const merged = mergeBatch()
         for (const item of targets) {
+          merged.total += 1
           try {
-            await api.post(`/api/items/${encodeURIComponent(item.account_id)}/${encodeURIComponent(item.item_id)}/${action}`)
-            ok += 1
+            // 单条接口也返回逐条汇总（ok/warnings/failed）：协议层没推成功时 ok=0、
+            // warning 在 warnings 里 —— HTTP 200 只代表请求到了，不代表真的推到闲鱼。
+            const result = await api.post<BatchResult>(
+              `/api/items/${encodeURIComponent(item.account_id)}/${encodeURIComponent(item.item_id)}/${action}`,
+            )
+            merged.ok += Number(result?.ok) || 0
+            merged.warnings.push(...(result?.warnings ?? []))
+            merged.failed.push(...(result?.failed ?? []))
           } catch (err) {
-            failed.push(`${item.item_id}: ${errorText(err)}`)
+            merged.failed.push({ id: item.item_id, message: errorText(err) })
           }
         }
-        if (failed.length === 0) toast.success(`已处理 ${ok} 个商品`)
-        else toast.error(`成功 ${ok} 个，失败 ${failed.length} 个：${failed[0]}`)
+        merged.synced = merged.ok
+        merged.local_only = merged.warnings.length
+        showBatchNotice(toast, merged, verb)
         setSelected(new Set())
         items.reload()
       },
@@ -355,8 +405,13 @@ function EditItemModal({ item, onClose, onSaved }: { item: Item; onClose: () => 
       if (stock !== '') patch.stock = Number(stock)
       const imageList = images.split('\n').map((s) => s.trim()).filter(Boolean)
       if (imageList.length) patch.images = imageList
-      await api.post(`/api/items/${encodeURIComponent(item.account_id)}/${encodeURIComponent(item.item_id)}/edit`, patch)
-      toast.success('已保存')
+      // 单条编辑返回 {ok, warnings, failed}：ok 才算真的改到闲鱼上了；
+      // 只有 warning 时是「本地已改、未同步」，不能报「已保存」了事。
+      const result = await api.post<BatchResult>(
+        `/api/items/${encodeURIComponent(item.account_id)}/${encodeURIComponent(item.item_id)}/edit`,
+        patch,
+      )
+      showBatchNotice(toast, result, '修改', '商品')
       onSaved()
     } catch (err) {
       toast.error(errorText(err))
@@ -524,29 +579,43 @@ function BatchEditModal({
       const uniform = perItem.every((entry) => JSON.stringify(entry.patch) === first)
 
       if (uniform) {
-        // 所有商品的最终值一致 → 走一次批量接口
-        await api.post(`/api/items/${encodeURIComponent(accountId)}/batch-edit`, {
-          item_ids: items.map((item) => item.item_id),
-          patch: perItem[0].patch,
-        })
-        toast.success(`已批量修改 ${items.length} 个商品`)
+        // 所有商品的最终值一致 → 走一次批量接口。
+        // 路径里的 accountId 必须带上：后端按 `(account_id, item_id)` 配对校验，
+        // 不属于该账号的 item_id 会逐条进 failed（account_mismatch）。
+        // 注意：后端对批量结果是 200 + {total, ok, warnings[], failed[]}（**逐条**成败），
+        // 一条都没改成功时 HTTP 仍是 200；而且协议层没就绪时「本地改了」只算
+        // warning、**ok=0** —— 不看返回值就报「已批量修改 N 个」会让用户以为
+        // 改到闲鱼上了，实际一个都没推出去。
+        const result = await api.post<BatchResult>(
+          `/api/items/${encodeURIComponent(accountId)}/batch-edit`,
+          {
+            item_ids: items.map((item) => item.item_id),
+            patch: perItem[0].patch,
+          },
+        )
+        showBatchNotice(toast, result, '修改')
       } else {
-        // 每条商品的最终值不同（百分比/替换）→ 逐条走单条编辑接口
-        let ok = 0
-        const failed: string[] = []
+        // 每条商品的最终值不同（百分比/查找替换）→ 逐条走单条编辑接口。
+        // 单条接口同样返回 {ok, warnings, failed}：协议层没推成功时 ok=0，
+        // 只有 warning —— 不能按「请求没抛异常」就计成功。
+        const merged = mergeBatch()
         for (const entry of perItem) {
+          merged.total += 1
           try {
-            await api.post(
+            const result = await api.post<BatchResult>(
               `/api/items/${encodeURIComponent(entry.item.account_id)}/${encodeURIComponent(entry.item.item_id)}/edit`,
               entry.patch,
             )
-            ok += 1
+            merged.ok += Number(result?.ok) || 0
+            merged.warnings.push(...(result?.warnings ?? []))
+            merged.failed.push(...(result?.failed ?? []))
           } catch (err) {
-            failed.push(`${entry.item.item_id}: ${errorText(err)}`)
+            merged.failed.push({ id: entry.item.item_id, message: errorText(err) })
           }
         }
-        if (failed.length === 0) toast.success(`已修改 ${ok} 个商品`)
-        else toast.error(`成功 ${ok} 个，失败 ${failed.length} 个：${failed[0]}`)
+        merged.synced = merged.ok
+        merged.local_only = merged.warnings.length
+        showBatchNotice(toast, merged, '修改')
       }
       onDone()
     } catch (err) {

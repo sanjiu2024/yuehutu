@@ -50,6 +50,10 @@ class FakeClient:
         self.calls.append(('downshelf', account_id, item_id))
         return {'ok': True}
 
+    def reshelf(self, account_id, item_id):
+        self.calls.append(('reshelf', account_id, item_id))
+        return {'ok': True}
+
 
 def install_fake_protocol(client: FakeClient) -> types.ModuleType:
     module = types.ModuleType('backend.app.xianyu.client')
@@ -73,14 +77,23 @@ def unblock_protocol() -> None:
 
 
 def install_boom_protocol(message: str) -> types.ModuleType:
-    """模块存在、但客户端构造就抛异常（cookie 无效/缺 unb 的真实形态）。"""
+    """模块存在、但客户端构造就抛异常（cookie 无效/缺 unb 的真实形态）。
+
+    `common.get_client` 现在是「先取 cookie、再构造」，所以只给 `XianyuClient`
+    会先撞上「账号没有 Cookie」，永远走不到构造失败那条分支；这里同时给一个
+    会抛异常的 `get_client` 工厂（协议层真实存在的那个入口），才是被测的分支。
+    """
     module = types.ModuleType('backend.app.xianyu.client')
 
     class BoomClient:
         def __init__(self, account_id):
             raise RuntimeError(message)
 
+    def boom_factory(account_id):
+        raise RuntimeError(message)
+
     module.XianyuClient = BoomClient  # type: ignore[attr-defined]
+    module.get_client = boom_factory  # type: ignore[attr-defined]
     sys.modules['backend.app.xianyu.client'] = module
     return module
 
@@ -202,13 +215,23 @@ class ItemsServiceTest(unittest.TestCase):
     # ------------------------------------------------------------------ 批量
 
     def test_batch_update_summary(self):
+        """协议层**没**就绪：本地改了，但一条都没推出去 -> ok 必须是 0。
+
+        这是本次修的缺陷：旧实现只 `ok += 1`，把 `update_item` 的 warning 吞掉，
+        于是 HTTP 200 + ok=2，前端/MCP 都以为已经改到闲鱼上了。
+        """
         self.seed('I1')
         self.seed('I2')
         result = items.batch_update(['I1', 'I2', 'MISSING'], {'价格': 50})
         self.assertEqual(result['total'], 3)
-        self.assertEqual(result['ok'], 2)
+        self.assertEqual(result['ok'], 0)          # 没推到平台 -> 不算成功
+        self.assertEqual(result['synced'], 0)
+        self.assertEqual(result['local_only'], 2)  # 本地改了但没推
+        self.assertEqual(len(result['warnings']), 2)
+        self.assertEqual(result['warnings'][0]['code'], 'not_pushed')
         self.assertEqual(len(result['failed']), 1)
         self.assertEqual(result['failed'][0]['id'], 'MISSING')
+        self.assertEqual(result['skipped'], ['MISSING'])
         self.assertIn('不存在', result['failed'][0]['message'])
 
         # 逐条记录：2 条成功 + 1 条失败
@@ -216,20 +239,40 @@ class ItemsServiceTest(unittest.TestCase):
         self.assertEqual(len(logs), 3)
         self.assertEqual(sum(1 for r in logs if r['success'] == 1), 2)
 
+        # 本地确实改了（warning 只是「没推到闲鱼」，不是「没改」）
         self.assertEqual(items.get_item('I1')['price'], 50.0)
         self.assertEqual(items.get_item('I2')['price'], 50.0)
 
-    def test_batch_update_calc_patch(self):
-        self.seed('I1', price=100.0)
-        self.seed('I2', price=200.0)
-        result = items.batch_update(['I1', 'I2'], {'price_delta': -10})
-        self.assertEqual(result['ok'], 2)
-        self.assertEqual(items.get_item('I1')['price'], 90.0)
-        self.assertEqual(items.get_item('I2')['price'], 190.0)
+    def test_batch_update_counts_ok_only_after_push(self):
+        """反向对照：协议层真的推成功了，ok 才算 2。"""
+        self.seed('I1')
+        self.seed('I2')
+        install_fake_protocol(self.client)
+        try:
+            result = items.batch_update(['I1', 'I2'], {'价格': 50})
+            self.assertEqual(result['ok'], 2)
+            self.assertEqual(result['local_only'], 0)
+            self.assertEqual(result['warnings'], [])
+            self.assertEqual(result['failed'], [])
+            self.assertEqual([c[0] for c in self.client.calls], ['edit_item', 'edit_item'])
+        finally:
+            remove_fake_protocol()
 
-        result = items.batch_update(['I1'], {'title_prefix': '【特价】'})
-        self.assertEqual(result['ok'], 1)
-        self.assertTrue(items.get_item('I1')['title'].startswith('【特价】'))
+    def test_batch_update_calc_patch(self):
+        install_fake_protocol(self.client)
+        try:
+            self.seed('I1', price=100.0)
+            self.seed('I2', price=200.0)
+            result = items.batch_update(['I1', 'I2'], {'price_delta': -10})
+            self.assertEqual(result['ok'], 2)
+            self.assertEqual(items.get_item('I1')['price'], 90.0)
+            self.assertEqual(items.get_item('I2')['price'], 190.0)
+
+            result = items.batch_update(['I1'], {'title_prefix': '【特价】'})
+            self.assertEqual(result['ok'], 1)
+            self.assertTrue(items.get_item('I1')['title'].startswith('【特价】'))
+        finally:
+            remove_fake_protocol()
 
     def test_batch_update_empty_and_bad_fields(self):
         result = items.batch_update([], {'price': 1})
@@ -245,17 +288,34 @@ class ItemsServiceTest(unittest.TestCase):
     # ------------------------------------------------------------------ 上下架
 
     def test_downshelf_and_reshelf(self):
+        """协议层没就绪时 ok=0（本地状态改了、但没推到闲鱼）；推成功才算 ok。"""
         self.seed('I1')
         self.seed('I2')
         result = items.downshelf(['I1', 'I2', 'NOPE'])
         self.assertEqual(result['total'], 3)
-        self.assertEqual(result['ok'], 2)
+        self.assertEqual(result['ok'], 0)
+        self.assertEqual(result['local_only'], 2)
+        self.assertEqual(len(result['warnings']), 2)
         self.assertEqual(len(result['failed']), 1)
         self.assertEqual(items.get_item('I1')['status'], 'off_shelf')
 
         result = items.reshelf(['I1'])
-        self.assertEqual(result['ok'], 1)
+        self.assertEqual(result['ok'], 0)
+        self.assertEqual(result['local_only'], 1)
         self.assertEqual(items.get_item('I1')['status'], 'on_sale')
+
+        # 同上，装上假协议层 -> 真的推成功了，ok 才等于条数
+        install_fake_protocol(self.client)
+        try:
+            result = items.downshelf(['I1', 'I2', 'NOPE'])
+            self.assertEqual(result['ok'], 2)
+            self.assertEqual(result['local_only'], 0)
+            self.assertEqual(result['warnings'], [])
+            result = items.reshelf(['I1'])
+            self.assertEqual(result['ok'], 1)
+            self.assertEqual(result['warnings'], [])
+        finally:
+            remove_fake_protocol()
 
     # ------------------------------------------------------------------ 协议层
 

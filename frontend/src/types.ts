@@ -125,11 +125,30 @@ export interface OperationLog {
   created_at?: string
 }
 
+/** 批量结果里的单条明细（failed / warnings 同形状）。 */
+export interface BatchEntry {
+  id: string
+  message: string
+  /** not_found / invalid_fields / account_mismatch / not_pushed ... */
+  code?: string
+}
+
 export interface BatchResult {
   total: number
+  /** 完全成功条数：本地已改 **且** 已推送到闲鱼。协议层没就绪时是 0。 */
   ok: number
-  failed: Array<{ id: string; message: string }>
+  /** `ok` 的显式别名，口径同上。 */
+  synced?: number
+  /** 本地改了但没推到闲鱼的条数（= warnings.length）。 */
+  local_only?: number
+  /** 本地改了但没推到闲鱼的逐条明细 —— 不能当成功吞掉。 */
+  warnings?: BatchEntry[]
+  failed: BatchEntry[]
+  /** 完全没改的 id 索引（= failed 的 id 列表）。 */
+  skipped?: string[]
+  updated?: string[]
   status?: string
+  fields?: Record<string, unknown>
 }
 
 /* ------------------------------------------------------------------ 会话 */

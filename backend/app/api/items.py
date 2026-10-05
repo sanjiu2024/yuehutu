@@ -116,10 +116,16 @@ def sync_items_for_account(account_id: str, user=Depends(current_user)):
 
 @router.post('/{account_id}/batch-edit')
 def batch_edit(account_id: str, payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
-    """CONTRACTS §3：{item_ids:[...], patch:{price_delta|price_set|title_tpl|...}}"""
+    """CONTRACTS §3：{item_ids:[...], patch:{price_delta|price_set|title_tpl|...}}
+
+    `account_id` **必须**参与校验：路径里的账号只能改自己的商品，属于别人的进
+    `failed`（`code=account_mismatch`），不整批 400 —— 前端与 MCP 都靠逐条结果。
+    响应体在统一信封内透出 `ok/synced/local_only/warnings/failed/skipped`，
+    协议层没就绪时 `ok` 为 0（本地改了但没推的不算 ok）。
+    """
     ids = payload.get('item_ids') or payload.get('ids') or []
     patch = payload.get('patch') or payload.get('fields') or {}
-    return _envelope(items.batch_update(ids, patch))
+    return _envelope(items.batch_update(ids, patch, account_id=account_id))
 
 
 @router.post('/{account_id}/batch-publish')
@@ -128,12 +134,14 @@ def batch_publish(account_id: str, payload: Dict[str, Any] = Body(...), user=Dep
     results = []
     for row in rows:
         if not isinstance(row, dict):
-            results.append({'success': False, 'message': 'item 必须是对象'})
+            results.append((None, {'success': False, 'message': 'item 必须是对象'}))
             continue
-        results.append(items.publish_item(account_id, row))
-    ok = sum(1 for r in results if not common.is_failure(r))
+        # 失败项要把**是哪一条**带回去，否则前端只能报「有 N 条失败」而说不出是哪条
+        results.append((row.get('item_id') or row.get('id') or '', items.publish_item(account_id, row)))
+    ok = sum(1 for _, r in results if not common.is_failure(r))
     return _envelope({'total': len(rows), 'ok': ok,
-                      'failed': [{'id': '', 'message': r.get('message', '')} for r in results if common.is_failure(r)]})
+                      'failed': [{'id': str(rid or ''), 'message': r.get('message', '')}
+                                 for rid, r in results if common.is_failure(r)]})
 
 
 @router.post('/{account_id}/publish')
@@ -163,12 +171,12 @@ def edit_item(account_id: str, item_id: str, payload: Dict[str, Any] = Body(...)
 
 @router.post('/{account_id}/{item_id}/delist')
 def delist_item(account_id: str, item_id: str, user=Depends(current_user)):
-    return _envelope(items.downshelf([item_id]))
+    return _envelope(items.downshelf([item_id], account_id=account_id))
 
 
 @router.post('/{account_id}/{item_id}/relist')
 def relist_item(account_id: str, item_id: str, user=Depends(current_user)):
-    return _envelope(items.reshelf([item_id]))
+    return _envelope(items.reshelf([item_id], account_id=account_id))
 
 
 # --------------------------------------------------------------------------- 通用单条（放最后）

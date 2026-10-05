@@ -3,8 +3,13 @@
 设计要点：
 - **本地优先**：改价、改标题这类操作先落库，再尽力推给协议层。协议层没就绪
   时本地依然生效，只是返回 `synced: false` + warning —— 卖家在 UI 上的操作不该白做。
-- **批量逐条**：`batch_update` 一条失败不影响其它条，返回
-  `{"total": n, "ok": n, "failed": [{"id": .., "message": ..}]}`，且**每条**都写 operation_logs。
+- **批量逐条**：`batch_update` / `downshelf` / `reshelf` 一条失败不影响其它条，且**每条**都写
+  operation_logs。返回
+  `{"total": n, "ok": n, "synced": n, "local_only": n, "warnings": [...], "failed": [...], "skipped": [...]}`：
+  - `ok` / `synced` **只统计完全成功**（本地已落库 **且** 已推送到协议层）；
+  - `warnings` / `local_only` 是「本地改了但没推到平台」（协议层未就绪或调用失败），**不算 ok**；
+  - `failed` / `skipped` 是「完全没改」（不存在、字段非法、跨账号）。
+  协议层没就绪时 `ok` 必须是 0 —— 否则用户看到「已批量修改 N 个」而实际一条都没推出去。
 - 需要协议层才能成立的操作（同步、发布）在协议层缺失时返回
   `{"success": false, "code": "xianyu_not_ready"}`。
 """
@@ -72,6 +77,22 @@ def _find_row(item_id: Any) -> Optional[Any]:
     return row
 
 
+def _find_row_for_account(account_id: Any, item_id: Any) -> Optional[Any]:
+    """按 `(account_id, item_id)` **严格配对**查；数字 item_id 允许按本地主键再查一次。
+
+    唯一的键是 `(account_id, item_id)`（`core/db.py` 的 DDL），只按 item_id 回落会让
+    路径里的 `account_id` 形同虚设 —— 拿 A 账号的路径能改到 B 账号的商品。
+    """
+    text = str(item_id)
+    owner = str(account_id)
+    row = db.query_one(
+        'SELECT * FROM items WHERE account_id = ? AND item_id = ?', (owner, text)
+    )
+    if row is None and text.isdigit():
+        row = db.query_one('SELECT * FROM items WHERE account_id = ? AND id = ?', (owner, int(text)))
+    return row
+
+
 # --------------------------------------------------------------------------- 读
 
 
@@ -127,14 +148,7 @@ def get_item_by_account(account_id: str, item_id: Any) -> Any:
     只按 item_id 回落会让调用方拿到别的账号的商品（MCP `items_get` 直连这条，
     串号是危险的）。数字 item_id 允许按本地主键查一次，但仍要求账号一致。
     """
-    text = str(item_id)
-    row = db.query_one(
-        'SELECT * FROM items WHERE account_id = ? AND item_id = ?', (account_id, text)
-    )
-    if row is None and text.isdigit():
-        row = db.query_one(
-            'SELECT * FROM items WHERE account_id = ? AND id = ?', (account_id, int(text))
-        )
+    row = _find_row_for_account(account_id, item_id)
     if row is None:
         return common.fail(f'商品不存在: {account_id}/{item_id}', 'not_found')
     return _row_to_item(row)
@@ -255,7 +269,8 @@ def _push_update(client: Any, account_id: str, item_id: str, resolved: Dict[str,
 
 
 def update_item(item_id: Any, fields: Dict[str, Any], account_id: Optional[str] = None) -> Any:
-    row = _find_row(item_id)
+    """单条修改。给了 `account_id` 就必须 `(account_id, item_id)` 配对命中，否则 not_found。"""
+    row = _find_row_for_account(account_id, item_id) if account_id else _find_row(item_id)
     if row is None:
         return common.fail(f'商品不存在: {item_id}', 'not_found')
     item = _row_to_item(row)
@@ -280,7 +295,9 @@ def update_item(item_id: Any, fields: Dict[str, Any], account_id: Optional[str] 
     else:
         warning = '协议层尚未就绪，改动仅本地生效'
 
-    updated = get_item(item['item_id'])
+    # 回读必须按 `(account_id, item_id)` 配对：同一个 item_id 可能存在于多个账号，
+    # 用 get_item(item_id) 单键查会把**别的账号**的商品塞进返回值里。
+    updated = get_item_by_account(item['account_id'], item['item_id'])
     common.log_operation(
         item['account_id'], 'update_item', item['item_id'], True,
         {'fields': resolved, 'warning': warning},
@@ -292,55 +309,113 @@ def update_item(item_id: Any, fields: Dict[str, Any], account_id: Optional[str] 
     return result
 
 
-def batch_update(item_ids: Sequence[Any], fields: Dict[str, Any]) -> Dict[str, Any]:
-    """批量修改：逐条处理，一条失败不影响其它条，逐条记 operation_logs。"""
-    ids = [str(x) for x in (item_ids or []) if str(x).strip()]
-    if not ids:
-        return {'total': 0, 'ok': 0, 'failed': [{'id': '', 'message': 'item_ids 不能为空'}]}
-    patch = normalize_fields(fields)
-    if common.is_failure(patch):
-        return {
-            'total': len(ids), 'ok': 0,
-            'failed': [{'id': i, 'message': patch['message']} for i in ids],
-            'message': patch['message'],
-        }
+def _batch_summary(
+    total: int,
+    synced_ok: int,
+    warnings: List[Dict[str, Any]],
+    failed: List[Dict[str, Any]],
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """批量结果的统一形状。
 
-    ok = 0
-    failed: List[Dict[str, Any]] = []
-    updated_items: List[Dict[str, Any]] = []
-    for item_id in ids:
-        result = update_item(item_id, fields)
-        if common.is_failure(result):
-            failed.append({'id': item_id, 'message': result.get('message', '失败')})
-            # update_item 已经在失败路径记过日志；不存在的情况补一条
-            if result.get('code') == 'not_found':
-                common.log_operation('', 'batch_update', item_id, False, result.get('message', ''))
-            continue
-        ok += 1
-        updated_items.append(result['item'])
-
-    summary = {
-        'total': len(ids),
-        'ok': ok,
+    - `ok` / `synced` = 完全成功（本地已改 **且** 已推送到协议层）；
+    - `warnings` / `local_only` = 本地改了但没推出去；
+    - `failed` = 完全没改的逐条明细，`skipped` = 同一批的 id 索引（一眼看出一条都没动）。
+    """
+    summary: Dict[str, Any] = {
+        'total': total,
+        'ok': synced_ok,
+        'synced': synced_ok,
+        'local_only': len(warnings),
+        'warnings': warnings,
         'failed': failed,
-        'updated': [i['item_id'] for i in updated_items],
-        'fields': patch,
+        'skipped': [str(f.get('id') or '') for f in failed],
     }
-    common.publish('items.batch_done', {'total': len(ids), 'ok': ok, 'failed': len(failed)})
+    if extra:
+        summary.update(extra)
     return summary
 
 
-def _set_status(item_ids: Sequence[Any], status: str, action: str) -> Dict[str, Any]:
+def batch_update(
+    item_ids: Sequence[Any], fields: Dict[str, Any], account_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """批量修改：逐条处理，一条失败不影响其它条，逐条记 operation_logs。
+
+    给了 `account_id`（CONTRACTS §3 的 `/api/items/{account_id}/batch-edit`）时，
+    每条都必须 `(account_id, item_id)` 配对命中；属于别的账号的进 `failed`，
+    **不整批 400** —— MCP 的 `items_batch_edit` 与前端都靠逐条结果。
+    """
     ids = [str(x) for x in (item_ids or []) if str(x).strip()]
     if not ids:
-        return {'total': 0, 'ok': 0, 'failed': [{'id': '', 'message': 'item_ids 不能为空'}]}
-    ok = 0
+        return _batch_summary(0, 0, [], [{'id': '', 'message': 'item_ids 不能为空', 'code': 'bad_request'}])
+    patch = normalize_fields(fields)
+    if common.is_failure(patch):
+        return _batch_summary(
+            len(ids), 0, [],
+            [{'id': i, 'message': patch['message'], 'code': patch.get('code', 'invalid_fields')} for i in ids],
+            {'message': patch['message'], 'fields': {}},
+        )
+
+    synced_ok = 0
+    warnings: List[Dict[str, Any]] = []
+    failed: List[Dict[str, Any]] = []
+    updated_items: List[Dict[str, Any]] = []
+    for item_id in ids:
+        if account_id:
+            row = _find_row_for_account(account_id, item_id)
+            if row is None:
+                same_id = _find_row(item_id)
+                if same_id is None:
+                    code, message = 'not_found', '商品不存在'
+                else:
+                    code, message = 'account_mismatch', f'商品不属于账号 {account_id}，拒绝跨账号批改'
+                failed.append({'id': item_id, 'message': message, 'code': code})
+                common.log_operation(str(account_id), 'batch_update', item_id, False, message)
+                continue
+        result = update_item(item_id, fields, account_id=account_id)
+        if common.is_failure(result):
+            failed.append({'id': item_id, 'message': result.get('message', '失败'),
+                           'code': result.get('code', 'error')})
+            # update_item 已经在失败路径记过日志；不存在的情况补一条
+            if result.get('code') == 'not_found':
+                common.log_operation(str(account_id or ''), 'batch_update', item_id, False, result.get('message', ''))
+            continue
+        updated_items.append(result['item'])
+        if result.get('synced'):
+            synced_ok += 1
+        else:
+            warnings.append({'id': item_id, 'code': 'not_pushed',
+                             'message': result.get('warning') or '改动仅本地生效，未同步到闲鱼'})
+
+    summary = _batch_summary(
+        len(ids), synced_ok, warnings, failed,
+        {'updated': [i['item_id'] for i in updated_items], 'fields': patch},
+    )
+    common.publish('items.batch_done', {'total': len(ids), 'ok': synced_ok,
+                                        'local_only': len(warnings), 'failed': len(failed)})
+    return summary
+
+
+def _set_status(
+    item_ids: Sequence[Any], status: str, action: str, account_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """上下架：口径与 `batch_update` 一致 —— `ok` 只算「本地改了 **且** 推到平台了」。"""
+    ids = [str(x) for x in (item_ids or []) if str(x).strip()]
+    if not ids:
+        return _batch_summary(0, 0, [], [{'id': '', 'message': 'item_ids 不能为空', 'code': 'bad_request'}],
+                              {'status': status})
+    synced_ok = 0
+    warnings: List[Dict[str, Any]] = []
     failed: List[Dict[str, Any]] = []
     for item_id in ids:
-        row = _find_row(item_id)
+        row = _find_row_for_account(account_id, item_id) if account_id else _find_row(item_id)
         if row is None:
-            failed.append({'id': item_id, 'message': '商品不存在'})
-            common.log_operation('', action, item_id, False, '商品不存在')
+            if account_id and _find_row(item_id) is not None:
+                code, message = 'account_mismatch', f'商品不属于账号 {account_id}'
+            else:
+                code, message = 'not_found', '商品不存在'
+            failed.append({'id': item_id, 'message': message, 'code': code})
+            common.log_operation(str(account_id or ''), action, item_id, False, message)
             continue
         item = _row_to_item(row)
         db.execute(
@@ -360,18 +435,21 @@ def _set_status(item_ids: Sequence[Any], status: str, action: str) -> Dict[str, 
         else:
             warning = '协议层尚未就绪，仅本地生效'
         common.log_operation(item['account_id'], action, item['item_id'], True, {'status': status, 'warning': warning})
-        ok += 1
-    common.publish('items.status_changed', {'status': status, 'action': action, 'ok': ok, 'total': len(ids)})
-    summary: Dict[str, Any] = {'total': len(ids), 'ok': ok, 'failed': failed, 'status': status}
-    return summary
+        if warning:
+            warnings.append({'id': item['item_id'], 'code': 'not_pushed', 'message': warning})
+        else:
+            synced_ok += 1
+    common.publish('items.status_changed', {'status': status, 'action': action,
+                                            'ok': synced_ok, 'total': len(ids)})
+    return _batch_summary(len(ids), synced_ok, warnings, failed, {'status': status})
 
 
-def downshelf(item_ids: Sequence[Any]) -> Dict[str, Any]:
-    return _set_status(item_ids, 'off_shelf', 'downshelf')
+def downshelf(item_ids: Sequence[Any], account_id: Optional[str] = None) -> Dict[str, Any]:
+    return _set_status(item_ids, 'off_shelf', 'downshelf', account_id)
 
 
-def reshelf(item_ids: Sequence[Any]) -> Dict[str, Any]:
-    return _set_status(item_ids, 'on_sale', 'reshelf')
+def reshelf(item_ids: Sequence[Any], account_id: Optional[str] = None) -> Dict[str, Any]:
+    return _set_status(item_ids, 'on_sale', 'reshelf', account_id)
 
 
 def sync_items(account_id: str) -> Any:
