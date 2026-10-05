@@ -131,8 +131,16 @@ class WsEventTest(unittest.TestCase):
             "VALUES('ws_acc','测试号',1,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)")
 
         got: list = []
-        reader = threading.Thread(
-            target=lambda: got.append(ws.receive_json()), daemon=True)
+        found = threading.Event()
+
+        def read_until_found(ws) -> None:
+            # 只认 `accounts.changed`，其余（探针残留事件）跳过 —— 否则 `got[0]`
+            # 可能是探针的 `ws.ready`，用例会偶发失败。
+            while not found.is_set():
+                event = ws.receive_json()
+                if event.get('topic') == 'accounts.changed':
+                    got.append(event)
+                    found.set()
 
         with self.client.websocket_connect(f'/api/ws?token={self.token}') as ws:
             # 先确认订阅已建立，再打 PATCH —— 否则事件可能发在订阅之前。
@@ -140,8 +148,7 @@ class WsEventTest(unittest.TestCase):
             probe.start()
             try:
                 while True:
-                    event = ws.receive_json()
-                    if event['topic'] == 'ws.ready':
+                    if ws.receive_json()['topic'] == 'ws.ready':
                         break
             finally:
                 probe.stop()
@@ -150,12 +157,12 @@ class WsEventTest(unittest.TestCase):
                 'Authorization': f'Bearer {self.token}'}, json={'remark': '改了备注'})
             self.assertEqual(resp.status_code, 200, resp.text)
 
+            reader = threading.Thread(target=read_until_found, args=(ws,), daemon=True)
             reader.start()
-            reader.join(timeout=5)
+            found.wait(timeout=5)
 
-        self.assertTrue(got, 'PATCH 账号后台 5 秒内没有收到任何 WS 事件')
+        self.assertTrue(got, 'PATCH 账号后台 5 秒内没有收到 accounts.changed 事件')
         event = got[0]
-        self.assertEqual(event['topic'], 'accounts.changed')
         self.assertEqual(event['payload']['account_id'], 'ws_acc')
         self.assertEqual(event['payload']['patch'], {'remark': '改了备注'})
 
