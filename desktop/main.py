@@ -10,8 +10,9 @@
 
 路径说明（打包后 sys.frozen 为真）：
 - 后端代码以 `backend` 包形式收进 _MEIPASS，这里把 _MEIPASS 加进 sys.path。
-- 前端产物作为 data 收在 _MEIPASS/frontend/dist，这里覆盖 config.FRONTEND_DIST
-  指过去（core/config.py 在 frozen 下算不出打包内路径，外壳侧覆盖即可，不动 core）。
+- 前端产物作为 data 收在 `_MEIPASS/frontend/dist`，`backend/app/core/config.py` 的
+  `resolve_frontend_dist()` 第一顺位就找这里，`create_app()` 因此挂的就是打包内的
+  真前端 —— 外壳**不需要**再动 config.FRONTEND_DIST 或重建挂载。
 """
 
 from __future__ import annotations
@@ -25,6 +26,16 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+# 打包后 console=False（PE Subsystem=WINDOWS_GUI），sys.stdout/sys.stderr 是 None。
+# uvicorn 的日志配置会执行 `sys.stdout.isatty()`，None 直接抛 AttributeError，
+# 后端起不来且没有任何输出（双击后「什么都没发生」）。这里在**任何后端 import 之前**
+# 把这两个流补成 devnull，pywebview 内部也有同样的补丁，但不能指望它 —— 它在
+# --no-window 分支之后才被 import。
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, 'w', encoding='utf-8')  # noqa: SIM115
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, 'w', encoding='utf-8')  # noqa: SIM115
 
 
 def _resolve_base() -> Path:
@@ -41,38 +52,23 @@ if str(BASE) not in sys.path:
 from backend.app import main as backend_main  # noqa: E402
 from backend.app.core import config, security  # noqa: E402
 
-# frozen 下前端产物在打包目录内，覆盖 core/config.py 算出来的开发态路径
-if getattr(sys, 'frozen', False):
-    config.FRONTEND_DIST = BASE / 'frontend' / 'dist'
-
 URL = ''
 TOKEN = ''
 
 
-def _ensure_frontend_mount() -> None:
-    """把前端目录挂到已建好的 app 上。
-
-    坑：`backend.app.main` 末尾是模块级 `app = create_app()`，在 import 时就跑完了 ——
-    那时 config.FRONTEND_DIST 还是 core/config.py 算出来的开发态路径（frozen 下不存在），
-    于是应用挂上的是**占位页**路由而不是静态托管。这里在覆盖路径之后重建挂载。
-    """
-    dist = Path(config.FRONTEND_DIST)
-    if not (dist / 'index.html').exists():
-        print(f'[desktop] 前端产物不存在，后端将给占位页: {dist}')
-        return
-    from fastapi.staticfiles import StaticFiles
-
-    app = backend_main.app
-    # 丢掉 import 阶段挂上的占位路由 / 旧静态挂载（API 路由保持在前，顺序不变）
-    app.router.routes = [
-        route for route in app.router.routes
-        if getattr(route, 'name', '') not in ('frontend', 'placeholder')
-    ]
-    app.mount('/', StaticFiles(directory=str(dist), html=True), name='frontend')
-    print(f'[desktop] 前端静态托管: {dist}')
+def _log(msg: str) -> None:
+    """同时写控制台（有的话）与 logs/app.log —— 打包后 print 是黑洞。"""
+    print(msg)
+    try:
+        config.ensure_dirs()
+        with open(config.LOG_PATH, 'a', encoding='utf-8') as fh:
+            fh.write(f'{time.strftime("%Y-%m-%d %H:%M:%S")} | {msg}\n')
+    except Exception:  # noqa: BLE001 - 写日志失败不该拦住启动
+        pass
 
 
-_ensure_frontend_mount()
+def _frontend_dist() -> Path:
+    return Path(config.resolve_frontend_dist())
 
 
 def _configure_logging() -> None:
@@ -89,7 +85,7 @@ def _configure_logging() -> None:
             enqueue=True,
         )
     except Exception as exc:  # noqa: BLE001 - 日志失败不该拦住启动
-        print(f'[desktop] 日志初始化失败: {exc}')
+        _log(f'[desktop] 日志初始化失败: {exc}')
 
 
 def wait_health(port: int, timeout: float = config.BACKEND_READY_TIMEOUT) -> bool:
@@ -116,7 +112,7 @@ def desktop_login(port: int) -> str:
             body = json.loads(resp.read().decode('utf-8'))
             return body.get('data', {}).get('token', '')
     except Exception as exc:  # noqa: BLE001 - 桌面外壳不该因为拿不到 token 就崩
-        print(f'[desktop] 自动登录失败（可手动登录）: {exc}')
+        _log(f'[desktop] 自动登录失败（可手动登录）: {exc}')
         return ''
 
 
@@ -165,17 +161,18 @@ def start_backend(port: int) -> threading.Thread:
 def run_headless(port: int) -> int:
     """只起后端、不开窗口（打包产物自检 / 无头环境用）。阻塞直到 Ctrl+C。"""
     _configure_logging()
+    _log(f'[desktop] 启动中 frozen={config.is_frozen()} 前端目录={_frontend_dist()}')
     start_backend(port)
     if not wait_health(port):
-        print('[desktop] 后端启动超时，请查看 logs/app.log')
+        _log(f'[desktop] 后端启动超时（端口 {port}），请查看 {config.LOG_PATH}')
         return 2
-    print(f'[desktop] 后端就绪（无窗口模式）: http://{config.HOST}:{port}/')
-    print(f'[desktop] 健康检查: http://{config.HOST}:{port}/api/health')
+    _log(f'[desktop] 后端就绪（无窗口模式）: http://{config.HOST}:{port}/')
+    _log(f'[desktop] 健康检查: http://{config.HOST}:{port}/api/health')
     try:
         while True:
             time.sleep(3600)
     except KeyboardInterrupt:
-        print('[desktop] 收到 Ctrl+C，退出')
+        _log('[desktop] 收到 Ctrl+C，退出')
     return 0
 
 
@@ -196,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         import webview
     except ImportError:
-        print('缺少 pywebview：C:\\Python310\\python.exe -m pip install pywebview pystray')
+        _log('缺少 pywebview：C:\\Python310\\python.exe -m pip install pywebview pystray')
         return 1
 
     _configure_logging()
@@ -204,11 +201,11 @@ def main(argv: list[str] | None = None) -> int:
 
     start_backend(port)
     if not wait_health(port):
-        print('[desktop] 后端启动超时，请查看 logs/app.log')
+        _log(f'[desktop] 后端启动超时（端口 {port}），请查看 {config.LOG_PATH}')
         return 2
 
     TOKEN = desktop_login(port)
-    print(f'[desktop] 后端就绪: {URL}')
+    _log(f'[desktop] 后端就绪: {URL} 前端目录={_frontend_dist()}')
 
     window = webview.create_window(config.APP_TITLE, URL, width=1440, height=920, min_size=(1024, 700))
 
@@ -223,14 +220,23 @@ def main(argv: list[str] | None = None) -> int:
             window.show()
             window.restore()
         except Exception as exc:  # noqa: BLE001 - 窗口可能已被销毁
-            print(f'[desktop] 打开窗口失败: {exc}')
+            _log(f'[desktop] 打开窗口失败: {exc}')
 
-    tray = None if args.no_tray else start_tray(lambda: os._exit(0), show_window)  # noqa: SLF001
+    def quit_app():
+        # 走 window.destroy() 让 webview.start() 正常返回，能跑到 finally 收尾；
+        # 原来直接 os._exit(0) 会跳过 loguru 的 enqueue 队列 flush，最后几条日志丢失。
+        try:
+            window.destroy()
+        except Exception:  # noqa: BLE001 - 窗口已经没了就直接退
+            os._exit(0)
+
+    tray = None if args.no_tray else start_tray(quit_app, show_window)
     try:
         webview.start()
     finally:
         if tray is not None:
             tray.visible = False
+    _log('[desktop] 已退出')
     return 0
 
 

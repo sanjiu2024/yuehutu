@@ -17,10 +17,11 @@ if (-not (Test-Path (Join-Path $frontend 'package.json'))) {
 Push-Location $frontend
 try {
     $nodeModules = Join-Path $frontend 'node_modules'
-    $needInstall = $Reinstall -or (-not $SkipInstall -and -not (Test-Path $nodeModules))
-    if ($SkipInstall -and -not (Test-Path $nodeModules)) {
+    # -Reinstall 的意图就是「不管现在有没有都重装」，所以它优先于 -SkipInstall 的存在性检查。
+    if ($SkipInstall -and -not $Reinstall -and -not (Test-Path $nodeModules)) {
         throw "node_modules 不存在，不能 -SkipInstall（先跑一次不带参数的 build_frontend.ps1）"
     }
+    $needInstall = $Reinstall -or (-not $SkipInstall -and -not (Test-Path $nodeModules))
     if ($needInstall) {
         Write-Step 'npm install（--no-fund --no-audit）'
         npm install --no-fund --no-audit

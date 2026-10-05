@@ -68,11 +68,16 @@ if (-not (Test-Path $exe)) { throw "打包结束但没找到 $exe" }
 $bundledFrontend = Join-Path $outDir '闲鱼AI工作台\_internal\frontend\dist\index.html'
 if (-not (Test-Path $bundledFrontend)) { throw "产物里没有前端: $bundledFrontend" }
 
-# 校验打包内前端 == 快照（逐文件比对大小）
+# 校验打包内前端 == 快照（逐文件比对大小 + SHA256，只比大小会漏掉同尺寸的内容改动）
 $bundledDir = Join-Path $outDir '闲鱼AI工作台\_internal\frontend\dist'
-$diff = Compare-Object `
-    (Get-ChildItem $stageDist -Recurse -File | ForEach-Object { "$($_.FullName.Substring($stageDist.Length))|$($_.Length)" }) `
-    (Get-ChildItem $bundledDir -Recurse -File | ForEach-Object { "$($_.FullName.Substring($bundledDir.Length))|$($_.Length)" })
+function Get-DistManifest([string]$root) {
+    Get-ChildItem $root -Recurse -File | ForEach-Object {
+        $rel = $_.FullName.Substring($root.Length)
+        $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash
+        "$rel|$($_.Length)|$hash"
+    } | Sort-Object
+}
+$diff = Compare-Object (Get-DistManifest $stageDist) (Get-DistManifest $bundledDir)
 if ($diff) {
     Write-Host ($diff | Format-Table | Out-String)
     throw '打包内前端与快照不一致'

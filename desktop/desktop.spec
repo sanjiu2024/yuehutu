@@ -6,8 +6,8 @@
 
 要点：
 - 入口 desktop/main.py；仓库根加进 pathex，让 `backend` 包可被分析到。
-- frontend/dist 作为 data 收进产物，运行时 desktop/main.py 会把
-  config.FRONTEND_DIST 覆盖到 _MEIPASS/frontend/dist。
+- frontend/dist 作为 data 收进产物的 `frontend/dist`（即 `_internal/frontend/dist`），
+  后端 core/config.py 的 `resolve_frontend_dist()` 第一顺位就找 `_MEIPASS/frontend/dist`。
 - 路由模块是 importlib 动态导入的，静态分析看不到 → 用 collect_submodules('backend') 兜住。
 """
 
@@ -40,7 +40,7 @@ hiddenimports = [
 hiddenimports += collect_submodules('backend')
 hiddenimports += collect_submodules('uvicorn')
 
-for optional_pkg in ('webview', 'pystray', 'PIL', 'playwright', 'loguru'):
+for optional_pkg in ('webview', 'pystray', 'PIL', 'patchright', 'loguru'):
     try:
         hiddenimports += collect_submodules(optional_pkg)
     except Exception as exc:  # noqa: BLE001 - 可选依赖没装就跳过
