@@ -22,7 +22,24 @@ import inspect
 import json
 from typing import Any, Dict, List, Optional
 
-from ..core import db, events
+from ..core import crypto, db, events
+
+# 提供者配置变化的 WS 话题（前端「AI 设置」页收到就静默重拉）。
+# 与 `api/providers.py` 用同一个 topic，两条写入路径（HTTP / MCP 工具）都要发，
+# 否则从 DSH 插件里改完 Key，网页上的列表一直是旧的。
+PROVIDERS_CHANGED = 'providers.changed'
+
+
+def publish_providers_changed(action: str, provider_id: Any, is_default: bool = False) -> None:
+    """发一条 providers.changed。**payload 里绝不放 api_key 明文**，推送失败不影响主流程。"""
+    try:
+        events.publish(PROVIDERS_CHANGED, {
+            'provider_id': int(provider_id) if provider_id not in (None, '') else None,
+            'is_default': bool(is_default),
+            'action': action,
+        })
+    except Exception:  # pragma: no cover - 推送失败绝不能影响写入
+        pass
 
 TOOL_SPECS: List[Dict[str, Any]] = [
     # ---------------- 账号 ----------------
@@ -493,7 +510,9 @@ def _providers_upsert(args: Dict[str, Any]) -> Dict[str, Any]:
         current = db.query_one('SELECT * FROM providers WHERE id = ?', (int(provider_id),))
         if current is None:
             return {'ok': False, 'error': f'提供者 #{provider_id} 不存在'}
-        api_key = str(args.get('api_key') or current['api_key'] or '')
+        # 没给新 key 就沿用原来的值；`crypto.encrypt()` 对**已是密文**的值原样返回，
+        # 所以这里不会把老密文再加密一层。
+        api_key = crypto.encrypt(args.get('api_key') or current['api_key'] or '')
         if not fields['name']:
             fields['name'] = current['name']
         if not fields['base_url']:
@@ -505,7 +524,7 @@ def _providers_upsert(args: Dict[str, Any]) -> Dict[str, Any]:
              fields['enabled'], fields['is_default'], int(provider_id)),
         )
     else:
-        api_key = str(args.get('api_key') or '')
+        api_key = crypto.encrypt(args.get('api_key') or '')
         if not fields['name'] or not fields['base_url']:
             return {'ok': False, 'error': '新增提供者必须给 name 和 base_url'}
         provider_id = int(db.execute(
@@ -516,6 +535,8 @@ def _providers_upsert(args: Dict[str, Any]) -> Dict[str, Any]:
         ))
     if fields['is_default']:
         db.execute('UPDATE providers SET is_default = 0 WHERE id != ?', (int(provider_id),))
+    publish_providers_changed('update' if args.get('id') else 'create', provider_id,
+                              bool(fields['is_default']))
     return {'ok': True, 'provider_id': int(provider_id), 'updated': True}
 
 

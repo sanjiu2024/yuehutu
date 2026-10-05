@@ -16,7 +16,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from ..core import db
+from ..core import crypto, db
+from ..xianyu import net as net_mod
 from . import roles as roles_mod
 
 DEFAULT_TIMEOUT = 60.0
@@ -84,11 +85,23 @@ def resolve_provider(role: Optional[str] = None, provider_id: Optional[int] = No
         raise LLMError(f'提供者「{row["name"]}」没有可用模型：请填 default_model 或给角色指定 model',
                        provider_id=int(row['id']))
 
+    # `providers.api_key` 是**加密落库**的（`core/crypto.py`）；历史明文行在这里由
+    # `decrypt()` 原样返回，所以不需要强制迁移就能继续工作。
+    try:
+        api_key = crypto.decrypt(row['api_key'] or '')
+    except crypto.CryptoError as exc:
+        # 不管底层是标签不符还是结构损坏，卖家能做的动作都一样：重填一次 Key。
+        # 这里必须给出可执行的下一步，否则前端只能显示一句没法处理的英文异常。
+        raise LLMError(
+            f'提供者「{row["name"]}」的 API Key 无法解密（{exc}）：'
+            '本地密钥可能已变更或数据库里的 Key 被改动过，请在「AI 设置」里重新填一次 Key',
+            provider_id=int(row['id'])) from exc
+
     return {
         'id': int(row['id']),
         'name': row['name'],
         'base_url': str(row['base_url'] or '').rstrip('/'),
-        'api_key': row['api_key'] or '',
+        'api_key': api_key,
         'model': model,
         'default_model': row['default_model'] or '',
     }
@@ -205,9 +218,19 @@ async def chat(
     started = time.time()
     last_error = ''
     attempts = RETRY_TIMES + 1
+    # 本机 NO_PROXY 里可能含 httpx 解析不了的方括号条目（`[::1]`），httpx 会在
+    # **构造 AsyncClient 时**直接抛 InvalidURL —— 那时还没发请求，所以下面所有
+    # `except httpx.HTTPError` 都抓不到，只会在兜底分支变成一句没法排查的
+    # `InvalidURL: Invalid port: ':1]'`。修法与 `xianyu/net.py::async_client` 对齐：
+    # 消毒 NO_PROXY + `trust_env=False` + `proxy=None`，行为只取决于本函数。
+    net_mod.sanitize_no_proxy()
     for attempt in range(attempts):
         try:
-            async with httpx.AsyncClient(timeout=float(timeout or DEFAULT_TIMEOUT)) as client:
+            async with httpx.AsyncClient(
+                timeout=float(timeout or DEFAULT_TIMEOUT),
+                trust_env=False,   # 不读 HTTP_PROXY/NO_PROXY，避免坏条目把客户端建不出来
+                proxy=None,        # 我们不走系统代理
+            ) as client:
                 response = await client.post(url, json=body, headers=headers)
             latency_ms = int((time.time() - started) * 1000)
             if response.status_code >= 400:
@@ -252,6 +275,13 @@ async def chat(
             raise
         except Exception as exc:  # pragma: no cover - 兜底
             last_error = f'{type(exc).__name__}: {exc}'
+            # httpx 的 InvalidURL 属 ValueError 而非 HTTPError，且发生在客户端**构造**阶段。
+            # 单独点名最常见的原因（代理环境变量），否则用户只看到 ':1]' 这种天书。
+            if isinstance(exc, (httpx.InvalidURL, ValueError)) and 'url' in type(exc).__name__.lower():
+                last_error += (
+                    '（疑似 HTTP_PROXY / NO_PROXY 环境变量含 httpx 无法解析的条目，'
+                    '请检查 NO_PROXY 里的方括号 IPv6 写法）'
+                )
 
     latency_ms = int((time.time() - started) * 1000)
     _record_run(

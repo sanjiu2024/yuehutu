@@ -245,6 +245,94 @@ class CrossAskTest(unittest.TestCase):
                    "VALUES(2,'a','b','ask')")
         self.assertEqual(len(runtime.recent_agent_messages(limit=10, conversation_id=1)), 1)
 
+    # ---------------- AI-1：跨商品协查必须按账号隔离 ----------------
+
+    def add_foreign_item(self, item_id='F', title='苹果 iPhone 13 256G 黑色 全新', account_id='acc2'):
+        db.execute(
+            'INSERT INTO items(account_id, item_id, title, price, stock) VALUES(?,?,?,?,1)',
+            (account_id, item_id, title, 3999),
+        )
+
+    def test_match_items_filters_by_account(self):
+        """**AI-1**：候选集原先 `SELECT ... FROM items ORDER BY id DESC LIMIT 500`
+        完全没有 `WHERE account_id`，别的闲鱼号在卖什么会泄漏给当前账号的买家。"""
+        self.add_foreign_item()
+        # 不传 account_id：保持旧行为（现有调用方/测试依赖它，不能砸）
+        loose = [m['item_id'] for m in runtime.match_items('苹果 iPhone 13 内存多大', exclude_item_id='A')]
+        self.assertIn('F', loose)
+
+        # 传了 account_id：跨账号商品必须消失
+        scoped = runtime.match_items('苹果 iPhone 13 内存多大', exclude_item_id='A', account_id='acc1')
+        self.assertEqual(scoped, [], f'跨账号命中了: {scoped}')
+
+        # 本账号的商品照常命中，别修成「一律不匹配」
+        same = runtime.match_items('蓝色牛仔裤还有吗', exclude_item_id='A', account_id='acc1')
+        self.assertEqual([m['item_id'] for m in same], ['B'])
+
+    def test_match_items_result_carries_account(self):
+        matched = runtime.match_items('蓝色牛仔裤还有吗', exclude_item_id='A', account_id='acc1')
+        self.assertEqual(matched[0]['account_id'], 'acc1')
+
+    def test_cross_ask_filters_by_account(self):
+        """`cross_ask` 也要透传 account_id，不能只在匹配函数里生效。"""
+        self.add_foreign_item()
+        with mock.patch.object(llm, 'chat', _fake_chat()):
+            text = asyncio.run(runtime.cross_ask(
+                'item:A', '苹果 iPhone 13 还有货吗', exclude_item_id='A',
+                account_id='acc1', conversation_id=5))
+        self.assertTrue(text)
+        rows = self.messages()
+        self.assertFalse([r for r in rows if r['to_agent'] == 'item:F'], f'问到别的账号去了: {rows}')
+        self.assertEqual([r['kind'] for r in rows], ['ask', 'notify'], rows)
+
+    # ---------------- 下架/已售商品不参与协查 ----------------
+
+    def test_match_items_skips_unlisted_items(self):
+        for status in ('sold', 'delisted', 'deleted', 'offline', '下架', '已售'):
+            with self.subTest(status=status):
+                db.execute("DELETE FROM items WHERE item_id = 'U'")
+                db.execute(
+                    "INSERT INTO items(account_id, item_id, title, price, stock, status) "
+                    "VALUES('acc1','U','限量版帆布鞋 全新',99,0,?)", (status,))
+                self.assertEqual(
+                    runtime.match_items('限量版帆布鞋还有吗', exclude_item_id='A', account_id='acc1'), [],
+                    f'status={status} 的下架商品不该参与协查')
+        db.execute("DELETE FROM items WHERE item_id = 'U'")
+
+    def test_match_items_keeps_unknown_and_on_sale(self):
+        """`items.status` 默认值是 'unknown'，不能因为过滤 status 就把默认行全筛掉。"""
+        for status in ('unknown', 'on_sale'):
+            with self.subTest(status=status):
+                db.execute("DELETE FROM items WHERE item_id = 'U'")
+                db.execute(
+                    "INSERT INTO items(account_id, item_id, title, price, stock, status) "
+                    "VALUES('acc1','U','限量版帆布鞋 全新',99,1,?)", (status,))
+                matched = runtime.match_items('限量版帆布鞋还有吗', exclude_item_id='A', account_id='acc1')
+                self.assertEqual([m['item_id'] for m in matched], ['U'], f'status={status} 被误杀')
+        db.execute("DELETE FROM items WHERE item_id = 'U'")
+
+    def test_match_items_skips_unlisted_even_without_account(self):
+        """不传 account_id 时也要过滤下架商品（那条 SQL 分支同样被修了）。"""
+        db.execute(
+            "INSERT INTO items(account_id, item_id, title, price, stock, status) "
+            "VALUES('acc1','U','限量版帆布鞋 全新',99,0,'sold')")
+        try:
+            self.assertEqual(runtime.match_items('限量版帆布鞋还有吗', exclude_item_id='A'), [])
+        finally:
+            db.execute("DELETE FROM items WHERE item_id = 'U'")
+
+    def test_match_items_candidate_items_still_filtered(self):
+        """显式传 candidate_items 的分支也不能漏掉账号过滤。"""
+        self.add_foreign_item()
+        scoped = runtime.match_items('随便什么', candidate_items=['B', 'F'], account_id='acc1')
+        self.assertEqual([m['item_id'] for m in scoped], ['B'], f'candidate 分支漏了账号过滤: {scoped}')
+        # 切到 acc2 就应该只剩 F
+        other = runtime.match_items('随便什么', candidate_items=['B', 'F'], account_id='acc2')
+        self.assertEqual([m['item_id'] for m in other], ['F'], other)
+        # 不传 account_id：旧行为，两个账号的都返回
+        loose = runtime.match_items('随便什么', candidate_items=['B', 'F'])
+        self.assertEqual(sorted(m['item_id'] for m in loose), ['B', 'F'])
+
 
 class ReplyForMessageTest(unittest.TestCase):
     @classmethod
@@ -295,6 +383,39 @@ class ReplyForMessageTest(unittest.TestCase):
         # 触发了跨商品协查：向 item:B 发过 ask
         rows = [dict(r) for r in db.query('SELECT * FROM agent_messages ORDER BY id')]
         self.assertTrue([r for r in rows if r['to_agent'] == 'item:B' and r['kind'] == 'ask'], rows)
+
+    def test_reply_does_not_cross_accounts(self):
+        """**AI-1 端到端**：acc1 的买家问一个只有 acc2 在卖的商品，绝不能问过去。
+
+        修复前实测：往 acc2 插一个「苹果 iPhone 13 256G 黑色 全新」后，
+        `POST /api/chats/incoming {"account_id":"acc1", ...}` 的 agent_messages 目标
+        是 `[('cross',), ('item:itC',), ('item:itA',)]` —— itC 属于 acc2。
+        """
+        db.execute(
+            "INSERT INTO items(account_id, item_id, title, price, stock, status) "
+            "VALUES('acc2','F','苹果 iPhone 13 256G 黑色 全新',3999,1,'on_sale')")
+        msg = int(db.execute(
+            "INSERT INTO messages(conversation_id, direction, sender, content) "
+            "VALUES(?,'in','buyer','苹果 iPhone 13 还有货吗')", (self.conv_id,)))
+
+        calls = []
+        with mock.patch.object(llm, 'chat', _fake_chat(calls=calls)):
+            result = asyncio.run(runtime.reply_for_message(self.conv_id, msg))
+
+        self.assertTrue(result['ok'], result)
+        rows = [dict(r) for r in db.query('SELECT * FROM agent_messages ORDER BY id')]
+        self.assertFalse([r for r in rows if r['to_agent'] == 'item:F'], f'跨账号协查: {rows}')
+        self.assertFalse(result['cross_used'], f'不该触发协查: {result}')
+
+        # 反过来：本账号内的商品仍然可以协查（别把功能修死）
+        msg2 = int(db.execute(
+            "INSERT INTO messages(conversation_id, direction, sender, content) "
+            "VALUES(?,'in','buyer','这条牛仔裤多少钱')", (self.conv_id,)))
+        with mock.patch.object(llm, 'chat', _fake_chat()):
+            result2 = asyncio.run(runtime.reply_for_message(self.conv_id, msg2))
+        self.assertTrue(result2['cross_used'], result2)
+        rows2 = [dict(r) for r in db.query('SELECT * FROM agent_messages ORDER BY id')]
+        self.assertTrue([r for r in rows2 if r['to_agent'] == 'item:B' and r['kind'] == 'ask'], rows2)
 
     def test_reply_forces_vision_for_image(self):
         conv = int(db.execute(

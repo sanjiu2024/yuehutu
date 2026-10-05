@@ -180,12 +180,41 @@ def _clean_for_match(text: str) -> str:
     return cleaned
 
 
+# 已下架/卖掉的商品不该被「跨商品协查」匹配到，否则买家会收到一件已售商品的报价。
+# 注意 `items.status` 的默认值是 `'unknown'`（core/db.py:74），所以**不能**只留
+# `on_sale`，否则正常同步进来的商品会被全部过滤掉。
+_UNLISTED_STATUSES = ('sold', 'delisted', 'deleted', 'offline', 'removed', '下架', '已售', '删除')
+
+_ITEM_COLUMNS = 'account_id, item_id, title, price, stock, status'
+
+
+def _visible_items_sql(account_id: Optional[str], limit: int) -> tuple:
+    """候选商品的 SQL + 参数。`account_id` 为空时保持旧行为（不过滤账号）。"""
+    placeholders = ','.join('?' for _ in _UNLISTED_STATUSES)
+    sql = (f'SELECT {_ITEM_COLUMNS} FROM items '
+           f'WHERE COALESCE(status, \'\') NOT IN ({placeholders})')
+    params: List[Any] = list(_UNLISTED_STATUSES)
+    if account_id not in (None, ''):
+        sql += ' AND account_id = ?'
+        params.append(str(account_id))
+    sql += ' ORDER BY id DESC LIMIT ?'
+    params.append(int(limit))
+    return sql, params
+
+
 def match_items(question: str, exclude_item_id: Optional[str] = None,
                 candidate_items: Optional[List[str]] = None,
-                limit: int = CROSS_MAX_TARGETS) -> List[Dict[str, Any]]:
+                limit: int = CROSS_MAX_TARGETS,
+                account_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """在 `items` 表里找买家可能问到的**其它**商品。
 
     给了 `candidate_items` 就按 id 精确查；否则按标题关键词在问题里的命中数排序。
+
+    `account_id`：**必须**由调用方传进当前会话的账号。不传（None）时不过滤账号，
+    保持旧行为以兼容既有调用；传了以后只在该账号的商品里找 —— 修的是 AI-1：
+    此前候选集是 `SELECT ... FROM items ORDER BY id DESC LIMIT 500`，没有任何账号
+    过滤，买家在 A 账号问「这件还有吗」会匹配到 B 账号的商品并发起跨商品协查
+    （实测 `agent_messages` 里出现了 `item:<另一个账号的商品>`）。
     """
     exclude = str(exclude_item_id or '')
     if candidate_items:
@@ -193,11 +222,13 @@ def match_items(question: str, exclude_item_id: Optional[str] = None,
         if not ids:
             return []
         placeholders = ','.join('?' for _ in ids)
-        rows = db.query(
-            f'SELECT account_id, item_id, title, price, stock, status FROM items '
-            f'WHERE item_id IN ({placeholders})',
-            ids,
-        )
+        sql = (f'SELECT {_ITEM_COLUMNS} FROM items WHERE item_id IN ({placeholders}) '
+               f'AND COALESCE(status, \'\') NOT IN ({",".join("?" for _ in _UNLISTED_STATUSES)})')
+        params: List[Any] = list(ids) + list(_UNLISTED_STATUSES)
+        if account_id not in (None, ''):
+            sql += ' AND account_id = ?'
+            params.append(str(account_id))
+        rows = db.query(sql, params)
         return [dict(r) for r in rows if str(r['item_id']) != exclude][:limit]
 
     cleaned_question = _clean_for_match(question)
@@ -205,7 +236,8 @@ def match_items(question: str, exclude_item_id: Optional[str] = None,
         return []
     q_grams = _ngrams(cleaned_question)
     scored: List[tuple] = []
-    for row in db.query('SELECT account_id, item_id, title, price, stock, status FROM items ORDER BY id DESC LIMIT 500'):
+    sql, params = _visible_items_sql(account_id, 500)
+    for row in db.query(sql, params):
         if str(row['item_id']) == exclude:
             continue
         title = str(row['title'] or '')
@@ -269,10 +301,12 @@ async def reply_for_message(conversation_id: int, message_id: int) -> Dict[str, 
     role = roles_mod.role_for_conversation(conv, message)
     content = str(message['content'] or '').strip()
 
-    # 买家在 A 商品里问到 B 商品 → 先协查，把答复作为上下文
+    # 买家在 A 商品里问到 B 商品 → 先协查，把答复作为上下文。
+    # `account_id` 必须传：候选商品只限本会话所属账号（修 AI-1，见 match_items 文档）。
     cross_note = ''
     if role == 'item' and content:
-        candidates = match_items(content, exclude_item_id=conv['item_id'])
+        candidates = match_items(content, exclude_item_id=conv['item_id'],
+                                account_id=conv['account_id'])
         if candidates:
             try:
                 cross_note = await cross_ask(
@@ -281,6 +315,7 @@ async def reply_for_message(conversation_id: int, message_id: int) -> Dict[str, 
                     exclude_item_id=conv['item_id'],
                     conversation_id=int(conv['id']),
                     candidate_items=[c['item_id'] for c in candidates],
+                    account_id=conv['account_id'],
                 )
             except Exception as exc:  # 协查失败不该让买家收不到回复
                 cross_note = ''
@@ -494,11 +529,14 @@ async def cross_ask(
     conversation_id: Optional[int] = None,
     depth: int = 1,
     candidate_items: Optional[List[str]] = None,
+    account_id: Optional[str] = None,
 ) -> str:
     """跨商品协查：`from_role` 问「买家问的这件别的商品怎么回事」，返回可直接用的答复文本。
 
     链路：记录 ask → 匹配商品 → 向 `item:<id>` 发 ask → 收 answer → 汇总 answer 回 `from_role`。
     每次投递都写 `agent_messages`。深度超过 `MAX_CROSS_DEPTH` 抛 `ValueError`。
+
+    `account_id` 会透传给 `match_items`：**不要**让协查跨账号（AI-1）。
     """
     depth = int(depth or 1)
     if depth > MAX_CROSS_DEPTH:
@@ -510,11 +548,13 @@ async def cross_ask(
     record_agent_message(
         str(from_role), 'cross', 'ask',
         topic='other_item_info',
-        payload={'question': question, 'candidate_items': candidate_items or [], 'depth': depth},
+        payload={'question': question, 'candidate_items': candidate_items or [], 'depth': depth,
+                 'account_id': str(account_id or '')},
         conversation_id=conversation_id,
     )
 
-    targets = match_items(question, exclude_item_id=exclude_item_id, candidate_items=candidate_items)
+    targets = match_items(question, exclude_item_id=exclude_item_id, candidate_items=candidate_items,
+                          account_id=account_id)
     if not targets:
         text = '店里没找到对应的商品，麻烦把商品名或链接发我一下，我帮你确认。'
         record_agent_message(

@@ -18,7 +18,7 @@ import json
 
 from typing import Any, Dict, List, Optional
 
-from ..core import db
+from ..core import db, events
 from .defaults import DEFAULT_ROLE_PROMPTS, DEFAULT_ROLE_TEMPERATURES
 
 ROLES = ('master', 'item', 'cs', 'bargain', 'cross', 'vision')
@@ -42,6 +42,15 @@ ROLE_DESCRIPTIONS: Dict[str, str] = {
 }
 
 _ROLE_UPDATE_FIELDS = ('provider_id', 'model', 'temperature', 'system_prompt', 'enabled')
+
+# `conversations.agent_role` 里这两类是**建会话时的自动兜底**（由有没有绑定商品推出，
+# 见 `services/chats.py::default_agent_role`），可以被消息内容进一步特化。
+GENERIC_ROLES = ('item', 'cs')
+# 其余角色只可能是有人显式指定的：钉住，消息内容无权推翻。
+PINNED_ROLES = tuple(r for r in ROLES if r not in GENERIC_ROLES)
+
+# 角色↔提供者映射变化也要通知前端（与 `api/providers.py` 同一个 topic）。
+PROVIDERS_CHANGED = 'providers.changed'
 
 
 def _field(obj: Any, key: str, default: Any = None) -> Any:
@@ -99,23 +108,31 @@ def role_for_conversation(conv: Any, message: Any = None) -> str:
     """会话（+这条买家消息）→ 该由哪个角色接。
 
     规则（顺序固定，方便测试）：
-    1. `conversations.agent_role` 合法 → 用它（前端/业务可以手工指定）；
+    1. `conversations.agent_role` 是**钉住**的角色（`master`/`bargain`/`cross`/`vision`）
+       → 直接用它。这四类只可能是有人显式指定的，消息内容无权推翻；
     2. 买家发来的是图片 → `vision`（看图 AI）；
     3. 买家在讲价 → `bargain`（议价 AI）；
-    4. 没有绑定商品（`item_id` 为空）→ `cs`（通用客服）；
-    5. 其余 → `item`（商品客服）。
+    4. `agent_role` 是**自动兜底**值（`item`/`cs`）→ 用它；
+    5. 没有绑定商品（`item_id` 为空）→ `cs`（通用客服）；
+    6. 其余 → `item`（商品客服）。
 
-    第 2/3 条需要 `message`。不传时行为与旧版完全一致，`bargain`/`vision` 就永远轮不到 ——
-    这正是它们此前不可达的原因：角色表里有这两个角色，却没有任何一条路径会选中它们。
+    第 4 条是本次修复的核心。此前的规则 1 是「只要 `agent_role` 合法就用它」，而
+    `services/chats.py::default_agent_role()` 在**建会话时**就把每个会话写成了
+    `item`/`cs` —— 于是规则 1 恒命中，第 2/3 条（vision/bargain）永远执行不到，
+    角色表里那两行配置形同虚设。现在把「自动兜底」和「显式钉住」区分开：
+    兜底值允许被消息内容特化，显式钉住的值不允许。
     """
     role = str(_field(conv, 'agent_role', '') or '').strip()
-    if is_role(role):
+    if role in PINNED_ROLES:
         return role
+    auto = role if role in GENERIC_ROLES else ''
     if _message_image(message):
         return 'vision'
     text = _message_text(message)
     if any(word in text for word in _BARGAIN_WORDS):
         return 'bargain'
+    if auto:
+        return auto
     if not str(_field(conv, 'item_id', '') or '').strip():
         return 'cs'
     return 'item'
@@ -184,7 +201,23 @@ def update_role(role: str, **fields: Any) -> Dict[str, Any]:
             role,
         ),
     )
+    # 角色↔提供者映射真的变了才发：前端「AI 设置」页收到就静默重拉。
+    if 'provider_id' in patch and patch['provider_id'] != current['provider_id']:
+        _publish_providers_changed(role, merged['provider_id'])
     return get_role(role)
+
+
+def _publish_providers_changed(role: str, provider_id: Any) -> None:
+    """发 providers.changed（action='roles'）。**payload 里不放任何 Key**，失败不影响主流程。"""
+    try:
+        events.publish(PROVIDERS_CHANGED, {
+            'provider_id': int(provider_id) if provider_id not in (None, '') else None,
+            'is_default': False,
+            'action': 'roles',
+            'role': role,
+        })
+    except Exception:  # pragma: no cover - 推送失败绝不能影响业务写入
+        pass
 
 
 def role_temperature(role: str) -> float:
