@@ -32,8 +32,31 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe desktop\main.py"
 ## 测试
 
 ```powershell
-cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_skeleton.py"
+# 全量基线（13 个测试文件，逐个子进程跑）
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
+
+# 单个文件
+cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_agents_cross.py"
 ```
+
+真实 HTTP 冒烟（需要后端已在跑）：
+
+```powershell
+cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe scripts\smoke_api.py 18090"     # 只读 17 条
+cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe scripts\smoke_write.py 18090"   # 写路径 11 条
+```
+
+测试约定：**不打真实闲鱼平台、不调真实 LLM**（协议层走 MockTransport，AI 层 mock
+`llm.chat`）；测试把整个数据目录挪到临时目录（`XIANYU_APP_DIR`），不会碰你的真实库。
+
+## 文档
+
+| 文件 | 内容 |
+| --- | --- |
+| [docs/HANDOFF.md](docs/HANDOFF.md) | 交接与验收记录：九条诉求逐条对照、真实命令与输出、**已验证 / 未验证**边界 |
+| [docs/CONTRACTS.md](docs/CONTRACTS.md) | 契约：19 张表 DDL / REST 清单 / 编排协议 / MCP 工具集 |
+| [docs/PACKAGING.md](docs/PACKAGING.md) | 打包、产物路径、常见坑 |
+| [docs/MCP.md](docs/MCP.md) | 挂进 DeepSeek Harness 的配置与排错 |
 
 ## 结构
 
@@ -50,11 +73,15 @@ docs/CONTRACTS.md      契约：表结构 / API / 编排协议 / 工具集（唯
 ```
 
 数据目录：`%APPDATA%\xianyu-ai-workbench\`（`data/app.db`、`logs/app.log`、`browser/`）。
+可用环境变量 `XIANYU_APP_DIR` 把它整体挪走（测试与多实例用）。
 
 ## 打包
 
 ```powershell
-pwsh scripts\build_exe.ps1
+pwsh scripts\build_frontend.ps1   # 先构建前端（js 文件名带内容 hash，必须重跑）
+pwsh scripts\build_exe.ps1        # 再打包
 ```
 
-产物 `dist\闲鱼AI工作台\闲鱼AI工作台.exe`（目录形态，启动快、便于热更）。
+产物 `dist\闲鱼AI工作台\闲鱼AI工作台.exe`（onedir 形态，约 190 MB —— 主因是
+`patchright` 自带的 `node.exe` driver）。首次运行会自动建库、生成随机管理员密码
+（`data\desktop_credentials.json`）与本地免密密钥（`data\local_secret.txt`）。
