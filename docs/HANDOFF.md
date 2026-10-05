@@ -22,7 +22,12 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 20  PASS 20  FAIL 0  CASES 377  SKIPPED 1
+-> TOTAL 20  PASS 20  FAIL 0  CASES 380  SKIPPED 1
+```
+
+```text
+cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_xianyu_login.py"
+-> Ran 22 tests ... OK (skipped=1)
 ```
 
 ```text
@@ -134,10 +139,27 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 24. **基线 runner 的假绿**：只按 returncode 记账，unittest 跑 0 个用例仍 exit 0；skip
     被当成通过。现在解析 `Ran N tests`/`skipped=N`，0 用例直接 FAIL。
 
+### 第四批：用户真机第一次点「扫码添加账号」抓到的（25）
+
+25. **扫码登录漏传查询参数，二维码永远出不来**（用户实测原话：
+    「获取二维码失败: 未能从 mini_login 页面解析出 viewData」）。请求
+    `passport.goofish.com/mini_login.htm` 时没带 `appName` 等参数，服务端**不报错**，
+    返回 200 + 一页「非法请求 [appNameError]」，正文里没有 `window.viewData`，
+    于是真因被伪装成「解析不出 viewData」。带参数后同一地址返回 28709 字节正常页面，
+    `viewData.loginFormData` 齐全。
+    - 修：`backend/app/xianyu/login.py` 新增 `login_query()` 作为参数唯一真源
+      （`lang/appName/appEntrance/styleType/bizParams/notLoadSsoView/notKeepLogin/
+      isMobile/qrCodeFirst/stie/rnd`，`rnd` 每次新生成），`_get_login_params` 与
+      `_generate_qr` 两处共用它。
+    - 回归：假闲鱼平台现在**复刻真实服务端行为** —— 没有 `appName` 就返回
+      「非法请求 [appNameError]」页面，所以「漏传参数」这条路径在测试里能被抓住
+      （此前测试对漏参数完全无感，这正是它漏到用户手上的原因）。
+    - 真机证据见第四节。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**20 个测试文件、377 个用例全绿、0 失败**（唯一 1 个 skip 是
+- 全部后端逻辑：**20 个测试文件、380 个用例全绿、0 失败**（唯一 1 个 skip 是
   `test_xianyu_login.py` 里本来就有的平台相关跳过）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -152,6 +174,14 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
   `/api/health` 200 `frozen:true`；`GET /` 真 index.html；`assets/index-*.js`
   200 且与 `frontend/dist` SHA256 一致（旧 hash 404）；`/api/settings` 401（API
   路由未被静态挂载吃掉）；`POST /api/auth/desktop` 200（桌面免密登录可用）。
+- **扫码登录真的通了**（唯一一处真打闲鱼平台的路径，且不涉及任何账号凭据）：
+  - 源码直调：`_get_login_params` 拿到完整 `loginFormData`（`_csrf_token`/`umidToken`/
+    `hsiz`/`bizParams=taobaoBizLoginFrom=web` 等），`_generate_qr` 拿到
+    `code_content` 107 字符（`https://passport.goofish.com/qrcodeCheck.htm?lgToken=...`）。
+  - **打包 exe 上**（`--no-window`）`POST /api/accounts/qr/start` → **200**，
+    `ticket` + `expires_in=299` + 1222 字节真二维码 PNG（base64 1632 字符，可正常扫描）。
+  - 修之前同一接口在同一个 exe 上是 **502 `http_error`**
+    「获取二维码失败: 未能从 mini_login 页面解析出 viewData」—— 即用户看到的那条。
 - **MCP 插件发现随机端口**（Lead 复跑）：后端 `--port 19107`（`XYWB_PORT=19107`）→
   `data/backend_port.txt` 内容 `19107`；**不设** `XYWB_BASE_URL` 真起
   `mcp_server/server.py` 子进程 → stderr 自报 `base_url=http://127.0.0.1:19107`
@@ -163,9 +193,10 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
   `cwd=C:\Windows` + 显式清空 `PYTHONPATH` 仍能 `initialize` 并列出 21 个工具。
 
 **未验证（不要当成已完成）**
-- **真实闲鱼平台一次没打**：协议层全部走 MockTransport。发布/编辑/上下架/发消息/
-  收私信在真实账号上是否成功，必须等用户扫码登录后实测。第 11、12、13 条修的是
-  「接线本身断掉」，接线通了不等于平台协议对。
+- **真实闲鱼平台只碰了「扫码取码」这一步**：二维码能出、能被手机扫，但**扫码之后的
+  登录确认与拿 Cookie 没走过**（要用户本人拿手机扫）。发布/编辑/上下架/发消息/收私信
+  在真实账号上是否成功，必须等登录实测；协议层其余部分全部走 MockTransport。第 11、
+  12、13 条修的是「接线本身断掉」，接线通了不等于平台协议对。
 - **真实 LLM 一次没调**：所有 AI 测试都 mock 了 `llm.chat`。
 - **真实买家来信没收到过**：IM 入站闭环只在假协议客户端上验过（`ensure_im` /
   `send_message` 两个口子打桩），真 WS 收帧形状与 `_read_loop → dispatch` 的端到端
