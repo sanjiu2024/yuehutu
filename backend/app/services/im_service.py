@@ -132,19 +132,54 @@ def ensure_session(account_id: str) -> Tuple[Optional[Any], Optional[Dict[str, A
     return session, None
 
 
+def _is_alive(session: Any) -> bool:
+    """会话是否还活着。没有 `connected` 属性的实现（旧假会话）按「活」处理。
+
+    「按活处理」是有意的：宁可复用一条状态未知的会话，也不要因为读不出版本差异
+    就无限重建 —— 重建在平台上等于多开一条入站连接。
+    """
+    connected = getattr(session, 'connected', None)
+    return True if connected is None else bool(connected)
+
+
 def start(account_id: str) -> Any:
     """账号需要收私信时调用：建会话 + 注册入站 handler。
 
-    协议层未就绪（没有 Cookie、缺依赖）时返回 `not_ready` 信封而不是抛异常。
+    **幂等**：同一账号已经挂着一条活着的会话时直接复用，不重复建连。这个函数现在由
+    API 层在「扫码登录成功 / 打开 enabled / relogin」三处调用，而这些动作用户会反复
+    触发；每调一次就新建一条 WebSocket，平台上会留下多条入站连接（同一条买家消息
+    收多份、AI 也回多份）。
+
+    协议层未就绪（没有 Cookie、缺依赖）时返回 `not_ready` 信封而不是抛异常 ——
+    调用点都在后台线程或 HTTP 路由里，抛出去只会变成一条没人看的 traceback。
     """
-    session, err = ensure_session(account_id)
-    if session is None:
-        return err or common.not_ready()
-    return {
-        'account_id': account_id,
-        'attached': True,
-        'connected': bool(getattr(session, 'connected', False)),
-    }
+    account_id = str(account_id or '')
+    if not account_id:
+        return common.fail('缺少 account_id', 'invalid_fields')
+    try:
+        existing = current_session(account_id)
+        if existing is not None and _is_alive(existing):
+            _attach(account_id, existing)  # 幂等：会话还在，但 handler 未必挂上了
+            return {
+                'account_id': account_id,
+                'attached': True,
+                'connected': True,
+                'reused': True,
+            }
+        if existing is not None:
+            # 半死的旧会话（连上过又断线）：先摘掉，别让它继续占着 account_id
+            stop(account_id)
+        session, err = ensure_session(account_id)
+        if session is None:
+            return err or common.not_ready()
+        return {
+            'account_id': account_id,
+            'attached': True,
+            'connected': bool(getattr(session, 'connected', False)),
+        }
+    except Exception as exc:  # noqa: BLE001 - 后台挂载路径不许把异常抛给调用方
+        logger.warning(f'[{account_id}] 挂载 IM 会话异常: {exc}')
+        return common.fail(f'IM 入站挂载异常: {exc}', 'protocol_error')
 
 
 def stop(account_id: str) -> Any:

@@ -24,10 +24,16 @@ import inspect
 import json
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from loguru import logger
+
 from ..core import db, events
 
 NOT_READY_CODE = 'xianyu_not_ready'
 NOT_READY_MESSAGE = '协议层尚未就绪'
+
+#: 「登录态过期」的统一提示词。协议层抛 `SessionExpiredError` 时用它改写异常文案，
+#: 这样上层（chats.py 的 `str(value)` warning、这里的失败信封）不必各自认一遍类型。
+SESSION_EXPIRED_MARK = '登录态已过期，需要重新登录'
 
 # code -> HTTP 状态码（路由层把服务返回的失败信封翻成语义状态码）
 FAIL_STATUS: Dict[str, int] = {
@@ -237,6 +243,79 @@ def run_awaitable(value: Any) -> Any:
         return pool.submit(asyncio.run, value).result()
 
 
+def _is_session_expired(exc: Any) -> bool:
+    """这个异常是不是协议层的「登录态过期」（`SessionExpiredError`）。
+
+    三路判断，从硬到软（协议层可能还没就绪，也可能把异常包了一层）：
+    1. 懒导入 `xianyu.client`，`isinstance(exc, client.SessionExpiredError)`；
+    2. MRO 里有没有 `SessionExpiredError` 这个名字（测试里的假实现、被包装过的异常）；
+    3. `xianyu.risk.is_session_expired(str(exc))` 文案兜底。
+    """
+    client_mod = protocol_module('client')
+    cls = getattr(client_mod, 'SessionExpiredError', None) if client_mod is not None else None
+    try:
+        if isinstance(cls, type) and isinstance(exc, cls):
+            return True
+    except Exception:  # noqa: BLE001 - 假类型/怪异元类，继续往下判
+        pass
+    try:
+        if any(klass.__name__ == 'SessionExpiredError' for klass in type(exc).__mro__):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    risk_mod = protocol_module('risk')
+    check = getattr(risk_mod, 'is_session_expired', None) if risk_mod is not None else None
+    try:
+        return bool(callable(check) and check(str(exc)))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _expired_text(value: Any) -> str:
+    """异常原文，且不重复带 `SESSION_EXPIRED_MARK` 前缀。"""
+    text = str(value)
+    prefix = f'{SESSION_EXPIRED_MARK}: '
+    return text[len(prefix):] if text.startswith(prefix) else text
+
+
+def _note_session_expired(client: Any, exc: BaseException) -> None:
+    """协议层报「登录态过期」时的回写路径（B2 的根因就在缺这一段）。
+
+    **为什么必须在这里做**：`xianyu.client` 抛出 `SessionExpiredError` 之后，
+    过去没有任何生产代码捕获它 —— 统一降级成 `protocol_error`，库里 `login_state`
+    还是 `active`，前端永远显示「已登录」，用户只能自己猜到该重新扫码。
+
+    两件事，都吞异常（回写失败绝不能盖掉真正的错误）：
+    1. `store.mark_need_relogin(account_id, 原因)` —— 账号页据此亮「需重新登录」；
+    2. `events.publish('accounts.changed', …)` —— 前端不用刷新就能看到状态变化。
+
+    另外把原因**写回异常文本**（不换类型、不丢原文）：`call_method` 的调用方
+    （如 `chats._push_message`）会 `str(value)` 拼 warning，原样透出才查得下去。
+    """
+    original = str(exc)
+    if not original.startswith(f'{SESSION_EXPIRED_MARK}: '):
+        try:
+            exc.args = (f'{SESSION_EXPIRED_MARK}: {original}',)
+        except Exception:  # noqa: BLE001 - 有些异常对象不让改 args，那就只丢前缀
+            pass
+
+    account_id = str(getattr(client, 'cookie_id', '') or getattr(client, 'account_id', '') or '')
+    store = protocol_module('store')
+    mark = getattr(store, 'mark_need_relogin', None) if store is not None else None
+    if account_id and callable(mark):
+        try:
+            mark(account_id, f'{SESSION_EXPIRED_MARK}: {original}')
+        except Exception as write_exc:  # noqa: BLE001
+            logger.warning(f'[{account_id}] 回写 need_relogin 失败: {write_exc}')
+    publish('accounts.changed', {
+        'account_id': account_id,
+        'reason': 'session_expired',
+        'login_state': getattr(store, 'STATE_NEED_RELOGIN', 'need_relogin')
+        if store is not None else 'need_relogin',
+        'message': SESSION_EXPIRED_MARK,
+    })
+
+
 def call_method(client: Any, names: Sequence[str], *args: Any, **kwargs: Any) -> Tuple[str, Any]:
     """按候选名字依次找方法调用。
 
@@ -246,6 +325,9 @@ def call_method(client: Any, names: Sequence[str], *args: Any, **kwargs: Any) ->
     **协程必须跑完再算 ok**：协议层方法大量是 `async def`，只 `return fn(...)` 会把
     一个还没执行的协程当成成功结果返回 —— 调用方看到 ok 却没发生任何事（假成功），
     协程还会因为没人 await 而泄漏。
+
+    `error` 分支额外识别「登录态过期」：先回写账号状态（见 `_note_session_expired`），
+    再把异常原样返回 —— 状态码与文案由 `call_failed` 给，这里不吞任何信息。
     """
     for name in names:
         fn = getattr(client, name, None)
@@ -253,6 +335,8 @@ def call_method(client: Any, names: Sequence[str], *args: Any, **kwargs: Any) ->
             try:
                 return CALL_OK, run_awaitable(fn(*args, **kwargs))
             except Exception as exc:
+                if _is_session_expired(exc):
+                    _note_session_expired(client, exc)
                 return CALL_ERROR, exc
     return CALL_MISSING, None
 
@@ -290,9 +374,20 @@ def extract_id(result: Any, *keys: str) -> str:
 
 
 def call_failed(status: str, value: Any) -> Optional[Dict[str, Any]]:
-    """把 call_method 的非 ok 状态翻成失败信封（ok 时返回 None）。"""
+    """把 call_method 的非 ok 状态翻成失败信封（ok 时返回 None）。
+
+    「登录态过期」单独给 `verification_required`（409）与 `login_state: need_relogin`：
+    前端据此弹「重新扫码」，而不是像通用 `protocol_error` 那样被当成偶发网络错误、
+    让用户一直重试一个已经死掉的 Cookie。
+    """
     if status == CALL_OK:
         return None
     if status == CALL_MISSING:
         return not_ready('协议层尚未实现该方法')
+    if _is_session_expired(value):
+        return fail(
+            f'账号{SESSION_EXPIRED_MARK}: {_expired_text(value)}',
+            'verification_required',
+            login_state='need_relogin',
+        )
     return fail(f'协议层调用失败: {value}', 'protocol_error')

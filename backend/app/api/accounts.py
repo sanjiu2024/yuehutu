@@ -25,13 +25,15 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
+from loguru import logger
 from pydantic import BaseModel
 
 from ..core import events
-from ..services import risk_service
+from ..services import im_service, risk_service
 from ..xianyu import login as qr_login
 from ..xianyu import risk as risk_mod
 from ..xianyu import store
@@ -49,6 +51,68 @@ def _publish(topic: str, payload: Dict[str, Any]) -> None:
         events.publish(topic, payload)
     except Exception:  # pragma: no cover
         pass
+
+
+# ---------------------------------------------------------------------------
+# IM 入站挂载。**这是「对话区同步不过来对话」的真因**：`im_service.start` 过去只有
+# `main.py` 启动那一刻的一次性调用点（筛 `enabled=1`），所以运行期扫码登录进来的账号
+# 在本进程里永远收不到买家消息 —— 必须重启后端才行。
+# ---------------------------------------------------------------------------
+
+
+def _start_im(account_id: str) -> None:
+    """后台挂载 IM 入站，立刻返回。
+
+    必须后台做：`im_service.start` 要建 WebSocket（真机会连平台），同步等它会把
+    「扫码登录成功」这个 HTTP 响应拖到超时。`im_service.start` 本身幂等且不抛异常，
+    这里再兜一层只是防止守护线程里出现没人看的 traceback。
+    """
+    def worker() -> None:
+        try:
+            result = im_service.start(account_id)
+        except Exception as exc:  # noqa: BLE001 - 后台线程里的异常会静默丢失
+            logger.warning(f'[{account_id}] IM 入站挂载异常: {exc}')
+            return
+        if isinstance(result, dict) and result.get('attached'):
+            logger.info(
+                f'[{account_id}] IM 入站已挂载 reused={bool(result.get("reused"))} '
+                f'connected={bool(result.get("connected"))}'
+            )
+        else:
+            detail = result.get('message') if isinstance(result, dict) else result
+            logger.warning(f'[{account_id}] IM 入站未挂载: {detail}')
+
+    threading.Thread(target=worker, name=f'im-start-{account_id}', daemon=True).start()
+
+
+def _stop_im(account_id: str) -> None:
+    """摘掉该账号的 IM 入站（幂等：本来没挂载时 `stop` 返回 `closed=False`）。"""
+    try:
+        im_service.stop(account_id)
+    except Exception as exc:  # noqa: BLE001 - 摘会话失败不该拦住停用/删号
+        logger.warning(f'[{account_id}] 关闭 IM 会话异常: {exc}')
+
+
+def _purge_account_chats(account_id: str) -> Dict[str, Any]:
+    """删号时清掉该账号的 conversations/messages。
+
+    接口由 `fix-chats`（task-19）在 `services/chats.py` 新增的
+    `purge_account_data(account_id) -> {conversations, messages}` 提供。**这里只探测
+    不实现**：没就绪就如实回 `{'purged': False, 'error': ...}`，既不假装成功，也不在
+    账号路由里自己写一份 SQL（两份实现一定会分叉）。
+    """
+    try:
+        from ..services import chats as chats_service
+    except Exception as exc:  # noqa: BLE001
+        return {'purged': False, 'error': f'chats 服务不可用: {exc}'}
+    purge = getattr(chats_service, 'purge_account_data', None)
+    if not callable(purge):
+        return {'purged': False, 'error': 'chats.purge_account_data 尚未就绪（task-19 未落地）'}
+    try:
+        counts = purge(account_id)
+    except Exception as exc:  # noqa: BLE001
+        return {'purged': False, 'error': f'清理会话/消息失败: {exc}'}
+    return {'purged': True, 'counts': counts if isinstance(counts, dict) else {}}
 
 
 class PollPayload(BaseModel):
@@ -162,6 +226,9 @@ async def _poll_ticket(ticket: str) -> Dict[str, Any]:
         )
         store.log_operation(user_id, 'qr_login', success=True)
         _publish('accounts.changed', {'account_id': user_id, 'reason': 'qr_login'})
+        # 运行期登录进来的账号必须当场挂上 IM 入站，否则本次进程内永远收不到买家消息
+        # （这正是「对话区同步不过来对话」的真因；过去只有 main.py 启动时挂一次）。
+        _start_im(user_id)
     return _to_contract_state(data)
 
 
@@ -211,6 +278,13 @@ def patch_account(account_id: str, payload: Dict[str, Any] = Body(...),
     )
     store.log_operation(account_id, 'patch', success=True, detail=payload)
     _publish('accounts.changed', {'account_id': account_id, 'patch': payload})
+    # 开关就是 IM 入站的生命周期：打开 -> 挂上，停用 -> 摘掉。不接这一段，
+    # `enabled` 依旧只是库里的一个数字（审计 task-14 §5：启用后 active_accounts 仍为空）。
+    if 'enabled' in payload:
+        if payload.get('enabled'):
+            _start_im(account_id)
+        else:
+            _stop_im(account_id)
     account = store.get_account(account_id)
     return {'success': True, 'data': _decorate(account) if account else {'id': account_id}}
 
@@ -224,6 +298,11 @@ def toggle_account(account_id: str, payload: TogglePayload,
     store.update_account(account_id, enabled=payload.enabled)
     store.log_operation(account_id, 'toggle', success=True, detail=str(payload.enabled))
     _publish('accounts.changed', {'account_id': account_id, 'enabled': bool(payload.enabled)})
+    # 别名与 PATCH 等价，IM 生命周期也必须一致，否则走旧接口的前端「启用」完还是收不到信。
+    if payload.enabled:
+        _start_im(account_id)
+    else:
+        _stop_im(account_id)
     return {'success': True, 'data': {'id': account_id, 'enabled': bool(payload.enabled)}}
 
 
@@ -246,6 +325,10 @@ async def relogin_account(account_id: str, user=Depends(current_user)) -> Dict[s
         data = await qr_login.start_qr_login()
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f'已置为需重新登录，但获取二维码失败: {exc}')
+    # 重新挂一次 IM 入站：旧会话还活着就复用（`im_service.start` 幂等），断线的会在
+    # 这轮扫码登录成功后的 `_poll_ticket` 里重建 —— relogin 已经把 Cookie 清空了，
+    # 此刻不可能建出可用的新会话，所以这里不做 stop（别把还能收信的旧连接提前掐掉）。
+    _start_im(account_id)
     return {'success': True, 'data': {
         'id': account_id,
         'login_state': store.STATE_NEED_RELOGIN,
@@ -303,9 +386,13 @@ async def captcha_account(account_id: str, payload: Optional[CaptchaPayload] = N
 
 @router.delete('/{account_id}')
 def delete_account(account_id: str, user=Depends(current_user)) -> Dict[str, Any]:
-    """删除账号（连带凭证与风控记录）。"""
+    """删除账号（连带凭证、风控记录与会话/消息）。"""
+    # 先摘 IM：账号行删掉之后 `stop` 仍然按 account_id 查内存会话表，但先摘更干净 ——
+    # 一个已经删掉的账号还挂着 WebSocket 继续收买家消息，是最难查的那种残留。
+    _stop_im(account_id)
     if not store.delete_account(account_id):
         raise _not_found(account_id)
     risk_mod.registry.reset(account_id)
+    purged = _purge_account_chats(account_id)
     _publish('accounts.changed', {'account_id': account_id, 'deleted': True})
-    return {'success': True, 'data': {'id': account_id, 'deleted': True}}
+    return {'success': True, 'data': {'id': account_id, 'deleted': True, **purged}}
