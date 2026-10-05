@@ -128,7 +128,11 @@ class XianyuClient:
         self._client = client
         self._transport = transport
         self._im: Optional[im.ImSession] = None
-        self._im_token: Optional[str] = None
+        # 注意：这个属性**绝不能叫 `_im_token`** —— 那会遮蔽同名的 `_im_token()` 方法，
+        # 实例属性把绑定方法顶掉之后 `await self._im_token()` 就是 `None()`，
+        # 报 `TypeError: 'NoneType' object is not callable`。真机后果是账号明明登录着，
+        # 后端启动却永远只打一行「IM 入站未挂载」，一条买家消息都收不到。
+        self._im_access_token: Optional[str] = None
         # 「新 IM 会话建好」的钩子。协议层不认识 services，由服务层
         # （`services.im_service.bind`）在这里挂回调，把入站 handler 注入会话。
         self._im_session_hooks: List[Callable[[im.ImSession], Any]] = []
@@ -590,8 +594,8 @@ class XianyuClient:
 
     async def _im_token(self) -> str:
         """取 IM 的 accessToken（走 mtop，带缓存）。"""
-        if self._im_token:
-            return self._im_token
+        if self._im_access_token:
+            return self._im_access_token
         device_id = mtop.generate_device_id(self.cookie_id)
         result = await self.mtop(
             IM_TOKEN_API,
@@ -601,7 +605,7 @@ class XianyuClient:
         token = ((result.get('data') or {}).get('accessToken')) or ''
         if not token:
             raise XianyuError('IM token 接口未返回 accessToken')
-        self._im_token = token
+        self._im_access_token = token
         return token
 
     async def _ensure_im(self) -> im.ImSession:

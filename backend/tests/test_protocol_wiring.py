@@ -30,6 +30,7 @@ if str(REPO_ROOT) not in sys.path:
 from backend.app.core import db  # noqa: E402
 from backend.app.services import common  # noqa: E402
 from backend.app.xianyu import store  # noqa: E402
+from backend.app.xianyu.client import XianyuClient  # noqa: E402
 
 #: 一个形状正确的最小 Cookie：必须有 `unb`，否则 XianyuClient 会（正确地）拒绝。
 GOOD_COOKIE = '_m_h5_tk=abc_123; unb=2200000001; cookie2=deadbeef; _tb_token_=xyz'
@@ -129,6 +130,53 @@ class CallMethodTest(unittest.TestCase):
         status, result = common.call_method(object(), ['nope'])
         self.assertEqual(status, common.CALL_MISSING)
         self.assertIsNone(result)
+
+
+class MethodShadowingTest(unittest.TestCase):
+    """实例属性不许遮蔽同类里的方法。
+
+    **为什么需要这条**：`XianyuClient.__init__` 曾经有 `self._im_token = None`，而同一个
+    类里还有一个 `async def _im_token()`。实例属性把绑定方法顶掉之后，
+    `await self._im_token()` 实际是 `None()` →
+    `TypeError: 'NoneType' object is not callable`。
+    真机后果：账号明明登录着，启动时只打一行「账号 X 的 IM 入站未挂载」，**一条买家
+    消息都收不到**，而所有用假客户端的用例全绿 —— 假客户端没有这个属性。
+
+    这类 bug 没有任何类型检查能拦住，只能靠「名字不能重叠」这条事实性断言。
+    """
+
+    def setUp(self):
+        self.client = XianyuClient(GOOD_COOKIE)
+
+    def test_no_instance_attribute_shadows_a_method(self):
+        import inspect
+
+        shadowed = []
+        for name, member in inspect.getmembers(type(self.client)):
+            if name.startswith('__'):
+                continue
+            if not callable(member) and not isinstance(member, (property, staticmethod)):
+                continue
+            # 只在实例上真的存在同名属性（进了 __dict__）时才算遮蔽
+            if name in vars(self.client) and not callable(vars(self.client)[name]):
+                shadowed.append(name)
+        self.assertEqual(shadowed, [], f'这些实例属性遮蔽了同名方法: {shadowed}')
+
+    def test_im_token_method_is_callable_and_cached(self):
+        import asyncio
+
+        calls = []
+
+        async def fake_mtop(api, body, **kwargs):
+            calls.append(api)
+            return {'data': {'accessToken': 'tok-1'}}
+
+        self.client.mtop = fake_mtop  # type: ignore[assignment]
+        first = asyncio.run(self.client._im_token())
+        second = asyncio.run(self.client._im_token())
+        self.assertEqual(first, 'tok-1')
+        self.assertEqual(second, 'tok-1')
+        self.assertEqual(len(calls), 1, '第二次没走缓存，会重复取 IM token')
 
 
 if __name__ == '__main__':
