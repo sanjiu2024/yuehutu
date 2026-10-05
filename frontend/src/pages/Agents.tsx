@@ -36,8 +36,16 @@ export function AgentsPage() {
   const [showRaw, setShowRaw] = useState(false)
   const [tab, setTab] = useState<'timeline' | 'runs'>('timeline')
 
-  const messages = useAsync<AgentMessage[]>(() => api.get<AgentMessage[]>('/api/agents/messages'), [])
-  const runs = useAsync<AgentRun[]>(() => api.get<AgentRun[]>('/api/agents/runs', { limit: 100 }), [])
+  const messages = useAsync<AgentMessage[]>(() => api.get<AgentMessage[]>('/api/agents/messages'), [], true, [
+    'agent.message',
+    'agent.cross_failed',
+    'agent.reply_failed',
+  ])
+  const runs = useAsync<AgentRun[]>(() => api.get<AgentRun[]>('/api/agents/runs', { limit: 100 }), [], true, [
+    'agent.message',
+    'agent.reply_failed',
+    'chats.ai_reply',
+  ])
 
   const list = useMemo(() => {
     const raw = messages.data ?? []

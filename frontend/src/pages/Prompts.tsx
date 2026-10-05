@@ -40,9 +40,13 @@ const EMPTY: PromptForm = {
 export function PromptsPage() {
   const toast = useToast()
   // 后端返回 {items, scopes, roles}，不是裸数组
-  const prompts = useAsync<PromptListResult>(() => api.get<PromptListResult>('/api/agents/prompts'), [])
-  const accounts = useAsync<Account[]>(() => api.get<Account[]>('/api/accounts'), [])
-  const items = useAsync<ItemListResult>(() => api.get<ItemListResult>('/api/items', { limit: 300 }), [])
+  const prompts = useAsync<PromptListResult>(() => api.get<PromptListResult>('/api/agents/prompts'), [], true, [
+    'prompts.changed',
+  ])
+  const accounts = useAsync<Account[]>(() => api.get<Account[]>('/api/accounts'), [], true, ['accounts.changed'])
+  const items = useAsync<ItemListResult>(() => api.get<ItemListResult>('/api/items', { limit: 300 }), [], true, [
+    'items.updated',
+  ])
 
   const [form, setForm] = useState<PromptForm | null>(null)
   const [removing, setRemoving] = useState<AiPrompt | null>(null)
@@ -106,8 +110,10 @@ export function PromptsPage() {
   return (
     <div>
       <Notice kind="info">
-        三级提示词会按 <strong>商品 &gt; 账号 &gt; 全局</strong> 的顺序叠加；同一级里 <strong>priority 越大越优先</strong>。
-        最终会和「AI 配置」里该角色的系统提示词拼接后一起发给模型。
+        <strong>三级是拼接，不是替换</strong>：商品 &gt; 账号 &gt; 全局 三级各挑出命中该角色的一条，依次接到「AI
+        配置」里那个角色的系统提示词后面，一起发给模型。同一级里如果有好几条：先看 <strong>角色是否精确匹配</strong>
+        （写了具体角色的优先，通用那条靠后），角色同样精确时再比 <strong>priority（越大越优先）</strong>，都相同则取最新的一条。
+        同一级下名称不同的多条可以共存，名称相同则是同一条（重复保存会更新它）。
       </Notice>
 
       <div className="toolbar">

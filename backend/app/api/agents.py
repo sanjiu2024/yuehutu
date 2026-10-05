@@ -20,12 +20,24 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 
 from ..agents import llm, prompts as prompts_mod, roles as roles_mod, runtime
-from ..core import db
+from ..core import db, events
 from .deps import current_user
 
 router = APIRouter(prefix='/api/agents', tags=['agents'])
+
+
+def _publish(topic: str, payload: Dict[str, Any]) -> None:
+    """提示词/角色变更广播。前端「提示词」「AI 配置」页靠它实时刷新。
+
+    推送失败绝不能影响已经写库的变更，所以整体吞异常。
+    """
+    try:
+        events.publish(topic, payload)
+    except Exception:  # pragma: no cover
+        pass
 
 
 # --------------------------------------------------------------------------
@@ -66,6 +78,7 @@ def update_role(role: str, payload: Dict[str, Any] = Body(...), user=Depends(cur
         data = roles_mod.update_role(role, **fields)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    _publish('providers.changed', {'action': 'roles', 'role': role})
     return {'success': True, 'data': data}
 
 
@@ -101,8 +114,14 @@ def create_prompt(payload: Dict[str, Any] = Body(...), user=Depends(current_user
             name=str(payload.get('name') or ''),
             enabled=bool(payload.get('enabled', True)),
         )
+    except prompts_mod.PromptValidationError as exc:
+        # 必须排在 ValueError 之前（它是 ValueError 子类）：main.py 的异常处理器会把
+        # HTTPException(detail) 拍平成 {'code': 'bad_request'}，结构化信息（哪个字段错）
+        # 就丢了。`as_envelope()` 直接给出 {'code':'invalid_fields','invalid_fields':{...}}。
+        return JSONResponse(status_code=400, content=exc.as_envelope())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    _publish('prompts.changed', {'action': 'create', 'prompt_id': data.get('id'), 'scope': data.get('scope')})
     return {'success': True, 'data': data}
 
 
@@ -125,10 +144,16 @@ def update_prompt(prompt_id: int, payload: Dict[str, Any] = Body(...), user=Depe
             name=str(payload.get('name', current['name']) or ''),
             enabled=bool(payload.get('enabled', current['enabled'])),
         )
+    except prompts_mod.PromptValidationError as exc:
+        # 必须排在 ValueError 之前（它是 ValueError 子类）：main.py 的异常处理器会把
+        # HTTPException(detail) 拍平成 {'code': 'bad_request'}，结构化信息（哪个字段错）
+        # 就丢了。`as_envelope()` 直接给出 {'code':'invalid_fields','invalid_fields':{...}}。
+        return JSONResponse(status_code=400, content=exc.as_envelope())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if data['id'] != int(prompt_id):
         prompts_mod.delete_prompt(prompt_id)  # 改了 scope/owner 导致换了行，清掉旧的
+    _publish('prompts.changed', {'action': 'update', 'prompt_id': data.get('id'), 'scope': data.get('scope')})
     return {'success': True, 'data': data}
 
 
@@ -137,6 +162,7 @@ def delete_prompt(prompt_id: int, user=Depends(current_user)):
     if prompts_mod.get_prompt(prompt_id) is None:
         raise HTTPException(status_code=404, detail=f'提示词 #{prompt_id} 不存在')
     prompts_mod.delete_prompt(prompt_id)
+    _publish('prompts.changed', {'action': 'delete', 'prompt_id': int(prompt_id)})
     return {'success': True, 'data': {'deleted': int(prompt_id)}}
 
 

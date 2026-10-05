@@ -86,6 +86,7 @@ class WsEventTest(unittest.TestCase):
     def tearDown(self):
         db.execute('DELETE FROM users')
         db.execute('DELETE FROM accounts')
+        db.execute('DELETE FROM ai_prompts')
         self.app_ctx.__exit__(None, None, None)
 
     # ------------------------------------------------------------ 鉴权
@@ -165,6 +166,54 @@ class WsEventTest(unittest.TestCase):
         event = got[0]
         self.assertEqual(event['payload']['account_id'], 'ws_acc')
         self.assertEqual(event['payload']['patch'], {'remark': '改了备注'})
+
+    # ------------------------------------------------------------ 回归：提示词变更必须发事件
+
+    def test_create_prompt_publishes_event(self):
+        """回归「除会话页外全站不实时刷新」（缺陷 E1）的后端一半。
+
+        `frontend/src/pages/Prompts.tsx` 用 `useAsync(..., ['prompts.changed'])`
+        订阅了 WS。若后端 `POST /api/agents/prompts` 不发这个事件，新建提示词后
+        页面不会自己更新 —— 用户看到的就是「点了保存但列表没变」。
+
+        事件投递是真实走的：真 `websocket_connect` + 真 `events.publish`（lifespan
+        已 `bind_loop`），不是断言某个函数被调用。
+        """
+        got: list = []
+        found = threading.Event()
+
+        def read_until_found(ws) -> None:
+            while not found.is_set():
+                event = ws.receive_json()
+                if event.get('topic') == 'prompts.changed':
+                    got.append(event)
+                    found.set()
+
+        with self.client.websocket_connect(f'/api/ws?token={self.token}') as ws:
+            probe = _Publisher('ws.ready', {})
+            probe.start()
+            try:
+                while True:
+                    if ws.receive_json()['topic'] == 'ws.ready':
+                        break
+            finally:
+                probe.stop()
+
+            resp = self.client.post(
+                '/api/agents/prompts',
+                headers={'Authorization': f'Bearer {self.token}'},
+                json={'scope': 'global', 'content': '事件回归用', 'priority': 0, 'role': ''},
+            )
+            self.assertEqual(resp.status_code, 200, resp.text)
+
+            reader = threading.Thread(target=read_until_found, args=(ws,), daemon=True)
+            reader.start()
+            found.wait(timeout=5)
+
+        self.assertTrue(got, '新建提示词后台 5 秒内没有收到 prompts.changed 事件')
+        event = got[0]
+        self.assertEqual(event['payload']['action'], 'create')
+        self.assertEqual(event['payload']['scope'], 'global')
 
 
 if __name__ == '__main__':

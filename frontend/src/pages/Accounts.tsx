@@ -18,7 +18,7 @@ const QR_STATE_TEXT: Record<QrState, string> = {
 /** 二维码有效期到期后自动重新拉一张（后端默认 300 秒）。 */
 export function AccountsPage() {
   const toast = useToast()
-  const accounts = useAsync<Account[]>(() => api.get<Account[]>('/api/accounts'), [])
+  const accounts = useAsync<Account[]>(() => api.get<Account[]>('/api/accounts'), [], true, ['accounts.changed'])
   const [qrOpen, setQrOpen] = useState(false)
   /** 点「重新登录」时带上账号，弹窗直接显示该账号的新二维码。 */
   const [reloginTarget, setReloginTarget] = useState<Account | null>(null)

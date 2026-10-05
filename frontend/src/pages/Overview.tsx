@@ -8,14 +8,19 @@ import { bool, formatTime, loginStateLabel, runtimeStateLabel } from '../format'
 import type { Account, Conversation, ConversationListResult, RiskStatusAll } from '../types'
 
 export function OverviewPage({ onGoto }: { onGoto: (page: string) => void }) {
-  const accounts = useAsync<Account[]>(() => api.get<Account[]>('/api/accounts'), [])
+  const accounts = useAsync<Account[]>(() => api.get<Account[]>('/api/accounts'), [], true, ['accounts.changed'])
   // 后端把会话包在 {conversations, total} 里
   const conversations = useAsync<ConversationListResult>(
     () => api.get<ConversationListResult>('/api/chats/conversations', { limit: 200 }),
     [],
+    true,
+    ['chats.message', 'chats.mode_changed', 'chats.ai_reply'],
   )
   // 不带 account_id 时返回 {states, blocked(账号id数组), cooldown_steps, auto_slider, ...}
-  const risk = useAsync<RiskStatusAll>(() => api.get<RiskStatusAll>('/api/risk/status'), [])
+  const risk = useAsync<RiskStatusAll>(() => api.get<RiskStatusAll>('/api/risk/status'), [], true, [
+    'risk.changed',
+    'risk.cleared',
+  ])
 
   const accountList = accounts.data ?? []
   const conversationList = conversations.data?.conversations ?? []

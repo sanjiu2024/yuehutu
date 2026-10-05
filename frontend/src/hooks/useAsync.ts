@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { errorText, isNotReady } from '../api'
+import { subscribeTopics } from '../ws'
 
 export interface AsyncState<T> {
   data: T | null
@@ -14,7 +15,13 @@ export interface AsyncState<T> {
   setData: (value: T | null) => void
 }
 
-export function useAsync<T>(loader: () => Promise<T>, deps: unknown[] = [], immediate = true): AsyncState<T> {
+export function useAsync<T>(
+  loader: () => Promise<T>,
+  deps: unknown[] = [],
+  immediate = true,
+  /** 订阅这些 WebSocket topic；收到事件就**静默**重拉一次（不闪加载态、不丢已有数据）。 */
+  topics: string[] = [],
+): AsyncState<T> {
   const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(immediate)
   const [error, setError] = useState('')
@@ -24,6 +31,10 @@ export function useAsync<T>(loader: () => Promise<T>, deps: unknown[] = [], imme
   const loaderRef = useRef(loader)
   loaderRef.current = loader
 
+  // 这次重拉是不是由 WS 事件触发的（静默刷新不该把页面打回加载态）
+  const silent = useRef(false)
+  const topicKey = topics.join(',')
+
   useEffect(() => {
     alive.current = true
     return () => {
@@ -32,36 +43,54 @@ export function useAsync<T>(loader: () => Promise<T>, deps: unknown[] = [], imme
   }, [])
 
   useEffect(() => {
+    if (!topicKey) return
+    return subscribeTopics(topicKey.split(','), () => {
+      silent.current = true
+      setTick((n) => n + 1)
+    })
+  }, [topicKey])
+
+  useEffect(() => {
     if (!immediate && tick === 0) return
     let cancelled = false
-    setLoading(true)
-    setError('')
-    setNotReady(false)
+    const isSilent = silent.current
+    silent.current = false
+    if (!isSilent) {
+      setLoading(true)
+      setError('')
+      setNotReady(false)
+    }
     loaderRef
       .current()
       .then((result) => {
         if (cancelled || !alive.current) return
         setData(result)
+        // 静默刷新成功了就把上次的报错清掉
+        if (isSilent) setError('')
       })
       .catch((err) => {
         if (cancelled || !alive.current) return
         if (isNotReady(err)) {
           setNotReady(true)
-          setData(null)
+          if (!isSilent) setData(null)
         } else {
+          // 静默刷新失败时保留旧数据，只把原因显示出来
           setError(errorText(err))
         }
       })
       .finally(() => {
         if (cancelled || !alive.current) return
-        setLoading(false)
+        if (!isSilent) setLoading(false)
       })
     return () => {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [...deps, tick, immediate])
+  }, [...deps, tick, immediate, topicKey])
 
-  const reload = useCallback(() => setTick((n) => n + 1), [])
+  const reload = useCallback(() => {
+    silent.current = false
+    setTick((n) => n + 1)
+  }, [])
   return { data, loading, error, notReady, reload, setData }
 }

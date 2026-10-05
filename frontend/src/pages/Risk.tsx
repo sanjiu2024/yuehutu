@@ -37,11 +37,16 @@ function parseSteps(text: string): number[] {
 
 export function RiskPage() {
   const toast = useToast()
-  const accounts = useAsync<Account[]>(() => api.get<Account[]>('/api/accounts'), [])
-  const risk = useAsync<RiskStatusAll>(() => api.get<RiskStatusAll>('/api/risk/status'), [])
+  const accounts = useAsync<Account[]>(() => api.get<Account[]>('/api/accounts'), [], true, ['accounts.changed'])
+  const risk = useAsync<RiskStatusAll>(() => api.get<RiskStatusAll>('/api/risk/status'), [], true, [
+    'risk.changed',
+    'risk.cleared',
+  ])
   const events = useAsync<RiskEventListResult>(
     () => api.get<RiskEventListResult>('/api/risk/events', { limit: 100 }),
     [],
+    true,
+    ['risk.changed', 'risk.cleared'],
   )
   const settings = useAsync<RiskSettings>(() => api.get<RiskSettings>('/api/risk/settings'), [])
 

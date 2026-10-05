@@ -38,8 +38,8 @@ function maskKey(provider: Provider): string {
 
 export function ProvidersPage() {
   const toast = useToast()
-  const providers = useAsync<Provider[]>(() => api.get<Provider[]>('/api/providers'), [])
-  const roles = useAsync<AiRole[]>(() => api.get<AiRole[]>('/api/agents/roles'), [])
+  const providers = useAsync<Provider[]>(() => api.get<Provider[]>('/api/providers'), [], true, ['providers.changed'])
+  const roles = useAsync<AiRole[]>(() => api.get<AiRole[]>('/api/agents/roles'), [], true, ['providers.changed'])
 
   const [tab, setTab] = useState<'providers' | 'roles'>('providers')
   const [form, setForm] = useState<ProviderForm | null>(null)
