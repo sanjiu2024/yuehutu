@@ -49,7 +49,7 @@ DSH 的 MCP 是**桥接**的，配置文件是：
 {
   "servers": {
     "xianyu": {
-      "description": "闲鱼 AI 工作台：账号/商品/会话/订单/风控 + master_chat 主管 AI",
+      "description": "闲鱼 AI 工作台：账号/商品/会话/订单/风控/主 AI 共 21 个工具。后端需先启动（桌面应用或 python -m backend.app.main）；地址与令牌自动从 %APPDATA%\\xianyu-ai-workbench\\data\\{backend_port.txt,mcp_token.txt} 发现，无需手填",
       "command": [
         "C:\\Python310\\python.exe",
         "C:\\Users\\Administrator\\Projects\\xianyu-ai-workbench\\mcp_server\\server.py"
@@ -63,11 +63,17 @@ DSH 的 MCP 是**桥接**的，配置文件是：
 }
 ```
 
+> **2026-10-06：这段已经真的写进 `%USERPROFILE%\.dsh\plugins\mcp-bridge.config.json` 了**
+> （原来的内容备份在同目录 `mcp-bridge.config.json.bak`）。但要**重启 DSH 宿主**才生效 ——
+> 该文件只在插件加载时读一次。重启后在 DSH 里用 `mcp_servers` / `mcp_tools(server="xianyu")`
+> 应该能看到这 21 个工具。
+
 要点：
 
 - `command` 第一项是 Python 解释器绝对路径，第二项是 `server.py` **绝对路径**。
-  不需要设 `cwd`：`server.py` 会自己把仓库根塞进 `sys.path`，从任何工作目录启动都能找到
-  `backend/app/agents/tools.py`（已实测，见第 5 节）。
+  不需要设 `cwd`，也不需要设 `PYTHONPATH`：`server.py` 会自己把仓库根塞进 `sys.path`，
+  从任何工作目录启动都能找到 `backend/app/agents/tools.py`（已实测：`cwd=C:\Windows`、
+  `PYTHONPATH` 显式清空，`initialize` 与 `tools/list` 21 个工具都正常）。
 - 不用配 `XYWB_TOKEN` —— 走 `mcp_token.txt` 即可。要覆盖再加这个 key。
 - **不用配 `XYWB_BASE_URL`**：桌面形态端口是随机的，插件会自己读
   `data/backend_port.txt` 找到后端。只有当你想让插件连**另一个**地址（比如固定端口跑的
