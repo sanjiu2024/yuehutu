@@ -22,12 +22,12 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 20  PASS 20  FAIL 0  CASES 380  SKIPPED 1
+-> TOTAL 20  PASS 20  FAIL 0  CASES 381  SKIPPED 1
 ```
 
 ```text
 cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_xianyu_login.py"
--> Ran 22 tests ... OK (skipped=1)
+-> Ran 23 tests ... OK (skipped=1)
 ```
 
 ```text
@@ -156,10 +156,33 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
       （此前测试对漏参数完全无感，这正是它漏到用户手上的原因）。
     - 真机证据见第四节。
 
+### 第五批：用户真机第一次扫码（26、27）
+
+26. **扫完码被判「二维码已过期」，登不上**（用户实测原话：「扫完码以后就给一个
+    二维码已过期没有登录上」）。轮询 `/newlogin/qrcode/query.do` 时只发了
+    `t/ck/appName/fromSite/lang` 五个字段。**未扫码阶段这样也能拿到
+    `qrCodeStatus=NEW`**，所以从接口上看一切正常；但手机扫完确认时服务端认不出这次
+    轮询，直接回 `EXPIRED`，现象就是「扫完就过期」。旧项目在这台机器上实测可用的
+    实现是把 `session.params` 整个发过去（含 `umidToken`/`_csrf_token`/`hsiz`/
+    `bizParams`）。
+    - 修：`poll()` 改 `data=dict(session.params)`；并补 `headers=self.headers`，
+      与创建二维码时同一套浏览器指纹。顺带修掉一个同类问题：
+      `QRLoginManager.__init__` 里建好的 `self.headers` **之前一处都没用过**，
+      登录会话前后指纹不一致 —— 现在 mini_login / generate.do / query.do 三处都带。
+    - 修：状态变化时把原始响应写日志（`raw={...}`），下次状态不对能直接看服务端
+      说了什么，不用再猜。
+    - 回归：假平台现在**要求**轮询带 `umidToken`，缺了就回 `EXPIRED` —— 复刻真机
+      现象，把这条路径变成真闸门。**先验证过它有齿**：把 `poll` 改回 5 字段，
+      `test_xianyu_login.py` 立刻 5 个用例变红，其中一个正是 `'expired' != 'success'`。
+27. **轮询偶发失败一次就判死整次登录**：前端 `catch` 里直接 `doneRef.current = true`
+    + 弹错停轮询。轮询要跑满二维码有效期（2 秒一次 ≈ 150 次），中间任意一次网络
+    抖动或后端瞬时 5xx 就把弹窗打死 —— 用户明明扫上了也登不上，且看起来像
+    「二维码坏了」。改成连续失败才判死（<5 次继续轮询，只提示「正在重试」）。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**20 个测试文件、380 个用例全绿、0 失败**（唯一 1 个 skip 是
+- 全部后端逻辑：**20 个测试文件、381 个用例全绿、0 失败**（唯一 1 个 skip 是
   `test_xianyu_login.py` 里本来就有的平台相关跳过）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
