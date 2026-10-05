@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
 from typing import Any, Dict, List, Optional, Sequence
 
 from loguru import logger
@@ -34,6 +35,23 @@ from ..core import db
 from . import common
 
 MODES = ('auto', 'manual', 'off')
+
+#: 取不到平台会话 id（cid）时的结构化 code 与原因文本。
+#: cid 只跟着 IM 帧进 `messages.meta`；HTTP 手动灌进来的来信、或历史数据没有 cid。
+MISSING_CID_CODE = 'missing_cid'
+MISSING_CID_MESSAGE = '无法确定平台会话 id（cid），消息仅本地留存、未发送'
+
+#: 账号级开关关掉 AI 时的结构化 code（任务 B3）。
+#: 判据是 `accounts.enabled` 与 `accounts.auto_reply` —— 这两个开关以前只在
+#: `main.py:105`（决定要不要挂 IM 入站）被读，业务层根本不看，所以「关了自动回复
+#: AI 照样开口」。注意 `enabled=0` 也会拦住 AI：账号没启用就当作不该自动发言。
+ACCOUNT_OFF_CODE = 'account_auto_reply_off'
+
+#: 非 auto 模式下的**结构化**拒发原因（任务 C5）。
+#: 以前这个 code 只存在于 `deliver_ai_reply` 的 `mode != 'auto'` 分支里，而它唯一的
+#: 生产调用方位于 `handle_incoming` 的 `mode == 'auto'` 分支内 -> 生产不可达。
+#: 现在判据提到分支外，`POST /api/chats/incoming` 在 manual/off 会话上也会带回这个 code。
+MODE_NOT_AUTO_CODE = 'mode_not_auto'
 
 SENDER_BY_ROLE = {
     'buyer': ('in', 'buyer'),
@@ -74,8 +92,11 @@ EXTERNAL_ID_KEY = 'external_id'
 def default_agent_role(item_id: Any) -> str:
     """新会话该用哪个角色：有商品上下文 -> `item`（商品专家），没有 -> `cs`（客服）。
 
-    与 `agents.roles.role_for_conversation()` 的兜底规则对齐；只在**建会话**时生效，
-    已存在的会话不会被悄悄改角色（人工设置的 `agent_role` 优先）。
+    **不要在建会话时再用它了**（任务 A2）：`role_for_conversation()` 的规则 1 是
+    「`agent_role` 是合法角色就直接用它」，而这里返回的 `item` / `cs` 恰好都是合法角色 ——
+    只要建会话时预写死，规则 1 就恒命中，`bargain` / `vision`（规则 2/3）**永远选不上**。
+    现在 `ensure_conversation()` 默认写空 `agent_role`，让规则真跑；
+    这个函数只保留给「确实要人工钉死角色」的调用方当兜底用。
     """
     return 'item' if str(item_id or '').strip() else 'cs'
 
@@ -113,9 +134,16 @@ def ensure_conversation(
     peer_nickname: str = '',
     item_id: str = '',
     mode: str = 'auto',
-    agent_role: str = 'item',
+    agent_role: str = '',
 ) -> Dict[str, Any]:
-    """按 (account_id, peer_user_id) upsert 会话，返回会话 dict（非信封）。"""
+    """按 (account_id, peer_user_id) upsert 会话，返回会话 dict（非信封）。
+
+    `agent_role` 默认 **空串**（任务 A2）：空串不是合法角色，
+    `agents.roles.role_for_conversation()` 的规则 1 会跳过它，改由消息内容决定
+    `vision` / `bargain` / `cs` / `item`。只有调用方**明确**传入合法角色时才钉死
+    （人工在 UI 上选了角色）。老代码在 `handle_incoming` / `dispatch_im_message` 里
+    预写 `default_agent_role(item_id)`（`item` / `cs`），导致规则 2/3 永远不可达。
+    """
     row = db.query_one(
         'SELECT * FROM conversations WHERE account_id = ? AND peer_user_id = ?',
         (account_id, peer_user_id),
@@ -124,7 +152,7 @@ def ensure_conversation(
         db.execute(
             'INSERT INTO conversations(account_id, peer_user_id, peer_nickname, item_id, mode, agent_role) '
             'VALUES(?,?,?,?,?,?)',
-            (account_id, peer_user_id, peer_nickname or '', item_id or '', mode if mode in MODES else 'auto', agent_role or 'item'),
+            (account_id, peer_user_id, peer_nickname or '', item_id or '', mode if mode in MODES else 'auto', agent_role or ''),
         )
         row = db.query_one(
             'SELECT * FROM conversations WHERE account_id = ? AND peer_user_id = ?',
@@ -141,6 +169,53 @@ def ensure_conversation(
             db.execute(f'UPDATE conversations SET {sets} WHERE id = ?', list(updates.values()) + [row['id']])
             row = db.query_one('SELECT * FROM conversations WHERE id = ?', (row['id'],))
     return _row_to_conversation(row)
+
+
+def purge_account_data(account_id: Any) -> Dict[str, int]:
+    """删除某账号的**全部会话与其消息**，返回 `{"conversations": n, "messages": n}`。
+
+    为什么单独放在这里：`xianyu.store.delete_account()` 只清
+    `account_credentials` / `risk_state` / `risk_events` / `accounts`，
+    既没有 `ON DELETE CASCADE` 也没有清 `conversations` / `messages` ——
+    删号后残留的会话会继续出现在对话列表里（审计 docs/audit/chats.md §10）。
+    删除账号的完整清理 = `store.delete_account()` + `chats.purge_account_data()`。
+
+    幂等：账号没有数据时返回 `{"conversations": 0, "messages": 0}`，不抛异常；
+    账号不存在也返回 0/0（调用方不需要先判存在）。
+    """
+    account_id = str(account_id or '')
+    if not account_id:
+        return {'conversations': 0, 'messages': 0}
+
+    # `db.execute()` 对 DELETE 的返回值不可靠（`lastrowid or rowcount` 会拿到陈旧
+    # lastrowid，见 core/db.py:265-267），所以条数先查再删。
+    row = db.query_one('SELECT COUNT(*) AS c FROM conversations WHERE account_id = ?', (account_id,))
+    conversations = int(row['c']) if row else 0
+    row = db.query_one(
+        'SELECT COUNT(*) AS c FROM messages WHERE conversation_id IN '
+        '(SELECT id FROM conversations WHERE account_id = ?)',
+        (account_id,),
+    )
+    messages = int(row['c']) if row else 0
+
+    if conversations or messages:
+        with db.tx():
+            # 先消息后会话：外键只声明在 messages.conversation_id 一侧，
+            # 反过来删会话会把 messages 留成孤儿。
+            db.execute(
+                'DELETE FROM messages WHERE conversation_id IN '
+                '(SELECT id FROM conversations WHERE account_id = ?)',
+                (account_id,),
+            )
+            db.execute('DELETE FROM conversations WHERE account_id = ?', (account_id,))
+
+    logger.info(
+        'purge_account_data: account={} conversations={} messages={}',
+        account_id,
+        conversations,
+        messages,
+    )
+    return {'conversations': conversations, 'messages': messages}
 
 
 def list_conversations(
@@ -268,11 +343,15 @@ def append_message(
 
 
 def _platform_cid(conversation: Any) -> str:
-    """尽力取平台会话 id（cid）。
+    """尽力取平台会话 id（cid）；**取不到就返回空串**，绝不拿别的 id 冒充。
 
     `conversations` 表没有 cid 列 —— cid 只出现在 IM 帧里，跟着消息落进 `messages.meta`。
-    单聊里 cid 与买家 id（toid）相同（见 `xianyu/client.py::send_message` 的注释），
-    所以取不到就退回 `peer_user_id`。
+
+    这里原来取不到就 `return peer_user_id`，是「人工回复发到错误会话」的根因：
+    cid 是 **IM 会话 id**，`peer_user_id` 是 **买家 user id**，两者不是一回事
+    （审计 docs/audit/chats.md §5 实测：打桩收到的第一个位置参数是 `audit_peer`）。
+    拿买家 id 当会话 id 发出去，等于把卖家自己回的话投进一个平台不认识的会话，
+    本地还记成 `sent: true`。现在**取不到就承认取不到**，由调用方给出 `missing_cid`。
     """
     try:
         row = db.query_one(
@@ -287,21 +366,24 @@ def _platform_cid(conversation: Any) -> str:
             if cid:
                 return cid
     except Exception as exc:  # noqa: BLE001 - 取不到 cid 不该让发送整条失败
-        logger.debug(f'从 messages.meta 取 cid 失败，退回买家 id: {exc}')
-    return str(conversation.get('peer_user_id') or '')
+        logger.debug(f'从 messages.meta 取 cid 失败: {exc}')
+    return ''
 
 
-def _push_message(client: Any, conversation: Any, text: str) -> Optional[str]:
-    """尽力把人工回复推给协议层；返回警告文本或 None。
+def _push_message(client: Any, conversation: Any, text: str, cid: str = '') -> Optional[str]:
+    """把人工回复推给协议层；返回 `None` 表示成功，否则返回失败原因文本。
 
     真客户端签名是 `send_message(cid, text, toid=None)`（`xianyu/client.py:345`）。
     这里原来传的是 `(account_id, peer_user_id, text)` —— 三个位置全错位，
     等于把**账号 id** 当会话、把**买家 id** 当消息正文发出去；人工接管看起来「发出去了」，
     实际发的内容和对象都是错的。现在按真签名传 cid + 正文。
+
+    `cid` 必须由调用方从 IM 帧里拿到（`_platform_cid`）；空 cid **不发送**，
+    返回原因文本，绝不退回 `peer_user_id` 冒充。
     """
-    cid = _platform_cid(conversation)
+    cid = str(cid or '') or _platform_cid(conversation)
     if not cid:
-        return '拿不到平台会话 id，消息仅本地留存'
+        return MISSING_CID_MESSAGE
     status, value = common.call_method(client, ('send_message',), cid, text)
     if status == common.CALL_OK and not (isinstance(value, dict) and value.get('success') is False):
         return None
@@ -313,9 +395,14 @@ def _push_message(client: Any, conversation: Any, text: str) -> Optional[str]:
 def send_manual(conversation_id: Any, text: str) -> Any:
     """人工接管：卖家自己回消息。
 
-    - 落 `messages`（direction=out, sender=human）
-    - 尽力调协议层真正发出去；协议层未就绪 -> 消息仍落库，`sent: false` + warning
+    - 落 `messages`（direction=out, sender=human），未送达时 `sent_ok=0` + `meta.send_error`
+    - 尽力调协议层真正发出去；协议层未就绪 / 取不到 cid -> **不发送**，
+      消息仍留库但标注未送达，并给出结构化 `code`
     - 会话切到 `manual`（AI 不再插话），并记 operation_logs
+
+    返回形状与 `deliver_ai_reply` 对齐：`{'message','sent','code','mode','conversation_id'}`
+    （`sent=False` 时多一个 `'warning'` 说明原因）。故意**不是**失败信封：
+    消息确实已经留在本地库里，HTTP 层报 4xx/5xx 会让前端丢掉「已留库、未送达」这个信息。
     """
     row = _find_conversation(conversation_id)
     if row is None:
@@ -325,16 +412,30 @@ def send_manual(conversation_id: Any, text: str) -> Any:
         return common.fail('消息内容不能为空', 'invalid_fields')
     conversation = _row_to_conversation(row)
 
-    client, _err = common.get_client(conversation['account_id'])
+    # cid 先算：它是**会话自己的固有属性**（这条会话有没有平台上下文），
+    # 与协议层此刻是否就绪无关。先判它，才能让 `missing_cid` 稳定可达、
+    # 也不会为了「一条本来就发不出去的消息」去构造协议层客户端。
+    cid = _platform_cid(conversation)
     warning: Optional[str] = None
     sent = False
-    if client is None:
-        warning = '协议层尚未就绪，消息仅本地留存'
+    if not cid:
+        code = MISSING_CID_CODE
+        warning = MISSING_CID_MESSAGE
     else:
-        warning = _push_message(client, conversation, text)
-        sent = warning is None
+        client, err = common.get_client(conversation['account_id'])
+        if client is None:
+            code = str((err or {}).get('code') or common.NOT_READY_CODE)
+            warning = '协议层尚未就绪，消息仅本地留存'
+        else:
+            warning = _push_message(client, conversation, text, cid=cid)
+            sent = warning is None
+            code = 'ok' if sent else 'send_failed'
 
-    message = append_message(row['id'], 'human', text, sent_ok=sent, mark_unread=False)
+    # 未送达必须留痕：光有一条 sent_ok=0 的 out 消息，谁也说不清是「没发」还是「发失败」。
+    message = append_message(
+        row['id'], 'human', text, sent_ok=sent, mark_unread=False,
+        meta=None if sent else {'send_error': warning},
+    )
     if common.is_failure(message):
         return message
 
@@ -344,10 +445,10 @@ def send_manual(conversation_id: Any, text: str) -> Any:
 
     common.log_operation(
         conversation['account_id'], 'send_manual', conversation['item_id'] or '',
-        True, {'conversation_id': row['id'], 'sent': sent, 'warning': warning},
+        sent, {'conversation_id': row['id'], 'sent': sent, 'code': code, 'warning': warning},
     )
     result: Dict[str, Any] = {
-        'message': message, 'sent': sent, 'mode': 'manual',
+        'message': message, 'sent': sent, 'code': code, 'mode': 'manual',
         'conversation_id': row['id'],
     }
     if warning:
@@ -404,6 +505,61 @@ def _load_runtime():
         return None
     except Exception:  # 编排层内部依赖缺失也当作未就绪
         return None
+
+
+def _account_reply_gate(account_id: Any) -> Optional[Dict[str, Any]]:
+    """账号级 AI 开关判据（任务 B3）；返回结构化拒绝信封或 None（放行）。
+
+    `accounts.enabled=0`（账号未启用）或 `accounts.auto_reply=0`（用户关了自动回复）
+    时**不生成也不发送** AI 回复 —— 人工回复不受影响（`send_manual` 不查这里）。
+
+    **账号行不存在时不拦**：服务层会被测试/脚本直接用 `ensure_conversation` 建会话，
+    没有 `accounts` 行不等于「用户关了开关」；真机里账号一定在库里（C3 已校验入站账号）。
+    """
+    account_id = str(account_id or '')
+    if not account_id:
+        return None
+    row = db.query_one('SELECT enabled, auto_reply FROM accounts WHERE id = ?', (account_id,))
+    if row is None:
+        return None
+    if not int(row['enabled'] or 0):
+        return {
+            'success': False,
+            'code': ACCOUNT_OFF_CODE,
+            'message': f'账号 {account_id} 未启用（enabled=0），AI 不自动回复',
+        }
+    if not int(row['auto_reply'] or 0):
+        return {
+            'success': False,
+            'code': ACCOUNT_OFF_CODE,
+            'message': f'账号 {account_id} 已关闭自动回复（auto_reply=0），AI 不自动回复',
+        }
+    return None
+
+
+def _account_exists(account_id: Any) -> bool:
+    """账号是否在 `accounts` 表里（任务 C3：不存在就不许建会话）。"""
+    account_id = str(account_id or '')
+    if not account_id:
+        return False
+    return db.query_one('SELECT 1 AS ok FROM accounts WHERE id = ?', (account_id,)) is not None
+
+
+def _ai_role_of(reply: Optional[Dict[str, Any]], conversation: Dict[str, Any]) -> str:
+    """AI 消息该挂哪个 sender 角色。
+
+    编排层返回的 `reply['role']` 是**真正跑出来的角色**（vision/bargain/cs/item），
+    优先用它；取不到再退回会话的 `agent_role`，最后退回 `item`。
+    A2 之前这里只看会话的 `agent_role`，所以角色改造后消息 sender 会一直显示旧角色。
+    """
+    for candidate in (
+        (reply or {}).get('role'),
+        conversation.get('agent_role'),
+    ):
+        role = str(candidate or '').strip()
+        if role:
+            return role
+    return 'item'
 
 
 def _normalize_ai_result(raw: Any) -> Dict[str, Any]:
@@ -501,13 +657,19 @@ def handle_incoming(
       也不会重复触发 AI，返回里带 `duplicate: true` 和已存在的那条消息。
       去重标记写进 `messages.meta.external_id`，**不新增列**。
     - 编排层（`backend.app.agents.runtime.reply_for_message`，async）未就绪时只落买家消息。
+    - **要新建会话时必须先确认账号存在**（任务 C3）：`account_id='nope_acc'` 以前
+      会 200 并凭空建出一个「幽灵会话」，出现在对话列表里。
+    - 不生成 AI 时也会带回**结构化原因**（`ai_result.code`）：
+      `mode_not_auto`（人工接管/关闭）或 `account_auto_reply_off`（账号级开关）。
     """
     if _find_conversation(conversation_id) is None:
         if not (account_id and peer_user_id):
             return common.fail(f'会话不存在: {conversation_id}', 'not_found')
+        if not _account_exists(account_id):
+            return common.fail(f'账号不存在: {account_id}', 'not_found')
+        # 不预写死 agent_role（任务 A2）：留给 roles 的规则 2/3 去选 vision / bargain。
         conversation = ensure_conversation(
             account_id, peer_user_id, peer_nickname, item_id,
-            agent_role=default_agent_role(item_id),
         )
     else:
         conversation = get_conversation(conversation_id)
@@ -532,10 +694,22 @@ def handle_incoming(
     if common.is_failure(incoming):
         return incoming
 
+    mode = str(conversation.get('mode') or 'auto')
+    # 判据提在 `mode == 'auto'` 分支**外面**（任务 C5）：以前 `mode_not_auto` 只写在
+    # `deliver_ai_reply` 里，而它唯一的生产调用方在 auto 分支内 -> 那个 code 生产不可达。
+    if mode != 'auto':
+        ai_result: Optional[Dict[str, Any]] = {
+            'success': False,
+            'code': MODE_NOT_AUTO_CODE,
+            'message': f'会话处于 {mode} 模式，AI 不自动回复',
+        }
+    else:
+        ai_result = _account_reply_gate(conversation.get('account_id'))
+
     reply_info: Optional[Dict[str, Any]] = None
     ai_message = None
     ai_send: Optional[Dict[str, Any]] = None
-    if conversation['mode'] == 'auto':
+    if mode == 'auto' and ai_result is None:
         # 编排层签名：async reply_for_message(conversation_id, message_id) —— 只生成不发送
         reply = _ai_reply(conversation, incoming['id'])
         if reply is not None:
@@ -543,7 +717,7 @@ def handle_incoming(
             reply_text = str(reply.get('reply') or '') if reply.get('success') else ''
             if reply_text:
                 ai_message = append_message(
-                    conversation['id'], f'ai:{conversation.get("agent_role") or "item"}',
+                    conversation['id'], f'ai:{_ai_role_of(reply, conversation)}',
                     reply_text, ai_generated=True, sent_ok=False, mark_unread=False,
                 )
                 common.publish('chats.ai_reply', {
@@ -557,11 +731,14 @@ def handle_incoming(
                 refreshed = ai_send.pop('message_row', None)
                 if refreshed is not None:
                     ai_message = refreshed
+        # AI 真跑了就用它的结构化结果；AI 压根没生成（编排层未就绪）时保留开关判据。
+        if reply_info is not None:
+            ai_result = reply_info
 
     return {
         'message': incoming,
         'ai_reply': ai_message,
-        'ai_result': reply_info,
+        'ai_result': ai_result,
         'ai_send': ai_send,
         'mode': conversation['mode'],
         'duplicate': False,
@@ -658,8 +835,12 @@ def deliver_ai_reply(
     返回 `{'sent','code','message','message_row'}`（`message_row` 是刷新后的消息行，
     调用方用它覆盖落库时那条 `sent_ok=False` 的旧快照）。
 
-    不发送的三种情况都必须留下原因：`mode != 'auto'`（人工接管 / 关闭）、
+    不发送的情况都必须留下原因：`mode != 'auto'`（人工接管 / 关闭）、
+    账号级开关关掉（`enabled=0` / `auto_reply=0`，任务 B3）、
     缺平台会话 id（HTTP 手动灌入的来信没有 cid）、账号正在风控冷却中。
+
+    这是投递侧的第二道账号级闸门：即使调用方绕开 `handle_incoming` 直接投递，
+    账号开关关掉时也不许发出去。
     """
     row = _find_conversation(conversation_id)
     if row is None:
@@ -671,8 +852,15 @@ def deliver_ai_reply(
 
     if conversation.get('mode') != 'auto':
         return _finish_ai_send(
-            conversation, message_id, sent=False, code='mode_not_auto',
+            conversation, message_id, sent=False, code=MODE_NOT_AUTO_CODE,
             message=f'会话处于 {conversation.get("mode")} 模式，AI 回复不自动发送',
+        )
+    gate = _account_reply_gate(account_id)
+    if gate is not None:
+        return _finish_ai_send(
+            conversation, message_id, sent=False,
+            code=str(gate.get('code') or ACCOUNT_OFF_CODE),
+            message=str(gate.get('message') or '账号级开关已关闭 AI 回复，未发送'),
         )
     if not text:
         return _finish_ai_send(
@@ -680,7 +868,7 @@ def deliver_ai_reply(
         )
     if not str(cid or ''):
         return _finish_ai_send(
-            conversation, message_id, sent=False, code='missing_cid',
+            conversation, message_id, sent=False, code=MISSING_CID_CODE,
             message='缺少平台会话 id（cid），AI 回复未发送',
         )
     if _account_in_risk_cooldown(account_id):
@@ -762,6 +950,80 @@ def _warn_unparsed_frame(im_module: Any, payload: Any, reason: str) -> None:
     )
 
 
+#: 图片地址在 IM 帧里可能用的键名（真机形状未定，见 docs/audit/chats.md §11）。
+IMAGE_KEYS = ('image_url', 'imageUrl', 'image', 'picUrl', 'pic_url', 'itemImage', 'imageUrls')
+
+#: 只认图片扩展名，避免把帧里随便一个 `url` 字段当成图片地址。
+_IMAGE_URL_RE = re.compile(r'^https?://\S+\.(?:jpe?g|png|webp|gif|bmp)(?:\?\S*)?$', re.I)
+
+
+def _image_value(value: Any) -> str:
+    """把 `IMAGE_KEYS` 命中位置的值解释成图片地址（字符串 / 字符串列表 / 对象 url）。"""
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return ''
+        if text[:1] in ('{', '['):
+            try:
+                return _first_image_url(json.loads(text))
+            except (TypeError, ValueError):
+                return ''
+        return text if _IMAGE_URL_RE.match(text) else ''
+    if isinstance(value, dict):
+        for key in ('url', 'src', 'image_url', 'imageUrl'):
+            if key in value:
+                found = _image_value(value[key])
+                if found:
+                    return found
+        return ''
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            found = _image_value(item)
+            if found:
+                return found
+        return ''
+    return ''
+
+
+def _first_image_url(payload: Any, depth: int = 6) -> str:
+    """从一帧原始推送里尽力抠出图片地址；找不到返回空串。
+
+    IM 帧的真实形状没有文档（`parse_incoming_message()` 也只回文本字段），
+    所以这里做**有界**递归：只认 `IMAGE_KEYS` 里的键，且值必须是 http(s) 图片地址。
+    宁可返回空串（vision 不触发），也不要把无关的 url 当成商品图送进模型。
+    """
+    if depth <= 0:
+        return ''
+    if isinstance(payload, dict):
+        for key in IMAGE_KEYS:
+            if key in payload:
+                found = _image_value(payload[key])
+                if found:
+                    return found
+        for value in payload.values():
+            found = _first_image_url(value, depth - 1)
+            if found:
+                return found
+        return ''
+    if isinstance(payload, (list, tuple)):
+        for value in payload:
+            found = _first_image_url(value, depth - 1)
+            if found:
+                return found
+        return ''
+    if isinstance(payload, str):
+        text = payload.strip()
+        if not text:
+            return ''
+        if text[:1] in ('{', '['):
+            try:
+                return _first_image_url(json.loads(text), depth - 1)
+            except (TypeError, ValueError):
+                return ''
+        return text if _IMAGE_URL_RE.match(text) else ''
+    return ''
+
+
 def dispatch_im_message(account_id: str, payload: Any) -> Optional[Any]:
     """一帧 IM 推送 -> `handle_incoming`。
 
@@ -785,14 +1047,23 @@ def dispatch_im_message(account_id: str, payload: Any) -> Optional[Any]:
         return None
 
     item_id = str(parsed.get('item_id') or '')
-    conversation = ensure_conversation(
-        account_id, buyer_id, item_id=item_id, agent_role=default_agent_role(item_id),
-    )
+    # 不预写死 agent_role（任务 A2）：留给 roles 的规则 2/3 去选 vision / bargain。
+    conversation = ensure_conversation(account_id, buyer_id, item_id=item_id)
+    incoming_meta: Dict[str, Any] = {
+        'source': 'im',
+        'cid': str(parsed.get('cid') or ''),
+    }
+    # 图片地址必须透传（任务 A2）：`roles.role_for_conversation()` 靠
+    # `messages.meta.image_url` 才会选 `vision`，`runtime` 也靠它塞 image_url 消息块。
+    # 协议层 `parse_incoming_message()` 目前只回文本字段，所以这里从**原始帧**里再抠一次。
+    image_url = str(parsed.get('image_url') or parsed.get('image') or '') or _first_image_url(payload)
+    if image_url:
+        incoming_meta['image_url'] = image_url
     return handle_incoming(
         conversation['id'], content,
         item_id=item_id,
         msg_id=str(parsed.get('msg_id') or ''),
-        meta={'source': 'im', 'cid': str(parsed.get('cid') or '')},
+        meta=incoming_meta,
     )
 
 

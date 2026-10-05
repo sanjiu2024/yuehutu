@@ -110,6 +110,12 @@ class _TempAppMixin:
         db.execute('DELETE FROM messages')
         db.execute('DELETE FROM conversations')
         db.execute('DELETE FROM agent_messages')
+        # 任务 C3：入站「新建会话」这一步要求账号真实存在（幽灵账号不许造会话）。
+        # 这些用例本来就不插账号行，补上才是真实使用姿势。
+        db.execute(
+            'INSERT OR REPLACE INTO accounts(id, nickname, enabled, auto_reply) VALUES(?,?,?,?)',
+            (ACCOUNT_ID, '入站测试账号', 1, 1),
+        )
 
     def _conversation(self, mode='auto', agent_role='item'):
         return chats.ensure_conversation(

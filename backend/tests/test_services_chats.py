@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import types
@@ -53,7 +54,9 @@ def clear_module(name: str) -> None:
     sys.modules.pop(name, None)
 
 
-class ChatsServiceTest(unittest.TestCase):
+class _ChatsTestBase(unittest.TestCase):
+    """公共夹具。分出来是为了让回归锁类能复用，而不继承父类的全部用例（避免重复跑）。"""
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
@@ -74,13 +77,24 @@ class ChatsServiceTest(unittest.TestCase):
         db.execute('DELETE FROM messages')
         db.execute('DELETE FROM conversations')
         db.execute('DELETE FROM operation_logs')
+        db.execute('DELETE FROM accounts')
         clear_module(CLIENT_MODULE)
         clear_module(RUNTIME_MODULE)
         self.client = FakeClient()
 
+    def make_account(self, account_id='acc1', enabled=1, auto_reply=1):
+        """建账号行（任务 C3 之后，入站新建会话要求账号存在；B3 读 enabled/auto_reply）。"""
+        db.execute(
+            'INSERT OR REPLACE INTO accounts(id, nickname, enabled, auto_reply) VALUES(?,?,?,?)',
+            (account_id, f'账号{account_id}', enabled, auto_reply),
+        )
+        return account_id
+
     def make_conversation(self, peer='buyer1', account='acc1', mode='auto'):
         return chats.ensure_conversation(account, peer, peer_nickname=f'买家{peer}', mode=mode)
 
+
+class ChatsServiceTest(_ChatsTestBase):
     # ------------------------------------------------------------------ 会话
 
     def test_ensure_conversation_is_idempotent(self):
@@ -159,6 +173,8 @@ class ChatsServiceTest(unittest.TestCase):
 
     def test_send_manual_local_only_when_protocol_missing(self):
         conv = self.make_conversation()
+        # 有真 cid 才会走到「协议层」这一步；没有 cid 的话问题是 `missing_cid`（另一条用例）
+        chats.append_message(conv['id'], 'buyer', '在吗', meta={'source': 'im', 'cid': 'cid-x'})
         block_module(CLIENT_MODULE)
         try:
             result = chats.send_manual(conv['id'], '我自己回他')
@@ -167,28 +183,61 @@ class ChatsServiceTest(unittest.TestCase):
 
         self.assertFalse(result['sent'])
         self.assertEqual(result['mode'], 'manual')
+        self.assertEqual(result['code'], 'xianyu_not_ready')
         self.assertIn('warning', result)
         self.assertEqual(result['message']['sender'], 'human')
+        # 未送达必须如实标注：sent_ok=0 + meta.send_error
+        self.assertFalse(result['message']['sent_ok'])
+        self.assertIn('send_error', json.loads(result['message']['meta'] or '{}'))
 
         row = db.query_one('SELECT mode FROM conversations WHERE id = ?', (conv['id'],))
         self.assertEqual(row['mode'], 'manual')
 
         logs = db.query("SELECT * FROM operation_logs WHERE action = 'send_manual'")
         self.assertEqual(len(logs), 1)
-        self.assertEqual(logs[0]['success'], 1)
+        # 没发出去就不许记成功（以前恒记 success=1，「人工回复半残」查不出来）
+        self.assertEqual(logs[0]['success'], 0)
+        self.assertIn('xianyu_not_ready', logs[0]['detail'])
+
+    def test_send_manual_without_cid_does_not_send_to_buyer_id(self):
+        """回归锁（缺陷 C2）：取不到 cid 时**不能**拿 peer_user_id 冒充平台会话 id。
+
+        老代码 `_platform_cid()` 取不到就 `return peer_user_id`，于是 `send_message`
+        的第一个位置参数变成了买家 user id —— 消息发到一个平台不认识的会话，
+        本地还记成 `sent: true`。审计实测参数为 `('audit_peer', 'manual-reply-content', None)`。
+        """
+        install_client(self.client)
+        conv = self.make_conversation(peer='audit_peer')  # 会话里没有任何带 cid 的消息
+
+        result = chats.send_manual(conv['id'], '人工回复')
+
+        self.assertEqual(self.client.sent, [], '取不到 cid 时一个字节都不该发出去')
+        self.assertFalse(result['sent'])
+        self.assertEqual(result['code'], 'missing_cid')
+        self.assertIn('cid', result['warning'])
+        # 本地留存但标注未送达
+        self.assertFalse(result['message']['sent_ok'])
+        self.assertIn('cid', json.loads(result['message']['meta'] or '{}')['send_error'])
+        log = db.query_one("SELECT * FROM operation_logs WHERE action = 'send_manual'")
+        self.assertEqual(int(log['success']), 0)
 
     def test_send_manual_pushes_to_protocol(self):
+        """有真 cid 时按真签名 `send_message(cid, text, toid=None)` 发出去。"""
         install_client(self.client)
         conv = self.make_conversation()
+        chats.append_message(conv['id'], 'buyer', '在吗', meta={'source': 'im', 'cid': 'cid-real'})
+
         result = chats.send_manual(conv['id'], '人工回复')
+
         self.assertTrue(result['sent'])
+        self.assertEqual(result['code'], 'ok')
         self.assertNotIn('warning', result)
         # 回归：老代码传的是 (account_id, peer_user_id, text)，按真签名
         # send_message(cid, text, toid=None) 解出来就是「cid=账号 id、正文=买家 id」——
         # 所以这里必须同时钉住「第一个位置是会话 id、第二个位置才是正文」。
         cid, text, _toid = self.client.sent[0]
         self.assertNotEqual(cid, 'acc1', '第一个位置不能是账号 id')
-        self.assertEqual(cid, 'buyer1', '单聊里 cid 与买家 id 相同')
+        self.assertEqual(cid, 'cid-real', '必须用 IM 帧带来的 cid')
         self.assertEqual(text, '人工回复')
 
     def test_send_manual_prefers_cid_from_im_meta(self):
@@ -416,11 +465,27 @@ class ChatsServiceTest(unittest.TestCase):
         self.assertEqual(result['code'], 'not_found')
 
     def test_handle_incoming_creates_conversation(self):
+        self.make_account('acc1')  # C3 之后：新建会话要求账号真实存在
         result = chats.handle_incoming(
             0, '新买家来信', account_id='acc1', peer_user_id='newbie', peer_nickname='新买家',
         )
         self.assertEqual(result['message']['content'], '新买家来信')
         self.assertEqual(chats.list_conversations()['total'], 1)
+
+    def test_handle_incoming_rejects_unknown_account(self):
+        """回归锁（缺陷 C3）：幽灵账号不许凭空造会话。
+
+        审计实测：`POST /api/chats/incoming {"account_id": "nope_acc", ...}` 会 200 建出
+        一个 `account_id='nope_acc'` 的会话，会话列表随后出现真实账号的「幽灵会话」。
+        """
+        result = chats.handle_incoming(
+            0, '我是幽灵', account_id='nope_acc', peer_user_id='b1',
+        )
+        self.assertFalse(result['success'])
+        self.assertEqual(result['code'], 'not_found')
+        self.assertIn('nope_acc', result['message'])
+        self.assertEqual(db.query('SELECT * FROM conversations'), [])
+        self.assertEqual(db.query('SELECT * FROM messages'), [])
 
     # ------------------------------------------------------------------ 事件
 
@@ -432,6 +497,212 @@ class ChatsServiceTest(unittest.TestCase):
         topics = [e['topic'] for e in events.recent(limit=500)[before:]]
         self.assertIn('chats.message', topics)
         self.assertIn('chats.mode_changed', topics)
+
+
+class InboundGateTest(_ChatsTestBase):
+    """task-19 修复的回归锁：账号闸门、cid 诚实性、图片透传、删号清理。
+
+    审计报告 `docs/audit/chats.md` 的缺陷编号（C2/C3/B3/A2）与 §10 残留清理。
+    """
+
+    # ------------------------------------------------------------------ C3 幽灵会话
+
+    def test_ghost_account_does_not_create_conversation_but_existing_still_works(self):
+        """只在「新建会话」这步拦账号；已有会话的老路径不许被拦（IM 循环靠它）。"""
+        self.make_account('acc1')
+        conv = self.make_conversation(peer='buyer1')
+
+        # 已有会话：账号行删掉也照常收信（回归锁：别把校验塞进 ensure_conversation/get_conversation）
+        db.execute('DELETE FROM accounts WHERE id = ?', ('acc1',))
+        result = chats.handle_incoming(conv['id'], '老会话还能收信')
+        self.assertEqual(result['message']['content'], '老会话还能收信')
+
+        # 新建会话：账号不存在 -> 拒绝，一条库都不落
+        before = len(db.query('SELECT * FROM conversations'))
+        ghost = chats.handle_incoming(0, '幽灵', account_id='ghost_acc', peer_user_id='g1')
+        self.assertFalse(ghost['success'])
+        self.assertEqual(ghost['code'], 'not_found')
+        self.assertEqual(len(db.query('SELECT * FROM conversations')), before)
+
+    # ------------------------------------------------------------------ B3 账号级闸门
+
+    def test_disabled_account_does_not_trigger_ai(self):
+        """B3：账号 enabled=0（未启用）时不许自动回复。全仓 `enabled` 原来只有 main.py 读过。"""
+        self.make_account('acc1', enabled=0, auto_reply=1)
+        conv = self.make_conversation()
+        module = types.ModuleType(RUNTIME_MODULE)
+
+        async def reply_for_message(conversation_id, message_id):
+            raise AssertionError('账号没启用时不该调 AI')
+
+        module.reply_for_message = reply_for_message  # type: ignore[attr-defined]
+        sys.modules[RUNTIME_MODULE] = module
+        try:
+            result = chats.handle_incoming(conv['id'], '在吗')
+        finally:
+            clear_module(RUNTIME_MODULE)
+
+        self.assertIsNone(result['ai_reply'])
+        self.assertEqual(result['ai_result']['code'], 'account_auto_reply_off')
+        self.assertEqual(len(db.query('SELECT * FROM messages')), 1)
+
+    def test_auto_reply_off_account_does_not_trigger_ai(self):
+        """B3：账号级 auto_reply=0（该账号关自动回复）时不许自动回复，但**不影响别的账号**。"""
+        self.make_account('acc1', enabled=1, auto_reply=0)
+        self.make_account('acc2', enabled=1, auto_reply=1)
+        conv = self.make_conversation(account='acc1')
+        other = chats.ensure_conversation('acc2', 'buyer2', mode='auto')
+        module = types.ModuleType(RUNTIME_MODULE)
+        calls = []
+
+        async def reply_for_message(conversation_id, message_id):
+            calls.append(conversation_id)
+            return {'ok': True, 'reply': 'acc2 的回复', 'role': 'item'}
+
+        module.reply_for_message = reply_for_message  # type: ignore[attr-defined]
+        sys.modules[RUNTIME_MODULE] = module
+        try:
+            off = chats.handle_incoming(conv['id'], '在吗')
+            on = chats.handle_incoming(other['id'], '在吗')
+        finally:
+            clear_module(RUNTIME_MODULE)
+
+        self.assertIsNone(off['ai_reply'])
+        self.assertEqual(off['ai_result']['code'], 'account_auto_reply_off')
+        self.assertEqual(calls, [other['id']])
+        self.assertEqual(on['ai_reply']['content'], 'acc2 的回复')
+
+    def test_account_gate_missing_row_does_not_block(self):
+        """账号行不存在时放行（回归锁）：test_im_loop.py 全程用不存在的账号派发 IM 帧。
+
+        那条测试不在我的写范围且不可改，所以「表里没这行」必须是**放行**而不是拒绝。
+        """
+        conv = self.make_conversation()
+        module = types.ModuleType(RUNTIME_MODULE)
+
+        async def reply_for_message(conversation_id, message_id):
+            return {'ok': True, 'reply': '放行', 'role': 'item'}
+
+        module.reply_for_message = reply_for_message  # type: ignore[attr-defined]
+        sys.modules[RUNTIME_MODULE] = module
+        try:
+            result = chats.handle_incoming(conv['id'], '在吗')
+        finally:
+            clear_module(RUNTIME_MODULE)
+
+        self.assertEqual(result['ai_reply']['content'], '放行')
+
+    def test_deliver_ai_reply_respects_account_gate(self):
+        """直投路径同样过闸门（B3）：发送函数自己会查，不只靠 handle_incoming。"""
+        install_client(self.client)
+        conv = self.make_conversation()
+        self.make_account('acc1', enabled=0)
+        msg = chats.append_message(conv['id'], 'ai:item', '草稿')
+
+        result = chats.deliver_ai_reply(conv['id'], msg['id'], '草稿', cid='cid-1')
+
+        self.assertFalse(result['sent'])
+        self.assertEqual(result['code'], 'account_auto_reply_off')
+        self.assertEqual(self.client.sent, [])
+        row = db.query_one('SELECT sent_ok FROM messages WHERE id = ?', (msg['id'],))
+        self.assertEqual(int(row['sent_ok']), 0)
+
+    def test_incoming_meta_only_whitelists_known_keys(self):
+        """meta 白名单：任意 body 键不许灌进 messages.meta。"""
+        from backend.app.api import chats as api_chats
+
+        meta = api_chats._incoming_meta(
+            {'source': 'im', 'image_url': 'https://x.test/a.png', 'evil': 'boom', 'cid': 'c1'},
+        )
+        self.assertEqual(meta['image_url'], 'https://x.test/a.png')
+        self.assertEqual(meta['cid'], 'c1')
+        self.assertNotIn('evil', meta)
+
+    # ------------------------------------------------------------------ A2 角色与图片
+
+    def test_ensure_conversation_does_not_prewrite_agent_role(self):
+        """A2：建会话时**不预写死合法角色**。
+
+        `roles.role_for_conversation()` 的第一条规则是「conv.agent_role 是合法角色就用它」，
+        以前 services 建会话时写死 `agent_role='item'`，于是 bargain/vision/cs 规则永远不可达。
+        """
+        conv = chats.ensure_conversation('acc1', 'buyer1', item_id='item-9')
+        row = db.query_one('SELECT agent_role FROM conversations WHERE id = ?', (conv['id'],))
+        self.assertEqual(str(row['agent_role'] or ''), '')
+        self.assertIsNone(conv['agent_role'] or None)
+
+    def test_incoming_image_url_makes_vision_reachable(self):
+        """A2 后半：图片要能走到编排层，`vision` 角色才可达。
+
+        图片进 `messages.meta.image_url` -> `agents.roles` 选 vision -> `agents.runtime`
+        把图塞进模型消息。以前 `meta` 只有 `{'source': 'api'}`，整条链路没有生产者。
+        """
+        from backend.app.agents import roles as roles_mod
+
+        self.make_account('acc1')
+        install_client(self.client)
+        result = chats.handle_incoming(
+            0, '这个款式还有别的颜色吗',
+            account_id='acc1', peer_user_id='buyer_img',
+            meta={'source': 'api', 'image_url': 'https://img.test/real.jpg'},
+        )
+        msg = result['message']
+        meta = json.loads(msg['meta'] or '{}')
+        self.assertEqual(meta['image_url'], 'https://img.test/real.jpg')
+
+        row = db.query_one('SELECT * FROM conversations WHERE id = ?', (msg['conversation_id'],))
+        self.assertEqual(roles_mod.role_for_conversation(row, msg), 'vision')
+
+    def test_first_image_url_scrapes_raw_frame(self):
+        """IM 帧的真实形状没有文档（`parse_incoming_message` 不回图片字段），所以要能抠原始帧。"""
+        frame = {
+            'body': {'message': {
+                'content': {'text': {'text': '看看这个'}},
+                'extension': {'picUrl': 'https://img.test/from-frame.jpg', 'itemId': 'i1'},
+            }},
+        }
+        self.assertEqual(chats._first_image_url(frame), 'https://img.test/from-frame.jpg')
+        # 不是图片地址的一律不要（宁可 vision 不触发，也别把无关 url 送进模型）
+        self.assertEqual(chats._first_image_url({'body': {'url': 'https://x.test/page.html'}}), '')
+        self.assertEqual(chats._first_image_url({}), '')
+        self.assertEqual(chats._first_image_url({'image_url': 'not-a-url'}), '')
+
+    # ------------------------------------------------------------------ §10 删号清理
+
+    def test_purge_account_data_is_idempotent_and_scoped(self):
+        """§10：删号要清会话与消息，且只清这个账号的；重复调用安全。"""
+        self.make_conversation(peer='b1', account='acc_del')
+        self.make_conversation(peer='b2', account='acc_del')
+        self.make_conversation(peer='b3', account='acc_keep')
+        conv_del = chats.list_conversations(account_id='acc_del')['conversations'][0]
+        conv_keep = chats.list_conversations(account_id='acc_keep')['conversations'][0]
+        for conv_id in (conv_del['id'], conv_keep['id']):
+            chats.append_message(conv_id, 'buyer', 'hi')
+
+        first = chats.purge_account_data('acc_del')
+        self.assertEqual(first, {'conversations': 2, 'messages': 1})
+        second = chats.purge_account_data('acc_del')
+        self.assertEqual(second, {'conversations': 0, 'messages': 0})
+
+        self.assertEqual(chats.list_conversations(account_id='acc_del')['total'], 0)
+        self.assertEqual(chats.list_conversations(account_id='acc_keep')['total'], 1)
+        self.assertEqual(len(db.query('SELECT * FROM messages')), 1)
+
+    def test_purge_account_data_missing_account(self):
+        self.assertEqual(chats.purge_account_data('nobody'), {'conversations': 0, 'messages': 0})
+        self.assertEqual(chats.purge_account_data(None), {'conversations': 0, 'messages': 0})
+
+    # ------------------------------------------------------------------ C5 闸门可达性
+
+    def test_mode_not_auto_decision_is_reported_on_incoming(self):
+        """C5：`mode_not_auto` 决策必须从入站路径就能看见（老代码只在投递函数里，生产不可达）。"""
+        conv = self.make_conversation(mode='manual')
+        result = chats.handle_incoming(conv['id'], '在吗')
+        self.assertIsNone(result['ai_reply'])
+        # ai_send 保持 None：编排层测试断言 manual 模式下 ai_send is None
+        self.assertIsNone(result['ai_send'])
+        self.assertEqual(result['ai_result']['code'], 'mode_not_auto')
+        self.assertIn('manual', result['ai_result']['message'])
 
 
 if __name__ == '__main__':

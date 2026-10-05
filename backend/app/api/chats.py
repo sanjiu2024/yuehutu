@@ -33,6 +33,29 @@ def _envelope(result: Any):
     return body if status_code == 200 else JSONResponse(status_code=status_code, content=body)
 
 
+#: 来信 body 里允许直接落进 `messages.meta` 的键（白名单，别把任意 body 灌进 meta）。
+INCOMING_META_KEYS = ('image_url', 'image', 'cid', 'msg_type', 'source')
+
+
+def _incoming_meta(payload: Dict[str, Any], image_url: str = '') -> Dict[str, Any]:
+    """组装买家来信的 `messages.meta`。
+
+    **图片地址必须透传**（任务 A2）：`agents.roles.role_for_conversation()` 只在
+    `meta.image_url`（或 `meta.image`）非空时才把角色选成 `vision`，
+    `agents.runtime._messages_for()` 也只在 `meta` 里有图片地址时才把图片塞进模型消息。
+    以前这里只写 `{'source': ...}`，整条图片链路没有生产者，`vision` 永不触发。
+    """
+    meta: Dict[str, Any] = {'source': str(payload.get('source') or 'api')}
+    for key in INCOMING_META_KEYS:
+        value = payload.get(key)
+        if value in (None, ''):
+            continue
+        meta[key] = str(value)
+    if image_url:
+        meta['image_url'] = image_url
+    return meta
+
+
 # --------------------------------------------------------------------------- 会话列表
 
 
@@ -88,9 +111,14 @@ def incoming(payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
       - `msg_id`      选填，平台消息 id；给了就**幂等**，重复送达不重复落库、不重复触发 AI
       - `peer_nickname` 选填，买家昵称
       - `direction`   选填，默认 `in`；传 `out` 表示这条其实是卖家自己发的（转人工回复）
+      - `image_url` / `image` 选填，买家发的图片地址。**必须透传到 `messages.meta`**：
+        `agents.roles` 靠它才会把角色选成 `vision`，`agents.runtime` 靠它把图片塞进模型消息；
+        不透传的话整条图片链路没有生产者（任务 A2）。
+      - `cid`         选填，平台 IM 会话 id；没有它时 AI 回复只能留库、发不出去（`missing_cid`）
 
     成功：`{"success": true, "data": {"message": {...}, "ai_reply": {...}|null,
-    "ai_result": {...}|null, "mode": "auto", "duplicate": false}}`
+    "ai_result": {...}|null, "ai_send": {...}|null, "mode": "auto", "duplicate": false}}`
+    `ai_result.code` 会说明「为什么没有 AI 回复」：`mode_not_auto` / `account_auto_reply_off`。
     失败：`{"success": false, "message": "...", "code": "invalid_fields"|"not_found"|...}`
     """
     account_id = str(payload.get('account_id') or '').strip()
@@ -99,6 +127,7 @@ def incoming(payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
     conversation_id = payload.get('conversation_id')
     item_id = str(payload.get('item_id') or '').strip()
     direction = str(payload.get('direction') or 'in').strip().lower()
+    image_url = str(payload.get('image_url') or payload.get('image') or '').strip()
 
     missing = [
         name for name, value in (
@@ -132,7 +161,7 @@ def incoming(payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
         account_id=account_id,
         peer_user_id=buyer_id,
         msg_id=str(payload.get('msg_id') or ''),
-        meta={'source': str(payload.get('source') or 'api')},
+        meta=_incoming_meta(payload, image_url),
     ))
 
 
