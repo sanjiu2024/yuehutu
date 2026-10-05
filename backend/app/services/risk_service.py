@@ -11,6 +11,13 @@
 冷却阶梯取自 settings `risk.cooldown_steps`（默认 `60,180,300,600,1200` 秒），
 与旧项目 `utils/risk_control.py` 的实测值一致；自动滑块默认**关**
 （settings `risk.auto_slider`，旧项目实测 37 次 0 成功）。
+
+**与协议层的双向接线**（缺一半，UI 和协议层就会各说各话）：
+
+- 正向：协议层真实熔断 → `risk.py:set_hit_handler` 钩子 → `record_hit()` 落库，
+  于是 `GET /api/risk/status` / `/api/risk/events` 能看到真实命中；
+- 反向：`mark_verified()` / `clear_cooldown()` 成功后 `protocol_risk.registry.reset()`，
+  把内存里那把锁一起放掉 —— 否则用户划完滑块 UI 说没事，协议层继续拦请求。
 """
 
 from __future__ import annotations
@@ -19,12 +26,15 @@ import time
 from typing import Any, Dict, List, Optional
 
 from ..core import db
+from ..xianyu import risk as protocol_risk
 from . import common
 
 DEFAULT_STEPS = [60, 180, 300, 600, 1200]
 SETTING_AUTO_SLIDER = 'risk.auto_slider'
 SETTING_COOLDOWN_STEPS = 'risk.cooldown_steps'
 SETTING_REFRESH_INTERVAL = 'risk.refresh_interval_seconds'
+# 连击多久算断：距上次命中超过这个秒数，下次命中从第 1 档重新数。
+STREAK_RESET_SECONDS = 1800
 
 
 # --------------------------------------------------------------------------- 冷却阶梯
@@ -185,23 +195,40 @@ def update_settings(fields: Dict[str, Any]) -> Dict[str, Any]:
     return settings()
 
 
-def record_hit(account_id: str, kind: str = 'hit', message: str = '') -> Dict[str, Any]:
-    """协议层命中风控时调用：连续命中 +1，按阶梯设置 blocked_until。"""
+def record_hit(account_id: str, kind: str = 'hit', message: str = '',
+               min_cooldown: float = 0) -> Dict[str, Any]:
+    """协议层命中风控时调用：连续命中 +1，按阶梯设置 blocked_until。
+
+    ``min_cooldown`` 是协议层已经算出的冷却（本地阶梯与响应里的 Retry-After 取大），
+    传进来保证库里的 ``blocked_until`` **不小于**内存里那把锁 —— 两边差一个数量级
+    时，UI 会显示「已解封」而协议层还在拦请求。
+    """
     if not account_id:
         return common.fail('account_id 不能为空', 'bad_request')
     row = _ensure_state(account_id)
-    hits = int(row['consecutive_hits'] or 0) + 1
     now = time.time()
-    blocked_until = now + cooldown_for(hits)
+    previous = int(row['consecutive_hits'] or 0)
+    last_hit_at = float(row['last_hit_at'] or 0)
+    # 连击衰减：距上次命中已超过 STREAK_RESET_SECONDS，说明那一段风控早过去了，
+    # 从第 1 档重新数。没有这一步 consecutive_hits 只增不减 —— 跑几天后随便一次
+    # 小命中都按最后一档（1200s）封禁，正是旧项目「闸门实际永久生效」的老毛病。
+    # 注意不能用「每次成功请求就归零」代替：那会让阶梯永远停在第一档，风控形同虚设。
+    if last_hit_at and now - last_hit_at > STREAK_RESET_SECONDS:
+        previous = 0
+    hits = previous + 1
+    cooldown = max(float(cooldown_for(hits)), float(min_cooldown or 0))
+    # 与 AccountGuard.trip 同款 max 语义：已因更长的惩罚被封到 T 就不能被这次较短
+    # 的冷却提前解封。
+    blocked_until = max(float(row['blocked_until'] or 0), now + cooldown)
     db.execute(
         'UPDATE risk_state SET consecutive_hits = ?, blocked_until = ?, last_hit_at = ?, updated_at = CURRENT_TIMESTAMP '
         'WHERE account_id = ?',
         (hits, blocked_until, now, account_id),
     )
-    common.add_risk_event(account_id, kind, message or f'第 {hits} 次命中，冷却 {cooldown_for(hits)} 秒')
+    common.add_risk_event(account_id, kind, message or f'第 {hits} 次命中，冷却 {int(cooldown)} 秒')
     common.publish('risk.changed', {'account_id': account_id, 'consecutive_hits': hits, 'blocked_until': blocked_until})
     return {'account_id': account_id, 'consecutive_hits': hits, 'blocked_until': blocked_until,
-            'cooldown_seconds': cooldown_for(hits)}
+            'cooldown_seconds': int(cooldown)}
 
 
 def mark_verified(account_id: str, verification_type: str = 'slider') -> Dict[str, Any]:
@@ -215,6 +242,9 @@ def mark_verified(account_id: str, verification_type: str = 'slider') -> Dict[st
     )
     common.add_risk_event(account_id, 'verified', f'人工验证成功（{verification_type or "slider"}）')
     common.publish('risk.changed', {'account_id': account_id, 'verified': True})
+    # 反向打通：人工验证既然过了，协议层那份内存熔断也得当场复位 —— 否则用户划完
+    # 滑块，前端显示「没在冷却」，协议层却照样拿 is_blocked 把请求拦下来。
+    protocol_risk.registry.reset(account_id)
     return {'account_id': account_id, 'verification_type': verification_type or 'slider'}
 
 
@@ -243,4 +273,51 @@ def clear_cooldown(account_id: str, verified: bool = False, verification_type: s
     common.add_risk_event(account_id, 'cleared', '人工验证成功，冷却已清除')
     common.log_operation(account_id, 'clear_cooldown', '', True, {'verification_type': verification_type or stored_type})
     common.publish('risk.changed', {'account_id': account_id, 'cleared': True})
+    protocol_risk.registry.reset(account_id)
     return {'account_id': account_id, 'cleared': True, 'state': _row_to_state(_ensure_state(account_id))}
+
+
+# --------------------------------------------------------------------------- 协议层接线
+
+
+def _on_protocol_hit(cookie_id: str, reason: str, cooldown: int) -> None:
+    """协议层（``backend/app/xianyu/risk.py``）真实熔断的回调实现。
+
+    ``cookie_id`` 就是账号 ID（Cookie 里的 ``unb``），与 ``risk_state.account_id``
+    是同一个值：协议层按 cookie_id 分桶、业务层按 account_id 分桶，两边必须是
+    同一个 ID，否则 UI 里会凭空多出一个账号。
+    """
+    record_hit(cookie_id, 'hit', reason, min_cooldown=cooldown)
+
+
+# import 时把钩子接上：协议层不认识 services（反向 import 会成环），只能由服务层
+# 注册。任何入口（FastAPI 路由 / 测试）一 import 本模块即生效。
+protocol_risk.set_hit_handler(_on_protocol_hit)
+
+
+def resync_from_db() -> int:
+    """把库里**还在冷却**的账号回灌进协议层内存锁，返回回灌条数。
+
+    启动时调用。协议层的锁在进程内，重启即失；不补这一步，`risk_state` 说
+    「还剩 900 秒」而协议层立刻放行请求 —— 跟「协议层熔断不落库」是同一类
+    「两边各说各话」，只是方向相反。
+    """
+    now = time.time()
+    rows = db.query(
+        'SELECT account_id, consecutive_hits, blocked_until FROM risk_state WHERE blocked_until > ?',
+        (now,),
+    )
+    restored = 0
+    for row in rows:
+        remaining = float(row['blocked_until'] or 0) - now
+        if remaining <= 0:
+            continue
+        protocol_risk.registry.block_for(
+            str(row['account_id']),
+            remaining,
+            int(row['consecutive_hits'] or 0),
+            '启动时从库里恢复的冷却',
+        )
+        restored += 1
+    return restored
+

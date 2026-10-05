@@ -54,20 +54,23 @@ def put_settings(payload: Dict[str, Any] = Body(...), user=Depends(current_user)
 
 @router.post('/clear')
 def clear(payload: Dict[str, Any] = Body(default={}), user=Depends(current_user)):
-    """body: {account_id, verified?: true, verification_type?}"""
+    """body: {account_id, verification_type?}"""
     body = payload or {}
     account_id = str(body.get('account_id') or '')
-    verified = common.truthy(body.get('verified'), False)
     return _envelope(risk_service.clear_cooldown(
-        account_id, verified=verified, verification_type=str(body.get('verification_type') or ''),
+        account_id, verification_type=str(body.get('verification_type') or ''),
     ))
 
 
 @router.post('/{account_id}/clear')
 def clear_for_account(account_id: str, payload: Dict[str, Any] = Body(default={}), user=Depends(current_user)):
-    """CONTRACTS §3：账号在路径里。body 仍要 {verified: true} 或已有验证凭证。"""
+    """CONTRACTS §3：账号在路径里。
+
+    **不接受请求体里的 `verified` 自证**：凭证只能由服务端写下 —— 真实滑块验证
+    通过时 `POST /api/accounts/{id}/captcha` 的后台任务会 `mark_verified`。让调用方
+    自己传 `verified: true` 等于没有门槛，任何人都能把冷却清掉。
+    """
     body = payload or {}
-    verified = common.truthy(body.get('verified'), False)
     return _envelope(risk_service.clear_cooldown(
-        account_id, verified=verified, verification_type=str(body.get('verification_type') or ''),
+        account_id, verification_type=str(body.get('verification_type') or ''),
     ))

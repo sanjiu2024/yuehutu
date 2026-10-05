@@ -106,6 +106,29 @@ class RiskServiceTest(unittest.TestCase):
         self.assertEqual(listed['total'], 2)
         self.assertEqual(listed['events'][0]['kind'], 'hit')
 
+    def test_streak_decays_after_quiet_period(self):
+        """连击要会断。否则 consecutive_hits 只增不减，跑几天后随便一次小命中都按
+        最后一档封禁 —— 旧项目「闸门实际永久生效」就是这么来的。"""
+        risk_service.record_hit('acc1')
+        risk_service.record_hit('acc1')
+        self.assertEqual(risk_service.status()['states'][0]['consecutive_hits'], 2)
+
+        # 假装上次命中发生在很久以前
+        stale = time.time() - risk_service.STREAK_RESET_SECONDS - 60
+        db.execute('UPDATE risk_state SET last_hit_at = ? WHERE account_id = ?', (stale, 'acc1'))
+
+        again = risk_service.record_hit('acc1')
+        self.assertEqual(again['consecutive_hits'], 1)
+        self.assertEqual(again['cooldown_seconds'], 60)
+
+    def test_streak_does_not_decay_while_recent(self):
+        """冷却期内再命中要升级，不能被衰减掉。"""
+        risk_service.record_hit('acc1')
+        row = db.query_one('SELECT last_hit_at FROM risk_state WHERE account_id = ?', ('acc1',))
+        risk_service.record_hit('acc1')
+        self.assertGreater(float(row['last_hit_at']), 0)
+        self.assertEqual(risk_service.status()['states'][0]['consecutive_hits'], 2)
+
     def test_record_hit_requires_account(self):
         result = risk_service.record_hit('')
         self.assertFalse(result['success'])

@@ -31,6 +31,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
 
 from ..core import events
+from ..services import risk_service
 from ..xianyu import login as qr_login
 from ..xianyu import risk as risk_mod
 from ..xianyu import store
@@ -283,6 +284,10 @@ async def captcha_account(account_id: str, payload: Optional[CaptchaPayload] = N
             store.set_cookie(account_id, result.get('cookie') or cookie,
                              xianyu_user_id=account_id, login_state=store.STATE_ACTIVE)
             risk_mod.registry.reset(account_id)
+            # 同时把「人工验证已通过」写进 risk_state.verification_type：registry.reset()
+            # 只清内存里的协议层冷却，而 `POST /api/risk/{id}/clear` 认的是库里的凭证。
+            # 不写这一步，真过了滑块也清不掉冷却（前端只能靠自证 verified 绕过，等于没门槛）。
+            risk_service.mark_verified(account_id, 'slider')
             store.log_operation(account_id, 'manual_verify', success=True)
         else:
             store.log_operation(account_id, 'manual_verify', success=False,
