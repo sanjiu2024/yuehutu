@@ -28,6 +28,26 @@ MCP_TOKEN_PATH = DATA_DIR / 'mcp_token.txt'
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FRONTEND_DIST = REPO_ROOT / 'frontend' / 'dist'
 
+
+def resolve_frontend_dist() -> Path:
+    """前端产物目录。
+
+    打包后资源被解到 `sys._MEIPASS`（PyInstaller --onedir 时就是 exe 同级目录），
+    打包时 frontend/dist 会被放到 `_MEIPASS/frontend/dist`。
+    找不到就退回源码目录，让开发态行为不变。
+    """
+    candidates = []
+    meipass = getattr(sys, '_MEIPASS', None)
+    if meipass:
+        candidates.append(Path(meipass) / 'frontend' / 'dist')
+    if getattr(sys, 'frozen', False):
+        candidates.append(Path(sys.executable).resolve().parent / 'frontend' / 'dist')
+    candidates.append(FRONTEND_DIST)
+    for path in candidates:
+        if (path / 'index.html').exists():
+            return path
+    return candidates[0]
+
 HOST = '127.0.0.1'
 DEFAULT_PORT = 0            # 0 = 让内核挑空闲端口（桌面应用必须，避免和别的东西撞）
 BACKEND_READY_TIMEOUT = 30  # 秒

@@ -119,8 +119,9 @@ def create_app() -> FastAPI:
         app.include_router(router)
         logger.debug('已注册路由: {}', name)
 
-    if config.FRONTEND_DIST.exists():
-        app.mount('/', StaticFiles(directory=str(config.FRONTEND_DIST), html=True), name='frontend')
+    if config.resolve_frontend_dist().joinpath('index.html').exists():
+        # 注意：挂载点用空字符串（不是 '/'），这样 API 路由优先于静态兜底。
+        app.mount('', StaticFiles(directory=str(config.resolve_frontend_dist()), html=True), name='frontend')
     else:
         @app.get('/', response_class=HTMLResponse)
         async def placeholder():  # pragma: no cover - 仅开发期

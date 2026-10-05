@@ -9,6 +9,7 @@ venv/
 build/
 dist/
 *.spec
+!desktop/desktop.spec
 
 # 前端
 node_modules/
