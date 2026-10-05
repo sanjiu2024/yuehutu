@@ -22,7 +22,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 24  PASS 24  FAIL 0  CASES 504  SKIPPED 1
+-> TOTAL 24  PASS 24  FAIL 0  CASES 512  SKIPPED 1
 ```
 
 ```text
@@ -325,10 +325,53 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 > `test_contract_routes.py::CONTRACT_ROUTES` 仍是手写副本，尚未自动解析契约文件。
 > 下一轮补。
 
+### 第七批：用户第一次拿真机跑打包 exe 抓到的（53、54）
+
+> 这两条是**用户自己启动 `dist\闲鱼AI工作台\闲鱼AI工作台.exe`、扫码登录真账号、点
+> 「同步商品」**才暴露出来的。前六批全部验收（24 个测试文件全绿、tsc 0 error、
+> 9 页浏览器冒烟、打包 exe `/api/health` 200）都抓不到它们，因为它们只在**真 Cookie**
+> 上现形：测试里的假 Cookie 自带 `_m_h5_tk`，假协议客户端也没有同名冲突。
+
+53. **取 IM token 的方法被同名实例属性遮蔽，IM 入站永远挂不上**（`c761b1e`）。
+    真机日志 `WARNING backend.app.main:worker:125 - 账号 2217970177348 的 IM 入站未挂载:
+    协议层调用失败: 'NoneType' object is not callable`。根因：`client.py` 里
+    `self._im_token: Optional[str] = None` 与 `async def _im_token(self)` 同名，实例属性
+    把绑定方法顶掉 → `await self._im_token()` 就是 `None()`。**与机器、网络、闲鱼版本
+    无关，任何环境必然复现**，即「对话区一条买家消息都收不到」的最后一个根因。
+    修：属性改名 `_im_access_token`（原位留注释），方法名与调用点不动。回归锁见
+    `test_protocol_wiring.py::MethodShadowingTest`：不是针对 `_im_token` 特判，而是用
+    `inspect.getmembers(type(client))` 对比 `vars(client)`，**任何**实例属性遮蔽同名
+    可调用方法都会被抓住。
+
+54. **mtop 缺 `_m_h5_tk` 握手：首次调用必然失败，且失败响应下发的新令牌从不落库**
+    （`58398cb`）。用户点「同步商品」看到 `协议层调用失败: MTOP 调用失败
+    [mtop.idle.web.xyh.item.list]: FAIL_SYS_TOKEN_EMPTY::令牌为空`；同一原因还导致
+    登录后 `_fill_profile` 直接失败（`取账号资料失败（不影响登录）: ... 令牌为空`）。
+    根因：扫码拿到的真 Cookie 里**根本没有 `_m_h5_tk`**（真机键只有 `_samesite_flag_` /
+    `_tb_token_` / `cookie2` / `t` / `XSRF-TOKEN` / `csg` / `sgcookie` / `tracknick` / `unb`），
+    平台的设计就是第一次回 `FAIL_SYS_TOKEN_EMPTY` 并**在失败响应里 Set-Cookie 下发新
+    令牌**；而 `mtop()` 只把新令牌合进内存、既不重试也不落库，下次 `get_client` 新建
+    客户端就丢光 —— 商品列表永远拉不回来（这就是审计 B5「`_m_h5_tk` 从不落库」）。
+    修（三步，各最小）：`mtop.is_token_error()` 把「是不是令牌问题」变成可测纯函数
+    （含平台自己的拼写错误 `EXOIRED`）；`store.refresh_token_cookies()` **窄写**，只更新
+    `cookie`/`updated_at`，**绝不复用 `set_cookie`**（那是扫码成功语义，会把
+    `login_state` 改成 active 并清 `relogin_reason`）；`mtop()` 最多两次尝试，只有确属
+    令牌问题**且响应确实下发了与本次不同的新令牌**时才重试（所以不会死循环），成功
+    或拿到新令牌就落库，`account_id` 由 `common._bind_im_service` 注入 `persist_account_id`。
+    区分口径对齐旧项目 `xianyu-super-butler/XianyuAutoAsync.py:2478-2503`：
+    「令牌过期」可自愈，「Session过期」才需要重扫 —— 绝不把可自愈的问题伪装成需要重新登录。
+    回归测试 `MtopTokenHandshakeTest`（6 条）：首次无令牌恰发两次、第二次按新令牌签名、
+    令牌真落到账号行、刷新不把 `need_relogin` 翻回 active、非令牌失败与 Session过期都不重试、
+    服务器一直回令牌为空时不死循环。
+
+> 这一批还留下一条**没有修**的项：`docs/CONTRACTS.md` §3 的 74 条路径中，
+> `test_contract_routes.py::CONTRACT_ROUTES` 仍是手写副本，尚未自动解析契约文件。
+> 下一轮补。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**24 个测试文件、504 个用例全绿、0 失败**（唯一 1 个 skip 是
+- 全部后端逻辑：**24 个测试文件、512 个用例全绿、0 失败**（唯一 1 个 skip 是
   `test_xianyu_login.py` 里本来就有的平台相关跳过）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -342,6 +385,21 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
   列表/同步 `count:2`、发布 `item_id:"PUB777"`、改价 2500→1999 `synced:true`、
   上下架 `ok:1 synced:1`、批量 `ok:2 synced:2`，并抓到全部出站 mtop 请求
   （版本号与 `publishScene`/价格单位分/类目与地址原样保留均可核对）。
+- **真机（用户本人 + 真账号 + 打包 exe + 真实 `%APPDATA%` 数据）**：
+  - 扫码登录**真的走完**：日志 `04:21:15 二维码状态: ... NEW -> SCANED` →
+    `04:21:17 ... SCANED -> CONFIRMED raw={... 'loginResult': 'success' ... 'resultCode': 100 ...}`
+    → 账号 `2217970177348` 建成且 `login_state=active`、`has_cookie=true`（缺陷 26 的
+    修法在真机生效）。
+  - 修完 53/54 后重启 exe，启动日志第一次出现
+    `INFO backend.app.main:worker:122 - 账号 2217970177348 的 IM 入站已挂载`（此前每次
+    只有「未挂载」WARNING）。
+  - `POST /api/items/2217970177348/sync` → **200 `{"count": 20}`**，`GET /api/items?...`
+    `total=20`、`/api/items/stats` `{"total":20,"by_status":{"on_sale":20},"inventory_value":4710.18}`
+    —— **20 件真商品入库**；用真浏览器打开 `http://127.0.0.1:52200/#/items` 截图确认
+    商品页「商品列表 共 20 条」、真标题/价格/在售状态/编辑·下架按钮齐全
+    （`C:\Users\Administrator\.dsh-tmp\items_ui_real.png`）。
+  - 令牌真的落库：`accounts.cookie` 里出现 `_m_h5_tk=3041b6979105a1a5b54bf2c8a64da9b7_1791245258792`，
+    且整轮探针**不再手工重试**（重试发生在 `mtop()` 内部）。
 - **真实桌面窗口**（`python desktop/main.py --port 18099`，真 WebView2）：
   自动登录后直接进概览页，左栏「实时连接已建立」、右上角「实时在线」。
 - 前端构建产物被后端托管（`GET /` 返回真 `index.html`）；`npx tsc --noEmit` 0 error。
@@ -368,14 +426,16 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
   `cwd=C:\Windows` + 显式清空 `PYTHONPATH` 仍能 `initialize` 并列出 21 个工具。
 
 **未验证（不要当成已完成）**
-- **真实闲鱼平台只碰了「扫码取码」这一步**：二维码能出、能被手机扫，但**扫码之后的
-  登录确认与拿 Cookie 没走过**（要用户本人拿手机扫）。发布/编辑/上下架/发消息/收私信
-  在真实账号上是否成功，必须等登录实测；协议层其余部分全部走 MockTransport。第 11、
-  12、13 条修的是「接线本身断掉」，接线通了不等于平台协议对。
+- **真实闲鱼平台上已验证的只有「读」这一半**：扫码登录、拿 Cookie、拉在售商品列表
+  （20 件真商品）都在真账号上跑通了。**写的一半仍没在真实账号上做过**：发布/编辑改价/
+  上架下架/发消息/收私信是否被平台逐字节接受，必须等人工在真机上点一次；协议层其余
+  部分仍走 MockTransport。第 11、12、13、28~31 条修的是「接线本身断掉」，接线通了
+  不等于平台协议对。
 - **真实 LLM 一次没调**：所有 AI 测试都 mock 了 `llm.chat`。
-- **真实买家来信没收到过**：IM 入站闭环只在假协议客户端上验过（`ensure_im` /
-  `send_message` 两个口子打桩），真 WS 收帧形状与 `_read_loop → dispatch` 的端到端
-  没打过真平台。
+- **真实买家来信没收到过**：IM 入站现在在真机上**挂载成功了**（这是缺陷 53 修好的），
+  但真平台的第一帧长什么样、`_read_loop → dispatch → 落库 → AI 回复 → 发回` 的整条
+  链路**没有真实买家**验过；闭环本身只在假协议客户端上验过（`ensure_im` /
+  `send_message` 两个口子打桩）。
 - **真机滑块/验证码没做过**：`captcha` 成功分支（写 `mark_verified` 清冷却）只在
   单测里造过。
 - 桌面 exe 在**无 WebView2** 的机器上的表现（本机已装 154.0.4258.53）。
@@ -388,6 +448,7 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 ## 五、下一步（按优先级）
 
 1. 用户在「AI 配置」页填一个真实 API Key 并设为默认 → 主管 AI 与商品 AI 才能真回话。
-2. 用户扫码登录一个真实闲鱼账号 → 才能实测商品发布/编辑、真实收发消息、真实风控。
+2. 真机实测「写」的一半：在已登录的真账号上发布一件商品 / 改一次价 / 上架下架各一次
+   （读的一半——拉取 20 件在售商品、IM 入站挂载——已在真机验证）。
 3. 重启 DSH 宿主让 MCP 插件 `xianyu` 生效，再用主管 AI 直接操作工作台。
 4. 桌面 exe 在干净机器上冒烟（缺 WebView2 时要给出可读提示）。
