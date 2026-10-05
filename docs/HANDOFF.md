@@ -13,7 +13,7 @@
 | 3 | 助词（提示词）自己填 | 「提示词」页 + `ai_prompts` 表 | 写接口冒烟 ⑧ |
 | 4 | 商品批量修改 | `services/items.py::batch_update` | `test_services_items.py` + 冒烟 ④ |
 | 5 | 统一 API Key 管理 | `providers` 表 + 「AI 配置」页 | 冒烟 ① |
-| 6 | 主 AI 对接我 / 插件让 DSH 控制 | `POST /api/agents/master/chat` + `mcp_server/` | 冒烟 ⑦；`test_mcp_server.py` 46 项 |
+| 6 | 主 AI 对接我 / 插件让 DSH 控制 | `POST /api/agents/master/chat` + `mcp_server/` | 冒烟 ⑦；`test_mcp_server.py` 55 项；端口文件端到端 |
 | 7 | 除 AI 外我自己也能回消息 | `POST /api/chats/{id}/send` | 冒烟 ⑤（消息落库） |
 | 8 | 不能老登录、风控要做好 | `xianyu/risk.py` 熔断 + `xianyu/login.py` 人工验证 | `test_xianyu_cookies.py` 37 项 |
 | 9 | 集成闲鱼客服 / 网页版功能 | `services/cs.py` 意图分类 + 快捷回复 | `test_services_cs.py` 20 项 |
@@ -71,6 +71,14 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
    真实场景会丢掉 `x5sec` → 登录永远判失败。
 6. **`NO_PROXY` 含 `[::1]` → httpx 构造即抛 `InvalidURL`**：`xianyu/net.py` 导入时消毒
    （去方括号，不丢条目 —— 丢了本地回环会走代理）。这条在旧项目里曾让整个扫码登录瘫痪。
+7. **打包后 `--no-window` 静默崩溃**（`019d1b6`）：`console=False` 下 `sys.stdout` 是
+   `None`，uvicorn 日志配置执行 `sys.stdout.isatty()` 抛 `AttributeError`，后端线程死掉
+   且零输出（双击后「什么都没发生」）。修复前连跑 3 次全 exit 2、日志 0 字节。
+8. **MCP 插件在桌面形态永远连不上**（`4a327a4` + `41701be`）：`--port 0` 由内核挑端口，
+   插件只能靠写死的 8080。后端写 `data/backend_port.txt`，插件四级回退解析。
+9. **账号变更不发事件**、**桌面自动登录被测试污染搞坏**、**跨商品中文匹配恒 0**、
+   **`services/chats` 把 async 当同步调**、**协议层 `Set-Cookie` 必须一条一个头**：
+   见第三节。
 
 ## 四、已验证 / 未验证（诚实边界）
 
@@ -78,14 +86,25 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 - 全部后端逻辑：13 个测试文件全绿，含真实子进程 MCP 冒烟。
 - 真实 HTTP：只读 17 条 + 写路径 11 条，均结构化信封、无 500。
 - 真实 WebSocket 事件投递。
-- 前端构建产物被后端托管（`GET /` 返回真 `index.html`）。
+- 前端构建产物被后端托管（`GET /` 返回真 `index.html`）；`npx tsc --noEmit` 0 error。
+- **打包产物真跑**（`dist\闲鱼AI工作台\闲鱼AI工作台.exe`，真双击等价方式启动）：
+  `/api/health` 200 `frozen:true`；`GET /` 真 index.html；`assets/index-BK87FCtW.js`
+  200 LEN=237390（旧 hash 404）；`/api/settings` 401（API 路由未被静态挂载吃掉）；
+  `POST /api/auth/desktop` 200（桌面免密登录在打包形态下可用）。
+- **MCP 插件发现随机端口**：不设 `XYWB_BASE_URL`，真随机端口 62405 的后端被
+  `data/backend_port.txt` 找到并成功调用 `providers_list`。
 
 **未验证（不要当成已完成）**
 - **真实闲鱼平台一次没打**：协议层全部走 MockTransport。发布/编辑/上下架/发消息
   在真实账号上是否成功，必须等用户扫码登录后实测。
 - **真实 LLM 一次没调**：所有 AI 测试都 mock 了 `llm.chat`。
+- **前端 UI 未逐页人工点击**（本机无 headless 浏览器）：验到的是 tsc 0 error、
+  构建成功、产物内九页标签齐全、后端托管 200、契约测试 3/3。
 - 桌面 exe 在**无 WebView2** 的机器上的表现（本机已装 154.0.4258.53）。
-- MCP 插件尚未真正写进 `~/.dsh/plugins/mcp-bridge.config.json` 并重启 DSH 宿主。
+- MCP 插件尚未真正写进 `~/.dsh/plugins/mcp-bridge.config.json` 并重启 DSH 宿主
+  （宿主级改动，留给机器主人决定）。
+- 真实窗口（`webview.start()`）只在开发态 `--no-window` 与打包产物 `--no-window`
+  下验过；带窗口的托盘交互未在打包产物上人工点过。
 
 ## 五、下一步（按优先级）
 
