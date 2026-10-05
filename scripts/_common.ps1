@@ -1,4 +1,4 @@
-# 公共变量与函数（被其它脚本 dot-source，不单独运行）
+﻿# 公共变量与函数（被其它脚本 dot-source，不单独运行）
 $ErrorActionPreference = 'Stop'
 
 $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path

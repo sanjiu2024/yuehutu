@@ -1,0 +1,461 @@
+"""跨商品协查测试（**全部 mock LLM，绝不打真实 API**）。
+
+跑法（仓库根目录）：
+    cmd /c "set PYTHONPATH=.&& C:\\Python310\\python.exe backend\\tests\\test_agents_cross.py"
+
+覆盖：
+- ask/answer 两条都落 agent_messages，且 from/to 正确
+- 深度超过 2 被拒
+- 排除当前会话自己的商品
+- 超时 / LLM 报错不炸链路
+- 主管 AI 工具调用（run_master）与 master_chat 不在自己的工具集里
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from backend.app.agents import llm, roles, runtime, tools  # noqa: E402
+from backend.app.core import config, db  # noqa: E402
+
+
+def _fake_chat(text_by_role=None, default='（mock 回复）', calls=None):
+    """造一个假的 llm.chat：按 role 返回不同文本，并记录调用。"""
+    text_by_role = text_by_role or {}
+
+    async def _chat(messages, *, role=None, **kwargs):
+        if calls is not None:
+            calls.append({'role': role, 'messages': messages, 'kwargs': kwargs})
+        text = text_by_role.get(role, f'{default}[{role}]')
+        return {'text': text, 'usage': {'prompt_tokens': 1, 'completion_tokens': 1, 'total_tokens': 2},
+                'model': 'mock-model', 'provider_id': 1, 'tool_calls': [], 'raw': {}}
+
+    return _chat
+
+
+class CrossAskTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        cls.orig_db_path = config.DB_PATH
+        config.DB_PATH = Path(cls.tmp.name) / 'app.db'
+        db.reset_connection()
+        db.init_db()
+        roles.ensure_roles()
+
+    @classmethod
+    def tearDownClass(cls):
+        db.reset_connection()
+        config.DB_PATH = cls.orig_db_path
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        db.reset_connection()  # 连接是线程本地缓存的，每个测试方法都要重新绑定临时库
+        db.execute('DELETE FROM agent_messages')
+        db.execute('DELETE FROM items')
+        db.execute('DELETE FROM messages')
+        db.execute('DELETE FROM conversations')
+        db.execute('DELETE FROM agent_runs')
+        db.execute("UPDATE ai_roles SET system_prompt = '', provider_id = NULL, model = ''")
+        db.execute('DELETE FROM ai_prompts')
+        db.execute('DELETE FROM providers')
+        db.execute(
+            "INSERT INTO providers(id, name, base_url, api_key, default_model, enabled, is_default) "
+            "VALUES(1,'mock','http://127.0.0.1:9/v1','sk-mock','mock-model',1,1)")
+        db.execute(
+            "INSERT INTO items(account_id, item_id, title, price, stock) "
+            "VALUES('acc1','A','红色连衣裙',50,1)")
+        db.execute(
+            "INSERT INTO items(account_id, item_id, title, price, stock) "
+            "VALUES('acc1','B','蓝色牛仔裤 全新',120,2)")
+
+    def messages(self):
+        rows = db.query('SELECT * FROM agent_messages ORDER BY id')
+        return [dict(r) for r in rows]
+
+    def test_ask_and_answer_land_in_agent_messages(self):
+        calls = []
+        with mock.patch.object(llm, 'chat', _fake_chat({'item': '牛仔裤 120 元，全新', 'cross': '蓝色牛仔裤 120 元，全新包邮'}, calls=calls)):
+            text = asyncio.run(runtime.cross_ask(
+                'item:A', '你们那条蓝色牛仔裤多少钱', exclude_item_id='A', conversation_id=7))
+
+        self.assertIn('120', text)
+        rows = self.messages()
+        kinds = [r['kind'] for r in rows]
+        self.assertIn('ask', kinds)
+        self.assertIn('answer', kinds)
+
+        # 第一条：item:A → cross（发起）
+        first = rows[0]
+        self.assertEqual((first['from_agent'], first['to_agent'], first['kind']),
+                         ('item:A', 'cross', 'ask'))
+        self.assertEqual(first['conversation_id'], 7)
+
+        # 第二条：cross → item:B（转问目标商品）
+        to_item = [r for r in rows if r['to_agent'] == 'item:B']
+        self.assertTrue(to_item, f'没有向 item:B 发 ask: {rows}')
+        self.assertEqual(to_item[0]['kind'], 'ask')
+        self.assertEqual(json.loads(to_item[0]['payload'])['item_id'], 'B')
+
+        # 第三条：item:B → cross（商品 AI 答复）
+        from_item = [r for r in rows if r['from_agent'] == 'item:B' and r['kind'] == 'answer']
+        self.assertTrue(from_item, f'item:B 没有回 answer: {rows}')
+
+        # 最后：cross → item:A（汇总回原 AI）
+        last = rows[-1]
+        self.assertEqual((last['from_agent'], last['to_agent'], last['kind']),
+                         ('cross', 'item:A', 'answer'))
+        self.assertIn('120', json.loads(last['payload'])['answer'])
+
+    def test_excludes_own_item(self):
+        calls = []
+        with mock.patch.object(llm, 'chat', _fake_chat(calls=calls)):
+            asyncio.run(runtime.cross_ask(
+                'item:A', '红色连衣裙和蓝色牛仔裤哪个更划算', exclude_item_id='A', conversation_id=1))
+        rows = self.messages()
+        # 问题同时命中 A 和 B，但当前会话自己就是 A，绝不能**转问** item:A
+        # （cross 最后把 answer 汇总回 item:A 是正常的）
+        self.assertFalse([r for r in rows if r['to_agent'] == 'item:A' and r['kind'] == 'ask'], rows)
+        self.assertTrue([r for r in rows if r['to_agent'] == 'item:B'], rows)
+
+    def test_candidate_items_preferred(self):
+        with mock.patch.object(llm, 'chat', _fake_chat()):
+            asyncio.run(runtime.cross_ask(
+                'item:A', '这个有货吗', exclude_item_id='A', conversation_id=1, candidate_items=['B']))
+        rows = self.messages()
+        self.assertTrue([r for r in rows if r['to_agent'] == 'item:B'], rows)
+
+    def test_depth_limit_rejected(self):
+        with mock.patch.object(llm, 'chat', _fake_chat()):
+            with self.assertRaises(ValueError):
+                asyncio.run(runtime.cross_ask('item:A', 'x', depth=3))
+        self.assertFalse([r for r in self.messages() if r['kind'] == 'ask'])
+
+    def test_depth_limit_boundary_ok(self):
+        with mock.patch.object(llm, 'chat', _fake_chat()):
+            text = asyncio.run(runtime.cross_ask('item:A', '蓝色牛仔裤多少钱', exclude_item_id='A', depth=2))
+        self.assertTrue(text)
+        # 深度已经 2，不能再往下递归，但 cross→item:A 的 answer 必须落库
+        rows = self.messages()
+        self.assertEqual(rows[-1]['kind'], 'answer')
+        self.assertEqual(rows[-1]['to_agent'], 'item:A')
+
+    def test_no_match_returns_notify(self):
+        calls = []
+        with mock.patch.object(llm, 'chat', _fake_chat(calls=calls)):
+            text = asyncio.run(runtime.cross_ask('item:A', '完全不存在的商品名', exclude_item_id='A'))
+        self.assertTrue(text)
+        self.assertEqual(calls, [])  # 没匹配到商品就不该调 LLM
+        rows = self.messages()
+        self.assertEqual([r['kind'] for r in rows], ['ask', 'notify'])
+
+    def test_llm_failure_does_not_break_chain(self):
+        async def boom(messages, **kwargs):
+            raise llm.LLMError('HTTP 500: 模型炸了')
+
+        with mock.patch.object(llm, 'chat', boom):
+            text = asyncio.run(runtime.cross_ask(
+                'item:A', '蓝色牛仔裤多少钱', exclude_item_id='A', conversation_id=3))
+        self.assertTrue(text)  # 仍然给原 AI 一句能用的兜底话术
+        rows = self.messages()
+        self.assertTrue(any(r['kind'] == 'notify' for r in rows), rows)
+        self.assertEqual(rows[-1]['kind'], 'answer')
+        self.assertEqual(rows[-1]['to_agent'], 'item:A')
+
+    def test_timeout_is_contained(self):
+        async def slow(messages, **kwargs):
+            await asyncio.sleep(5)
+            return {'text': 'too late'}
+
+        original = runtime.CROSS_TIMEOUT
+        runtime.CROSS_TIMEOUT = 0.05
+        try:
+            with mock.patch.object(llm, 'chat', slow):
+                text = asyncio.run(runtime.cross_ask(
+                    'item:A', '蓝色牛仔裤多少钱', exclude_item_id='A'))
+        finally:
+            runtime.CROSS_TIMEOUT = original
+        self.assertTrue(text)
+        self.assertTrue(any(r['kind'] == 'notify' for r in self.messages()))
+
+    def test_match_items_scores_by_title(self):
+        matched = runtime.match_items('蓝色牛仔裤还有吗', exclude_item_id='A')
+        self.assertEqual([m['item_id'] for m in matched], ['B'])
+        self.assertEqual(runtime.match_items('蓝色牛仔裤还有吗', exclude_item_id='B'), [])
+
+    def test_match_items_regression_chinese_substring(self):
+        """回归锁：中文没有空格，买家问「这条牛仔裤多少钱」必须命中标题「蓝色牛仔裤 全新」。
+
+        老实现按空格/标点切词，标题只切出 `['蓝色牛仔裤']` 一个 token，整串不在问句里
+        → 命中 0 → 商品 A 的 AI 永远不会去问商品 B 的 AI（用户核心诉求）。
+        """
+        matched = runtime.match_items('这条牛仔裤多少钱', exclude_item_id='A')
+        self.assertEqual([m['item_id'] for m in matched], ['B'],
+                         f'中文子串匹配回归了：{matched}')
+
+        # 同一个问题，从 B 的会话里问出去时，绝不能把 B 自己再匹配回来
+        self.assertEqual(runtime.match_items('这条牛仔裤多少钱', exclude_item_id='B'), [])
+
+    def test_match_items_regression_excludes_self_only(self):
+        """排除自身商品后仍能命中对方 —— 这正是「A 的 AI 问 B 的 AI」的最小前提。"""
+        self.assertEqual(runtime.match_items('牛仔裤', exclude_item_id='A')[0]['item_id'], 'B')
+        self.assertEqual(runtime.match_items('连衣裙', exclude_item_id='B')[0]['item_id'], 'A')
+        # 两个都不排除时两条都在
+        both = runtime.match_items('红色连衣裙 蓝色牛仔裤', exclude_item_id=None)
+        self.assertEqual(sorted(m['item_id'] for m in both), ['A', 'B'])
+
+    def test_match_items_ignores_generic_words(self):
+        """「全新/包邮」这类每个商品都有的词不能把无关商品算成命中。"""
+        self.assertEqual(runtime.match_items('全新包邮吗', exclude_item_id='A'), [])
+
+    def test_recent_agent_messages_limit_and_filter(self):
+        db.execute("INSERT INTO agent_messages(conversation_id, from_agent, to_agent, kind) "
+                   "VALUES(1,'a','b','ask')")
+        db.execute("INSERT INTO agent_messages(conversation_id, from_agent, to_agent, kind) "
+                   "VALUES(2,'a','b','ask')")
+        self.assertEqual(len(runtime.recent_agent_messages(limit=10, conversation_id=1)), 1)
+
+
+class ReplyForMessageTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        cls.orig_db_path = config.DB_PATH
+        config.DB_PATH = Path(cls.tmp.name) / 'app.db'
+        db.reset_connection()
+        db.init_db()
+        roles.ensure_roles()
+
+    @classmethod
+    def tearDownClass(cls):
+        db.reset_connection()
+        config.DB_PATH = cls.orig_db_path
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        db.reset_connection()
+        db.execute('DELETE FROM agent_messages')
+        db.execute('DELETE FROM messages')
+        db.execute('DELETE FROM conversations')
+        db.execute('DELETE FROM items')
+        db.execute('DELETE FROM agent_runs')
+        db.execute("UPDATE ai_roles SET system_prompt = ''")
+        db.execute('DELETE FROM ai_prompts')
+        db.execute('DELETE FROM providers')
+        db.execute("INSERT INTO providers(id, name, base_url, api_key, default_model) "
+                   "VALUES(1,'mock','http://127.0.0.1:9/v1','sk-mock','mock-model')")
+        db.execute("INSERT INTO items(account_id, item_id, title, price) VALUES('acc1','A','红色连衣裙',50)")
+        db.execute("INSERT INTO items(account_id, item_id, title, price) VALUES('acc1','B','蓝色牛仔裤 全新',120)")
+        self.conv_id = int(db.execute(
+            "INSERT INTO conversations(account_id, peer_user_id, item_id, mode, agent_role) "
+            "VALUES('acc1','buyer1','A','auto','item')"))
+        self.msg_id = int(db.execute(
+            "INSERT INTO messages(conversation_id, direction, sender, content) "
+            "VALUES(?,'in','buyer','这条牛仔裤多少钱')", (self.conv_id,)))
+
+    def test_item_reply_uses_item_role_and_cross_lookup(self):
+        calls = []
+        with mock.patch.object(llm, 'chat', _fake_chat({'item': '120 元，全新', 'cross': '蓝色牛仔裤 120 元'}, calls=calls)):
+            result = asyncio.run(runtime.reply_for_message(self.conv_id, self.msg_id))
+
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['role'], 'item')
+        self.assertTrue(result['reply'])
+        self.assertTrue(result['cross_used'])
+        # 触发了跨商品协查：向 item:B 发过 ask
+        rows = [dict(r) for r in db.query('SELECT * FROM agent_messages ORDER BY id')]
+        self.assertTrue([r for r in rows if r['to_agent'] == 'item:B' and r['kind'] == 'ask'], rows)
+
+    def test_reply_forces_vision_for_image(self):
+        conv = int(db.execute(
+            "INSERT INTO conversations(account_id, peer_user_id, item_id, agent_role) "
+            "VALUES('acc1','buyer2','A','vision')"))
+        msg = int(db.execute(
+            "INSERT INTO messages(conversation_id, direction, sender, content, meta) "
+            "VALUES(?,'in','buyer','看看这个','{\"image_url\":\"http://x/1.jpg\"}')", (conv,)))
+        calls = []
+        with mock.patch.object(llm, 'chat', _fake_chat(calls=calls)):
+            result = asyncio.run(runtime.reply_for_message(conv, msg))
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['role'], 'vision')
+        sent = calls[-1]['messages']
+        # 图片按 OpenAI 多模态格式塞进 user content
+        self.assertIsInstance(sent[-1]['content'], list)
+        self.assertEqual(sent[-1]['content'][1]['type'], 'image_url')
+
+    def test_missing_conversation_is_soft_error(self):
+        result = asyncio.run(runtime.reply_for_message(99999, self.msg_id))
+        self.assertFalse(result['ok'])
+        self.assertIn('不存在', result['error'])
+
+    def test_no_provider_is_soft_error(self):
+        db.execute('DELETE FROM providers')
+        result = asyncio.run(runtime.reply_for_message(self.conv_id, self.msg_id))
+        self.assertFalse(result['ok'])
+        self.assertIn('提供者', result['error'])
+
+
+class MasterChatTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        cls.orig_db_path = config.DB_PATH
+        config.DB_PATH = Path(cls.tmp.name) / 'app.db'
+        db.reset_connection()
+        db.init_db()
+        roles.ensure_roles()
+
+    @classmethod
+    def tearDownClass(cls):
+        db.reset_connection()
+        config.DB_PATH = cls.orig_db_path
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        db.reset_connection()
+        db.execute('DELETE FROM agent_runs')
+        db.execute('DELETE FROM agent_messages')
+        db.execute('DELETE FROM items')
+        db.execute("UPDATE ai_roles SET system_prompt = ''")
+        db.execute('DELETE FROM ai_prompts')
+        db.execute('DELETE FROM providers')
+        db.execute("INSERT INTO providers(id, name, base_url, api_key, default_model) "
+                   "VALUES(1,'mock','http://127.0.0.1:9/v1','sk-mock','mock-model')")
+        db.execute("INSERT INTO items(account_id, item_id, title, price, stock) "
+                   "VALUES('acc1','A','红色连衣裙',50,3)")
+
+    def test_master_tool_is_not_in_its_own_toolset(self):
+        self.assertIn('master_chat', tools.TOOL_NAMES)
+        self.assertNotIn('master_chat', [s['function']['name'] for s in tools.MASTER_TOOLS])
+        self.assertEqual(len(tools.MASTER_TOOLS), len(tools.TOOL_SPECS) - 1)
+
+    def test_tool_names_match_contract(self):
+        expected = [
+            'accounts_list', 'accounts_set_enabled', 'accounts_relogin',
+            'items_list', 'items_get', 'items_edit', 'items_publish', 'items_batch_edit', 'items_sync',
+            'chats_list', 'chats_read', 'chats_send', 'chats_set_mode',
+            'orders_list', 'orders_deliver',
+            'risk_status', 'risk_clear',
+            'providers_list', 'providers_upsert',
+            'master_chat',
+        ]
+        self.assertEqual(tools.TOOL_NAMES, expected)
+        for spec in tools.TOOL_SPECS:
+            self.assertEqual(spec['type'], 'function')
+            self.assertIn('name', spec['function'])
+            self.assertIn('description', spec['function'])
+            self.assertIn('parameters', spec['function'])
+            self.assertEqual(spec['function']['parameters']['type'], 'object')
+
+    def test_call_tool_reads_items_from_db(self):
+        result = asyncio.run(tools.call_tool('items_list', {}))
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['items'][0]['item_id'], 'A')
+
+        result = asyncio.run(tools.call_tool('items_get', {'account_id': 'acc1', 'item_id': 'A'}))
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['item']['title'], '红色连衣裙')
+
+    def test_call_tool_validates_required_and_unknown(self):
+        result = asyncio.run(tools.call_tool('items_get', {'account_id': 'acc1'}))
+        self.assertFalse(result['ok'])
+        self.assertIn('缺少参数', result['error'])
+
+        result = asyncio.run(tools.call_tool('nope_nope', {}))
+        self.assertFalse(result['ok'])
+        self.assertIn('未知工具', result['error'])
+
+    def test_call_tool_missing_item_is_soft_error(self):
+        result = asyncio.run(tools.call_tool('items_get', {'account_id': 'acc1', 'item_id': 'ZZZ'}))
+        self.assertFalse(result['ok'])
+        self.assertIn('没找到', result['error'])
+
+    def test_providers_list_hides_api_key(self):
+        result = asyncio.run(tools.call_tool('providers_list', {}))
+        self.assertTrue(result['ok'], result)
+        self.assertNotIn('api_key', result['providers'][0])
+
+    def test_run_master_executes_tool_then_answers(self):
+        rounds = {'n': 0}
+
+        async def fake(messages, *, role=None, tools=None, **kwargs):
+            rounds['n'] += 1
+            if rounds['n'] == 1:
+                return {'text': '', 'tool_calls': [{'id': 'c1', 'function': {
+                    'name': 'items_list', 'arguments': '{}'}}],
+                    'usage': {}, 'model': 'mock-model', 'provider_id': 1, 'raw': {}}
+            return {'text': '你有 1 个在售商品：红色连衣裙。', 'tool_calls': [], 'usage': {},
+                    'model': 'mock-model', 'provider_id': 1, 'raw': {}}
+
+        with mock.patch.object(llm, 'chat', fake):
+            result = asyncio.run(runtime.run_master('我有哪些商品？'))
+
+        self.assertTrue(result['ok'], result)
+        self.assertIn('红色连衣裙', result['reply'])
+        self.assertEqual(len(result['tool_calls']), 1)
+        self.assertEqual(result['tool_calls'][0]['name'], 'items_list')
+        self.assertTrue(result['tool_calls'][0]['result']['ok'])
+        self.assertEqual(rounds['n'], 2)
+
+    def test_run_master_simple_answer_without_tools(self):
+        with mock.patch.object(llm, 'chat', _fake_chat({'master': '好的，我看看'})):
+            result = asyncio.run(runtime.run_master('在吗'))
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['reply'], '好的，我看看')
+        self.assertEqual(result['tool_calls'], [])
+
+    def test_run_master_llm_failure(self):
+        async def boom(messages, **kwargs):
+            raise llm.LLMError('HTTP 401: bad key')
+
+        with mock.patch.object(llm, 'chat', boom):
+            result = asyncio.run(runtime.run_master('在吗'))
+        self.assertFalse(result['ok'])
+        self.assertIn('401', result['error'])
+
+    def test_master_chat_tool_delegates_to_run_master(self):
+        with mock.patch.object(llm, 'chat', _fake_chat({'master': '我在'})):
+            result = asyncio.run(tools.call_tool('master_chat', {'message': '在吗'}))
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['reply'], '我在')
+
+    def test_master_chat_api(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from backend.app.api import agents as agents_api
+        from backend.app.core import security
+
+        app = FastAPI()
+        app.include_router(agents_api.router)
+        client = TestClient(app)
+        user_id = int(db.execute(
+            "INSERT INTO users(username, password_hash, is_admin) VALUES('m','x',1)"))
+        headers = {'Authorization': f'Bearer {security.issue_token(user_id)}'}
+
+        with mock.patch.object(llm, 'chat', _fake_chat({'master': '店里有一件红色连衣裙。'})):
+            resp = client.post('/api/agents/master/chat', headers=headers, json={'message': '有什么商品'})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertTrue(body['success'])
+        self.assertIn('红色连衣裙', body['data']['reply'])
+
+        resp = client.post('/api/agents/master/chat', headers=headers, json={'message': ''})
+        self.assertEqual(resp.status_code, 400, resp.text)
+
+        resp = client.post('/api/agents/master/chat', json={'message': 'hi'})
+        self.assertEqual(resp.status_code, 401, resp.text)
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)

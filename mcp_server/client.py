@@ -182,6 +182,11 @@ def canonical_name(name: str) -> Optional[str]:
     return ALIASES.get(name)
 
 
+#: MCP 侧独有的工具（不在 agents 的 TOOL_SPECS 里，但 task-6 要求暴露）。
+#: `backend/tests/test_mcp_server.py::test_no_routeless_or_unknown_listed` 按这个集合对账。
+MCP_ONLY_TOOLS = frozenset({'agents_messages'})
+
+
 # --------------------------------------------------------------------------
 # 客户端
 # --------------------------------------------------------------------------

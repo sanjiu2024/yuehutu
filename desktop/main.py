@@ -49,6 +49,32 @@ URL = ''
 TOKEN = ''
 
 
+def _ensure_frontend_mount() -> None:
+    """把前端目录挂到已建好的 app 上。
+
+    坑：`backend.app.main` 末尾是模块级 `app = create_app()`，在 import 时就跑完了 ——
+    那时 config.FRONTEND_DIST 还是 core/config.py 算出来的开发态路径（frozen 下不存在），
+    于是应用挂上的是**占位页**路由而不是静态托管。这里在覆盖路径之后重建挂载。
+    """
+    dist = Path(config.FRONTEND_DIST)
+    if not (dist / 'index.html').exists():
+        print(f'[desktop] 前端产物不存在，后端将给占位页: {dist}')
+        return
+    from fastapi.staticfiles import StaticFiles
+
+    app = backend_main.app
+    # 丢掉 import 阶段挂上的占位路由 / 旧静态挂载（API 路由保持在前，顺序不变）
+    app.router.routes = [
+        route for route in app.router.routes
+        if getattr(route, 'name', '') not in ('frontend', 'placeholder')
+    ]
+    app.mount('/', StaticFiles(directory=str(dist), html=True), name='frontend')
+    print(f'[desktop] 前端静态托管: {dist}')
+
+
+_ensure_frontend_mount()
+
+
 def _configure_logging() -> None:
     """打包后没有控制台：日志落 APP_DIR/logs/app.log，出错时有据可查。"""
     try:

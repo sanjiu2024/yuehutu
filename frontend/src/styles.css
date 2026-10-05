@@ -1049,3 +1049,49 @@ td.num {
   max-height: 62vh;
   overflow-y: auto;
 }
+
+.prompt-preview {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #0e1728;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 132px;
+  overflow-y: auto;
+}
+
+/* ---------- 登录页 ---------- */
+
+.login-wrap {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.login-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 26px 24px;
+}
+.login-card h1 {
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+.login-card .sub {
+  color: var(--text-mute);
+  font-size: 12.5px;
+  margin-bottom: 18px;
+}
+.login-logo {
+  font-size: 30px;
+  margin-bottom: 6px;
+}

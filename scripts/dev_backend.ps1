@@ -1,4 +1,4 @@
-# 开发模式跑后端（前端未构建时后端给占位页）
+﻿# 开发模式跑后端（前端未构建时后端给占位页）
 #   pwsh scripts\dev_backend.ps1 [-Port 8080]
 param(
     [int]$Port = 8080

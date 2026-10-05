@@ -66,7 +66,6 @@ export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): voi
 }
 
 function friendlyMessage(status: number, message: string, code: string): string {
-  if (status === 404 || code === 'not_found') return NOT_READY_HINT
   if (status === 401 || code === 'unauthorized') return '登录状态已失效，请重新登录'
   if (status === 403) return '没有权限执行该操作'
   if (status === 422) return '参数校验失败：' + message
@@ -136,10 +135,18 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   }
 
   if (!response.ok) {
-    const rawMessage = envelope?.message || response.statusText || ''
+    // FastAPI 的默认错误处理器返回 {"detail": "..."}，**没有** success 字段；
+    // 后端业务失败走 common.respond，一定带 success/code。据此区分
+    // 「路由根本不存在」与「路由在、但这单业务失败了（如账号不存在）」。
+    const isFrameworkError = !envelope || typeof envelope.success !== 'boolean'
+    const rawMessage =
+      envelope?.message ||
+      (envelope as unknown as { detail?: string } | null)?.detail ||
+      response.statusText ||
+      ''
     const code = envelope?.code || `http_${response.status}`
-    // 后端未实现该路由时 FastAPI 会走 404 处理器，同样落到这里
-    const notReady = response.status === 404 || response.status === 501 || response.status === 405
+    // 后端尚未实现该路由时 FastAPI 直接 404/405；这类才算「未就绪」。
+    const notReady = isFrameworkError && (response.status === 404 || response.status === 405 || response.status === 501)
     throw new ApiError(friendlyMessage(response.status, rawMessage, code), code, response.status, notReady)
   }
 

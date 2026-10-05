@@ -62,6 +62,17 @@ C:\Python310\python.exe -m PyInstaller --noconfirm --clean `
 4. 排除 `tkinter`/`PyQt*`/`matplotlib`/`pytest` 等，减小体积。
 5. 若 `frontend\dist\index.html` 不存在，spec 直接报错退出（不会打出一个没有界面的包）。
 
+> ⚠️ `.gitignore` 里有 `*.spec` —— `desktop/desktop.spec` 是打包的唯一配置，必须进仓库。
+> 需要 Lead 在 `.gitignore` 补一行 `!desktop/desktop.spec`（或删掉 `*.spec`）。
+
+冒烟打包（不依赖真实前端，只验证打包链路 + frozen 路径）：
+
+```powershell
+$env:XYWB_FRONTEND_DIST = "$env:TEMP\xywb_fake_dist"   # 里面放个 index.html 即可
+C:\Python310\python.exe -m PyInstaller --noconfirm --clean `
+  --workpath build_smoke --distpath dist_smoke desktop\desktop.spec
+```
+
 ## 4. 运行与自检
 
 双击 `dist\闲鱼AI工作台\闲鱼AI工作台.exe`：起后端线程 → 等 `/api/health` → 开窗口 → 托盘常驻。关窗口不退出，托盘「退出」才停。
@@ -100,24 +111,70 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe desktop\main.py --no-window -
 | `build_frontend.ps1` | `npm install` + `npm run build` → `frontend/dist` |
 | `build_exe.ps1` | 构建前端 + PyInstaller onedir 打包 |
 
-## 6. 路径与 frozen 说明
+## 6. 路径与 frozen 说明（外壳侧解决，**不需要改 `backend/app/core/config.py`**）
 
 - 开发态：`config.REPO_ROOT` 由 `backend/app/core/config.py` 的 `__file__` 推出（仓库根），`FRONTEND_DIST = <repo>\frontend\dist`。
-- **frozen 态**：`core/config.py` 的 `REPO_ROOT` 会算到 `_internal\backend\app\core` 往上三级 —— 指不到打包内的前端目录。因此 `desktop/main.py` 在 `sys.frozen` 为真时**在外壳侧覆盖** `config.FRONTEND_DIST = _MEIPASS / 'frontend' / 'dist'`（在 `create_app()` 被调用前生效，因为 `backend.app.main` 是模块级 `app = create_app()`……注意：外壳 import 后才覆盖，见下方「已知限制」）。
-- 同理 `sys.path` 会被加上 `_MEIPASS`，让 `backend` 包可导入。
+- **frozen 态**：`core/config.py` 的 `REPO_ROOT` 会算到 `_internal\backend\app\core` 往上三级，指不到打包内的前端目录。`desktop/main.py` 因此做了两件事：
+  1. 把 `sys.path` 加上 `_MEIPASS`，让 `backend` 包可导入；
+  2. 把 `config.FRONTEND_DIST` 覆盖成 `_MEIPASS / 'frontend' / 'dist'`。
+- 但 `backend/app/main.py` 末尾是**模块级** `app = create_app()`，import 时就执行完 —— 那时 `FRONTEND_DIST` 还是开发态路径（frozen 下不存在），应用挂的是**占位页**路由。
+  所以外壳在覆盖之后调用 `_ensure_frontend_mount()`：丢掉占位路由/旧静态挂载，重新 `app.mount('/', StaticFiles(dist, html=True))`。
+- 实测（冒烟打包，假 dist）：frozen exe 起来后 `/` 返回的就是打包内那个 `index.html`，不是占位页。
 
-### 已知限制（需要 Lead 决定是否改 `backend/app/**`）
+```text
+[desktop] 前端静态托管: ...\_internal\frontend\dist
+HEALTH 200: {"success":true,"data":{"ok":true,"version":"0.1.0","frozen":true}}
+ROOT 200: <!doctype html><title>FAKE-DIST-OK</title>
+```
 
-1. `backend/app/main.py` 末尾有模块级 `app = create_app()`，它**在 import 时就执行**，此时 `desktop/main.py` 还没来得及覆盖 `config.FRONTEND_DIST`。frozen 下如果 `core/config.py` 算出的路径恰好不存在，应用会挂上**占位页路由**而不是静态托管。
-   - 现状：外壳已覆盖 `config.FRONTEND_DIST`，但只在 import 之后 —— 所以占位页/静态托管的选择可能发生在覆盖之前。
-   - 建议改法（**外壳不动 core，需 Lead 拍板**）：把 `config.py` 里 `FRONTEND_DIST` 改成函数 `frontend_dist()`，或在 `main.py` 的 `create_app()` 里读 `sys._MEIPASS`：
-     ```python
-     if getattr(sys, 'frozen', False):
-         FRONTEND_DIST = Path(sys._MEIPASS) / 'frontend' / 'dist'
-     else:
-         FRONTEND_DIST = REPO_ROOT / 'frontend' / 'dist'
-     ```
-2. `desktop/main.py` 里的 `config.FRONTEND_DIST` 覆盖保留作双保险；若 Lead 按上面改了 `core/config.py`，这行可删。
+> 若将来 Lead 愿意改 `backend/app/**`，更干净的做法是在 `create_app()` 里判断 `sys.frozen` 后直接读 `sys._MEIPASS`；届时外壳这两行可以删。
+
+## 6.5 ⚠️ 已知缺陷：跑测试会破坏桌面自动登录（已复现，需 Lead 修 `backend/**`）
+
+**现象**：打包产物第一次跑自动登录正常；跑过一次 `backend/tests/test_skeleton.py` 后，再启动产物，`POST /api/auth/desktop` 返回
+`{"success":false,"message":"管理员账号异常","code":"http_error"}`（HTTP 500），窗口打开后是未登录状态。
+
+**机制**（`backend/tests/test_skeleton.py:24-47` + `backend/app/core/security.py:40-61`）：
+
+1. 测试的 `setUpClass` 只把 `config.DB_PATH` / `config.MCP_TOKEN_PATH` 指到临时目录，
+   **没有改 `config.CRED_PATH`**（= `%APPDATA%\xianyu-ai-workbench\data\desktop_credentials.json`）。
+2. 临时库里没有 admin，测试触发 `security.ensure_admin()` → 走「新建管理员」分支 →
+   生成**随机新密码**并 `cred_path.write_text(...)`，**覆盖了真实的凭据文件**。
+3. 真实 `app.db` 里的 admin 密码还是旧的，而凭据文件已经是新密码 →
+   `desktop_login()` 里 `security.authenticate(*security.ensure_admin())` 返回 `None` → 500。
+
+**实测证据**（2026-10-06）：
+
+```text
+运行 test_skeleton.py 前: {"username":"admin","password":"fiOQH6s-8QIn"}
+运行后                   : {"username":"admin","password":"bS5m9fPJ46UH"}
+该密码与真实库 hash 匹配 : False
+ensure_admin() 返回      : ('admin', 'bS5m9fPJ46UH')
+authenticate() 结果      : None      ← 就是 500 的来源
+```
+
+**影响面**：任何人在开发机上跑过 `backend/tests/*.py`（`test_agents_cross.py`、`test_agents_providers.py`、
+`test_agents_prompts.py` 都直接 `INSERT INTO users` 再 `DELETE FROM users`，同样会留下不一致）之后，
+桌面自动登录就坏了 —— 而用户看到的是「窗口打开了但没登录」，很难联想到是测试造成的。
+
+**临时恢复办法**（不改代码，用户侧）：
+
+```powershell
+# 关掉所有产物进程，然后删掉凭据文件 + 清空 users/sessions，下次启动会重新生成一对一致的
+$d = "$env:APPDATA\xianyu-ai-workbench\data"
+Remove-Item "$d\desktop_credentials.json"
+C:\Python310\python.exe -c "import sqlite3,os;c=sqlite3.connect(os.path.join(os.environ['APPDATA'],'xianyu-ai-workbench','data','app.db'));c.execute('DELETE FROM sessions');c.execute('DELETE FROM users');c.commit()"
+```
+
+实测该恢复路径有效：`users=0` + 无凭据文件时启动，`ensure_admin()` 返回 `('admin','t0-PGPb9Idx_')`，
+`authenticate()` 返回 `{'id': 2, 'username': 'admin', 'is_admin': True}`，`POST /api/auth/desktop` → HTTP 200。
+
+**建议的正规修法**（属 `backend/**`，归 Lead，外壳不动）：
+
+- 测试侧：`setUpClass` 里把 `config.CRED_PATH` 也指到临时目录（和 `DB_PATH` 一样），
+  并在 `tearDownClass` 还原；或干脆用环境变量把整个 `APP_DIR` 指到临时目录。
+- 生产侧（更稳）：`security.ensure_admin()` 在「凭据文件里的密码验不过」时不要静默返回坏密码，
+  应该把 admin 密码**重置成凭据文件里的那个**（`UPDATE users SET password_hash=?`），让两边自愈。
 
 ## 7. 常见坑
 
@@ -125,6 +182,7 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe desktop\main.py --no-window -
 |---|---|
 | 窗口白屏 / 打不开 | 缺 **WebView2 运行时**。装 [Evergreen Bootstrapper](https://developer.microsoft.com/microsoft-edge/webview2/)，本机已装 154.0.4258.53 |
 | 双击 exe 没反应、没日志 | `console=False`，看不到 stdout。看 `%APPDATA%\xianyu-ai-workbench\logs\app.log`；排查时先用 `--no-window --port 18080` 跑 |
+| **窗口开了但没登录 / `管理员账号异常`** | 跑过 `backend/tests/*.py` 导致凭据文件被覆盖 —— 见上面 6.5 节 |
 | 杀毒报毒 / 被删 | PyInstaller 无签名 exe 常见误报。加白名单；正式分发要买代码签名证书 |
 | 路径带空格 / 中文 | 脚本全部用 `Join-Path` + 引号；spec 里用 `Path` 对象，支持 `C:\Program Files\...` 与中文路径 |
 | `ModuleNotFoundError: backend` | 打包时 `pathex` 没加仓库根，或运行时 `sys.path` 没加 `_MEIPASS`（本仓库两者都已处理） |
