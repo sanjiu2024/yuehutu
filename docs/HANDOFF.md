@@ -96,8 +96,12 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
   `/api/health` 200 `frozen:true`；`GET /` 真 index.html；`assets/index-BK87FCtW.js`
   200 LEN=237390（旧 hash 404）；`/api/settings` 401（API 路由未被静态挂载吃掉）；
   `POST /api/auth/desktop` 200（桌面免密登录在打包形态下可用）。
-- **MCP 插件发现随机端口**：不设 `XYWB_BASE_URL`，真随机端口 62405 的后端被
-  `data/backend_port.txt` 找到并成功调用 `providers_list`。
+- **MCP 插件发现随机端口**（Lead 复跑）：后端 `--port 19107`（`XYWB_PORT=19107`）→
+  `data/backend_port.txt` 内容 `19107`；**不设** `XYWB_BASE_URL` 真起
+  `mcp_server/server.py` 子进程 → stderr 自报 `base_url=http://127.0.0.1:19107`
+  `token 来源=file` `工具定义=backend.app.agents.tools.TOOL_SPECS`；`tools/list`
+  返回 21 个工具；`tools/call providers_list` 返回真实 provider 列表；
+  `items_get` 传 `account_id=../../etc` 返回 `code=not_found`（未穿越）。
 
 **未验证（不要当成已完成）**
 - **真实闲鱼平台一次没打**：协议层全部走 MockTransport。发布/编辑/上下架/发消息
