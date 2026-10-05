@@ -121,6 +121,27 @@ def set_cookie(account_id: str, cookie: str, xianyu_user_id: str = '',
     )
 
 
+def refresh_token_cookies(account_id: str, cookie: str) -> None:
+    """把 mtop 续期后的 Cookie 写回库（``_m_h5_tk`` 等签名令牌）。
+
+    **不能用 ``set_cookie``**：那个函数是「扫码验证成功」的语义，会把
+    ``login_state`` 改成 active 并清掉 ``relogin_reason`` —— 登录态已经过期
+    的账号只是刷新一下签名令牌，不能因此被标成「已登录」。这里只动 cookie
+    与 updated_at 两列。
+
+    不落库的后果是实打实的：``common.get_client`` 每次都新建客户端，令牌只
+    留在内存里，下一次调用又得重新走一遍「失败一次换令牌」的握手；而
+    ``_fill_profile`` / 商品同步这类**只调一次**的地方根本等不到第二次，
+    用户看到的就是「令牌为空」的报错。
+    """
+    if not cookie:
+        return
+    db.execute(
+        'UPDATE account_credentials SET cookie = ?, updated_at = ? WHERE account_id = ?',
+        (cookie, _now(), account_id),
+    )
+
+
 def set_login_state(account_id: str, state: str, reason: str = '') -> None:
     """置登录态。登录态过期走这里 —— **不是风控**，不动 risk_state。"""
     db.execute(

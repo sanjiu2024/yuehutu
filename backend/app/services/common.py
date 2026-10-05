@@ -172,9 +172,18 @@ def _bind_im_service(account_id: str, client: Any) -> Any:
     `_ensure_im()` 建好会话后回调钩子，服务层据此注册入站 handler；没有这一步，
     买家真的说话时帧会落到一个空 handler 列表上。
 
+    顺带把 **account_id 写在客户端上**（`persist_account_id`）：mtop 会把自己的
+    签名令牌 `_m_h5_tk` 续期写回库，写哪一行只有服务层知道。协议层不认识业务
+    账号表，所以这个信息必须由这里注入。
+
     **只加不改语义**：服务层没就绪 / 客户端不支持钩子 / 钩子自己抛异常，都只是少收
     几条私信，绝不允许影响 `get_client` 的返回值。
     """
+    try:
+        if hasattr(client, 'persist_account_id'):
+            client.persist_account_id = str(account_id)
+    except Exception:  # noqa: BLE001 - 打标记失败不能影响拿客户端
+        pass
     try:
         module = importlib.import_module('backend.app.services.im_service')
         bind = getattr(module, 'bind', None)

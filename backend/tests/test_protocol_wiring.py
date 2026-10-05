@@ -35,6 +35,10 @@ from backend.app.xianyu.client import XianyuClient  # noqa: E402
 #: 一个形状正确的最小 Cookie：必须有 `unb`，否则 XianyuClient 会（正确地）拒绝。
 GOOD_COOKIE = '_m_h5_tk=abc_123; unb=2200000001; cookie2=deadbeef; _tb_token_=xyz'
 NO_UNB_COOKIE = '_m_h5_tk=abc_123; cookie2=deadbeef'
+#: **真机扫码拿到的 Cookie 就长这样 —— 没有 `_m_h5_tk`**（实测键只有
+#: `_samesite_flag_ / _tb_token_ / cookie2 / t / XSRF-TOKEN / csg / sgcookie /
+#: tracknick / unb`）。令牌握手相关的用例必须用这个，不能用 GOOD_COOKIE。
+NO_TOKEN_COOKIE = 'unb=2200000001; cookie2=deadbeef; _tb_token_=xyz'
 
 
 class ProtocolWiringTest(unittest.TestCase):
@@ -179,5 +183,179 @@ class MethodShadowingTest(unittest.TestCase):
         self.assertEqual(len(calls), 1, '第二次没走缓存，会重复取 IM token')
 
 
+class MtopTokenHandshakeTest(unittest.TestCase):
+    """mtop 的 `_m_h5_tk` 握手：失败一次拿到令牌 → 带新令牌重试 → 令牌写回库。
+
+    **为什么需要这一组**：库里扫码来的 Cookie **没有** `_m_h5_tk`（真机实测键为
+    `_samesite_flag_ / _tb_token_ / cookie2 / t / XSRF-TOKEN / csg / sgcookie /
+    tracknick / unb`）。这种 Cookie 第一次调用必然返回
+    `FAIL_SYS_TOKEN_EMPTY::令牌为空`，而**失败响应本身就带 Set-Cookie 下发
+    `_m_h5_tk`** —— 不重试的话，「同步商品」永远报令牌为空；不落库的话，
+    `common.get_client` 每次新建客户端都要重新走一遍这个失败（取资料、发布这类
+    只调一次的路径根本等不到第二次）。
+    """
+
+    NEW_TOKEN = '369401f2e251d9576770753df0cc2614'
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        from backend.tests.testenv import use_temp_app_dir
+
+        use_temp_app_dir(cls.tmp.name)
+
+    @classmethod
+    def tearDownClass(cls):
+        db.reset_connection()
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        db.reset_connection()
+        db.execute('DELETE FROM account_credentials')
+        db.execute('DELETE FROM accounts')
+        db.execute(
+            "INSERT INTO accounts(id, nickname, enabled, auto_reply, created_at, updated_at) "
+            "VALUES('wired','接线测试号',1,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)")
+        db.execute(
+            'INSERT INTO account_credentials(account_id, cookie, xianyu_user_id, login_state,'
+            ' relogin_reason, updated_at)'
+            " VALUES('wired', ?, '2200000001', 'active', '', CURRENT_TIMESTAMP)",
+            (NO_TOKEN_COOKIE,),
+        )
+
+    def _client_with_stub(self, stub):
+        import httpx
+
+        client = XianyuClient(store.get_cookie('wired'), transport=httpx.MockTransport(stub))
+        client.persist_account_id = 'wired'
+        return client
+
+    def _token_handshake_stub(self, fail_ret='FAIL_SYS_TOKEN_EMPTY::令牌为空'):
+        """第一次（Cookie 里没令牌）失败并下发新令牌；第二次必须带新令牌。"""
+        import httpx
+
+        seen = []
+
+        def handler(request):
+            cookie_header = request.headers.get('cookie', '')
+            params = request.url.params
+            form = dict(httpx.QueryParams(request.content.decode('utf-8')))
+            seen.append({
+                'token_in_cookie': '_m_h5_tk=' in cookie_header,
+                't': params.get('t'),
+                'sign': params.get('sign'),
+                # 签名是对**表单里的 data 字段**算的，不是整个请求体
+                'data': form.get('data', ''),
+            })
+            if '_m_h5_tk=' not in cookie_header:
+                return httpx.Response(
+                    200, json={'ret': [fail_ret], 'data': None},
+                    headers={'set-cookie': f'_m_h5_tk={self.NEW_TOKEN}_1759000000000; Path=/'},
+                )
+            return httpx.Response(200, json={
+                'ret': ['SUCCESS::调用成功'], 'data': {'totalCount': 0},
+            })
+
+        return handler, seen
+
+    def test_first_call_without_token_retries_once_and_succeeds(self):
+        import asyncio
+
+        handler, seen = self._token_handshake_stub()
+        client = self._client_with_stub(handler)
+        result = asyncio.run(client.mtop('mtop.idle.web.xyh.item.list', {'pageNumber': 1}))
+
+        self.assertEqual(len(seen), 2, f'不是「失败一次再成功一次」，实际发了 {len(seen)} 次')
+        self.assertFalse(seen[0]['token_in_cookie'], '第一次不该带令牌（库里本来就没有）')
+        self.assertTrue(seen[1]['token_in_cookie'], '重试没带上响应下发的新令牌')
+        # 第二次必须**用新令牌重签**：签名对不上，服务端照样返回令牌为空。
+        from backend.app.xianyu import mtop as mtop_mod
+
+        self.assertEqual(
+            seen[1]['sign'],
+            mtop_mod.generate_sign(seen[1]['t'], self.NEW_TOKEN, seen[1]['data']),
+            '重试用的还是旧 token（签名没跟着换）',
+        )
+        self.assertTrue(result['success'])
+        self.assertEqual(result['data'], {'totalCount': 0})
+
+    def test_refreshed_token_is_persisted_to_the_account_row(self):
+        import asyncio
+
+        handler, _ = self._token_handshake_stub()
+        client = self._client_with_stub(handler)
+        asyncio.run(client.mtop('mtop.idle.web.xyh.item.list', {'pageNumber': 1}))
+
+        stored = store.get_cookie('wired')
+        self.assertIn(f'_m_h5_tk={self.NEW_TOKEN}_1759000000000', stored,
+                      '续期的令牌没写回库 —— 下一个客户端实例又要从「令牌为空」重来一遍')
+
+    def test_refresh_does_not_flip_login_state(self):
+        """刷新令牌不能把 need_relogin 的账号标成已登录。
+
+        这正是不复用 `store.set_cookie`（扫码成功语义）的原因。
+        """
+        import asyncio
+
+        db.execute("UPDATE account_credentials SET login_state = 'need_relogin',"
+                   " relogin_reason = '登录态已过期' WHERE account_id = 'wired'")
+        handler, _ = self._token_handshake_stub()
+        client = self._client_with_stub(handler)
+        asyncio.run(client.mtop('mtop.idle.web.xyh.item.list', {'pageNumber': 1}))
+
+        row = db.query_one('SELECT login_state, relogin_reason FROM account_credentials'
+                           " WHERE account_id = 'wired'")
+        self.assertEqual(row['login_state'], 'need_relogin')
+        self.assertEqual(row['relogin_reason'], '登录态已过期')
+
+    def test_non_token_failure_is_not_retried(self):
+        """只对令牌类失败重试：别的失败重试一遍纯属浪费请求。"""
+        import asyncio
+
+        from backend.app.xianyu.client import XianyuError
+
+        handler, seen = self._token_handshake_stub(fail_ret='FAIL_BIZ_ITEM_NOT_EXIST::商品不存在')
+        client = self._client_with_stub(handler)
+        with self.assertRaises(XianyuError):
+            asyncio.run(client.mtop('mtop.idle.web.xyh.item.list', {'pageNumber': 1}))
+        self.assertEqual(len(seen), 1, '非令牌失败被重试了')
+
+    def test_session_expired_is_not_retried_and_raises(self):
+        """`Session过期` 与令牌失效是两回事：前者只能重新扫码，重试没有意义。"""
+        import asyncio
+
+        from backend.app.xianyu.client import SessionExpiredError
+
+        handler, seen = self._token_handshake_stub(
+            fail_ret='FAIL_SYS_SESSION_EXPIRED::Session过期，请重新登录')
+        client = self._client_with_stub(handler)
+        with self.assertRaises(SessionExpiredError):
+            asyncio.run(client.mtop('mtop.idle.web.xyh.item.list', {'pageNumber': 1}))
+        self.assertEqual(len(seen), 1, 'Session过期不该重试')
+
+    def test_no_infinite_loop_when_server_keeps_returning_token_empty(self):
+        """服务端一直说「令牌为空」时最多两次，绝不能转圈。"""
+        import asyncio
+
+        import httpx
+
+        from backend.app.xianyu.client import XianyuError
+
+        seen = []
+
+        def handler(request):
+            seen.append(1)
+            return httpx.Response(
+                200, json={'ret': ['FAIL_SYS_TOKEN_EMPTY::令牌为空'], 'data': None},
+                headers={'set-cookie': f'_m_h5_tk={self.NEW_TOKEN}_1759000000000; Path=/'},
+            )
+
+        client = self._client_with_stub(handler)
+        with self.assertRaises(XianyuError):
+            asyncio.run(client.mtop('mtop.idle.web.xyh.item.list', {'pageNumber': 1}))
+        self.assertEqual(len(seen), 2, f'重试次数不是 1（共发了 {len(seen)} 次）')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+

@@ -37,6 +37,29 @@ DEFAULT_TIMEOUT = 25
 # 只有这两个 Cookie 会在响应里续期，也只需要合并这两个。
 TOKEN_COOKIES = ('_m_h5_tk', '_m_h5_tk_enc')
 
+# 「签名令牌不对」这一类失败。**它们是可以自愈的**：失败响应本身就会
+# Set-Cookie 下发新的 ``_m_h5_tk``，带上它重签一次即可 —— 与
+# ``FAIL_SYS_SESSION_EXPIRED``（cookie2/unb 真死，只能重新扫码）是两回事。
+# 真机取证：库里 Cookie 没有 ``_m_h5_tk`` 时第一次调用必然返回
+# ``FAIL_SYS_TOKEN_EMPTY::令牌为空``，同一次响应就带回
+# ``_m_h5_tk=369401f2…``，第二次调用即 SUCCESS。
+TOKEN_ERROR_MARKERS = (
+    'FAIL_SYS_TOKEN_EMPTY',
+    'FAIL_SYS_TOKEN_EXPIRED',
+    'FAIL_SYS_TOKEN_EXOIRED',  # 平台自己的拼写错误，别以为是笔误删掉
+    '令牌为空',
+    '令牌过期',
+)
+
+
+def is_token_error(message_or_ret: Any) -> bool:
+    """判断失败信息是不是「签名令牌不对」这一类（可带新令牌重试）。"""
+    if isinstance(message_or_ret, (list, tuple, set)):
+        text = ' '.join(str(item) for item in message_or_ret)
+    else:
+        text = str(message_or_ret or '')
+    return any(marker in text for marker in TOKEN_ERROR_MARKERS)
+
 
 def generate_sign(t: str, token: str, data: str) -> str:
     """生成 MTOP 签名。

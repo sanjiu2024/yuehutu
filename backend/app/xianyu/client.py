@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 from loguru import logger
 
 from . import cookies as cookie_utils
-from . import fingerprint, im, mtop, net, risk
+from . import fingerprint, im, mtop, net, risk, store
 
 # ---------------------------------------------------------------------------
 # 接口常量。版本号**必须逐个硬编码**：``*.pc.idleitem.*`` 族是 1.0，
@@ -127,6 +127,10 @@ class XianyuClient:
             raise ValueError('Cookie 里缺少 unb，无法确定账号 ID')
         self._client = client
         self._transport = transport
+        # 「这次是替哪个账号调用的」，由服务层（``services/common.get_client``）注入。
+        # mtop 续期后的 Cookie 要写回**这个账号**的库行；没有注入时退回 cookie_id
+        # （真实账号的 accounts.id 就是 Cookie 里的 unb，两者一致）。
+        self.persist_account_id = ''
         self._im: Optional[im.ImSession] = None
         # 注意：这个属性**绝不能叫 `_im_token`** —— 那会遮蔽同名的 `_im_token()` 方法，
         # 实例属性把绑定方法顶掉之后 `await self._im_token()` 就是 `None()`，
@@ -201,6 +205,13 @@ class XianyuClient:
         与旧实现的差别：**成功才 reset 熔断计数**。旧实现只在调用方显式
         ``guard.reset()`` 时清零，结果「连续命中」几乎永远在累加，阶梯很快
         爬到 20 分钟。
+
+        另外两处是「令牌握手」：
+        * 库里 Cookie 没有 ``_m_h5_tk`` 时，第一次调用必然返回
+          ``FAIL_SYS_TOKEN_EMPTY::令牌为空`` —— 失败响应本身就带着新的
+          ``_m_h5_tk``，所以这里**带新令牌重签一次**（仅一次）。
+        * 换到的令牌要**写回库**，否则每次 ``common.get_client`` 新建客户端
+          都要重来一遍，而只调一次的路径（取资料 / 商品同步）永远等不到重试。
         """
         guard = risk.registry.get(self.cookie_id)
         if guard.is_blocked:
@@ -210,49 +221,77 @@ class XianyuClient:
             )
 
         data_str = mtop.encode_data(data)
-        t = str(int(time.time() * 1000))
-        token = mtop.token_from_cookies(self.cookie_str)
-        params = mtop.call_params(api, v, data_str, token, t, spm_cnt)
-        headers = fingerprint.headers({
-            'accept': 'application/json',
-            'content-type': 'application/x-www-form-urlencoded',
-            'origin': 'https://www.goofish.com',
-            'referer': 'https://www.goofish.com/',
-            'cookie': self.cookie_str.replace('\n', '').replace('\r', ''),
-        })
+        used_token = ''
+        for attempt in (1, 2):
+            t = str(int(time.time() * 1000))
+            used_token = mtop.token_from_cookies(self.cookie_str)
+            params = mtop.call_params(api, v, data_str, used_token, t, spm_cnt)
+            headers = fingerprint.headers({
+                'accept': 'application/json',
+                'content-type': 'application/x-www-form-urlencoded',
+                'origin': 'https://www.goofish.com',
+                'referer': 'https://www.goofish.com/',
+                'cookie': self.cookie_str.replace('\n', '').replace('\r', ''),
+            })
 
-        client = await self._http()
-        try:
-            response = await client.post(
-                mtop.api_url(api, v), params=params, data={'data': data_str},
-                headers=headers,
-            )
-        except Exception as exc:
-            raise XianyuError(f'MTOP 请求异常: {exc}') from exc
+            client = await self._http()
+            try:
+                response = await client.post(
+                    mtop.api_url(api, v), params=params, data={'data': data_str},
+                    headers=headers,
+                )
+            except Exception as exc:
+                raise XianyuError(f'MTOP 请求异常: {exc}') from exc
 
-        # 无论成败都要吸收续期的 token cookie：失败响应里也常带着新的 _m_h5_tk，
-        # 丢掉它下一次调用还是用旧 token，签名继续失败，形成死循环。
-        self.cookie_str = mtop.merge_token_cookies(self.cookie_str, response)
+            # 无论成败都要吸收续期的 token cookie：失败响应里也常带着新的
+            # _m_h5_tk，丢掉它下一次调用还是用旧 token，签名继续失败，死循环。
+            self.cookie_str = mtop.merge_token_cookies(self.cookie_str, response)
+            self._persist_token_cookies()
 
-        try:
-            payload = response.json()
-        except Exception:
-            text = (response.text or '')[:200]
-            raise XianyuError(f'MTOP 响应不是 JSON（HTTP {response.status_code}）: {text}')
+            try:
+                payload = response.json()
+            except Exception:
+                text = (response.text or '')[:200]
+                raise XianyuError(
+                    f'MTOP 响应不是 JSON（HTTP {response.status_code}）: {text}'
+                )
 
-        success, message, ret_list = mtop.parse_ret(payload)
-        if not success:
+            success, message, ret_list = mtop.parse_ret(payload)
+            if success:
+                guard.reset()
+                return {
+                    'success': True,
+                    'data': payload.get('data') if isinstance(payload, dict) else None,
+                    'message': message,
+                    'ret': ret_list,
+                    'cookies_str': self.cookie_str,
+                }
+
+            # 先分流登录态过期/风控（会抛），再判要不要为令牌重试。
             self._check_response(payload, message)
+            fresh_token = mtop.token_from_cookies(self.cookie_str)
+            retryable = attempt == 1 and (
+                mtop.is_token_error(ret_list) or mtop.is_token_error(message)
+            )
+            if retryable and fresh_token and fresh_token != used_token:
+                logger.warning(
+                    f'[{self.cookie_id}] MTOP 签名令牌不可用（可自愈），'
+                    f'带响应下发的新令牌重试一次: {message}'
+                )
+                continue
             raise XianyuError(f'MTOP 调用失败 [{api}]: {message}', ret=ret_list)
 
-        guard.reset()
-        return {
-            'success': True,
-            'data': payload.get('data') if isinstance(payload, dict) else None,
-            'message': message,
-            'ret': ret_list,
-            'cookies_str': self.cookie_str,
-        }
+        # 循环只可能从 continue 走到这里（attempt==2 的分支一定会抛），
+        # 保底抛一条，避免静态分析认为「可能返回 None」。
+        raise XianyuError(f'MTOP 调用失败 [{api}]: 令牌重试后仍未成功')
+
+    def _persist_token_cookies(self) -> None:
+        """把续期后的 Cookie 写回库，让下一个客户端实例直接带上令牌。"""
+        account_id = getattr(self, 'persist_account_id', '') or self.cookie_id
+        try:
+            store.refresh_token_cookies(account_id, self.cookie_str)
+        except Exception as exc:  # noqa: BLE001 - 落库失败不能打断业务调用
+            logger.debug(f'[{self.cookie_id}] 续期 Cookie 落库失败: {exc}')
 
     # -- 商品 -------------------------------------------------------------
 
