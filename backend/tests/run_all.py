@@ -8,9 +8,11 @@
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 
 TESTS_DIR = pathlib.Path(__file__).resolve().parent
 ROOT = TESTS_DIR.parent.parent
@@ -31,23 +33,30 @@ def main() -> int:
 
     passed: list[str] = []
     failed: list[tuple[str, str]] = []
-    for path in files:
-        rel = path.relative_to(ROOT).as_posix()
-        proc = subprocess.run(
-            [sys.executable, str(path)],
-            cwd=str(ROOT),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        tail = (proc.stdout or "").strip().splitlines()[-1:] or [""]
-        if proc.returncode == 0:
-            passed.append(rel)
-            print(f"PASS  {rel}  ({tail[0]})")
-        else:
-            failed.append((rel, (proc.stdout or "") + (proc.stderr or "")))
-            print(f"FAIL  {rel}  (exit {proc.returncode})")
+    # 每个测试给一个独立的数据目录：否则测试里的临时库会往真实 %APPDATA% 写
+    # desktop_credentials.json，把生产管理员的密码覆盖掉（PACKAGING.md 6.5）。
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as sandbox:
+        for path in files:
+            rel = path.relative_to(ROOT).as_posix()
+            env = dict(os.environ)
+            env["XIANYU_APP_DIR"] = os.path.join(sandbox, path.stem)
+            env["PYTHONPATH"] = "."
+            proc = subprocess.run(
+                [sys.executable, str(path)],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+            )
+            tail = (proc.stdout or "").strip().splitlines()[-1:] or [""]
+            if proc.returncode == 0:
+                passed.append(rel)
+                print(f"PASS  {rel}  ({tail[0]})")
+            else:
+                failed.append((rel, (proc.stdout or "") + (proc.stderr or "")))
+                print(f"FAIL  {rel}  (exit {proc.returncode})")
 
     print("-" * 60)
     print(f"TOTAL {len(files)}  PASS {len(passed)}  FAIL {len(failed)}")

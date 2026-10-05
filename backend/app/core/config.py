@@ -13,7 +13,10 @@ VERSION = '0.1.0'
 # 打包成 exe 后 sys.frozen 为真，此时用 exe 所在目录旁边的 data（便携）还是 APPDATA？
 # 选择 APPDATA：exe 可能放在 Program Files（不可写）。
 _APPDATA = os.environ.get('APPDATA') or str(Path.home() / 'AppData' / 'Roaming')
-APP_DIR = Path(_APPDATA) / APP_NAME
+# 测试/CI 用 XIANYU_APP_DIR 把**整个数据目录**挪到临时位置。
+# 只改 DB_PATH 是不够的：desktop_credentials.json 会写真实 APPDATA，把生产管理员的
+# 密码覆盖成临时库的随机密码，导致桌面自动登录 500（见 docs/PACKAGING.md 6.5）。
+APP_DIR = Path(os.environ['XIANYU_APP_DIR']) if os.environ.get('XIANYU_APP_DIR') else Path(_APPDATA) / APP_NAME
 DATA_DIR = APP_DIR / 'data'
 LOGS_DIR = APP_DIR / 'logs'
 BROWSER_DIR = APP_DIR / 'browser_profiles'   # Playwright 持久化 profile

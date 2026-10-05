@@ -31,8 +31,7 @@ def desktop_login(x_desktop_secret: str = Header(default='')):
     """桌面外壳专用：持有本地密钥即可换 token。"""
     if not x_desktop_secret or x_desktop_secret != security.local_secret():
         raise HTTPException(status_code=401, detail='本地密钥不正确')
-    row = security.ensure_admin()
-    user = security.authenticate(row[0], row[1])
+    user = security.desktop_user()
     if user is None:
         raise HTTPException(status_code=500, detail='管理员账号异常')
     token = security.issue_token(user['id'])

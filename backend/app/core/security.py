@@ -15,6 +15,8 @@ import secrets
 import time
 from typing import Any, Dict, Optional, Tuple
 
+from loguru import logger
+
 from . import config, db
 
 TOUCH_INTERVAL = 300.0
@@ -38,29 +40,67 @@ def verify_password(password: str, stored: str) -> bool:
 
 
 def ensure_admin() -> Tuple[str, str]:
-    """确保存在管理员。返回 (username, password)（仅在首次创建时生成随机密码）。"""
-    row = db.query_one('SELECT id, username FROM users WHERE is_admin = 1 LIMIT 1')
+    """确保存在管理员，并且**凭据文件里的密码一定和库里的 hash 对得上**。
+
+    返回 (username, password)；password 为空表示这次没有新生成密码。
+
+    自愈逻辑（修 docs/PACKAGING.md 6.5）：历史上跑测试只把 DB_PATH 指到临时目录、
+    没改 CRED_PATH，于是临时库里的随机密码被写进真实凭据文件，而真实库里的 hash
+    还是旧的 → `POST /api/auth/desktop` 永远 500「管理员账号异常」，用户看到的是
+    「窗口开了但没登录」。这里在验不过时**重新生成一对并同时落库 + 落盘**，两边
+    自愈；不去信任那个来历不明的文件内容（它可能是别的库的密码）。
+    """
+    row = db.query_one('SELECT id, username, password_hash FROM users WHERE is_admin = 1 LIMIT 1')
     cred_path = config.CRED_PATH
     if row is not None:
         if cred_path.exists():
             try:
                 data = json.loads(cred_path.read_text('utf-8'))
-                return data.get('username', row['username']), data.get('password', '')
             except (OSError, ValueError):
-                pass
-        return row['username'], ''
+                data = {}
+            username = data.get('username') or row['username']
+            password = data.get('password') or ''
+            if password and verify_password(password, row['password_hash']):
+                return username, ''
+        return _reset_admin_password(int(row['id']), row['username'])
     username = 'admin'
     password = secrets.token_urlsafe(9)
     db.execute(
         'INSERT INTO users(username, password_hash, is_admin) VALUES(?, ?, 1)',
         (username, hash_password(password)),
     )
+    _write_credentials(username, password)
+    return username, password
+
+
+def _write_credentials(username: str, password: str) -> None:
     config.ensure_dirs()
-    cred_path.write_text(
+    config.CRED_PATH.write_text(
         json.dumps({'username': username, 'password': password}, ensure_ascii=False, indent=2),
         encoding='utf-8',
     )
+
+
+def _reset_admin_password(user_id: int, username: str) -> Tuple[str, str]:
+    """凭据文件缺失或与库不一致时，重生成一对一致的（库 + 文件同时更新）。"""
+    password = secrets.token_urlsafe(9)
+    db.execute('UPDATE users SET password_hash = ? WHERE id = ?', (hash_password(password), user_id))
+    _write_credentials(username, password)
+    logger.warning('管理员凭据与数据库不一致，已重置并写回 {}', config.CRED_PATH)
     return username, password
+
+
+def desktop_user() -> Optional[Dict[str, Any]]:
+    """桌面外壳自动登录：确保管理员存在且凭据一致，然后直接返回该用户。
+
+    比「`ensure_admin()` 拿明文密码再 `authenticate()`」稳：后者在「密码与库一致、
+    无需重置」时拿不到明文（返回空串）就必然 401/500，正是 PACKAGING.md 6.5 的表象。
+    """
+    ensure_admin()
+    row = db.query_one('SELECT id, username, is_admin FROM users WHERE is_admin = 1 LIMIT 1')
+    if row is None:
+        return None
+    return {'id': row['id'], 'username': row['username'], 'is_admin': bool(row['is_admin'])}
 
 
 def authenticate(username: str, password: str) -> Optional[Dict[str, Any]]:

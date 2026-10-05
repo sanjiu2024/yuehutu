@@ -30,12 +30,24 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
 
+from ..core import events
 from ..xianyu import login as qr_login
 from ..xianyu import risk as risk_mod
 from ..xianyu import store
 from .deps import current_user
 
 router = APIRouter(prefix='/api/accounts', tags=['accounts'])
+
+
+def _publish(topic: str, payload: Dict[str, Any]) -> None:
+    """账号变更广播。前端账号页/会话页靠它实时刷新。
+
+    推送失败绝不能影响已经写库的变更，所以整体吞异常。
+    """
+    try:
+        events.publish(topic, payload)
+    except Exception:  # pragma: no cover
+        pass
 
 
 class PollPayload(BaseModel):
@@ -148,6 +160,7 @@ async def _poll_ticket(ticket: str) -> Dict[str, Any]:
             login_state=store.STATE_ACTIVE,
         )
         store.log_operation(user_id, 'qr_login', success=True)
+        _publish('accounts.changed', {'account_id': user_id, 'reason': 'qr_login'})
     return _to_contract_state(data)
 
 
@@ -196,6 +209,7 @@ def patch_account(account_id: str, payload: Dict[str, Any] = Body(...),
         remark=payload.get('remark'),
     )
     store.log_operation(account_id, 'patch', success=True, detail=payload)
+    _publish('accounts.changed', {'account_id': account_id, 'patch': payload})
     account = store.get_account(account_id)
     return {'success': True, 'data': _decorate(account) if account else {'id': account_id}}
 
@@ -208,6 +222,7 @@ def toggle_account(account_id: str, payload: TogglePayload,
         raise _not_found(account_id)
     store.update_account(account_id, enabled=payload.enabled)
     store.log_operation(account_id, 'toggle', success=True, detail=str(payload.enabled))
+    _publish('accounts.changed', {'account_id': account_id, 'enabled': bool(payload.enabled)})
     return {'success': True, 'data': {'id': account_id, 'enabled': bool(payload.enabled)}}
 
 
@@ -287,4 +302,5 @@ def delete_account(account_id: str, user=Depends(current_user)) -> Dict[str, Any
     if not store.delete_account(account_id):
         raise _not_found(account_id)
     risk_mod.registry.reset(account_id)
+    _publish('accounts.changed', {'account_id': account_id, 'deleted': True})
     return {'success': True, 'data': {'id': account_id, 'deleted': True}}

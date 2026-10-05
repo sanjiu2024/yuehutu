@@ -25,12 +25,13 @@ class SkeletonTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        # 整个数据目录挪到临时位置：只改 DB_PATH 会让临时库的随机密码覆盖真实
+        # desktop_credentials.json（docs/PACKAGING.md 6.5）。
+        from backend.tests.testenv import use_temp_app_dir
+
         cls.orig_db_path = config.DB_PATH
-        config.DB_PATH = Path(cls.tmp.name) / 'app.db'
+        use_temp_app_dir(cls.tmp.name)
         cls.orig_mcp_token = config.MCP_TOKEN_PATH
-        config.MCP_TOKEN_PATH = Path(cls.tmp.name) / 'mcp_token.txt'
-        db.reset_connection()
-        db.init_db()
 
         from backend.app.main import create_app
 
@@ -112,6 +113,32 @@ class SkeletonTest(unittest.TestCase):
 
         resp = self.client.post('/api/auth/desktop', headers={'X-Desktop-Secret': 'wrong'})
         self.assertEqual(resp.status_code, 401, resp.text)
+
+    def test_desktop_login_survives_clobbered_credentials(self):
+        """回归（docs/PACKAGING.md 6.5）：凭据文件被别的库的密码覆盖后必须自愈。
+
+        历史现象：跑过一次测试后，桌面外壳启动 → `管理员账号异常`（500），
+        用户看到「窗口开了但没登录」。现在 `ensure_admin()` 会重生成一对一致的。
+        """
+        config.CRED_PATH.write_text(
+            json.dumps({'username': 'admin', 'password': 'stale-password-from-another-db'}),
+            encoding='utf-8',
+        )
+        resp = self.client.post('/api/auth/desktop', headers={'X-Desktop-Secret': security.local_secret()})
+        self.assertEqual(resp.status_code, 200, resp.text)
+
+        # 自愈后：凭据文件里的密码必须能真正登录（两边一致）
+        cred = json.loads(config.CRED_PATH.read_text(encoding='utf-8'))
+        self.assertIsNotNone(security.authenticate(cred['username'], cred['password']))
+        # 且坏密码不再可用
+        self.assertIsNone(security.authenticate(cred['username'], 'stale-password-from-another-db'))
+
+    def test_desktop_login_survives_missing_credentials(self):
+        config.CRED_PATH.unlink(missing_ok=True)
+        resp = self.client.post('/api/auth/desktop', headers={'X-Desktop-Secret': security.local_secret()})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        cred = json.loads(config.CRED_PATH.read_text(encoding='utf-8'))
+        self.assertIsNotNone(security.authenticate(cred['username'], cred['password']))
 
 
 if __name__ == '__main__':
