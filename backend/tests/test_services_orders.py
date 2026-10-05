@@ -60,7 +60,10 @@ def install_boom_client(message: str) -> None:
     module = types.ModuleType(CLIENT_MODULE)
 
     class BoomClient:
-        def __init__(self, account_id):
+        #: 签名必须与真实 `backend/app/xianyu/client.py::XianyuClient(cookie_str, ...)` 一致。
+        #: 老测试写的是 `__init__(self, account_id)` —— 照抄了 common.get_client 当年
+        #: 那条**把账号 ID 当 Cookie 传**的错误假设，所以哪怕生产断链也一路绿。
+        def __init__(self, cookie_str, client=None, transport=None):
             raise RuntimeError(message)
 
     module.XianyuClient = BoomClient  # type: ignore[attr-defined]
@@ -193,7 +196,16 @@ class OrdersServiceTest(unittest.TestCase):
         self.assertEqual(logs[0]['success'], 0)
 
     def test_client_construction_failure_is_not_ready(self):
-        """cookie 无效/缺 unb -> 仍然是 xianyu_not_ready，message 保留真实原因。"""
+        """cookie 无效/缺 unb -> 仍然是 xianyu_not_ready，message 保留真实原因。
+
+        必须先有一条凭证：`common.get_client` 现在会先 `store.get_cookie(account_id)`
+        再构造客户端，没有 Cookie 时它连构造都不做（那是另一条路径，见
+        `test_protocol_wiring.py`）。这里要测的正是「构造本身炸了」。
+        """
+        db.execute("INSERT OR REPLACE INTO accounts(id, nickname, enabled, auto_reply) "
+                   "VALUES('acc1','测试号',1,1)")
+        db.execute("INSERT OR REPLACE INTO account_credentials(account_id, cookie, login_state) "
+                   "VALUES('acc1','unb=2200000001; cookie2=x','active')")
         install_boom_client('Cookie 里缺少 unb，无法确定账号 ID')
         try:
             result = orders.sync_orders('acc1')
