@@ -60,6 +60,11 @@ items(id INTEGER PK, account_id TEXT, item_id TEXT UNIQUE, title TEXT, price REA
 -- AI 供应商与角色
 providers(id INTEGER PK, name TEXT, base_url TEXT, api_key TEXT, default_model TEXT,
           enabled INTEGER DEFAULT 1, is_default INTEGER DEFAULT 0, created_at, updated_at)
+          -- api_key **落库是密文**（审计 A3）：`backend/app/core/crypto.py` 的
+          -- `enc:v1:<b64>` 格式，密钥从 `security.local_secret()` 派生（不是新发明的密钥源）。
+          -- 历史遗留的明文行在 `GET/POST/PUT /api/providers` 上做一次性幂等迁移。
+          -- 出站仍然只回 `api_key_masked`，任何接口都不许回明文。
+          -- ⚠ 删掉 `<data>/local_secret.txt` = 所有 API Key 都解不开，只能重新填一次
 ai_roles(role TEXT PK,               -- master|item|cs|bargain|cross|vision
          provider_id INTEGER, model TEXT, temperature REAL DEFAULT 0.7,
          system_prompt TEXT, enabled INTEGER DEFAULT 1, updated_at)
@@ -107,17 +112,30 @@ GET    /api/system/info
 GET    /api/accounts              -> [{id,nickname,enabled,auto_reply,login_state,runtime_state,remark}]
 POST   /api/accounts/qr/start     -> {ticket,qr_image_b64,expires_in}
 GET    /api/accounts/qr/{ticket}  -> {state:pending|scanned|confirmed|expired|failed,account_id?}
-PATCH  /api/accounts/{id}         {enabled?,auto_reply?,remark?}
-DELETE /api/accounts/{id}
-POST   /api/accounts/{id}/relogin -> 触发重新扫码/续期
+PATCH  /api/accounts/{id}         {enabled?,auto_reply?,remark?}   -- enabled 就是 IM 入站的生命周期
+DELETE /api/accounts/{id}         -> {deleted:true,purged:true,counts:{conversations,messages}}
+      -- 删号**连带清掉该账号的 conversations 与 messages**（审计 C4，以前删完还能看到该账号的会话）；
+      --   先摘 IM 会话再删行。清理失败不假装成功：回 `purged:false` + `error`。
+      --   `counts` 由 `services/chats.py::purge_account_data(account_id)` 给出（幂等，第二次 0/0）。
+POST   /api/accounts/{id}/relogin -> 触发重新扫码/续期（成功后重新挂 IM）
 POST   /api/accounts/{id}/captcha -> 打开人工验证浏览器窗口（滑块）
 GET    /api/accounts/{id}/status
 POST   /api/accounts/qr/poll      -- 兼容别名（旧名，等价于 GET /api/accounts/qr/{ticket}）
 POST   /api/accounts/{id}/toggle  -- 兼容别名（旧名，等价于 PATCH 的 auto_reply）
 
+# 登录态过期的统一口径（审计 B2：过去没有任何回写路径，前端永远显示「已登录」）
+`backend/app/xianyu/client.py` 抛 `SessionExpiredError` 时，`services/common.py::call_method()`
+识别它 → `store.mark_need_relogin()` 回写 + `events.publish('accounts.changed',
+{reason:'session_expired',login_state:'need_relogin'})`，响应给 `code='verification_required'`
+且**保留平台原文**。前端据此弹「重新扫码」，而不是当成偶发网络错误让人一直重试。
+`xianyu_not_ready` 与它不同：那是「协议层此刻不可用」，用户不必重登。
+
 GET    /api/items?account_id=&status=&keyword=&page=&size=
+GET    /api/items/{account_id}                 -> 该账号的商品列表（带 status/keyword/page/size）
 GET    /api/items/{account_id}/{item_id}       -> 单条商品（MCP 的 items_get 直连这条，别再全表拉）
-GET    /api/items/{item_id}       -- 无账号上下文时按 item_id 直查
+      -- 单条商品**必须**带账号上下文。曾经存在过一条扁平的 `GET /api/items/{item_id}`，
+      --   它与账号列表路径形状完全相同、被 FastAPI 按声明顺序吃掉，已删除：同一个
+      --   单段路径不可能既是「账号列表」又是「商品详情」，只能保留一个。
 POST   /api/items/{account_id}/sync            -> 从闲鱼拉取在售商品入库
 POST   /api/items/{account_id}/publish         {title,price,description,images,category_id,...}
 POST   /api/items/{account_id}/{item_id}/edit  {price?,title?,description?,stock?,images?}
@@ -140,12 +158,42 @@ POST   /api/chats/classify                     {content} -> {intent,replies[]}  
 POST   /api/chats/incoming                     {account_id,content,buyer_id,item_id?,conversation_id?,msg_id?,...}
       -> {message,ai_reply,ai_result,ai_send,mode,duplicate}
       -- 买家来信的统一入口；给了 msg_id 即幂等。
+      -- ai_result.code 说明「为什么这条来信没有产生 AI 回复」。**case 很重要**：它是
+      --   入站路径上唯一能看见闸门原因的地方（`ai_send` 只在 AI 真跑过时才非空）。
+      --   保证给出的只有下面两个**闸门** code：
+      --   'mode_not_auto'          该会话处于人工接管/关闭，AI 一律不生成
+      --   'account_auto_reply_off' 账号级 enabled=0 或 auto_reply=0，AI 一律不生成
+      --   其余失败（没有可用 provider、LLM 报错、返回格式无法识别）一律
+      --   `success=False` + `message`（人类可读原文）；只有抛异常那条路径额外带
+      --   `code='ai_error'`，正常失败**没有** code，前端不能假定一定有。
+      --   账号行不存在时**放行**（IM 帧派发不因缺行而静默丢弃），此时不会给出上述 code。
       -- ai_send 只在 mode=auto 且真的尝试发送时出现：
       --   {sent:bool, code?:'missing_cid'|'risk_cooldown'|'risk_blocked'|'protocol_error',
       --    message?:str, cid?:str}；code 出现即表示「AI 生成了但没有发出去」，
       --   且一定同时写 operation_logs(action='ai_reply_send'|'ai_reply_blocked')。
       -- mode != 'auto'（人工接管）时一律不发送，ai_send 不出现。
 WS     /api/ws?token=...                                        -- 新消息/状态推送
+       -- 服务端推送的 topic 全量清单（前端按 topic 订阅后静默重拉，不刷新页面）：
+       --   chats.message        {conversation_id,message_id,direction,sender,content}
+       --   chats.mode_changed   {conversation_id,mode}
+       --   chats.ai_reply       {conversation_id,message_id,role,text}
+       --   accounts.changed     {account_id, patch?|action?}
+       --   items.updated        {account_id, item_ids[], action:'publish'|'edit'|'status'|'sync'|'batch_edit'}
+       --   providers.changed    {provider_id?, is_default?, action:'create'|'update'|'delete'|'set_default'|'roles'}
+       --                        **不许**带 api_key 明文
+       --   prompts.changed      {action:'create'|'update'|'delete', prompt_id, scope?}
+       --   risk.changed         {account_id, reason?}
+       --   risk.cleared         {account_id, source?}
+       --   agent.message        {from_role,to_role,kind:'ask'|'answer'|'notify',...}
+       --   agent.reply_failed   {conversation_id,role,error}
+       --   agent.cross_failed   {conversation_id,error}
+       --   agent.master.tools   {tool,ok,...}
+       -- 前端页面订阅关系是契约的一部分：概览/账号/风控订阅 accounts.changed 与
+       -- risk.*；商品页订阅 items.updated；AI 配置订阅 providers.changed；提示词页
+       -- 订阅 prompts.changed；AI 沟通订阅 agent.*；会话页订阅 chats.*。
+       -- 发布事件绝不能影响已写库的业务变更（各路由的 _publish 整体吞异常）。
+       -- 回归测试：backend/tests/test_ws_events.py 用真 websocket_connect 断言
+       -- accounts.changed 与 prompts.changed 真的投递到客户端。
 
 GET    /api/agents/roles ; PUT /api/agents/roles/{role}
 GET    /api/agents/roles/{role}/prompt-preview -> 该角色实际生效的系统提示词（三级合并后的结果）
@@ -214,7 +262,11 @@ GET    /api/settings ; PUT /api/settings       {key:value,...}
 ```
 `kind` ∈ `ask|answer|notify`。`cross` 收到后：① 用 `payload.candidate_items` 或商品索引匹配 → ② 向目标 `item:<item_id>` 发 `ask` → ③ 汇总为 `answer` 返回原 AI。所有消息落 `agent_messages`，前端「AI 之间沟通」页可见。
 
-**提示词三级覆盖**：`ai_prompts`（scope=global/account/item，priority 大者胜）→ 与 `ai_roles.system_prompt` 拼接。默认提示词写在 `backend/app/agents/defaults.py`，**用户可在 UI 里改**。
+**角色判定**（审计 A2：`bargain`/`vision` 曾经是**死角色**）：`backend/app/agents/roles.py::role_for_conversation()` 先按**被钉住的角色**决定（`master`/`bargain`/`cross`/`vision` —— 卖家在 `conversations.agent_role` 里显式指定的容器角色不被覆盖），否则**看图 → `vision`、砍价词 → `bargain`**，都没命中才回退 `item`/`cs`。所以：`services/chats.py::ensure_conversation()` **不许预写死一个合法 `agent_role`**（`agent_role=''` 表示「没钉，按规则判」），`meta.image_url` 必须透传（要走白名单，见 `api/chats.py::_incoming_meta`）—— 少了任何一条，规则永远短路，两个角色永远选不上。
+
+**提示词三级覆盖**：`ai_prompts`（scope=global/account/item）**三级是拼接不是替换**：角色基础提示词 + global + account + item 各挑一条，按顺序拼到 system 上。**同一级里**的挑法（`prompts.py::_pick`）：先看 `role` 是否精确等于当前角色（写了具体角色的优先，`role=''` 的通用条靠后），同样精确时比 `priority`（大者胜），再相同取 `id` 大的（最新）。默认提示词写在 `backend/app/agents/defaults.py`，**用户可在 UI 里改**。
+**去重键是 `(role, scope, account_id, item_id, name)`**（审计 A5）：同名 = 同一条（重复保存幂等更新），不同名 = 多条共存；以前键里没有 `name`，第二条会**静默覆盖**第一条。
+`scope=account/item` 却缺 `account_id`/`item_id` → 400 `code='invalid_fields'` + `invalid_fields:{字段:原因}`（审计 A6，不允许存在永远不生效的孤儿行）。
 
 **提供者路由**：每个 role 指定 `provider_id + model`（`ai_roles`）；未指定则用 `providers.is_default=1`。所有调用统一走 `backend/app/agents/llm.py::chat()`（OpenAI 兼容 `/chat/completions`），带超时、重试 1 次、token 计量 → 落 `agent_runs`。
 
@@ -228,10 +280,12 @@ GET    /api/settings ; PUT /api/settings       {key:value,...}
 | `im_service.stop(account_id)` | 摘掉并关闭该账号的 IM 会话 | 返回信封 |
 
 - **后端启动时自己拉起**：`backend/app/main.py::_start_im_services()` 在 lifespan 里对每个「`accounts.enabled=1` 且有非空 Cookie」的账号调一次 `im_service.start()`。放在后台线程里跑 —— 它要建真实 IM 连接，不能拖住后端就绪。
+- **运行期也必须拉起**（审计 C1/B1，这是「对话区同步不过来对话」的真因）：`backend/app/api/accounts.py` 在四个位置调 `_start_im()` / `_stop_im()` —— 扫码登录成功、`PATCH`/`toggle` 把 `enabled` 打开、`relogin` 成功后重新挂、`enabled` 关闭与 `DELETE` 时摘掉。**只靠 lifespan 那一次的话，运行期登录进来的账号在本进程内永远收不到买家消息，必须重启后端。**
 - **幂等**：同一个账号重复 start 只留一个 handler（按函数对象去重 + 会话上的 `ATTACHED_ACCOUNTS_KEY` 集合）；同一平台的 `msg_id` 重复投递只处理一次。
 - **不发送就不许静默**：AI 回复没发出去一定带 `code`，并写 `operation_logs`（风控拦截另写 `risk_events.kind='ai_reply_blocked'`）、`messages.sent_ok=0`、`messages.meta.send_error`。
 - 缺 `cid`（HTTP 手动灌入的来信没有平台会话 id）→ `code='missing_cid'`。
-- **人工回复走真签名**：`services/chats.py::_push_message()` 调的协议层接口是 `send_message(cid, text, toid=None)`（`xianyu/client.py`）；单聊里 `cid` 与买家 id 相同，所以取不到 IM 帧的 `cid` 就退回 `conversations.peer_user_id`。
+- **人工回复走真签名**：`services/chats.py::_push_message()` 调的协议层接口是 `send_message(cid, text, toid=None)`（`xianyu/client.py`）。
+- **缺 `cid` 绝不用买家 id 冒充**（审计 C2）：`conversations.peer_user_id` 是买家 user id，**不是** IM 会话 id，拿它顶上等于把消息往错的会话发。取不到真 `cid` 时：`code='missing_cid'`、**不构造协议层客户端、不发送**、`sent_ok=false` + `meta.send_error` 如实写「未发送」。`send_manual` 的顺序是**先算 cid 再取客户端**（cid 是会话固有属性，与协议层此刻是否就绪无关）。
 
 ## 5. DSH 插件（MCP）
 
