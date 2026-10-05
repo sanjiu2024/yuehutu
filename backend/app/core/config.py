@@ -53,5 +53,17 @@ def ensure_dirs() -> None:
         path.mkdir(parents=True, exist_ok=True)
 
 
+def setup_logging() -> None:
+    """日志同时写文件（排障用）与控制台（开发用）；桌面模式下控制台不可见也无妨。"""
+    import sys as _sys
+
+    from loguru import logger
+
+    ensure_dirs()
+    logger.remove()
+    logger.add(str(LOG_PATH), rotation='10 MB', retention=5, encoding='utf-8', level='DEBUG')
+    logger.add(_sys.stderr, level='INFO', colorize=False)
+
+
 def is_frozen() -> bool:
     return bool(getattr(sys, 'frozen', False))

@@ -1,0 +1,735 @@
+"""MCP 工具 → 本地后端 REST 的薄 HTTP 客户端。
+
+设计约束：
+- 只用 Python 3.10 标准库（`urllib`），不引入 requests / mcp SDK。
+- **后端不可用时不抛栈**：一律返回结构化错误
+  `{"success": False, "code": "...", "message": "...", "detail": {...}}`，
+  与 `backend/app/api/system.py` 的信封一致（成功 `{"success":true,"data":..}`）。
+- base_url：`XYWB_BASE_URL` 环境变量，默认 `http://127.0.0.1:8080`。
+- token：`XYWB_TOKEN` 环境变量优先，否则读
+  `%APPDATA%\\xianyu-ai-workbench\\data\\mcp_token.txt`（后端启动时用
+  `backend/app/core/security.py::write_mcp_token` 写入）。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib import error as urllib_error
+from urllib import parse as urllib_parse
+from urllib import request as urllib_request
+
+DEFAULT_BASE_URL = 'http://127.0.0.1:8080'
+DEFAULT_TIMEOUT = 30.0
+
+# 与 backend/app/core/config.py::MCP_TOKEN_PATH 保持一致。
+# 这里不 import backend（MCP server 可能独立部署），只在需要时按同样规则算路径。
+_APP_NAME = 'xianyu-ai-workbench'
+
+
+def default_token_path() -> Path:
+    appdata = os.environ.get('APPDATA') or str(Path.home() / 'AppData' / 'Roaming')
+    return Path(appdata) / _APP_NAME / 'data' / 'mcp_token.txt'
+
+
+# --------------------------------------------------------------------------
+# 结构化错误
+# --------------------------------------------------------------------------
+
+def error(code: str, message: str, **detail: Any) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {'success': False, 'code': code, 'message': message}
+    if detail:
+        payload['detail'] = detail
+    return payload
+
+
+def ok(data: Any) -> Dict[str, Any]:
+    return {'success': True, 'data': data}
+
+
+# --------------------------------------------------------------------------
+# 路由表：规范工具名 → REST 调用
+#
+# 规范名以 docs/CONTRACTS.md §5 为准（2026-10-06 lead 裁决）。
+# 动词式别名只允许在 tools/call 里出现，不出现在 tools/list。
+# --------------------------------------------------------------------------
+
+# kind: query / path / body
+TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
+    'accounts_list': {
+        'method': 'GET', 'path': '/api/accounts',
+        'query': ['enabled', 'q', 'limit'],
+    },
+    'accounts_set_enabled': {
+        'method': 'PATCH', 'path': '/api/accounts/{account_id}',
+        'path_params': ['account_id'], 'body': ['enabled', 'auto_reply', 'remark'],
+    },
+    'accounts_relogin': {
+        'method': 'POST', 'path': '/api/accounts/{account_id}/relogin',
+        'path_params': ['account_id'],
+    },
+    'items_list': {
+        'method': 'GET', 'path': '/api/items',
+        'query': ['account_id', 'status', 'q', 'limit', 'offset'],
+    },
+    'items_get': {
+        'method': 'GET', 'path': '/api/items/{account_id}/{item_id}',
+        'path_params': ['account_id', 'item_id'],
+    },
+    'items_edit': {
+        'method': 'POST', 'path': '/api/items/{account_id}/{item_id}/edit',
+        'path_params': ['account_id', 'item_id'],
+        'body': ['price', 'title', 'description', 'stock', 'images', 'category_id'],
+    },
+    'items_publish': {
+        'method': 'POST', 'path': '/api/items/{account_id}/publish',
+        'path_params': ['account_id'],
+        'body': ['title', 'price', 'description', 'images', 'category_id', 'stock', 'original_price'],
+    },
+    'items_batch_edit': {
+        'method': 'POST', 'path': '/api/items/{account_id}/batch-edit',
+        'path_params': ['account_id'], 'body': ['item_ids', 'patch'],
+    },
+    'items_sync': {
+        'method': 'POST', 'path': '/api/items/{account_id}/sync',
+        'path_params': ['account_id'],
+    },
+    'chats_list': {
+        'method': 'GET', 'path': '/api/chats/conversations',
+        'query': ['account_id', 'mode', 'limit'],
+    },
+    'chats_read': {
+        'method': 'GET', 'path': '/api/chats/{conversation_id}/messages',
+        'path_params': ['conversation_id'], 'query': ['limit', 'before_id'],
+    },
+    'chats_send': {
+        'method': 'POST', 'path': '/api/chats/{conversation_id}/send',
+        'path_params': ['conversation_id'], 'body': ['content'],
+    },
+    'chats_set_mode': {
+        'method': 'POST', 'path': '/api/chats/{conversation_id}/mode',
+        'path_params': ['conversation_id'], 'body': ['mode'],
+    },
+    'orders_list': {
+        'method': 'GET', 'path': '/api/orders',
+        'query': ['account_id', 'status', 'limit'],
+    },
+    'orders_deliver': {
+        'method': 'POST', 'path': '/api/orders/{order_id}/deliver',
+        'path_params': ['order_id'], 'body': ['company', 'tracking_no'],
+    },
+    'risk_status': {
+        'method': 'GET', 'path': '/api/risk/status',
+        'query': ['account_id'],
+    },
+    'risk_clear': {
+        'method': 'POST', 'path': '/api/risk/{account_id}/clear',
+        'path_params': ['account_id'],
+    },
+    'providers_list': {'method': 'GET', 'path': '/api/providers'},
+    'providers_upsert': {
+        # 带 id 走 PUT /api/providers/{id}，不带 id 走 POST /api/providers
+        'method': 'POST', 'path': '/api/providers',
+        'body': ['id', 'name', 'base_url', 'api_key', 'default_model', 'enabled', 'is_default'],
+    },
+    'master_chat': {
+        'method': 'POST', 'path': '/api/agents/master/chat',
+        'body': ['message', 'conversation_id'],
+    },
+    # 任务卡额外要求：AI 之间的沟通记录（CONTRACTS §3 已有该端点）
+    'agents_messages': {
+        'method': 'GET', 'path': '/api/agents/messages',
+        'query': ['conversation_id'],
+    },
+}
+
+# 动词式别名（task-6 任务卡里的写法）→ 规范名
+ALIASES: Dict[str, str] = {
+    'list_accounts': 'accounts_list',
+    'set_account_enabled': 'accounts_set_enabled',
+    'relogin_account': 'accounts_relogin',
+    'list_items': 'items_list',
+    'get_item': 'items_get',
+    'update_item': 'items_edit',
+    'edit_item': 'items_edit',
+    'publish_item': 'items_publish',
+    'batch_update_items': 'items_batch_edit',
+    'batch_edit_items': 'items_batch_edit',
+    'sync_items': 'items_sync',
+    'list_conversations': 'chats_list',
+    'get_messages': 'chats_read',
+    'send_message': 'chats_send',
+    'set_chat_mode': 'chats_set_mode',
+    'list_orders': 'orders_list',
+    'deliver_order': 'orders_deliver',
+    'get_risk_status': 'risk_status',
+    'clear_risk': 'risk_clear',
+    'list_providers': 'providers_list',
+    'upsert_provider': 'providers_upsert',
+    'list_agent_messages': 'agents_messages',
+}
+
+
+def canonical_name(name: str) -> Optional[str]:
+    """别名/规范名 → 规范名；未知工具返回 None。"""
+    if not name:
+        return None
+    if name in TOOL_ROUTES:
+        return name
+    return ALIASES.get(name)
+
+
+# --------------------------------------------------------------------------
+# 客户端
+# --------------------------------------------------------------------------
+
+class BackendClient:
+    """极薄的同步 HTTP 客户端。所有失败都变成结构化 dict，绝不抛栈。"""
+
+    def __init__(
+        self,
+        base_url: Optional[str] = None,
+        token: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> None:
+        self.base_url = (base_url or os.environ.get('XYWB_BASE_URL') or DEFAULT_BASE_URL).rstrip('/')
+        self._token = token if token is not None else _read_token()[0]
+        self.token_source = 'arg' if token is not None else _read_token()[1]
+        if timeout is None:
+            raw = os.environ.get('XYWB_TIMEOUT')
+            try:
+                timeout = float(raw) if raw else DEFAULT_TIMEOUT
+            except ValueError:
+                timeout = DEFAULT_TIMEOUT
+        self.timeout = timeout
+
+    # -- HTTP ------------------------------------------------------------
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        query: Optional[Dict[str, Any]] = None,
+        body: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        url = self.base_url + path
+        if query:
+            clean = {k: v for k, v in query.items() if v is not None}
+            if clean:
+                url += '?' + urllib_parse.urlencode(clean, doseq=True)
+
+        headers = {'Accept': 'application/json'}
+        data = None
+        if body is not None:
+            data = json.dumps(body, ensure_ascii=False).encode('utf-8')
+            headers['Content-Type'] = 'application/json'
+        if self._token:
+            headers['Authorization'] = 'Bearer ' + self._token
+
+        req = urllib_request.Request(url, data=data, headers=headers, method=method.upper())
+        try:
+            with urllib_request.urlopen(req, timeout=self.timeout) as resp:
+                status = getattr(resp, 'status', 200) or 200
+                raw = resp.read()
+        except urllib_error.HTTPError as exc:            # 4xx/5xx：后端有响应
+            try:
+                raw = exc.read()
+            except Exception:                            # pragma: no cover - 极端情况
+                raw = b''
+            return _http_error_result(exc.code, raw, url)
+        except urllib_error.URLError as exc:             # 连不上 / DNS / 超时
+            reason = getattr(exc, 'reason', exc)
+            code = 'backend_timeout' if 'timed out' in str(reason).lower() else 'backend_unreachable'
+            return error(
+                code,
+                f'无法连接本地后端 {self.base_url}（{reason}）。'
+                '请先启动后端：python -m backend.app.main，或用 desktop/main.py 打开桌面应用。',
+                base_url=self.base_url, url=url,
+            )
+        except OSError as exc:                           # socket 层
+            return error('backend_unreachable', f'连接后端失败：{exc}', base_url=self.base_url, url=url)
+        except Exception as exc:                         # 兜底：绝不抛栈
+            return error('client_error', f'{type(exc).__name__}: {exc}', url=url)
+
+        return _decode_result(status, raw, url)
+
+    # -- 工具调用 ---------------------------------------------------------
+
+    def call_tool(self, name: str, args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        args = dict(args or {})
+        cname = canonical_name(name)
+        if cname is None:
+            return error(
+                'unknown_tool',
+                f'未知工具 {name!r}。可用工具见 tools/list。',
+                available=sorted(TOOL_ROUTES),
+            )
+
+        if cname == 'items_get':
+            return self._items_get(args)
+        if cname == 'providers_upsert' and args.get('id'):
+            rest = {k: v for k, v in args.items() if k != 'id'}
+            return self._dispatch('PUT', f"/api/providers/{args['id']}", None, rest)
+        return self._dispatch_route(cname, args)
+
+    # -- 内部 -------------------------------------------------------------
+
+    def _dispatch_route(self, cname: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        route = TOOL_ROUTES[cname]
+        path = route['path']
+        missing: List[str] = []
+        for key in route.get('path_params', []):
+            if args.get(key) in (None, ''):
+                missing.append(key)
+            else:
+                path = path.replace('{' + key + '}', urllib_parse.quote(str(args[key]), safe=''))
+        if missing:
+            return error('invalid_args', f'{cname} 缺少必填参数：{", ".join(missing)}', missing=missing)
+
+        query = {k: args.get(k) for k in route.get('query', []) if args.get(k) is not None}
+        body = {k: args.get(k) for k in route.get('body', []) if k in args}
+        if 'body' in route and not body and route['method'] != 'GET':
+            return error('invalid_args', f'{cname} 至少需要一个请求体字段：{", ".join(route["body"])}')
+        return self._dispatch(route['method'], path, query or None, body or None)
+
+    def _dispatch(
+        self,
+        method: str,
+        path: str,
+        query: Optional[Dict[str, Any]],
+        body: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        return self.request(method, path, query=query, body=body)
+
+    def _items_get(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """直连 `GET /api/items/{account_id}/{item_id}`（CONTRACTS §3）。
+
+        该端点由 services 工作流新增，落地前可能 404 —— 此时退化为
+        「拉列表 + 本地按 item_id 精确过滤」，保证 MCP 侧始终可用。
+        """
+        account_id, item_id = args.get('account_id'), args.get('item_id')
+        if not account_id or not item_id:
+            return error('invalid_args', 'items_get 需要 account_id 与 item_id')
+        direct = self.request(
+            'GET',
+            f'/api/items/{urllib_parse.quote(str(account_id), safe="")}'
+            f'/{urllib_parse.quote(str(item_id), safe="")}',
+        )
+        if direct.get('success') or direct.get('code') != 'http_404':
+            return direct
+        listed = self.request('GET', '/api/items', query={'account_id': account_id, 'q': item_id})
+        if not listed.get('success'):
+            return listed
+        rows = listed.get('data')
+        if isinstance(rows, dict):
+            rows = rows.get('items') or rows.get('list') or []
+        for row in rows or []:
+            if isinstance(row, dict) and str(row.get('item_id')) == str(item_id):
+                return ok({'item': row, '_fallback': 'list_filter'})
+        return error('not_found', f'商品不存在：account_id={account_id} item_id={item_id}',
+                     fallback='list_filter')
+
+    def health(self) -> Dict[str, Any]:
+        return self.request('GET', '/api/health')
+
+
+def _read_token() -> Tuple[Optional[str], str]:
+    """返回 (token, 来源说明)。环境变量优先，其次 mcp_token.txt。"""
+    env_token = (os.environ.get('XYWB_TOKEN') or '').strip()
+    if env_token:
+        return env_token, 'env:XYWB_TOKEN'
+    path = default_token_path()
+    try:
+        if path.exists():
+            token = path.read_text('utf-8').strip()
+            if token:
+                return token, f'file:{path}'
+            return None, f'file:{path} (空文件)'
+        return None, f'file:{path} (不存在)'
+    except OSError as exc:
+        return None, f'file:{path} (读取失败: {exc})'
+
+
+def _decode_result(status: int, raw: bytes, url: str) -> Dict[str, Any]:
+    text = raw.decode('utf-8', errors='replace') if raw else ''
+    if not text.strip():
+        return error('empty_response', f'后端返回空响应（HTTP {status}）', url=url, status=status)
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return error('bad_response', f'后端返回非 JSON（HTTP {status}）', url=url,
+                     status=status, body=text[:500])
+    if isinstance(payload, dict) and 'success' in payload:
+        if payload.get('success'):
+            return payload
+        return error(payload.get('code') or 'backend_error',
+                     payload.get('message') or '后端返回失败',
+                     url=url, status=status, body=payload)
+    if 200 <= status < 300:
+        return ok(payload)
+    return error(f'http_{status}', f'HTTP {status}', url=url, status=status, body=payload)
+
+
+def _http_error_result(status: int, raw: bytes, url: str) -> Dict[str, Any]:
+    text = raw.decode('utf-8', errors='replace') if raw else ''
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        code = payload.get('code') or f'http_{status}'
+        message = payload.get('message') or f'HTTP {status}'
+        if status in (401, 403) and code == f'http_{status}':
+            code = 'unauthorized'
+            message = '后端拒绝授权：检查 mcp_token.txt 是否为最新（后端每次启动会重写），或设 XYWB_TOKEN。'
+        return error(code, message, url=url, status=status, body=payload)
+    hint = ''
+    if status == 404:
+        hint = '（端点可能还没实现）'
+    return error(f'http_{status}', f'HTTP {status}{hint}', url=url, status=status, body=text[:500])
+
+
+# --------------------------------------------------------------------------
+# MCP 工具定义（tools/list 用）
+# --------------------------------------------------------------------------
+
+def _prop(kind: str, desc: str, **extra: Any) -> Dict[str, Any]:
+    out: Dict[str, Any] = {'type': kind, 'description': desc}
+    out.update(extra)
+    return out
+
+
+_ACCOUNT_ID = _prop('string', '闲鱼账号 id（unb），用 accounts_list 查')
+_CONV_ID = _prop('integer', '会话 id，用 chats_list 查')
+_ITEM_ID = _prop('string', '闲鱼商品 id，用 items_list 查')
+
+#: 规范名 → {description, input_schema}
+CANONICAL_SPECS: Dict[str, Dict[str, Any]] = {
+    'accounts_list': {
+        'description': '列出已登录的闲鱼账号（含启用状态、登录态、风控运行时状态）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'enabled': _prop('boolean', '只看启用/停用的账号'),
+                'q': _prop('string', '按昵称/备注模糊搜索'),
+                'limit': _prop('integer', '返回条数上限'),
+            },
+        },
+    },
+    'accounts_set_enabled': {
+        'description': '开启/停用某个闲鱼账号，或改自动回复开关与备注。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'enabled': _prop('boolean', '是否启用该账号（启用才会自动同步/回复）'),
+                'auto_reply': _prop('boolean', '是否允许 AI 自动回复'),
+                'remark': _prop('string', '备注名'),
+            },
+            'required': ['account_id'],
+        },
+    },
+    'accounts_relogin': {
+        'description': '让某个账号重新扫码登录（Cookie 失效时用）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {'account_id': _ACCOUNT_ID},
+            'required': ['account_id'],
+        },
+    },
+    'items_list': {
+        'description': '查询商品列表，可按账号/状态/关键词过滤。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'status': _prop('string', '商品状态，如 onsale / sold / delisted'),
+                'q': _prop('string', '标题关键词'),
+                'limit': _prop('integer', '返回条数上限'),
+                'offset': _prop('integer', '分页偏移'),
+            },
+        },
+    },
+    'items_get': {
+        'description': '查单个商品的完整信息（标题、价格、库存、描述、图片）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {'account_id': _ACCOUNT_ID, 'item_id': _ITEM_ID},
+            'required': ['account_id', 'item_id'],
+        },
+    },
+    'items_edit': {
+        'description': '修改单个商品的价格/标题/描述/库存/图片。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'item_id': _ITEM_ID,
+                'price': _prop('number', '新价格（元）'),
+                'title': _prop('string', '新标题'),
+                'description': _prop('string', '新描述'),
+                'stock': _prop('integer', '新库存'),
+                'images': _prop('array', '图片 URL 列表', items={'type': 'string'}),
+                'category_id': _prop('string', '类目 id'),
+            },
+            'required': ['account_id', 'item_id'],
+        },
+    },
+    'items_publish': {
+        'description': '在指定账号下发布一个新商品。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'title': _prop('string', '标题'),
+                'price': _prop('number', '价格（元）'),
+                'description': _prop('string', '描述'),
+                'images': _prop('array', '图片 URL 列表', items={'type': 'string'}),
+                'category_id': _prop('string', '类目 id'),
+                'stock': _prop('integer', '库存'),
+                'original_price': _prop('number', '原价（划线价）'),
+            },
+            'required': ['account_id', 'title', 'price'],
+        },
+    },
+    'items_batch_edit': {
+        'description': '批量改价/改标题。patch 支持 price_delta / price_set / title_tpl 等。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'item_ids': _prop('array', '要改的商品 id 列表', items={'type': 'string'}),
+                'patch': _prop('object', '改动规则，如 {"price_delta": -5} 或 {"price_set": 99}'),
+            },
+            'required': ['account_id', 'item_ids', 'patch'],
+        },
+    },
+    'items_sync': {
+        'description': '从闲鱼拉取该账号的在售商品并入库（会走风控限速）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {'account_id': _ACCOUNT_ID},
+            'required': ['account_id'],
+        },
+    },
+    'chats_list': {
+        'description': '列出会话（买家对话），可按账号/接管模式过滤。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'mode': _prop('string', '接管模式：auto / manual / off'),
+                'limit': _prop('integer', '返回条数上限'),
+            },
+        },
+    },
+    'chats_read': {
+        'description': '读某个会话的历史消息。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'conversation_id': _CONV_ID,
+                'limit': _prop('integer', '返回条数上限'),
+                'before_id': _prop('integer', '只取该消息 id 之前的更早消息'),
+            },
+            'required': ['conversation_id'],
+        },
+    },
+    'chats_send': {
+        'description': '以人工身份在某个会话里发消息给买家（会真实发送，谨慎调用）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'conversation_id': _CONV_ID,
+                'content': _prop('string', '要发送的文本'),
+            },
+            'required': ['conversation_id', 'content'],
+        },
+    },
+    'chats_set_mode': {
+        'description': '切换会话的 AI 接管模式：auto（AI 自动回）/ manual（人工接管）/ off（不处理）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'conversation_id': _CONV_ID,
+                'mode': _prop('string', 'auto | manual | off', enum=['auto', 'manual', 'off']),
+            },
+            'required': ['conversation_id', 'mode'],
+        },
+    },
+    'orders_list': {
+        'description': '查询订单，可按账号/状态过滤。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'status': _prop('string', '订单状态'),
+                'limit': _prop('integer', '返回条数上限'),
+            },
+        },
+    },
+    'orders_deliver': {
+        'description': '给订单发货（可带快递公司与运单号）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'order_id': _prop('string', '订单号'),
+                'company': _prop('string', '快递公司'),
+                'tracking_no': _prop('string', '运单号'),
+            },
+            'required': ['order_id'],
+        },
+    },
+    'risk_status': {
+        'description': '查风控状态：连续命中次数、熔断到期时间、是否需要人工验证。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {'account_id': _ACCOUNT_ID},
+        },
+    },
+    'risk_clear': {
+        'description': '清除某账号的风控熔断（只有人工验证成功后才该调用）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {'account_id': _ACCOUNT_ID},
+            'required': ['account_id'],
+        },
+    },
+    'providers_list': {
+        'description': '列出已配置的 AI 供应商（OpenAI 兼容端点）。',
+        'input_schema': {'type': 'object', 'properties': {}},
+    },
+    'providers_upsert': {
+        'description': '新增或更新 AI 供应商配置（带 id 为更新）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'id': _prop('integer', '供应商 id；带此字段表示更新'),
+                'name': _prop('string', '显示名'),
+                'base_url': _prop('string', 'OpenAI 兼容 base_url'),
+                'api_key': _prop('string', 'API Key'),
+                'default_model': _prop('string', '默认模型名'),
+                'enabled': _prop('boolean', '是否启用'),
+                'is_default': _prop('boolean', '是否设为默认供应商'),
+            },
+        },
+    },
+    'master_chat': {
+        'description': '把你的话转给本软件的「主管 AI」，它会理解意图并调用工具干活。想指挥这个工作台就用它。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'message': _prop('string', '你要对主管 AI 说的话'),
+                'conversation_id': _prop('integer', '可选：关联到某个买家会话的上下文'),
+            },
+            'required': ['message'],
+        },
+    },
+    'agents_messages': {
+        'description': '查看 AI 之间的沟通记录（跨商品协查），用于排查 AI 编排。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {'conversation_id': _CONV_ID},
+        },
+    },
+}
+
+
+def tool_specs() -> List[Dict[str, Any]]:
+    """返回 tools/list 要用的规范工具定义。
+
+    唯一来源是 `backend/app/agents/tools.py::TOOL_SPECS`（懒导入）；
+    该文件不存在 / 导入失败 / 结构不认时，退回本模块的 `CANONICAL_SPECS`。
+    两边的名字集合始终以 `TOOL_ROUTES` 为准（没有路由的工具不会暴露，
+    否则模型会看到一个必然报错的工具）。
+    """
+    external, source = _load_external_specs()
+    specs: List[Dict[str, Any]] = []
+    for name in TOOL_ROUTES:
+        base = CANONICAL_SPECS.get(name, {'description': name, 'input_schema': {'type': 'object'}})
+        spec = {
+            'name': name,
+            'description': base.get('description', name),
+            'inputSchema': base.get('input_schema') or {'type': 'object', 'properties': {}},
+        }
+        if name in external:
+            merged = dict(spec)
+            if external[name].get('description'):
+                merged['description'] = external[name]['description']
+            if external[name].get('inputSchema'):
+                merged['inputSchema'] = external[name]['inputSchema']
+            spec = merged
+        specs.append(spec)
+    return specs
+
+
+def tool_specs_source() -> str:
+    """给日志/README 用：当前工具定义来自哪里。"""
+    return _load_external_specs()[1]
+
+
+def _load_external_specs() -> Tuple[Dict[str, Dict[str, Any]], str]:
+    """懒导入 agents 的 TOOL_SPECS，规范化成 {name: {description, inputSchema}}。"""
+    repo_root = Path(__file__).resolve().parents[1]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    try:
+        from backend.app.agents.tools import TOOL_SPECS  # type: ignore
+    except Exception as exc:  # ImportError / 语法错 / 依赖缺失 —— 都退回内置清单
+        return {}, f'builtin (TOOL_SPECS 不可用: {type(exc).__name__}: {exc})'
+    try:
+        return _normalize_specs(TOOL_SPECS), 'backend.app.agents.tools.TOOL_SPECS'
+    except Exception as exc:
+        return {}, f'builtin (TOOL_SPECS 结构不认: {type(exc).__name__}: {exc})'
+
+
+def _normalize_specs(raw: Any) -> Dict[str, Dict[str, Any]]:
+    """兼容几种可能形态：list[dict] / dict[name]->spec / dict[name]->{parameters..}。"""
+    out: Dict[str, Dict[str, Any]] = {}
+    if isinstance(raw, dict):
+        iterable: Iterable[Tuple[Optional[str], Any]] = raw.items()
+    elif isinstance(raw, (list, tuple)):
+        iterable = [(None, entry) for entry in raw]
+    else:
+        raise TypeError(f'TOOL_SPECS 类型不支持: {type(raw).__name__}')
+
+    for key, entry in iterable:
+        if not isinstance(entry, dict):
+            continue
+        # agents 工作流确认的形态：{"type":"function","function":{"name","description","parameters"}}
+        inner = entry.get('function') if isinstance(entry.get('function'), dict) else {}
+        name = entry.get('name') or inner.get('name') or key
+        if not isinstance(name, str) or not name:
+            continue
+        schema = (
+            entry.get('inputSchema')
+            or entry.get('input_schema')
+            or entry.get('parameters')
+            or entry.get('args_schema')
+            or inner.get('parameters')
+        )
+        if isinstance(schema, type):       # pydantic 模型类
+            schema = _pydantic_schema(schema)
+        if not isinstance(schema, dict):
+            schema = None
+        desc = entry.get('description') or entry.get('desc') or inner.get('description')
+        if not isinstance(desc, str):
+            desc = None
+        out[str(name)] = {'description': desc, 'inputSchema': schema}
+    if not out:
+        raise ValueError('TOOL_SPECS 里没解析出任何工具')
+    return out
+
+
+def _pydantic_schema(model: Any) -> Optional[Dict[str, Any]]:
+    for attr in ('model_json_schema', 'schema'):
+        fn = getattr(model, attr, None)
+        if callable(fn):
+            try:
+                return fn()
+            except Exception:
+                return None
+    return None

@@ -27,6 +27,8 @@ class SkeletonTest(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         cls.orig_db_path = config.DB_PATH
         config.DB_PATH = Path(cls.tmp.name) / 'app.db'
+        cls.orig_mcp_token = config.MCP_TOKEN_PATH
+        config.MCP_TOKEN_PATH = Path(cls.tmp.name) / 'mcp_token.txt'
         db.reset_connection()
         db.init_db()
 
@@ -41,6 +43,7 @@ class SkeletonTest(unittest.TestCase):
         cls.client.__exit__(None, None, None)
         db.reset_connection()
         config.DB_PATH = cls.orig_db_path
+        config.MCP_TOKEN_PATH = cls.orig_mcp_token
         cls.tmp.cleanup()
 
     def login(self) -> str:
@@ -93,6 +96,14 @@ class SkeletonTest(unittest.TestCase):
         resp = self.client.get('/api/auth/me', headers=headers)
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertTrue(resp.json()['data']['username'])
+
+    def test_mcp_token_written_and_usable(self):
+        """后端启动时会给 DSH 插件留一个长期 token，插件不用走登录流程。"""
+        self.assertTrue(config.MCP_TOKEN_PATH.exists(), '启动时应写入 mcp_token.txt')
+        token = config.MCP_TOKEN_PATH.read_text(encoding='utf-8').strip()
+        self.assertTrue(token)
+        resp = self.client.get('/api/settings', headers={'Authorization': f'Bearer {token}'})
+        self.assertEqual(resp.status_code, 200, resp.text)
 
     def test_desktop_secret_login(self):
         resp = self.client.post('/api/auth/desktop', headers={'X-Desktop-Secret': security.local_secret()})

@@ -61,11 +61,13 @@ PLACEHOLDER = """<!doctype html>
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    config.setup_logging()
     config.ensure_dirs()
     db.init_db()
     username, password = security.ensure_admin()
     security.local_secret()
     security.purge_expired()
+    security.refresh_mcp_token()
     events.bind_loop(asyncio.get_running_loop())
     logger.info('数据库就绪: {}', config.DB_PATH)
     logger.info('管理员账号: {}', username)

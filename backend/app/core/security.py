@@ -71,8 +71,8 @@ def authenticate(username: str, password: str) -> Optional[Dict[str, Any]]:
     return {'id': row['id'], 'username': row['username'], 'is_admin': bool(row['is_admin'])}
 
 
-def issue_token(user_id: int) -> str:
-    token = secrets.token_urlsafe(32)
+def issue_token(user_id: int, token: Optional[str] = None) -> str:
+    token = token or secrets.token_urlsafe(32)
     now = time.time()
     db.execute(
         'INSERT INTO sessions(token, user_id, created_at, last_seen, expires_at) VALUES(?,?,?,?,?)',
@@ -142,3 +142,18 @@ def local_secret() -> str:
 def write_mcp_token(token: str) -> None:
     config.ensure_dirs()
     config.MCP_TOKEN_PATH.write_text(token, encoding='utf-8')
+
+
+def refresh_mcp_token() -> str:
+    """每次后端启动换一个长期 MCP token 并写盘（MCP 插件读这个文件，不需要走登录流程）。
+
+    单独一条 sessions 记录（user_id=admin），因此和网页登录互不干扰：网页登出不会
+    让 DSH 里的插件掉线，反之亦然。
+    """
+    admin = db.query_one('SELECT id FROM users ORDER BY id LIMIT 1')
+    if admin is None:
+        return ''
+    token = secrets.token_urlsafe(32)
+    issue_token(int(admin['id']), token=token)
+    write_mcp_token(token)
+    return token

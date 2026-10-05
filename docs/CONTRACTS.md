@@ -111,6 +111,7 @@ POST   /api/accounts/{id}/relogin -> 触发重新扫码/续期
 POST   /api/accounts/{id}/captcha -> 打开人工验证浏览器窗口（滑块）
 
 GET    /api/items?account_id=&status=&q=&limit=&offset=
+GET    /api/items/{account_id}/{item_id}       -> 单条商品（MCP 的 items_get 直连这条，别再全表拉）
 POST   /api/items/{account_id}/sync            -> 从闲鱼拉取在售商品入库
 POST   /api/items/{account_id}/publish         {title,price,description,images,category_id,...}
 POST   /api/items/{account_id}/{item_id}/edit  {price?,title?,description?,stock?,images?}
@@ -171,7 +172,11 @@ GET    /api/settings ; PUT /api/settings       {key:value,...}
 
 ## 5. DSH 插件（MCP）
 
-`mcp_server/server.py`：stdio JSON-RPC MCP server，工具集与主管 AI 的 tool 集**同一份定义**（`backend/app/agents/tools.py::TOOL_SPECS`）：
+`mcp_server/server.py`：stdio JSON-RPC MCP server，工具集与主管 AI 的 tool 集**同一份定义**（`backend/app/agents/tools.py::TOOL_SPECS`）。
+
+> **工具名以本节为准**（2026-10-06 裁决，mcp 与 agents 两处不一致时按这里）：§5 名单是规范名；
+> `TOOL_SPECS` 必须用这套名字。MCP 侧可额外接受动词式别名（`list_items` → `items_list` 等），
+> 但 `tools/list` 只暴露规范名，避免同一个动作出现两个工具让模型选错。
 
 ```
 accounts_list / accounts_set_enabled / accounts_relogin
