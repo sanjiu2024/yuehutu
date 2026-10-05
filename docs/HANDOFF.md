@@ -22,7 +22,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 24  PASS 24  FAIL 0  CASES 512  SKIPPED 1
+-> TOTAL 25  PASS 25  FAIL 0  CASES 534  SKIPPED 1
 ```
 
 ```text
@@ -34,7 +34,7 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_xianyu_log
 cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
--> BUILD_EXIT=0   frontend/dist/assets/index-CZsX4qcD.js (231.51 kB)
+-> BUILD_EXIT=0   frontend/dist/assets/index-x6fHQ3NA.js (231.97 kB)
 ```
 
 ```text
@@ -368,10 +368,57 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 > `test_contract_routes.py::CONTRACT_ROUTES` 仍是手写副本，尚未自动解析契约文件。
 > 下一轮补。
 
+### 第八批：用户第二次真机实测「消息一个没读取过来」抓到的（55、56、57）
+
+> 用户报「我账号上面的消息一个没读取过来」，会话页 `共 0 个会话`。账号本身是好的：
+> `login_state=active`、`has_cookie=true`、`runtime_state=running`，启动日志也已经有
+> `账号 2217970177348 的 IM 入站已挂载`（即 53 已修好）。真机抓帧才看到根因在**注册**这一步。
+
+55. **IM 注册用的设备 ID 与取 token 用的不是同一个，`/reg` 必然被拒**（`082a2a2`）。
+    真机回帧原文 `{"code": 401, "body": {"reason": "device id or appkey is not equal", ...}}`；
+    而 `ImSession.request()` 当时**完全不看回帧 code**，调用方拿到 `{}`，与「平台确实没有会话」
+    不可区分 → 界面只显示「没有会话」，真实原因被完全吞掉。
+    根因：取 token 时的 `deviceId` 与 `/reg` 帧里的 `did` 是**两处各自随机生成的 uuid4**。
+    修：`mtop.generate_device_id()` 改成确定性（账号 + 固定盐派生），
+    `client._im_device_id()` 成为唯一真源，取 token 与 `_ensure_im()` 都用它；
+    `request()` 新增 `_raise_on_error()`，`code >= 400` 一律抛 `ImError` 并带平台原文
+    （`/reg` 单独提示「did 必须与取 token 的 deviceId 相同」——正是这次的坑）。
+    顺带把回帧形状吃全：`fetch_conversations` 读 `body['userConvs']`、
+    `fetch_messages` 兼容 `body['data']`、`start_timestamp` 默认 `LATEST_TIMESTAMP`
+    （传 0 不代表「最新」，平台可能直接回空）。
+    回归 `test_xianyu_im.py`（16 条）：设备 ID 确定性 / `/reg` 401 与 400 分支 /
+    真机会话与消息形状 / 两种回帧包装。
+
+56. **历史会话从来不回填：IM 入站只处理「正在发生」的推送帧**（`1e7f8a9`）。
+    进程启动之前就存在的会话，无论在线多久都不会自己进库——所以用户真机上永远是 0 个会话。
+    修：新增 `chats.sync_im_conversations()`（取客户端 → `fetch_conversations` → 逐会话
+    `ensure_conversation` → `fetch_messages` 落消息；缺 `buyer_id` 跳过；单会话失败只进
+    `warnings` 不整单失败），并按 `messages.meta.external_id` 精确去重（入站出站都判）→
+    重复点按钮不会灌重复消息；未读数只在平台值更大时对齐。
+    `im_service.start()` 挂载成功时自动回填一次；用户侧给了
+    `POST /api/chats/sync`（必须声明在 `GET /{conversation_id}` **之前**，否则被动态路由吞掉）
+    和会话页工具栏的「同步历史会话」按钮。
+
+57. **会话列表的「最后一条消息」永远是空字符串**（同 `082a2a2`，被 55 的测试当场抓出）。
+    `im.parse_conversation()` 把**整条 userConvs 项**交给 `extract_message_summary()`，
+    而后者内部取 `model['message']`——该项没有 `message` 键，实际内容在 `lastMessage` 里。
+    修：改传 `last_wrapper or raw`。
+
+> **这一批的诚实边界**：55/56/57 都有本地回归（`test_xianyu_im.py` 16 条 +
+> `test_services_chats.py::ImBackfillTest` 6 条，均不发网络），但**真机 IM 复验没能做完**——
+> 复验时 mtop 取 IM token 被平台风控拦下：`FAIL_SYS_USER_VALIDATE; RGV587_ERROR::SM::
+> 哎哟喂,被挤爆啦,请稍后重试`（06:37 首次命中，06:49 仍未解）。这个冷却很可能需要真人过一次
+> 滑块，**触发原因就是短时间多次取 token（15 分钟内约 5 次，含我自己的复验探针）**，
+> 所以停手不再打 mtop。冷却过后请重跑一次：启动应用 → 点「同步历史会话」，
+> 应看到 `success=true` 且 `conversations_new > 0`，会话页出现真实买家会话。
+
+> 仍未修（跨批次累计）：`docs/CONTRACTS.md` §3 的 74 条路径中，
+> `test_contract_routes.py::CONTRACT_ROUTES` 仍是手写副本，尚未自动解析契约文件。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**24 个测试文件、512 个用例全绿、0 失败**（唯一 1 个 skip 是
+- 全部后端逻辑：**25 个测试文件、534 个用例全绿、0 失败**（唯一 1 个 skip 是
   `test_xianyu_login.py` 里本来就有的平台相关跳过）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -407,6 +454,8 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
   `/api/health` 200 `frozen:true`；`GET /` 真 index.html；`assets/index-*.js`
   200 且与 `frontend/dist` SHA256 一致（旧 hash 404）；`/api/settings` 401（API
   路由未被静态挂载吃掉）；`POST /api/auth/desktop` 200（桌面免密登录可用）。
+  第八批重新打包后复验：产物 **9557793 字节**、`GET /` 里是 `index-x6fHQ3NA.js`、
+  `POST /api/chats/sync` 401（= 已注册，不是 404）。
 - **扫码登录真的通了**（唯一一处真打闲鱼平台的路径，且不涉及任何账号凭据）：
   - 源码直调：`_get_login_params` 拿到完整 `loginFormData`（`_csrf_token`/`umidToken`/
     `hsiz`/`bizParams=taobaoBizLoginFrom=web` 等），`_generate_qr` 拿到
@@ -432,10 +481,15 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
   部分仍走 MockTransport。第 11、12、13、28~31 条修的是「接线本身断掉」，接线通了
   不等于平台协议对。
 - **真实 LLM 一次没调**：所有 AI 测试都 mock 了 `llm.chat`。
-- **真实买家来信没收到过**：IM 入站现在在真机上**挂载成功了**（这是缺陷 53 修好的），
+- **真实买家来信没收到过**：IM 入站现在在真机上**挂载成功了**（缺陷 53 修好的），
   但真平台的第一帧长什么样、`_read_loop → dispatch → 落库 → AI 回复 → 发回` 的整条
   链路**没有真实买家**验过；闭环本身只在假协议客户端上验过（`ensure_im` /
   `send_message` 两个口子打桩）。
+- **真机 IM 注册与历史回填没复验完**（第八批）：`/reg` 401
+  `device id or appkey is not equal` 的根因（55）与历史会话不回填（56）都已在本地回归锁住，
+  但复验时 mtop 取 IM token 撞上平台风控 `RGV587_ERROR`，冷却没过。**需要真人过一次滑块
+  （或等冷却）后再跑一次「同步历史会话」，才能说真机这半边通了。**
+  另外注意：短时间多次取 token 本身就会触发这个冷却（我们的复验探针就是触发源之一）。
 - **真机滑块/验证码没做过**：`captcha` 成功分支（写 `mark_verified` 清冷却）只在
   单测里造过。
 - 桌面 exe 在**无 WebView2** 的机器上的表现（本机已装 154.0.4258.53）。
@@ -451,4 +505,7 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 2. 真机实测「写」的一半：在已登录的真账号上发布一件商品 / 改一次价 / 上架下架各一次
    （读的一半——拉取 20 件在售商品、IM 入站挂载——已在真机验证）。
 3. 重启 DSH 宿主让 MCP 插件 `xianyu` 生效，再用主管 AI 直接操作工作台。
-4. 桌面 exe 在干净机器上冒烟（缺 WebView2 时要给出可读提示）。
+4. 风控冷却过后，真机点一次「同步历史会话」（会话页工具栏）：应看到
+   `success=true` 且 `conversations_new > 0`，会话页出现真实买家会话 —— 这是第八批
+   唯一还没在真机上闭环的实证。
+5. 桌面 exe 在干净机器上冒烟（缺 WebView2 时要给出可读提示）。
