@@ -76,9 +76,12 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
    且零输出（双击后「什么都没发生」）。修复前连跑 3 次全 exit 2、日志 0 字节。
 8. **MCP 插件在桌面形态永远连不上**（`4a327a4` + `41701be`）：`--port 0` 由内核挑端口，
    插件只能靠写死的 8080。后端写 `data/backend_port.txt`，插件四级回退解析。
-9. **账号变更不发事件**、**桌面自动登录被测试污染搞坏**、**跨商品中文匹配恒 0**、
-   **`services/chats` 把 async 当同步调**、**协议层 `Set-Cookie` 必须一条一个头**：
-   见第三节。
+9. **集成前的两个 Lead 范围缺陷**（`777d71a`）：静态托管挂到 `'/'` 会让
+   `app.openapi()` 只剩 14 条路由（API 被静态挂载吃掉），改挂 `''`；`config.FRONTEND_DIST`
+   在 frozen 下指不到打包内路径，新增 `resolve_frontend_dist()` 三级查找。
+10. **MCP server 五个真缺陷**（独立复核复现）：stdin 一个非 UTF-8 字节打死 server；
+    `providers_upsert` 路径未转义可穿越；token 文件非 UTF-8 打死 `BackendClient()`；
+    `items_get` 只取第一页；external schema 整块覆盖丢 6 个工具参数。
 
 ## 四、已验证 / 未验证（诚实边界）
 
