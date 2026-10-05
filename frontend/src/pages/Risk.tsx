@@ -100,14 +100,15 @@ export function RiskPage() {
   }
 
   /**
-   * 解除熔断。后端只在「检测到人工验证成功」时才放行，
-   * 所以这里显式带上 `verified: true` —— 用户点这个按钮就是确认自己已经过了验证。
+   * 解除熔断。**凭证只能由服务端写**：真的划完滑块、后端 captcha 任务确认拿到
+   * `x5sec` 之后才会写下验证凭证；这里不再自证 `{verified:true}`（那是让前端
+   * 替后端盖章，等于没门槛）。没验证过就会被 409 拒掉，前端如实报出来。
    */
   const doClear = async () => {
     if (!clearing) return
     setBusy(true)
     try {
-      await api.post<ClearResult>(`/api/risk/${encodeURIComponent(clearing)}/clear`, { verified: true })
+      await api.post<ClearResult>(`/api/risk/${encodeURIComponent(clearing)}/clear`, {})
       toast.success('已解除该账号的熔断')
       setClearing(null)
       risk.reload()
