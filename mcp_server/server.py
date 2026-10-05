@@ -163,8 +163,22 @@ def dispatch(msg: Dict[str, Any], client: BackendClient) -> Optional[Dict[str, A
 # --------------------------------------------------------------------------
 
 def _write(message: Dict[str, Any], stream: Any) -> None:
-    stream.write(json.dumps(message, ensure_ascii=False) + '\n')
-    stream.flush()
+    try:
+        stream.write(json.dumps(message, ensure_ascii=False) + '\n')
+        stream.flush()
+    except (BrokenPipeError, ValueError):
+        # 客户端已经断开：让主循环自然收尾，别打栈。
+        raise EOFError from None
+
+
+def _safe_write(message: Dict[str, Any], stream: Any) -> bool:
+    """写一帧；客户端已断开时返回 False，让主循环干净退出。"""
+    try:
+        _write(message, stream)
+    except EOFError:
+        log('stdout 已关闭，退出')
+        return False
+    return True
 
 
 def serve(stdin: Any = None, stdout: Any = None, client: Optional[BackendClient] = None) -> int:
@@ -174,18 +188,29 @@ def serve(stdin: Any = None, stdout: Any = None, client: Optional[BackendClient]
     log(f'启动：base_url={client.base_url} token来源={client.token_source} '
         f'工具定义={tool_specs_source()}')
 
-    for line in stdin:
+    while True:
+        # 不用 `for line in stdin`：stdin 上一个非 UTF-8 字节会让迭代抛
+        # UnicodeDecodeError，整个 server 直接打栈退出（客户端只看到掉线）。
+        try:
+            line = stdin.readline()
+        except UnicodeDecodeError as exc:
+            _safe_write(rpc_error(None, PARSE_ERROR, f'输入不是合法 UTF-8：{exc}'), stdout)
+            continue
+        except (OSError, ValueError):
+            break
+        if not line:                       # EOF
+            break
         line = line.strip()
         if not line:
             continue
         try:
             msg = json.loads(line)
         except ValueError as exc:
-            _write(rpc_error(None, PARSE_ERROR, f'JSON 解析失败：{exc}'), stdout)
+            _safe_write(rpc_error(None, PARSE_ERROR, f'JSON 解析失败：{exc}'), stdout)
             continue
         response = dispatch(msg, client)
-        if response is not None:
-            _write(response, stdout)
+        if response is not None and not _safe_write(response, stdout):
+            break
     log('stdin 关闭，退出')
     return 0
 
@@ -194,6 +219,7 @@ def selftest() -> int:
     """不接客户端，直接打一遍内部逻辑，方便人肉排查。"""
     client = BackendClient()
     print(f'base_url      = {client.base_url}')
+    print(f'地址来源      = {client.base_url_source}')
     print(f'token 来源    = {client.token_source}')
     print(f'工具定义来源  = {tool_specs_source()}')
     specs = tool_specs()
@@ -211,7 +237,8 @@ def main(argv: Optional[list] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     for stream in (sys.stdout, sys.stdin):
         try:
-            stream.reconfigure(encoding='utf-8')      # type: ignore[union-attr]
+            # errors='replace'：stdin 上一个坏字节不该打死整个 server。
+            stream.reconfigure(encoding='utf-8', errors='replace')  # type: ignore[union-attr]
         except Exception:
             pass
     if '--selftest' in argv:

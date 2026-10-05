@@ -25,14 +25,70 @@ from urllib import request as urllib_request
 DEFAULT_BASE_URL = 'http://127.0.0.1:8080'
 DEFAULT_TIMEOUT = 30.0
 
-# 与 backend/app/core/config.py::MCP_TOKEN_PATH 保持一致。
+# 与 backend/app/core/config.py 保持一致。
 # 这里不 import backend（MCP server 可能独立部署），只在需要时按同样规则算路径。
 _APP_NAME = 'xianyu-ai-workbench'
 
 
-def default_token_path() -> Path:
+def _app_dir() -> Path:
+    """数据目录的父目录，与 `backend/app/core/config.py:19` 同规则。
+
+    `XIANYU_APP_DIR` 优先（测试/CI 用它把整个数据目录挪到临时位置），否则用 APPDATA。
+    """
+    override = os.environ.get('XIANYU_APP_DIR')
+    if override:
+        return Path(override)
     appdata = os.environ.get('APPDATA') or str(Path.home() / 'AppData' / 'Roaming')
-    return Path(appdata) / _APP_NAME / 'data' / 'mcp_token.txt'
+    return Path(appdata) / _APP_NAME
+
+
+def default_token_path() -> Path:
+    return _app_dir() / 'data' / 'mcp_token.txt'
+
+
+def default_port_path() -> Path:
+    """后端把实际监听端口写在这里（`backend/app/main.py::_write_port_file`）。
+
+    桌面形态端口是随机挑的（`desktop/main.py:191` 调 `pick_free_port()`），
+    插件不可能猜中 8080，只能读这个文件。
+    """
+    return _app_dir() / 'data' / 'backend_port.txt'
+
+
+def _read_port_file() -> Tuple[Optional[int], str]:
+    """读 `backend_port.txt`，返回 (端口, 说明)。任何异常都降级为「没有」。"""
+    path = default_port_path()
+    try:
+        if not path.exists():
+            return None, '不存在'
+        text = path.read_bytes().decode('utf-8', errors='replace').strip()
+        if not text:
+            return None, '空文件'
+        port = int(text.split()[0])
+        if not (1 <= port <= 65535):
+            return None, f'端口越界({port})'
+        return port, f'file:{path}'
+    except (OSError, ValueError) as exc:
+        return None, f'读取失败({type(exc).__name__})'
+
+
+def resolve_base_url(explicit: Optional[str] = None) -> Tuple[str, str]:
+    """决定后端地址，返回 `(base_url, 来源说明)`。
+
+    优先级：显式参数 > `XYWB_BASE_URL` > `data/backend_port.txt` > 默认 8080。
+
+    端口文件是**桌面形态的关键**：那里端口是随机挑的，用户没法预先填
+    `XYWB_BASE_URL`；后端每次启动都会重写这个文件（`backend/app/main.py:81-95`）。
+    """
+    if explicit:
+        return explicit.rstrip('/'), 'arg'
+    env = (os.environ.get('XYWB_BASE_URL') or '').strip()
+    if env:
+        return env.rstrip('/'), 'env:XYWB_BASE_URL'
+    port, why = _read_port_file()
+    if port:
+        return f'http://127.0.0.1:{port}', why
+    return DEFAULT_BASE_URL, f'default (端口文件{why})'
 
 
 # --------------------------------------------------------------------------
@@ -200,9 +256,12 @@ class BackendClient:
         token: Optional[str] = None,
         timeout: Optional[float] = None,
     ) -> None:
-        self.base_url = (base_url or os.environ.get('XYWB_BASE_URL') or DEFAULT_BASE_URL).rstrip('/')
-        self._token = token if token is not None else _read_token()[0]
-        self.token_source = 'arg' if token is not None else _read_token()[1]
+        self.base_url, self.base_url_source = resolve_base_url(base_url)
+        if token is not None:
+            self._token, self.token_source = token, 'arg'
+        else:
+            # 只读一次：两次读取之间文件若被后端重写，token 与来源说明会不一致。
+            self._token, self.token_source = _read_token()
         if timeout is None:
             raw = os.environ.get('XYWB_TIMEOUT')
             try:
@@ -276,8 +335,16 @@ class BackendClient:
         if cname == 'items_get':
             return self._items_get(args)
         if cname == 'providers_upsert' and args.get('id'):
-            rest = {k: v for k, v in args.items() if k != 'id'}
-            return self._dispatch('PUT', f"/api/providers/{args['id']}", None, rest)
+            # 与 _dispatch_route 同样的白名单 + 转义：模型多给的字段不能原样送到后端，
+            # id 也必须转义，否则 '1/../accounts' 这类值能穿越到别的端点。
+            allowed = TOOL_ROUTES['providers_upsert']['body']
+            body = {k: args[k] for k in allowed if k in args and k != 'id'}
+            if not body:
+                return error('invalid_args', 'providers_upsert 带 id 时至少需要一个可更新字段：'
+                                             + ', '.join(k for k in allowed if k != 'id'))
+            return self._dispatch(
+                'PUT', '/api/providers/' + urllib_parse.quote(str(args['id']), safe=''), None, body,
+            )
         return self._dispatch_route(cname, args)
 
     # -- 内部 -------------------------------------------------------------
@@ -325,7 +392,11 @@ class BackendClient:
         )
         if direct.get('success') or direct.get('code') != 'http_404':
             return direct
-        listed = self.request('GET', '/api/items', query={'account_id': account_id, 'q': item_id})
+        # 兜底是「拉列表 + 本地精确过滤」，后端默认一页 50 条；这里把页撑到上限
+        # （`limit` 在 backend/app/api/items.py:52-55 折算成 size，最大 500），
+        # 否则目标商品排在第 50 条之后会被误报 not_found。
+        listed = self.request('GET', '/api/items',
+                              query={'account_id': account_id, 'q': item_id, 'limit': 500})
         if not listed.get('success'):
             return listed
         rows = listed.get('data')
@@ -349,13 +420,23 @@ def _read_token() -> Tuple[Optional[str], str]:
     path = default_token_path()
     try:
         if path.exists():
-            token = path.read_text('utf-8').strip()
+            raw = path.read_bytes()
+            try:
+                token = raw.decode('utf-8').strip()
+            except UnicodeDecodeError as exc:
+                # 文件被写成 GBK/UTF-16 或被写坏。不能拿替换字符当 token 去发请求
+                # （只会换回一个难懂的 401），如实降级为「无 token」。
+                return None, f'file:{path} (不是 UTF-8，已忽略: {exc})'
             if token:
+                if '\ufffd' in token or any(ord(ch) < 32 for ch in token):
+                    return None, f'file:{path} (内容异常，已忽略)'
                 return token, f'file:{path}'
             return None, f'file:{path} (空文件)'
         return None, f'file:{path} (不存在)'
     except OSError as exc:
         return None, f'file:{path} (读取失败: {exc})'
+    except Exception as exc:      # 任何意外都不该打死 server
+        return None, f'file:{path} (读取失败: {type(exc).__name__}: {exc})'
 
 
 def _decode_result(status: int, raw: bytes, url: str) -> Dict[str, Any]:
@@ -665,10 +746,35 @@ def tool_specs() -> List[Dict[str, Any]]:
             if external[name].get('description'):
                 merged['description'] = external[name]['description']
             if external[name].get('inputSchema'):
-                merged['inputSchema'] = external[name]['inputSchema']
+                merged['inputSchema'] = _merge_schema(spec['inputSchema'], external[name]['inputSchema'])
             spec = merged
         specs.append(spec)
     return specs
+
+
+def _merge_schema(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """以外部 schema 为准，但**补上内置 schema 里多出来的属性**。
+
+    外部的 `TOOL_SPECS` 比路由窄：如果整块覆盖，会出现「路由认识、`tools/list` 里
+    看不到」的参数（模型看得到才敢传），并且 external 常带
+    `additionalProperties: false`，等于把这些参数从契约里抹掉。所以做并集，
+    内置的 `properties` 只补空缺、不覆盖外部的定义。
+    """
+    if not isinstance(base, dict) or not isinstance(override, dict):
+        return override if isinstance(override, dict) else base
+    merged = dict(override)
+    base_props = base.get('properties')
+    ext_props = override.get('properties')
+    if isinstance(base_props, dict):
+        if not isinstance(ext_props, dict):
+            merged['properties'] = dict(base_props)
+        else:
+            missing = {k: v for k, v in base_props.items() if k not in ext_props}
+            if missing:
+                merged['properties'] = {**missing, **ext_props}
+    if not merged.get('type'):
+        merged['type'] = base.get('type') or 'object'
+    return merged
 
 
 def tool_specs_source() -> str:

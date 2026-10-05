@@ -15,8 +15,12 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
+import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -32,6 +36,18 @@ if str(REPO_ROOT) not in sys.path:
 
 from mcp_server import client as mcp_client  # noqa: E402
 from mcp_server import server as mcp_server  # noqa: E402
+
+
+def _smoke_env(**overrides) -> dict:
+    """子进程冒烟用的环境：故意指向死端口，避免测试依赖真后端。"""
+    env = dict(os.environ)
+    env['PYTHONPATH'] = str(REPO_ROOT) + os.pathsep + env.get('PYTHONPATH', '')
+    env['PYTHONIOENCODING'] = 'utf-8'
+    env['PYTHONUNBUFFERED'] = '1'
+    env['XYWB_BASE_URL'] = 'http://127.0.0.1:59999'
+    env['XYWB_TOKEN'] = 'SMOKE_TOKEN'
+    env.update(overrides)
+    return env
 
 # CONTRACTS.md §5 的规范工具名（2026-10-06 lead 裁决）
 CANONICAL_TOOLS = {
@@ -356,12 +372,7 @@ class SubprocessSmokeTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        env = dict(os.environ)
-        env['PYTHONPATH'] = str(REPO_ROOT) + os.pathsep + env.get('PYTHONPATH', '')
-        env['PYTHONIOENCODING'] = 'utf-8'
-        env['PYTHONUNBUFFERED'] = '1'
-        env['XYWB_BASE_URL'] = 'http://127.0.0.1:59999'   # 故意的死端口
-        env['XYWB_TOKEN'] = 'SMOKE_TOKEN'
+        env = _smoke_env()
         cls.proc = subprocess.Popen(
             [sys.executable, '-u', str(REPO_ROOT / 'mcp_server' / 'server.py')],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -550,6 +561,265 @@ class ToolSpecsSourceTest(unittest.TestCase):
             self.assertIn('properties', specs['items_list']['inputSchema'])
         finally:
             mcp_client._load_external_specs = orig
+
+    def test_toolspec_fallback_is_not_silent(self):
+        """守卫不能因为「TOOL_SPECS 不可用」就整体跳过。
+
+        独立复核发现的缝：新增工具时若同时把 `agents/tools.py` 写坏（语法错/缺依赖），
+        对齐测试会双双 skipTest，套件仍然全绿，而 tools/list 已悄悄退回内置清单。
+        这里把「文件在、却加载不出来」判为失败。
+        """
+        tools_py = pathlib.Path(mcp_client.__file__).resolve().parents[1] / 'backend' / 'app' / 'agents' / 'tools.py'
+        if not tools_py.exists():
+            self.skipTest(f'{tools_py} 尚未落地（agents 工作流还没写完）')
+        external, source = mcp_client._load_external_specs()
+        self.assertTrue(external, f'backend/app/agents/tools.py 存在，但 TOOL_SPECS 加载失败，'
+                                  f'tools/list 已静默退回内置清单：{source}')
+
+
+class RouteRegistrationTest(unittest.TestCase):
+    """MCP 的每条路由都必须真的在后端注册过（否则模型看到的是必然报错的工具）。
+
+    用 AST 读 `backend/app/api/*.py` 的 `@router.<verb>` 装饰器 + 文件里的
+    `prefix=`，不启动后端、不碰数据库。
+    """
+
+    @staticmethod
+    def _registered() -> set:
+        api_dir = REPO_ROOT / 'backend' / 'app' / 'api'
+        if not api_dir.is_dir():
+            return set()
+        out = set()
+        for path in sorted(api_dir.glob('*.py')):
+            src = path.read_text(encoding='utf-8')
+            m = re.search(r"""prefix\s*=\s*['"]([^'"]*)""", src)
+            prefix = m.group(1) if m else ''
+            for verb, route in re.findall(
+                    r"""@router\.(get|post|put|patch|delete)\(\s*['"]([^'"]*)""", src):
+                full = (prefix + route).replace('//', '/').rstrip('/') or '/'
+                out.add((verb.upper(), re.sub(r'\{[^}]+\}', '{}', full)))
+        return out
+
+    def test_every_mcp_route_is_registered(self):
+        registered = self._registered()
+        if not registered:
+            self.skipTest('backend/app/api 尚未落地')
+        missing = []
+        for name, route in sorted(mcp_client.TOOL_ROUTES.items()):
+            key = (route['method'].upper(), re.sub(r'\{[^}]+\}', '{}', route['path']))
+            if key not in registered:
+                missing.append(f'{name} -> {route["method"]} {route["path"]}')
+        self.assertFalse(missing, '这些 MCP 路由后端没注册：\n  ' + '\n  '.join(missing))
+
+    def test_lead_confirmed_routes_match_contract(self):
+        """2026-10-06 lead 点名的 5 条，路径必须与 CONTRACTS §3 逐字一致。"""
+        expected = {
+            'items_batch_edit': ('POST', '/api/items/{account_id}/batch-edit'),
+            'accounts_relogin': ('POST', '/api/accounts/{account_id}/relogin'),
+            'accounts_set_enabled': ('PATCH', '/api/accounts/{account_id}'),
+            'items_get': ('GET', '/api/items/{account_id}/{item_id}'),
+            'chats_list': ('GET', '/api/chats/conversations'),
+        }
+        for name, (method, path) in expected.items():
+            route = mcp_client.TOOL_ROUTES[name]
+            self.assertEqual((route['method'], route['path']), (method, path), name)
+
+
+class RobustnessTest(unittest.TestCase):
+    """独立复核报出的缺陷的回归测试。"""
+
+    def test_corrupt_token_file_does_not_kill_client(self):
+        """token 文件非 UTF-8 时必须降级为「无 token」，不能抛 UnicodeDecodeError。"""
+        tmp = pathlib.Path(tempfile.mkdtemp()) / 'mcp_token.txt'
+        tmp.write_bytes(b'\xff\xfe\x00bad-bytes')
+        orig = mcp_client.default_token_path
+        mcp_client.default_token_path = lambda: tmp
+        os.environ.pop('XYWB_TOKEN', None)
+        try:
+            token, source = mcp_client._read_token()
+            self.assertIsNone(token, f'坏文件不该产出 token，得到 {token!r}')
+            self.assertIn('已忽略', source)
+            client = mcp_client.BackendClient(base_url='http://127.0.0.1:9')
+            self.assertIsNone(client._token)          # 构造不抛
+            self.assertEqual(client.token_source, source)
+        finally:
+            mcp_client.default_token_path = orig
+            shutil.rmtree(tmp.parent, ignore_errors=True)
+
+    def test_invalid_utf8_on_stdin_does_not_kill_server(self):
+        """stdin 上的坏字节只回一条 parse error，后续请求照常处理。"""
+        proc = subprocess.Popen(
+            [sys.executable, '-u', os.path.join(REPO_ROOT, 'mcp_server', 'server.py')],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=_smoke_env(),
+        )
+        try:
+            out, _ = proc.communicate(
+                b'\xff\xfe bad bytes\n{"jsonrpc":"2.0","id":7,"method":"ping"}\n', timeout=60)
+        finally:
+            if proc.poll() is None:      # pragma: no cover
+                proc.kill()
+        self.assertEqual(proc.returncode, 0, '坏字节不该让 server 打栈退出')
+        lines = [json.loads(l) for l in out.decode('utf-8', 'replace').splitlines() if l.strip()]
+        self.assertEqual(len(lines), 2, f'期望 parse error + ping 响应，实际 {lines}')
+        self.assertEqual(lines[0]['error']['code'], mcp_server.PARSE_ERROR)
+        self.assertEqual(lines[1]['id'], 7)
+        self.assertEqual(lines[1]['result'], {})
+
+    def test_providers_upsert_with_id_filters_unknown_fields(self):
+        """带 id 的更新也必须过白名单，不能把模型多给的字段原样 PUT。"""
+        recorded = {}
+
+        class Recorder(mcp_client.BackendClient):
+            def __init__(self):
+                super().__init__(base_url='http://127.0.0.1:9', token='T')
+
+            def request(self, method, path, query=None, body=None):
+                recorded['call'] = (method, path, body)
+                return mcp_client.ok({})
+
+        Recorder().call_tool('providers_upsert', {
+            'id': 3, 'default_model': 'm', 'BOGUS': 'x', 'secret_typo': 1,
+        })
+        self.assertEqual(recorded['call'], ('PUT', '/api/providers/3', {'default_model': 'm'}))
+
+    def test_providers_upsert_id_is_escaped(self):
+        """id 必须转义，否则 '1/../accounts' 能穿越到别的端点。"""
+        recorded = {}
+
+        class Recorder(mcp_client.BackendClient):
+            def __init__(self):
+                super().__init__(base_url='http://127.0.0.1:9', token='T')
+
+            def request(self, method, path, query=None, body=None):
+                recorded['path'] = path
+                return mcp_client.ok({})
+
+        Recorder().call_tool('providers_upsert', {'id': '1/../accounts', 'name': 'n'})
+        self.assertEqual(recorded['path'], '/api/providers/1%2F..%2Faccounts')
+
+    def test_providers_upsert_with_id_needs_a_field(self):
+        class Recorder(mcp_client.BackendClient):
+            def __init__(self):
+                super().__init__(base_url='http://127.0.0.1:9', token='T')
+
+            def request(self, method, path, query=None, body=None):  # pragma: no cover
+                raise AssertionError('不该发请求')
+
+        result = Recorder().call_tool('providers_upsert', {'id': 3})
+        self.assertFalse(result['success'])
+        self.assertEqual(result['code'], 'invalid_args')
+
+    def test_items_get_fallback_raises_page_size(self):
+        """404 兜底要撑大页大小，否则目标商品排在第 50 条之后会误报 not_found。"""
+        seen = []
+
+        class Recorder(mcp_client.BackendClient):
+            def __init__(self):
+                super().__init__(base_url='http://127.0.0.1:9', token='T')
+
+            def request(self, method, path, query=None, body=None):
+                seen.append((path, query))
+                if path.startswith('/api/items/') and path.count('/') > 3:
+                    return mcp_client.error('http_404', 'HTTP 404')
+                return mcp_client.ok({'items': [{'item_id': 'x1'}]})
+
+        result = Recorder().call_tool('items_get', {'account_id': 'a1', 'item_id': 'x1'})
+        self.assertTrue(result['success'])
+        self.assertEqual(result['data']['_fallback'], 'list_filter')
+        self.assertEqual(seen[-1][1], {'account_id': 'a1', 'q': 'x1', 'limit': 500})
+
+    def test_external_narrow_schema_does_not_hide_route_params(self):
+        """external schema 比路由窄时，不能整块覆盖 —— 否则参数从契约里消失。"""
+        orig = mcp_client._load_external_specs
+        mcp_client._load_external_specs = lambda: (
+            {'accounts_list': {'description': 'd',
+                               'inputSchema': {'type': 'object', 'properties': {},
+                                               'additionalProperties': False}}}, 'fake')
+        try:
+            specs = {s['name']: s for s in mcp_client.tool_specs()}
+            props = specs['accounts_list']['inputSchema']['properties']
+            for key in mcp_client.TOOL_ROUTES['accounts_list']['query']:
+                self.assertIn(key, props, f'路由参数 {key} 被 external schema 抹掉了')
+            self.assertEqual(specs['accounts_list']['description'], 'd')   # 描述仍以 external 为准
+        finally:
+            mcp_client._load_external_specs = orig
+
+
+class BaseUrlResolutionTest(unittest.TestCase):
+    """桌面形态端口是随机挑的，插件必须能从 `data/backend_port.txt` 发现后端。
+
+    优先级：显式参数 > `XYWB_BASE_URL` > 端口文件 > 默认 8080。
+    """
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        (self.tmp / 'data').mkdir(parents=True, exist_ok=True)
+        self._env = {k: os.environ.get(k) for k in ('XIANYU_APP_DIR', 'XYWB_BASE_URL')}
+        os.environ['XIANYU_APP_DIR'] = str(self.tmp)
+        os.environ.pop('XYWB_BASE_URL', None)
+
+    def tearDown(self):
+        for key, value in self._env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_port(self, content):
+        (self.tmp / 'data' / 'backend_port.txt').write_text(content, encoding='utf-8')
+
+    def test_reads_port_from_file(self):
+        self._write_port('18090')
+        url, source = mcp_client.resolve_base_url()
+        self.assertEqual(url, 'http://127.0.0.1:18090')
+        self.assertIn('backend_port.txt', source)
+
+    def test_port_file_is_stripped(self):
+        self._write_port('  18090 \n')
+        self.assertEqual(mcp_client.resolve_base_url()[0], 'http://127.0.0.1:18090')
+
+    def test_env_wins_over_port_file(self):
+        self._write_port('18090')
+        os.environ['XYWB_BASE_URL'] = 'http://127.0.0.1:7777/'
+        url, source = mcp_client.resolve_base_url()
+        self.assertEqual(url, 'http://127.0.0.1:7777')      # 去掉尾斜杠
+        self.assertEqual(source, 'env:XYWB_BASE_URL')
+
+    def test_explicit_arg_wins_over_everything(self):
+        self._write_port('18090')
+        os.environ['XYWB_BASE_URL'] = 'http://127.0.0.1:7777'
+        self.assertEqual(mcp_client.resolve_base_url('http://127.0.0.1:1/')[0],
+                         'http://127.0.0.1:1')
+
+    def test_missing_file_falls_back_without_raising(self):
+        url, source = mcp_client.resolve_base_url()
+        self.assertEqual(url, mcp_client.DEFAULT_BASE_URL)
+        self.assertIn('不存在', source)
+
+    def test_invalid_contents_fall_back_without_raising(self):
+        for bad in ('', '   ', 'not-a-port', '99999', '0', '-1'):
+            with self.subTest(content=bad):
+                self._write_port(bad)
+                url, _ = mcp_client.resolve_base_url()
+                self.assertEqual(url, mcp_client.DEFAULT_BASE_URL)
+
+    def test_non_utf8_port_file_falls_back(self):
+        (self.tmp / 'data' / 'backend_port.txt').write_bytes(b'\xff\xfe\x00bad')
+        url, _ = mcp_client.resolve_base_url()
+        self.assertEqual(url, mcp_client.DEFAULT_BASE_URL)
+
+    def test_client_uses_port_file(self):
+        self._write_port('18090')
+        client = mcp_client.BackendClient()
+        self.assertEqual(client.base_url, 'http://127.0.0.1:18090')
+        self.assertIn('backend_port.txt', client.base_url_source)
+
+    def test_app_dir_honours_xianyu_app_dir(self):
+        """与 backend/app/core/config.py:19 同规则，测试才能把数据目录挪走。"""
+        self.assertEqual(mcp_client.default_port_path(),
+                         self.tmp / 'data' / 'backend_port.txt')
 
 
 if __name__ == '__main__':
