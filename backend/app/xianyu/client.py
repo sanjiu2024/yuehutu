@@ -14,9 +14,11 @@ httpx，三套客户端各自读环境变量，于是 ``NO_PROXY`` 一坏就有�
 
 from __future__ import annotations
 
+import copy
+import json
 import os
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from loguru import logger
 
@@ -35,9 +37,44 @@ ITEM_DETAIL_SPM = 'a21ybx.im.0.0'
 EDIT_API = 'mtop.idle.pc.idleitem.edit'
 EDIT_VERSION = '1.0'
 EDIT_DETAIL_API = 'mtop.idle.pc.idleitem.editDetail'
+EDIT_BIZCODE = 'pcMainPublish'
+EDIT_PUBLISH_SCENE = 'pcMainPublish'
 
 PUBLISH_API = 'mtop.idle.pc.idleitem.publish'
 PUBLISH_VERSION = '1.0'
+PUBLISH_SCENE = 'mainPublish'
+
+# 发布**不是单请求**：漏掉分类推荐 / 注册分类路径任何一步，发布都会报
+# `FAIL_BIZ_CHANNEL_CAT_ID_PATH_QUERY_ERROR`（看起来像签名/权限问题，其实缺步骤）。
+CATEGORY_RECOMMEND_API = 'mtop.taobao.idle.kgraph.property.recommend'
+CATEGORY_RECOMMEND_VERSION = '2.0'
+CARDS_API = 'mtop.idle.item.publish.service.cards.list'
+CARDS_VERSION = '1.0'
+BADWORDS_API = 'mtop.taobao.idleitem.badwords.prepubcheck'
+BADWORDS_VERSION = '2.0'
+
+# 商品列表（我的闲鱼）—— 版本 1.0，spm 属于「个人中心」族。
+ITEM_LIST_API = 'mtop.idle.web.xyh.item.list'
+ITEM_LIST_VERSION = '1.0'
+ITEM_LIST_SPM = 'a21ybx.personal.0.0'
+ITEM_LIST_PAGE_SIZE = 20
+
+# 下架是 2.0 族；上架**没有独立接口**，靠 edit 改 itemStatus。
+DOWNSHELF_API = 'mtop.taobao.idle.item.downshelf'
+DOWNSHELF_VERSION = '2.0'
+ITEM_STATUS_ON_SALE = 'onsale'
+ITEM_STATUS_OFF_SHELF = 'downshelf'
+
+DEFAULT_CHANNEL_CATE_ID = '201459411'
+DEFAULT_CHANNEL_CATE_NAME = '其他闲置'
+DEFAULT_TB_CAT_ID = '50014945'
+
+# 平台侧只认字符串 'false' 的开关集合（旧项目实测：传布尔平台不认）。
+USER_RIGHTS_PROTOCOLS = [
+    {'enable': False, 'serviceCode': 'FAST_DELIVERY_48_HOUR'},
+    {'enable': False, 'serviceCode': 'FAST_DELIVERY_24_HOUR'},
+    {'enable': False, 'serviceCode': 'NONCONFORMITY_FREE_REFUND'},
+]
 
 IM_TOKEN_API = 'mtop.taobao.idlemessage.pc.login.token'
 IM_TOKEN_VERSION = '1.0'
@@ -46,7 +83,17 @@ USER_PROFILE_API = 'mtop.idle.web.user.page.head'
 
 
 class XianyuError(RuntimeError):
-    """协议层通用错误。"""
+    """协议层通用错误。
+
+    ``ret`` 保存平台原始的 ``ret`` 列表（如 ``['FAIL_BIZ_BADWORD::...']``）。
+    调用方**必须**据此判断业务原因，不要去搜索 ``str(exc)`` —— 异常文本里带着
+    api 名（``...badwords.prepubcheck``），搜 `BADWORD` 会把接口自身的任何失败
+    都误判成「命中违禁词」。
+    """
+
+    def __init__(self, message: str, ret: Optional[List[str]] = None):
+        super().__init__(message)
+        self.ret = list(ret or [])
 
 
 class SessionExpiredError(XianyuError):
@@ -192,7 +239,7 @@ class XianyuClient:
         success, message, ret_list = mtop.parse_ret(payload)
         if not success:
             self._check_response(payload, message)
-            raise XianyuError(f'MTOP 调用失败 [{api}]: {message}')
+            raise XianyuError(f'MTOP 调用失败 [{api}]: {message}', ret=ret_list)
 
         guard.reset()
         return {
@@ -222,22 +269,272 @@ class XianyuClient:
         data = await self.item_detail(item_id)
         return normalize_item(data, str(item_id))
 
-    async def edit_item(self, item_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """编辑商品。``payload`` 里的字段直接并进 ``data``。"""
-        body = {'itemId': str(item_id)}
-        body.update(payload or {})
-        result = await self.mtop(EDIT_API, body, v=EDIT_VERSION)
-        return result.get('data') or {}
-
     async def edit_item_detail(self, item_id: str) -> Dict[str, Any]:
         """编辑页回填用的详情（与 ``item_detail`` 是两个接口，字段不同）。"""
         result = await self.mtop(EDIT_DETAIL_API, {'itemId': str(item_id)}, v=EDIT_VERSION)
         return result.get('data') or {}
 
+    async def list_items(self, page_number: int = 1, page_size: int = ITEM_LIST_PAGE_SIZE,
+                         max_pages: int = 5) -> Dict[str, Any]:
+        """拉「我的闲鱼」商品列表（在售/已下架都在 ``itemTopicList`` 里）。
+
+        ``spm_cnt`` 必须是列表族 ``a21ybx.personal.0.0``：发布族的默认 spm 打这个
+        接口会返回空 body / 接口不存在。
+
+        第一页必须带 ``needGroupInfo=True`` 才会回 ``itemGroupList``（分组），
+        后续翻页要带上分组字段。单页失败不抛出 —— 已拿到的商品照常返回。
+        """
+        page_size = max(1, min(int(page_size or ITEM_LIST_PAGE_SIZE), 100))
+        max_pages = max(1, int(max_pages or 1))
+        items: List[Dict[str, Any]] = []
+        seen: set = set()
+        groups: List[Dict[str, Any]] = []
+        total = 0
+        next_page = 0
+
+        for index in range(max_pages):
+            number = int(page_number or 1) + index
+            body: Dict[str, Any] = {
+                'pageNumber': number,
+                'pageSize': page_size,
+                'userId': self.cookie_id,
+            }
+            if index == 0:
+                body['needGroupInfo'] = True
+            else:
+                body['needGroupInfo'] = False
+                if groups:
+                    group = groups[0]
+                    body['groupName'] = group.get('groupName') or ''
+                    body['groupId'] = str(group.get('groupId') or '')
+                    body['defaultGroup'] = bool(group.get('defaultGroup'))
+            result = await self.mtop(ITEM_LIST_API, body, v=ITEM_LIST_VERSION,
+                                     spm_cnt=ITEM_LIST_SPM)
+            data = result.get('data') or {}
+            if not isinstance(data, dict):
+                break
+            if index == 0:
+                raw_groups = data.get('itemGroupList') or data.get('groupList') or []
+                groups = [g for g in raw_groups if isinstance(g, dict)]
+            total = int(data.get('totalCount') or total or 0)
+            next_page = int(data.get('nextPage') or 0)
+            page_items = _extract_list_cards(data)
+            for card in page_items:
+                normalized = normalize_list_card(card)
+                if not normalized:
+                    continue
+                key = normalized['item_id']
+                if key in seen:
+                    continue
+                seen.add(key)
+                items.append(normalized)
+            if not page_items or next_page in (0, -1, number):
+                break
+
+        return {'items': items, 'total': total or len(items), 'next_page': next_page,
+                'groups': groups, 'page': int(page_number or 1), 'size': page_size}
+
+    async def recommend_category(self, title: str, description: str = '',
+                                 images: Optional[List[Dict[str, Any]]] = None):
+        """分类推荐：返回 ``(transport_data, card_list)``，失败时两者都为 None。
+
+        **失败不阻断发布**（退回默认分类），但 card_list 为空时调用方必须跳过
+        «注册分类路径» 那一步。
+        """
+        stamp = int(time.time() * 1000)
+        body = {
+            'title': title,
+            'lockCpv': False,
+            'multiSKU': False,
+            'publishScene': PUBLISH_SCENE,
+            'scene': 'newPublishChoice',
+            'description': description or title,
+            'imageInfos': images or [],
+            'uniqueCode': f'{stamp}{stamp % 1000}',
+        }
+        try:
+            result = await self.mtop(CATEGORY_RECOMMEND_API, body,
+                                     v=CATEGORY_RECOMMEND_VERSION)
+        except XianyuError as exc:
+            logger.warning(f'[{self.cookie_id}] 分类推荐失败，将使用默认分类: {exc}')
+            return None, None
+        data = result.get('data')
+        if not isinstance(data, dict):
+            return None, None
+        transport = data.get('transportData')
+        cards = data.get('cardList') or data.get('card_list')
+        return (transport if isinstance(transport, dict) else None), (
+            cards if isinstance(cards, list) else None)
+
+    async def register_publish_cards(self, card_list: List[Any],
+                                     item_info: Dict[str, Any]) -> bool:
+        """注册分类路径 session。**跳过这步发布必报**
+        ``FAIL_BIZ_CHANNEL_CAT_ID_PATH_QUERY_ERROR``。
+
+        ``cpvList`` / ``itemInfoJson`` 是「JSON 再序列化一层塞进字符串」，
+        ``multiSkuEditingMode`` 也是字符串 ``'false'``。失败只记日志、不阻断。
+        """
+        if not card_list:
+            return False
+        body = {
+            'cpvList': json.dumps(card_list, ensure_ascii=False),
+            'itemInfoJson': json.dumps(item_info, ensure_ascii=False),
+            'param': json.dumps({
+                'multiSkuEditingMode': 'false',
+                'settingsPreferences': None,
+                'supportDefaultOpen': True,
+            }, ensure_ascii=False),
+        }
+        try:
+            await self.mtop(CARDS_API, body, v=CARDS_VERSION)
+        except XianyuError as exc:
+            logger.warning(f'[{self.cookie_id}] 注册分类卡片失败（发布可能因类目路径报错）: {exc}')
+            return False
+        return True
+
+    async def check_bad_words(self, title: str) -> None:
+        """违禁词预检。**预检接口自身失败按通过处理**（发布接口自己也会校验，
+        不该因为预检服务抖动就拦住发布）；只有明确命中才抛 ``XianyuError``。"""
+        body = {
+            'title': title,
+            'scene': 'pcPublish',
+            'sessionId': f'{int(time.time() * 1000)}{self.cookie_id}',
+        }
+        try:
+            await self.mtop(BADWORDS_API, body, v=BADWORDS_VERSION)
+        except XianyuError as exc:
+            # 只看平台 ret，**不搜索 str(exc)**：异常文本里带 api 名
+            # `...badwords.prepubcheck`，搜 'BADWORD' 会把预检接口自己的任何
+            # 失败都误判成「命中违禁词」，把本该继续的发布拦下。
+            if _ret_hits_bad_word(exc.ret):
+                raise XianyuError(f'标题含违禁词: {"; ".join(exc.ret)}', ret=exc.ret) from exc
+            logger.warning(f'[{self.cookie_id}] 违禁词预检异常，按通过处理: {exc}')
+
+    async def _publish_images(self, images: Sequence[Any]) -> List[Dict[str, Any]]:
+        """把本地 ``images``（URL 或本地文件路径）转成 ``imageInfoDOList``。"""
+        infos: List[Dict[str, Any]] = []
+        for index, entry in enumerate(images or []):
+            if isinstance(entry, dict):
+                info = dict(entry)
+                info.setdefault('major', index == 0)
+                infos.append(info)
+                continue
+            text = str(entry or '').strip()
+            if not text:
+                continue
+            if text.startswith(('http://', 'https://')):
+                infos.append(build_image_info(text, is_major=(index == 0)))
+                continue
+            uploaded = await self.upload_image(text)
+            infos.append(build_image_info(
+                str(uploaded.get('url') or ''), is_major=(index == 0),
+                file_id=uploaded.get('fileId'),
+                width=int(uploaded.get('width') or 800),
+                height=int(uploaded.get('height') or 800),
+            ))
+        return infos
+
     async def publish_item(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """发布商品。"""
-        result = await self.mtop(PUBLISH_API, payload or {}, v=PUBLISH_VERSION)
-        return result.get('data') or {}
+        """发布商品（完整流程）：上传图片 → 分类推荐 → 注册分类路径 → 发布。
+
+        入参是**业务层字段名**（``title/price/description/images/stock/...``），
+        协议层负责映射成平台字段并补齐发布族必填项。返回
+        ``{'item_id', 'itemId', 'raw', ...}``。
+        """
+        payload = payload or {}
+        title = str(payload.get('title') or '').strip()
+        if not title:
+            raise XianyuError('发布缺少标题')
+        raw_images = payload.get('images')
+        if isinstance(raw_images, str):
+            raw_images = [raw_images]
+        images = await self._publish_images(list(raw_images or []))
+        if not images:
+            raise XianyuError('至少需要一张图片')
+
+        await self.check_bad_words(title)
+
+        description = payload.get('description') or payload.get('desc') or ''
+        transport, card_list = await self.recommend_category(title, description, images)
+
+        channel_cate_id = payload.get('channel_cate_id')
+        channel_cate_name = payload.get('channel_cate_name')
+        tb_cat_id = payload.get('tb_cat_id') or payload.get('category_id')
+        user_picked = bool(channel_cate_id and channel_cate_name)
+        label = build_label_ext(
+            None if user_picked else transport,
+            channel_cate_id, channel_cate_name, tb_cat_id,
+        )
+
+        body = build_publish_payload(
+            title=title,
+            price=payload.get('price'),
+            desc=description,
+            orig_price=payload.get('original_price', payload.get('orig_price')),
+            images=images,
+            label_ext=label,
+            quantity=payload.get('stock', payload.get('quantity', 1)),
+            free_shipping=payload.get('free_shipping', True),
+            addr=payload.get('addr'),
+        )
+
+        # 漏了这步发布必报 FAIL_BIZ_CHANNEL_CAT_ID_PATH_QUERY_ERROR
+        if card_list:
+            await self.register_publish_cards(card_list, body)
+
+        body['uniqueCode'] = mtop.generate_uuid()
+        result = await self.mtop(PUBLISH_API, body, v=PUBLISH_VERSION)
+        data = result.get('data') or {}
+        item_id = ''
+        if isinstance(data, dict):
+            item_id = str(data.get('itemId') or data.get('item_id') or '')
+        return {'item_id': item_id, 'itemId': item_id, 'raw': data}
+
+    async def edit_item(self, item_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """编辑商品：**取回原表单 → 只打目标字段的补丁 → 提交**。
+
+        绝不用「零构造 payload」直接提交 —— 那会静默丢掉类目属性、地址、
+        议价设置等所有没显式传的字段。``payload`` 用业务层字段名
+        （``price/title/description/stock/status/original_price/free_shipping``）。
+
+        上架没有独立接口，``reshelf`` 就是 ``status='on_sale'`` 走到这里。
+        """
+        if not item_id:
+            raise XianyuError('缺少商品ID')
+        changes = _local_changes_to_edit(payload or {})
+        if not changes:
+            raise XianyuError('没有可提交到平台的字段')
+
+        detail = await self.edit_item_detail(item_id)
+        if not isinstance(detail, dict) or not detail:
+            raise XianyuError(f'读取商品详情失败: 商品 {item_id} 的 editDetail 为空')
+
+        body = build_edit_submit(detail, changes)
+        body['itemId'] = str(item_id)
+        body['sourceId'] = str(item_id)
+        result = await self.mtop(EDIT_API, body, v=EDIT_VERSION)
+        data = result.get('data')
+        return data if isinstance(data, dict) else {}
+
+    async def downshelf(self, item_id: str) -> Dict[str, Any]:
+        """下架（``mtop.taobao.idle.item.downshelf`` **v2.0**，不是 1.0）。"""
+        if not item_id:
+            raise XianyuError('缺少商品ID')
+        result = await self.mtop(DOWNSHELF_API, {'itemId': str(item_id)},
+                                 v=DOWNSHELF_VERSION)
+        data = result.get('data')
+        return data if isinstance(data, dict) else {}
+
+    async def reshelf(self, item_id: str) -> Dict[str, Any]:
+        """上架。**平台没有独立的上架接口** —— 就是编辑流程改 ``itemStatus``。"""
+        return await self.edit_item(item_id, {'status': 'on_sale'})
+
+    async def set_status(self, item_id: str, status: str) -> Dict[str, Any]:
+        """按业务状态名分发：``on_sale`` → 上架，其它 → 下架。"""
+        text = str(status or '').strip().lower()
+        if text in ('on_sale', 'onsale', 'on_sale_item'):
+            return await self.reshelf(item_id)
+        return await self.downshelf(item_id)
 
     async def user_profile(self, user_id: Optional[str] = None) -> Dict[str, Any]:
         """账号公开资料（昵称 / 头像 / 卖家等级）。"""
@@ -479,3 +776,354 @@ def _https(url: str) -> str:
     if url.startswith('http://'):
         return 'https://' + url[len('http://'):]
     return url
+
+
+# ---------------------------------------------------------------------------
+# 列表接口解析
+# ---------------------------------------------------------------------------
+
+#: 平台「命中违禁词」的 ret 标记。只认这些，不认 api 名里的 badwords。
+BAD_WORD_MARKERS = ('BADWORD', 'BAD_WORD', '违禁')
+
+
+def _ret_hits_bad_word(ret: Optional[Sequence[Any]]) -> bool:
+    """平台 ret 列表里是否有「命中违禁词」的标记。"""
+    for item in ret or []:
+        text = str(item).upper()
+        if any(marker.upper() in text for marker in BAD_WORD_MARKERS):
+            return True
+    return False
+
+
+_STATUS_MAP = {
+    'onsale': 'on_sale', 'on_sale': 'on_sale', 'onSale': 'on_sale',
+    'downshelf': 'off_shelf', 'off_shelf': 'off_shelf', 'offshelf': 'off_shelf',
+}
+
+
+def canonical_status(value: Any) -> str:
+    """平台状态名 → 本地口径（``on_sale`` / ``off_shelf``）。
+
+    认不出来的**原样返回**（例如 ``sold``），不要猜 —— 把「已卖出」硬说成
+    「在售」会让统计页骗人。数字状态（1 = 在售）按旧项目实测映射。
+    """
+    if value is None or value == '':
+        return 'on_sale'
+    if isinstance(value, (int, float)):
+        return 'on_sale' if int(value) == 1 else 'off_shelf'
+    text = str(value)
+    return _STATUS_MAP.get(text, _STATUS_MAP.get(text.lower(), text))
+
+
+def _extract_list_cards(data: Dict[str, Any]) -> List[Any]:
+    """从列表响应里挖出商品卡。
+
+    当前平台是 ``itemTopicList``，旧版是 ``cardList``；两个都试，按需往下钻一层
+    （``data`` / ``module`` 里再套一层的情况遇到过）。
+    """
+    for key in ('itemTopicList', 'cardList', 'itemList'):
+        raw = data.get(key)
+        if isinstance(raw, list) and raw:
+            return raw
+    for wrapper in ('data', 'module', 'result'):
+        inner = data.get(wrapper)
+        if isinstance(inner, dict):
+            found = _extract_list_cards(inner)
+            if found:
+                return found
+    return []
+
+
+def _first_text(mapping: Dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = mapping.get(key)
+        if value not in (None, ''):
+            return str(value)
+    return ''
+
+
+def normalize_list_card(card: Any) -> Optional[Dict[str, Any]]:
+    """把列表里的商品卡归一化成业务层形状；取不到 item_id 就丢弃（返回 None）。
+
+    字段名在不同版本里套了三层（``cardData`` → ``itemInfo``/``itemData``/``item``），
+    逐个试。
+    """
+    if not isinstance(card, dict):
+        return None
+    node = card.get('cardData') if isinstance(card.get('cardData'), dict) else card
+    inner: Any = None
+    for key in ('itemInfo', 'itemData', 'item', 'auction'):
+        if isinstance(node.get(key), dict):
+            inner = node[key]
+            break
+    if inner is None:
+        inner = node
+
+    detail = inner.get('detailParams') if isinstance(inner.get('detailParams'), dict) else {}
+    item_id = _first_text(detail, 'itemId') or _first_text(
+        inner, 'itemId', 'auctionId', 'id') or _first_text(node, 'itemId', 'id')
+    if not item_id:
+        return None
+
+    price: Any = inner.get('price')
+    if isinstance(price, dict):
+        price = price.get('price') or price.get('value') or price.get('text')
+    if price in (None, ''):
+        price_info = inner.get('priceInfo') if isinstance(inner.get('priceInfo'), dict) else {}
+        price = price_info.get('price') or price_info.get('value')
+    if price in (None, ''):
+        price = inner.get('soldPrice')
+    price_text = str(price) if price not in (None, '') else ''
+    try:
+        price_value = float(str(price).replace('¥', '').replace(',', '').strip())
+    except (TypeError, ValueError):
+        price_value = 0.0
+
+    images: List[str] = []
+    for key in ('picInfo', 'images', 'imageInfos', 'imageList'):
+        raw = inner.get(key)
+        if isinstance(raw, list):
+            for entry in raw:
+                url = entry.get('url') if isinstance(entry, dict) else entry
+                if url:
+                    images.append(_https(str(url)))
+            if images:
+                break
+    if not images:
+        single = _first_text(inner, 'itemImage', 'picUrl', 'image')
+        if single:
+            images = [_https(single)]
+
+    quantity = inner.get('quantity')
+    if quantity in (None, ''):
+        quantity = inner.get('stock')
+    try:
+        stock = int(float(quantity)) if quantity not in (None, '') else 1
+    except (TypeError, ValueError):
+        stock = 1
+
+    return {
+        'item_id': item_id,
+        'title': _first_text(inner, 'title', 'itemTitle', 'name'),
+        'price': price_value,
+        'price_text': price_text,
+        'stock': stock,
+        'status': canonical_status(inner.get('itemStatus') or inner.get('status')),
+        'item_status': inner.get('itemStatus'),
+        'category_id': _first_text(inner, 'categoryId', 'catId', 'channelCatId'),
+        'images': images,
+        'description': _first_text(inner, 'desc', 'description'),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 发布 / 编辑 payload 构造（纯函数，便于单测）
+# ---------------------------------------------------------------------------
+
+
+def to_cent(value: Any) -> str:
+    """元 → 分，**字符串**。平台价格字段要字符串分，传数字会报参数不合法。"""
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        raise XianyuError(f'价格无法解析: {value!r}') from None
+    if amount < 0:
+        raise XianyuError(f'价格不能为负: {value!r}')
+    return str(round(amount * 100))
+
+
+def build_image_info(url: str, is_major: bool = False, file_id: Optional[str] = None,
+                     width: int = 800, height: int = 800) -> Dict[str, Any]:
+    """``imageInfoDOList`` 的元素。``extraInfo`` 三个值必须是**字符串** ``'false'``。"""
+    info: Dict[str, Any] = {
+        'extraInfo': {'isH': 'false', 'isT': 'false', 'raw': 'false'},
+        'isQrCode': False,
+        'url': url,
+        'heightSize': height,
+        'widthSize': width,
+        'major': is_major,
+        'type': 0,
+        'status': 'done',
+    }
+    if file_id:
+        info['fileId'] = file_id
+    return info
+
+
+def _literal_label_ext(channel_cate_id: str, channel_cate_name: str,
+                       tb_cat_id: str) -> Dict[str, Any]:
+    return {
+        'channelCateName': channel_cate_name,
+        'valueId': None,
+        'channelCateId': channel_cate_id,
+        'valueName': None,
+        'tbCatId': tb_cat_id,
+        'subPropertyId': None,
+        'labelType': 'common',
+        'subValueId': None,
+        'labelId': None,
+        'propertyName': '分类',
+        'isUserClick': '1',
+        'isUserCancel': None,
+        'from': 'newPublishChoice',
+        'propertyId': '-10000',
+        'labelFrom': 'newPublish',
+        'text': channel_cate_name,
+        'properties': f'-10000##分类:{channel_cate_id}##{channel_cate_name}',
+    }
+
+
+def build_label_ext(transport: Optional[Dict[str, Any]],
+                    channel_cate_id: Optional[str] = None,
+                    channel_cate_name: Optional[str] = None,
+                    tb_cat_id: Optional[str] = None) -> Dict[str, Any]:
+    """分类标签：**用户显式指定 > kgraph 推荐 > 默认「其他闲置」**。
+
+    「用户指定」要求 ID 与名字**同时**给出：只给 ID 而名字退回默认值会拼出
+    「用户 cateId + 其他闲置名字」这种自相矛盾的标签，还不如整份用默认值。
+    用户指定时整份走字面量，不能混进 transport 的 ``valueId``/``labelId``
+    （那些指向被推荐的分类）。
+    """
+    if channel_cate_id and channel_cate_name:
+        return _literal_label_ext(channel_cate_id, channel_cate_name,
+                                  tb_cat_id or DEFAULT_TB_CAT_ID)
+    if transport:
+        label = dict(transport)
+        label['text'] = transport.get('channelCateName', channel_cate_name)
+        label['properties'] = (
+            f"-10000##分类:{transport.get('channelCateId', channel_cate_id)}"
+            f"##{transport.get('channelCateName', channel_cate_name)}"
+        )
+        label['isUserClick'] = '1'
+        label['labelFrom'] = 'newPublish'
+        return label
+    return _literal_label_ext(DEFAULT_CHANNEL_CATE_ID, DEFAULT_CHANNEL_CATE_NAME,
+                              DEFAULT_TB_CAT_ID)
+
+
+def build_publish_payload(title: str, price: Any, desc: Optional[str] = None,
+                          orig_price: Any = None,
+                          images: Optional[List[Dict[str, Any]]] = None,
+                          label_ext: Optional[Dict[str, Any]] = None,
+                          quantity: Any = 1, free_shipping: bool = True,
+                          addr: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """发布 payload。与 ``edit`` 的 payload **同构**。"""
+    images = images or []
+    if not images:
+        raise XianyuError('至少需要一张图片')
+
+    price_cent = to_cent(price)
+    orig_cent = to_cent(orig_price) if orig_price is not None else price_cent
+    label = label_ext or build_label_ext(None)
+
+    payload: Dict[str, Any] = {
+        'freebies': False,
+        'itemTypeStr': 'b',            # b = 二手闲置
+        'quantity': str(quantity),     # 字符串
+        'simpleItem': 'true',          # 字符串
+        'imageInfoDOList': images,
+        'itemTextDTO': {'title': title, 'desc': desc or title, 'titleDescSeparate': False},
+        'itemLabelExtList': [label],
+        'itemPriceDTO': {'origPriceInCent': orig_cent, 'priceInCent': price_cent},
+        'userRightsProtocols': USER_RIGHTS_PROTOCOLS,
+        'itemPostFeeDTO': {
+            'canFreeShipping': bool(free_shipping),
+            'supportFreight': True,
+            'onlyTakeSelf': False,
+        },
+        'itemCatDTO': {
+            'catId': label.get('tbCatId') or DEFAULT_TB_CAT_ID,
+            'catName': label.get('channelCateName', DEFAULT_CHANNEL_CATE_NAME),
+            'channelCatId': label.get('channelCateId', DEFAULT_CHANNEL_CATE_ID),
+            'tbCatId': label.get('tbCatId') or DEFAULT_TB_CAT_ID,
+        },
+        'publishScene': PUBLISH_SCENE,
+    }
+    if addr:
+        payload['itemAddrDTO'] = addr
+    return payload
+
+
+def _set_path(payload: Dict[str, Any], path: str, value: Any) -> None:
+    """按 ``a.b.c`` 写入，中间层缺失补空字典。"""
+    parts = path.split('.')
+    cursor = payload
+    for part in parts[:-1]:
+        child = cursor.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            cursor[part] = child
+        cursor = child
+    cursor[parts[-1]] = value
+
+
+def build_edit_patch(detail: Dict[str, Any], *, price: Any = None, orig_price: Any = None,
+                     quantity: Any = None, title: Optional[str] = None,
+                     desc: Optional[str] = None, item_status: Optional[str] = None,
+                     free_shipping: Optional[bool] = None) -> Dict[str, Any]:
+    """在 ``editDetail`` 原表单上打补丁。**只覆盖显式传入的字段**，
+    其余一律沿用原表单 —— 这是不丢类目属性/地址/议价设置的唯一做法。"""
+    payload: Dict[str, Any] = copy.deepcopy(detail)
+    if price is not None:
+        _set_path(payload, 'itemPriceDTO.priceInCent', to_cent(price))
+    if orig_price is not None:
+        _set_path(payload, 'itemPriceDTO.origPriceInCent', to_cent(orig_price))
+    if quantity is not None:
+        payload['quantity'] = str(quantity)
+    if title is not None:
+        _set_path(payload, 'itemTextDTO.title', title)
+    if desc is not None:
+        _set_path(payload, 'itemTextDTO.desc', desc)
+    if item_status is not None:
+        payload['itemStatus'] = item_status
+    if free_shipping is not None:
+        _set_path(payload, 'itemPostFeeDTO.canFreeShipping', bool(free_shipping))
+    return payload
+
+
+def build_edit_submit(detail: Dict[str, Any], changes: Dict[str, Any]) -> Dict[str, Any]:
+    """打补丁 + 注入编辑族必填字段，得到最终提交体。"""
+    payload = build_edit_patch(detail, **changes)
+    payload['uniqueCode'] = mtop.generate_uuid()
+    payload['bizcode'] = EDIT_BIZCODE
+    payload['publishScene'] = EDIT_PUBLISH_SCENE
+    return payload
+
+
+#: 业务层字段名 → 编辑接口可改的字段。**改价没有独立接口**，走 edit。
+EDITABLE_FIELDS = {
+    'price', 'original_price', 'stock', 'title', 'description', 'status', 'free_shipping',
+}
+
+
+def _local_changes_to_edit(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """业务层字段名 → ``build_edit_patch`` 的 kwargs。
+
+    不认识的字段**抛错**而不是静默丢掉：静默丢会让用户看到「已同步」而字段
+    根本没变（这正是本仓库反复踩的「假通」）。
+    """
+    changes: Dict[str, Any] = {}
+    unknown: List[str] = []
+    for key, value in (payload or {}).items():
+        if key == 'price':
+            changes['price'] = value
+        elif key in ('original_price', 'orig_price'):
+            changes['orig_price'] = value
+        elif key in ('stock', 'quantity'):
+            changes['quantity'] = value
+        elif key == 'title':
+            changes['title'] = '' if value is None else str(value)
+        elif key in ('description', 'desc'):
+            changes['desc'] = '' if value is None else str(value)
+        elif key == 'status':
+            changes['item_status'] = (
+                ITEM_STATUS_ON_SALE if canonical_status(value) == 'on_sale'
+                else ITEM_STATUS_OFF_SHELF
+            )
+        elif key == 'free_shipping':
+            changes['free_shipping'] = bool(value)
+        else:
+            unknown.append(str(key))
+    if unknown:
+        raise XianyuError(f'协议层不支持修改字段: {", ".join(sorted(unknown))}')
+    return changes

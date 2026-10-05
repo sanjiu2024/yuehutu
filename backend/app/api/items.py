@@ -158,6 +158,26 @@ def operation_logs_for_account(
     return _envelope({'logs': items.list_operation_logs(account_id=account_id, limit=limit)})
 
 
+@router.get('/{account_id}')
+def list_items_for_account(
+    account_id: str,
+    status: Optional[str] = Query(default=None),
+    q: Optional[str] = Query(default=None),
+    keyword: Optional[str] = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=50, ge=1, le=500),
+    user=Depends(current_user),
+):
+    """某个账号的商品列表。
+
+    缺了这条路由时 `GET /api/items/{account_id}` 会被下面的
+    `GET /{item_id}` 吞掉，当成「item_id = 账号名」查，报 `商品不存在` 404 ——
+    看起来像账号没商品，其实路由根本不存在。
+    """
+    return _envelope(items.list_items(account_id=account_id, keyword=q or keyword,
+                                      page=page, size=size, status=status))
+
+
 @router.get('/{account_id}/{item_id}')
 def get_item_for_account(account_id: str, item_id: str, user=Depends(current_user)):
     """CONTRACTS §3 的单条商品（MCP 的 items_get 直连这条）。"""
@@ -180,11 +200,13 @@ def relist_item(account_id: str, item_id: str, user=Depends(current_user)):
 
 
 # --------------------------------------------------------------------------- 通用单条（放最后）
-
-
-@router.get('/{item_id}')
-def get_item(item_id: str, user=Depends(current_user)):
-    return _envelope(items.get_item(item_id))
+#
+# **这里曾经是 `GET /api/items/{item_id}`，已删除。** 它与上面的
+# `GET /{account_id}`（账号商品列表）形状完全相同，FastAPI 按声明顺序匹配，两条
+# 只能活一条：谁在后面谁永远收不到请求。账号列表这条是审计 I7 要求补的，且前端
+# 「商品」页按账号拉列表必须走它；扁平单条没有任何生产调用方（MCP 的 items_get
+# 走的是带账号上下文的 `/{account_id}/{item_id}`），所以这里删掉扁平那条，
+# 单条商品一律要求带账号上下文。CONTRACTS §3 已同步。
 
 
 @router.put('/{item_id}')

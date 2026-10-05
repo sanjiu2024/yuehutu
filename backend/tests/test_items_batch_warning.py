@@ -41,22 +41,30 @@ OTHER = 'other_acc'
 
 
 class FakeClient:
-    """假协议层客户端：只记调用，不联网。"""
+    """假协议层客户端：只记调用，不联网。
+
+    **签名与 `backend/app/xianyu/client.py::XianyuClient` 逐字一致**：真类是
+    `edit_item(item_id, payload)` / `downshelf(item_id)` / `reshelf(item_id)`，
+    都没有 `account_id` 参数（账号身份由 client 自己的 cookie 决定）。
+    顺着服务层的错误调用签成 `(account_id, item_id, ...)` 会让假对象比真对象宽松，
+    测试挡住「多传一个参数」这类真 bug（真机上是 502 TypeError）。
+    签名对拍在 `backend/tests/test_services_items.py::FakeClientSignatureTest`。
+    """
 
     def __init__(self, account_id: str):
         self.account_id = account_id
         self.calls = []
 
-    def edit_item(self, account_id, item_id, fields):
-        self.calls.append(('edit_item', account_id, item_id))
+    def edit_item(self, item_id: str, payload: dict):
+        self.calls.append(('edit_item', item_id, payload))
         return {'ok': True}
 
-    def downshelf(self, account_id, item_id):
-        self.calls.append(('downshelf', account_id, item_id))
+    def downshelf(self, item_id: str):
+        self.calls.append(('downshelf', item_id))
         return {'ok': True}
 
-    def reshelf(self, account_id, item_id):
-        self.calls.append(('reshelf', account_id, item_id))
+    def reshelf(self, item_id: str):
+        self.calls.append(('reshelf', item_id))
         return {'ok': True}
 
 

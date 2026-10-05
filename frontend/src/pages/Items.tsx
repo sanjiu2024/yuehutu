@@ -44,9 +44,36 @@ function mergeBatch(): BatchResult & { warnings: NonNullable<BatchResult['warnin
   return { total: 0, ok: 0, synced: 0, local_only: 0, warnings: [], failed: [] }
 }
 
+/**
+ * 单条 `/edit` 的返回形状与批量**不一样**：
+ *   `{ item, synced, updated_fields, warning? }`（`backend/app/services/items.py` 的 `update_item`）
+ * 而批量形状是 `{ total, ok, warnings, failed }`。
+ * 直接把它当 `BatchResult` 读会 `ok=undefined→0`、`warnings=undefined→[]`，于是
+ * `warning` 被吞掉，还错报「商品修改：没有可处理的商品（共 0 个）」。
+ * 这里折成批量形状：`synced=false` 时把 `warning` 记成一条 `not_pushed`。
+ */
+function singleEditAsBatch(
+  result: { item?: Item; synced?: boolean; warning?: string; updated_fields?: string[] } | undefined,
+): BatchResult & { warnings: NonNullable<BatchResult['warnings']> } {
+  const merged = mergeBatch()
+  merged.total = 1
+  if (result?.synced) {
+    merged.ok = 1
+    merged.synced = 1
+    return merged
+  }
+  merged.warnings.push({
+    id: result?.item?.item_id ?? '',
+    code: 'not_pushed',
+    message: result?.warning || '改动仅本地生效，未同步到闲鱼',
+  })
+  merged.local_only = 1
+  return merged
+}
+
 export function ItemsPage() {
   const toast = useToast()
-  const accounts = useAsync<Account[]>(() => api.get<Account[]>('/api/accounts'), [])
+  const accounts = useAsync<Account[]>(() => api.get<Account[]>('/api/accounts'), [], true, ['accounts.changed'])
   const [accountId, setAccountId] = useState('')
   const [status, setStatus] = useState('')
   const [query, setQuery] = useState('')
@@ -69,6 +96,9 @@ export function ItemsPage() {
         limit: 500,
       }),
     [accountId, status, query],
+    true,
+    // 发布/编辑/上下架/同步成功后后端会发 items.updated，静默重拉列表
+    ['items.updated'],
   )
 
   const list = items.data?.items ?? []
@@ -99,8 +129,10 @@ export function ItemsPage() {
     }
     setBusy(true)
     try {
-      await api.post(`/api/items/${encodeURIComponent(accountId)}/sync`)
-      toast.success('已触发同步，稍后刷新查看')
+      // 同步是同步阻塞完成的（不是后台任务），返回值里就有条数；
+      // 再用 items.updated 事件触发静默重拉，不靠「稍后自己刷新」蒙用户。
+      const result = await api.post<{ count?: number }>(`/api/items/${encodeURIComponent(accountId)}/sync`)
+      toast.success(`同步完成，拉取到 ${Number(result?.count) || 0} 个商品`)
       items.reload()
     } catch (err) {
       toast.error(errorText(err))
@@ -405,13 +437,14 @@ function EditItemModal({ item, onClose, onSaved }: { item: Item; onClose: () => 
       if (stock !== '') patch.stock = Number(stock)
       const imageList = images.split('\n').map((s) => s.trim()).filter(Boolean)
       if (imageList.length) patch.images = imageList
-      // 单条编辑返回 {ok, warnings, failed}：ok 才算真的改到闲鱼上了；
-      // 只有 warning 时是「本地已改、未同步」，不能报「已保存」了事。
-      const result = await api.post<BatchResult>(
+      // 单条编辑返回 {item, synced, updated_fields, warning?}（**不是**批量形状）：
+      // ok 才算真的改到闲鱼上了；只有 warning 时是「本地已改、未同步」，
+      // 不能报「已保存」了事，也绝不能因为形状不对报「共 0 个」。
+      const result = await api.post<{ item?: Item; synced?: boolean; warning?: string; updated_fields?: string[] }>(
         `/api/items/${encodeURIComponent(item.account_id)}/${encodeURIComponent(item.item_id)}/edit`,
         patch,
       )
-      showBatchNotice(toast, result, '修改', '商品')
+      showBatchNotice(toast, singleEditAsBatch(result), '修改', '商品')
       onSaved()
     } catch (err) {
       toast.error(errorText(err))
@@ -602,13 +635,14 @@ function BatchEditModal({
         for (const entry of perItem) {
           merged.total += 1
           try {
-            const result = await api.post<BatchResult>(
+            const result = await api.post<{ item?: Item; synced?: boolean; warning?: string }>(
               `/api/items/${encodeURIComponent(entry.item.account_id)}/${encodeURIComponent(entry.item.item_id)}/edit`,
               entry.patch,
             )
-            merged.ok += Number(result?.ok) || 0
-            merged.warnings.push(...(result?.warnings ?? []))
-            merged.failed.push(...(result?.failed ?? []))
+            const one = singleEditAsBatch(result)
+            merged.ok += one.ok
+            merged.warnings.push(...one.warnings)
+            merged.failed.push(...one.failed)
           } catch (err) {
             merged.failed.push({ id: entry.item.item_id, message: errorText(err) })
           }
@@ -848,6 +882,8 @@ function OperationLogsModal({ accountId, onClose }: { accountId: string; onClose
   const logs = useAsync<{ logs: OperationLog[] }>(
     () => api.get<{ logs: OperationLog[] }>(`/api/items/${encodeURIComponent(accountId)}/operation-logs`, { limit: 100 }),
     [accountId],
+    true,
+    ['items.updated'],
   )
   const list = logs.data?.logs ?? []
 

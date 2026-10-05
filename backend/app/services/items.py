@@ -19,6 +19,8 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+from loguru import logger
+
 from ..core import db
 from . import common
 
@@ -255,12 +257,41 @@ def _apply_patch(item: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
 # --------------------------------------------------------------------------- 写
 
 
+#: 协议层商品编辑**真正能改**的字段（``XianyuClient.edit_item`` 的业务字段名）。
+#: 交集之外的字段（``ai_enabled`` / ``images`` / ``category_id``）本地照改，
+#: 但必须如实报 warning —— 说「已同步」而平台根本没这个字段就是假通。
+PUSHABLE_EDIT_FIELDS = {'price', 'original_price', 'stock', 'title', 'description',
+                        'status', 'free_shipping'}
+
+#: 商品写操作成功后统一发的事件。前端各页订阅同一个 topic 做静默重拉，
+#: 所以 payload 里必须带够定位信息（哪个账号、哪些商品、干了什么）。
+ITEMS_UPDATED_TOPIC = 'items.updated'
+
+
+def _publish_updated(account_id: Any, item_ids: Sequence[Any], action: str) -> None:
+    """发 ``items.updated``。**事件失败绝不影响主流程**（写操作已经成功落库，
+    不能因为一个通知把成功改判成失败）。"""
+    try:
+        common.publish(ITEMS_UPDATED_TOPIC, {
+            'account_id': str(account_id or ''),
+            'item_ids': [str(i) for i in (item_ids or []) if str(i).strip()],
+            'action': action,
+        })
+    except Exception:  # noqa: BLE001 - 通知失败与业务结果无关
+        logger.exception('发布 items.updated 事件失败（不影响本次操作结果）')
+
+
 def _push_update(client: Any, account_id: str, item_id: str, resolved: Dict[str, Any]) -> Optional[str]:
-    """尽力把改动推给协议层；返回警告文本或 None（协议层未就绪也算警告，不算失败）。"""
-    status, value = common.call_method(
-        client, ('edit_item', 'update_item', 'modify_item', 'edit'),
-        account_id, item_id, resolved,
-    )
+    """尽力把改动推给协议层；返回警告文本或 None（协议层未就绪也算警告，不算失败）。
+
+    真签名是 ``XianyuClient.edit_item(item_id, payload)``（**两个参数**，没有
+    ``account_id``）；多传一个 account_id 会在 Python 层就 ``TypeError``，
+    表现为 502 ``protocol_error``，跟平台无关。
+    """
+    payload = {k: v for k, v in resolved.items() if k in PUSHABLE_EDIT_FIELDS}
+    if not payload:
+        return '这些字段闲鱼平台不支持修改，改动仅本地生效'
+    status, value = common.call_method(client, ('edit_item',), item_id, payload)
     if status == common.CALL_OK:
         return None
     if status == common.CALL_MISSING:
@@ -302,7 +333,7 @@ def update_item(item_id: Any, fields: Dict[str, Any], account_id: Optional[str] 
         item['account_id'], 'update_item', item['item_id'], True,
         {'fields': resolved, 'warning': warning},
     )
-    common.publish('items.updated', {'item_id': item['item_id'], 'account_id': item['account_id'], 'fields': resolved})
+    _publish_updated(item['account_id'], [item['item_id']], 'edit')
     result: Dict[str, Any] = {'item': updated, 'synced': warning is None, 'updated_fields': list(resolved)}
     if warning:
         result['warning'] = warning
@@ -391,6 +422,9 @@ def batch_update(
         len(ids), synced_ok, warnings, failed,
         {'updated': [i['item_id'] for i in updated_items], 'fields': patch},
     )
+    if updated_items:
+        _publish_updated(account_id or updated_items[0].get('account_id'),
+                         [i['item_id'] for i in updated_items], 'batch_edit')
     common.publish('items.batch_done', {'total': len(ids), 'ok': synced_ok,
                                         'local_only': len(warnings), 'failed': len(failed)})
     return summary
@@ -407,6 +441,8 @@ def _set_status(
     synced_ok = 0
     warnings: List[Dict[str, Any]] = []
     failed: List[Dict[str, Any]] = []
+    touched: List[str] = []
+    touched_account = str(account_id or '')
     for item_id in ids:
         row = _find_row_for_account(account_id, item_id) if account_id else _find_row(item_id)
         if row is None:
@@ -425,8 +461,11 @@ def _set_status(
         warning = None
         client, _err = common.get_client(item['account_id'])
         if client is not None:
+            # 真签名：downshelf(item_id) / reshelf(item_id)（**一个参数**，没有
+            # account_id）；上架其实是编辑流程改 itemStatus，没有独立接口。
+            action_method = 'reshelf' if action == 'reshelf' else 'downshelf'
             call_status, value = common.call_method(
-                client, (action, f'{action}_item', 'set_status'), item['account_id'], item['item_id'],
+                client, (action_method,), item['item_id'],
             )
             if call_status == common.CALL_MISSING:
                 warning = '协议层尚未实现该操作，仅本地生效'
@@ -439,6 +478,10 @@ def _set_status(
             warnings.append({'id': item['item_id'], 'code': 'not_pushed', 'message': warning})
         else:
             synced_ok += 1
+        touched.append(item['item_id'])
+        touched_account = item['account_id']
+    if touched:
+        _publish_updated(account_id or touched_account, touched, 'status')
     common.publish('items.status_changed', {'status': status, 'action': action,
                                             'ok': synced_ok, 'total': len(ids)})
     return _batch_summary(len(ids), synced_ok, warnings, failed, {'status': status})
@@ -461,16 +504,21 @@ def sync_items(account_id: str) -> Any:
         common.log_operation(account_id, 'sync_items', '', False, (err or {}).get('message', ''))
         return err or common.not_ready()
 
-    status, value = common.call_method(
-        client, ('list_items', 'fetch_items', 'get_items', 'my_items'), account_id,
-    )
+    # 真签名：list_items(page_number=1, page_size=20, max_pages=5)（**没有
+    # account_id** —— 账号身份由 client 自带 cookie 决定）。多传一个参数会在
+    # Python 层 TypeError，请求根本发不出去，正是「商品拉不过来」的根因。
+    status, value = common.call_method(client, ('list_items',))
     problem = common.call_failed(status, value)
     if problem is not None:
         common.log_operation(account_id, 'sync_items', '', False, problem.get('message', ''))
         return problem
 
-    raw_items = common.extract_list(value, 'items', 'list', 'data')
+    if isinstance(value, dict) and isinstance(value.get('items'), list):
+        raw_items = value['items']
+    else:
+        raw_items = common.extract_list(value, 'items', 'list', 'data')
     ok = 0
+    synced_ids: List[str] = []
     for raw in raw_items:
         if not isinstance(raw, dict):
             continue
@@ -498,9 +546,11 @@ def sync_items(account_id: str) -> Any:
             ),
         )
         ok += 1
+        synced_ids.append(item_id)
 
     common.log_operation(account_id, 'sync_items', '', True, {'count': ok})
     common.publish('items.synced', {'account_id': account_id, 'count': ok})
+    _publish_updated(account_id, synced_ids, 'sync')
     return {'account_id': account_id, 'count': ok, 'items': list_items(account_id=account_id)['items']}
 
 
@@ -518,7 +568,9 @@ def publish_item(account_id: str, payload: Dict[str, Any]) -> Any:
         common.log_operation(account_id, 'publish_item', '', False, (err or {}).get('message', ''))
         return err or common.not_ready()
 
-    status, value = common.call_method(client, ('publish_item', 'create_item', 'publish'), account_id, payload)
+    # 真签名：publish_item(payload)（**一个参数**）。多传 account_id 会在 Python
+    # 层 TypeError → 502 protocol_error，请求根本没发出去。
+    status, value = common.call_method(client, ('publish_item',), payload)
     problem = common.call_failed(status, value)
     if problem is not None:
         common.log_operation(account_id, 'publish_item', '', False, problem.get('message', ''))
@@ -545,4 +597,6 @@ def publish_item(account_id: str, payload: Dict[str, Any]) -> Any:
         )
     common.log_operation(account_id, 'publish_item', item_id, True, {'title': payload.get('title')})
     common.publish('items.published', {'account_id': account_id, 'item_id': item_id})
+    if item_id:
+        _publish_updated(account_id, [item_id], 'publish')
     return {'item_id': item_id, 'raw': value}

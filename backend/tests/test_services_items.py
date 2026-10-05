@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import inspect
 import sys
 import tempfile
 import types
@@ -20,38 +21,54 @@ if str(REPO_ROOT) not in sys.path:
 
 from backend.app.core import config, db, events  # noqa: E402
 from backend.app.services import common, items  # noqa: E402
+# 真协议层类的引用在**假模块注入之前**绑定，之后 FakeClient 随便替换 sys.modules
+# 都不影响这里 —— 签名对拍必须以真类为基准。
+from backend.app.xianyu.client import XianyuClient as RealXianyuClient  # noqa: E402
 
 
 class FakeClient:
-    """假协议层客户端：只记调用，不联网。"""
+    """假协议层客户端：只记调用，不联网。
+
+    **签名必须与 `backend/app/xianyu/client.py::XianyuClient` 逐字一致**。
+    这个类曾经写成 `list_items(self, account_id)` / `publish_item(self, account_id, payload)`
+    —— 顺着**服务层的错误调用**签名，于是 21 个用例全绿，真机上却
+    `publish_item() takes 2 positional arguments but 3 were given`（502）。
+    假对象比真对象宽松一分，测试就少挡一类真 bug，所以这里连默认值都照抄，
+    并在文件末尾用 `inspect.signature` 逐方法对拍。
+    """
 
     def __init__(self, account_id: str):
         self.account_id = account_id
         self.calls = []
 
-    def list_items(self, account_id):
-        self.calls.append(('list_items', account_id))
+    def list_items(self, page_number: int = 1, page_size: int = 20, max_pages: int = 5):
+        self.calls.append(('list_items', page_number, page_size, max_pages))
         return {
             'items': [
                 {'item_id': 'A1', 'title': 'iPhone 13', 'price': 2500, 'stock': 1, 'status': 'on_sale'},
                 {'item_id': 'A2', 'title': 'AirPods', 'price': 400, 'stock': 2, 'status': 'on_sale'},
-            ]
+            ],
+            'total': 2,
         }
 
-    def edit_item(self, account_id, item_id, fields):
-        self.calls.append(('edit_item', account_id, item_id, fields))
+    def edit_item(self, item_id: str, payload: dict):
+        self.calls.append(('edit_item', item_id, payload))
         return {'ok': True}
 
-    def publish_item(self, account_id, payload):
-        self.calls.append(('publish_item', account_id, payload))
+    def publish_item(self, payload: dict):
+        self.calls.append(('publish_item', payload))
         return {'item_id': 'NEW1'}
 
-    def downshelf(self, account_id, item_id):
-        self.calls.append(('downshelf', account_id, item_id))
+    def downshelf(self, item_id: str):
+        self.calls.append(('downshelf', item_id))
         return {'ok': True}
 
-    def reshelf(self, account_id, item_id):
-        self.calls.append(('reshelf', account_id, item_id))
+    def reshelf(self, item_id: str):
+        self.calls.append(('reshelf', item_id))
+        return {'ok': True}
+
+    def set_status(self, item_id: str, status: str):
+        self.calls.append(('set_status', item_id, status))
         return {'ok': True}
 
 
@@ -441,6 +458,37 @@ class ItemsServiceTest(unittest.TestCase):
         topics = [e['topic'] for e in after[before:]]
         self.assertIn('items.updated', topics)
         self.assertIn('items.status_changed', topics)
+
+
+class FakeClientSignatureTest(unittest.TestCase):
+    """**假协议层必须和真协议层同签名**（I6 的回归锁）。
+
+    2026-08 的真事故：`FakeClient.publish_item(self, account_id, payload)` 顺着
+    服务层的错误调用写，21 个用例全绿，真机上第一次发布就
+    `publish_item() takes 2 positional arguments but 3 were given`（502）。
+    假对象比真的宽松 → 测试挡不住真 bug。这里逐方法对拍参数名与默认值。
+    """
+
+    #: 服务层会真的去调的协议层方法（不是全量 API，只锁会被误写的这些）
+    CHECKED = ('list_items', 'publish_item', 'edit_item', 'downshelf', 'reshelf', 'set_status')
+
+    def test_fake_client_signatures_match_real(self):
+        for name in self.CHECKED:
+            with self.subTest(method=name):
+                real = inspect.signature(getattr(RealXianyuClient, name))
+                fake = inspect.signature(getattr(FakeClient, name))
+                self.assertEqual(
+                    [(p.name, p.default, p.kind) for p in fake.parameters.values()],
+                    [(p.name, p.default, p.kind) for p in real.parameters.values()],
+                    f'FakeClient.{name} 的签名和真类不一致：{fake} != {real}',
+                )
+
+    def test_real_protocol_layer_exposes_every_method_service_calls(self):
+        """服务层调的每个方法，真类都得有 —— 否则就是 503 xianyu_not_ready 假通。"""
+        for name in self.CHECKED:
+            with self.subTest(method=name):
+                self.assertTrue(hasattr(RealXianyuClient, name),
+                                f'XianyuClient 缺少服务层要调的方法 {name}')
 
 
 if __name__ == '__main__':
