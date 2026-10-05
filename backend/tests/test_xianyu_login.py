@@ -37,9 +37,14 @@ from backend.app.xianyu import login as qr_login  # noqa: E402
 from backend.app.xianyu import net, store  # noqa: E402
 
 # 一段最小的 viewData，形状与真实页面一致（正则要求以 `};` 收尾）。
+# 字段按真实 loginFormData 给全：query.do 要**整个 params** 发过去才能被服务端
+# 认出来（缺 umidToken 时手机扫完会被判 EXPIRED，见 _FakePlatform）。
 VIEW_DATA_HTML = (
     '<html><script>window.viewData = '
-    '{"loginFormData": {"t": "T-PARAM", "ck": "CK-PARAM"}};'
+    '{"loginFormData": {"t": "T-PARAM", "ck": "CK-PARAM", "umidToken": "UMID-TOKEN",'
+    ' "_csrf_token": "CSRF-TOKEN", "hsiz": "HSIZ", "bizParams": "taobaoBizLoginFrom=web",'
+    ' "appName": "xianyu", "appEntrance": "web", "fromSite": "77", "lang": "zh_CN",'
+    ' "mainPage": "False", "isMobile": "False", "returnUrl": ""}};'
     '</script></html>'
 )
 
@@ -55,6 +60,8 @@ class _FakePlatform:
         self.calls = []
         # path -> 该次请求带回的 query 参数（回归用：mini_login.htm 必须带 appName 等）
         self.queries = {}
+        # path -> 该次 POST 的表单体（回归用：query.do 必须带全会话参数）
+        self.posts = {}
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         url = str(request.url)
@@ -62,6 +69,8 @@ class _FakePlatform:
         path = request.url.path
         self.calls.append((request.method, path))
         self.queries.setdefault(path, dict(request.url.params))
+        if request.method == 'POST' and request.content:
+            self.posts[path] = dict(httpx.QueryParams(request.content.decode('utf-8')))
 
         if 'h5api.m.goofish.com' in url and 'mtop.gaia' in url:
             # MTOP 握手：靠 Set-Cookie 种下 _m_h5_tk。
@@ -87,6 +96,13 @@ class _FakePlatform:
 
         if path == qr_login.API_SCAN_STATUS:
             status = self.statuses.pop(0) if self.statuses else 'NEW'
+            body = self.posts.get(path) or {}
+            # 复刻真机现象：漏了会话参数（这里以 umidToken 为代表）的轮询，未扫码
+            # 阶段照样回 NEW，一旦手机扫过就回 EXPIRED —— 用户实测就是这样
+            # 「扫完码提示二维码已过期，没登上」。旧项目可用的实现是整个 params 发过去。
+            if not body.get('umidToken'):
+                status = 'EXPIRED'
+                self.statuses = []
             data = {'qrCodeStatus': status}
             headers = []
             if status == 'CONFIRMED':
@@ -200,6 +216,27 @@ class QRLoginFlowTest(unittest.TestCase):
 
         second = self._run(self.manager.poll(ticket))
         self.assertEqual(second['status'], qr_login.STATUS_SCANNED)
+
+    def test_poll_sends_full_session_params(self):
+        """query.do 必须带上会话的**全部**参数，不能只发 t/ck/appName/fromSite/lang。
+
+        只发那 5 个时未扫码阶段照样回 NEW，但手机扫完确认时服务端认不出这次轮询，
+        直接回 EXPIRED —— 用户实测原话：「扫完码以后就给一个二维码已过期没有登录上」。
+        旧项目实测可用的实现就是把 session.params 整个发过去。
+        """
+        platform = _FakePlatform(statuses=['NEW'])
+        self.manager.transport = platform.transport()
+        ticket = self._run(self.manager.start())['session_id']
+        session = self.manager.sessions[ticket]
+
+        result = self._run(self.manager.poll(ticket))
+
+        body = platform.posts.get(qr_login.API_SCAN_STATUS) or {}
+        for key in ('t', 'ck', 'umidToken', '_csrf_token', 'appName', 'fromSite'):
+            self.assertIn(key, body, f'query.do 漏了 {key}（实收: {sorted(body)}）')
+        self.assertEqual(body['umidToken'], str(session.params['umidToken']))
+        self.assertEqual(result['status'], qr_login.STATUS_WAITING,
+                         f'参数发全了不该被判过期（实收: {sorted(body)}）')
 
     def test_confirmed_yields_cookie_with_x5sec(self):
         platform = _FakePlatform(statuses=['NEW', 'SCANED', 'CONFIRMED'])

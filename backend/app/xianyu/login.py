@@ -187,7 +187,8 @@ class QRLoginManager:
 
     async def _get_login_params(self, client) -> Dict[str, Any]:
         """取 ``loginFormData``。"""
-        response = await client.get(f'{PASSPORT_HOST}{API_MINI_LOGIN}', params=login_query())
+        response = await client.get(f'{PASSPORT_HOST}{API_MINI_LOGIN}',
+                                    params=login_query(), headers=self.headers)
         match = VIEW_DATA_RE.search(response.text or '')
         if not match:
             raise QRLoginError('未能从 mini_login 页面解析出 viewData')
@@ -209,7 +210,8 @@ class QRLoginManager:
         """调 generate.do 拿二维码内容。"""
         query = dict(params)
         query.update(login_query())
-        response = await client.get(f'{PASSPORT_HOST}{API_GENERATE_QR}', params=query)
+        response = await client.get(f'{PASSPORT_HOST}{API_GENERATE_QR}', params=query,
+                                    headers=self.headers)
         try:
             payload = response.json()
         except Exception as exc:
@@ -280,13 +282,12 @@ class QRLoginManager:
                 client.cookies.update(cookie_utils.parse_cookie_string(session.cookies))
             response = await client.post(
                 f'{PASSPORT_HOST}{API_SCAN_STATUS}',
-                data={
-                    't': session.params.get('t', ''),
-                    'ck': session.params.get('ck', ''),
-                    'appName': 'xianyu',
-                    'fromSite': '77',
-                    'lang': 'zh_cn',
-                },
+                # **把会话参数整个发过去**（含 umidToken / _csrf_token / hsiz / bizParams）。
+                # 只发 t/ck/appName/fromSite/lang 时，未扫码阶段照样回 NEW，但手机扫完
+                # 确认时服务端认不出这次轮询，直接回 EXPIRED —— 用户看到的就是
+                # 「扫完码提示二维码已过期，没登上」。旧项目实测可用的实现就是整个发。
+                data=dict(session.params),
+                headers=self.headers,
             )
             try:
                 payload = response.json()
@@ -299,7 +300,10 @@ class QRLoginManager:
         data = ((payload or {}).get('content') or {}).get('data') or {}
         remote = data.get('qrCodeStatus') or ''
         if remote != session.last_remote_status:
-            logger.info(f'二维码状态: {session_id} {session.last_remote_status or "INIT"} -> {remote or "EMPTY"}')
+            # 连原始响应一起记：状态不对时（尤其扫码后被判 EXPIRED）能直接看出
+            # 服务端到底说了什么，不用再靠猜。
+            logger.info(f'二维码状态: {session_id} {session.last_remote_status or "INIT"} -> {remote or "EMPTY"}'
+                        f' raw={str(payload)[:300]}')
             session.last_remote_status = remote
 
         if remote == 'CONFIRMED':
