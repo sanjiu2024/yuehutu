@@ -109,6 +109,35 @@ export function ChatsPage() {
     }
   }
 
+  // 把**平台上已经存在**的历史会话拉回本地。IM 入站只收「正在发生」的推送，
+  // 进程启动前就有的会话不会自己进库 —— 不点这个按钮，界面就一直是空的。
+  const [syncing, setSyncing] = useState(false)
+  const syncHistory = async () => {
+    if (!accountId) {
+      toast.error('先在左边选一个账号，再同步历史会话')
+      return
+    }
+    setSyncing(true)
+    try {
+      const result = await api.post<{
+        scanned?: number
+        conversations_new?: number
+        messages?: number
+        messages_skipped?: number
+        skipped?: number
+      }>('/api/chats/sync', { account_id: accountId, limit: 50, message_limit: 20 })
+      toast.success(
+        `同步完成：扫描 ${result?.scanned ?? 0} 个会话，新增 ${result?.conversations_new ?? 0} 个会话、` +
+          `${result?.messages ?? 0} 条消息`,
+      )
+      conversations.reload()
+    } catch (err) {
+      toast.error(errorText(err))
+    } finally {
+      setSyncing(false)
+    }
+  }
+
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <div className="toolbar">
@@ -131,6 +160,9 @@ export function ChatsPage() {
         <button className="btn" onClick={conversations.reload}>
           刷新
         </button>
+        <button className="btn" onClick={syncHistory} disabled={syncing}>
+          {syncing ? '同步中…' : '同步历史会话'}
+        </button>
         <span className="spacer" />
         <span className="dim" style={{ fontSize: 12 }}>
           共 {list.length} 个会话
@@ -146,7 +178,7 @@ export function ChatsPage() {
             empty={list.length === 0}
             emptyIcon="💬"
             emptyTitle="没有会话"
-            emptyDesc="账号在线并收到买家消息后，会话会出现在这里。"
+            emptyDesc="账号在线并收到买家消息后，会话会出现在这里；平台上已有的历史会话请点上面「同步历史会话」。"
             onRetry={conversations.reload}
           >
             {list.map((conversation) => {

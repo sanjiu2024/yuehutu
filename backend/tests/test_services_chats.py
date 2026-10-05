@@ -14,6 +14,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -703,6 +704,145 @@ class InboundGateTest(_ChatsTestBase):
         self.assertIsNone(result['ai_send'])
         self.assertEqual(result['ai_result']['code'], 'mode_not_auto')
         self.assertIn('manual', result['ai_result']['message'])
+
+
+class ImBackfillTest(_ChatsTestBase):
+    """把平台上的**历史**会话拉回本地（`chats.sync_im_conversations`）。
+
+    为什么要有这条路径：IM 入站 handler 只处理「正在发生」的推送帧，进程启动之前就
+    存在于平台上的会话永远不会自己进库。真机表现是用户那句话 ——
+    「我账号上面的消息一个没读取过来。」
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.make_account('acc1')
+        self.calls = {'conversations': [], 'messages': []}
+
+    def _install(self, conversations=None, messages=None):
+        """装一个只实现这两个口子的假客户端（同步函数，`call_method` 两种都吃）。"""
+
+        class FakeImClient:
+            def __init__(inner):
+                inner.conversations = conversations if conversations is not None else [
+                    {
+                        'cid': 'cid-1',
+                        'buyer_id': 'buyer-1',
+                        'buyer_name': '小明',
+                        'buyer_avatar': 'https://img/a.jpg',
+                        'item_id': 'item-9',
+                        'item_title': '测试商品',
+                        'last_message': '在吗？',
+                        'last_time': 1700000002000,
+                        'unread': 2,
+                    }
+                ]
+                inner.messages = messages if messages is not None else [
+                    {
+                        'msg_id': 'm-2', 'cid': 'cid-1', 'buyer_id': 'buyer-1',
+                        'is_self': False, 'content': '在吗？', 'images': [],
+                        'msg_type': 'text', 'time': 1700000002000,
+                    },
+                    {
+                        'msg_id': 'm-1', 'cid': 'cid-1', 'buyer_id': 'buyer-1',
+                        'is_self': True, 'content': '在的', 'images': [],
+                        'msg_type': 'text', 'time': 1700000001000,
+                    },
+                ]
+
+            def fetch_conversations(inner, start_timestamp=None, limit=50):
+                self.calls['conversations'].append((start_timestamp, limit))
+                return inner.conversations
+
+            def fetch_messages(inner, cid, start_timestamp=None, limit=20):
+                self.calls['messages'].append((cid, limit))
+                return inner.messages
+
+        install_client(FakeImClient())
+        return FakeImClient
+
+    # ------------------------------------------------------------------ 正常回填
+
+    def test_backfill_creates_conversation_and_messages(self):
+        self._install()
+        result = chats.sync_im_conversations('acc1')
+        self.assertEqual(result['scanned'], 1)
+        self.assertEqual(result['conversations_new'], 1)
+        self.assertEqual(result['messages'], 2)
+
+        listed = chats.list_conversations(account_id='acc1')
+        self.assertEqual(listed['total'], 1)
+        conv = listed['conversations'][0]
+        self.assertEqual(conv['peer_user_id'], 'buyer-1')
+        self.assertEqual(conv['peer_nickname'], '小明')
+        self.assertEqual(conv['item_id'], 'item-9')
+        self.assertEqual(conv['unread'], 2, '未读数要对齐平台的红点')
+
+        messages = chats.get_messages(conv['id'])['messages']
+        self.assertEqual([one['content'] for one in messages], ['在的', '在吗？'],
+                         '消息要按平台时间正序，别倒着灌')
+        buyer = messages[-1]
+        self.assertEqual(buyer['sender'], 'buyer')
+        self.assertEqual(buyer['direction'], 'in')
+        meta = json.loads(buyer['meta']) if isinstance(buyer['meta'], str) else buyer['meta']
+        self.assertIn('cid', meta, 'cid 要留在 meta 里，AI 回复才发得出去')
+        self.assertEqual(meta.get('external_id'), 'm-2')
+
+    def test_backfill_is_idempotent(self):
+        self._install()
+        first = chats.sync_im_conversations('acc1')
+        conv_id = chats.list_conversations(account_id='acc1')['conversations'][0]['id']
+        second = chats.sync_im_conversations('acc1')
+        self.assertEqual(first['messages'], 2)
+        self.assertEqual(second['conversations_new'], 0)
+        self.assertEqual(second['messages'], 0)
+        self.assertEqual(second['messages_skipped'], 2)
+        self.assertEqual(len(chats.get_messages(conv_id)['messages']), 2,
+                         '重复回填不许灌重复消息')
+
+    def test_backfill_skips_conversation_without_buyer(self):
+        self._install(conversations=[{'cid': 'cid-x'}])
+        result = chats.sync_im_conversations('acc1')
+        self.assertEqual(result['skipped'], 1)
+        self.assertEqual(result['conversations_new'], 0)
+        self.assertEqual(chats.list_conversations()['total'], 0)
+
+    def test_single_conversation_failure_does_not_fail_the_whole_sync(self):
+        self._install()
+        original = chats.common.call_method
+
+        def flaky(client, names, *args, **kwargs):
+            if names and names[0] == 'fetch_messages':
+                return chats.common.CALL_ERROR, 'boom'
+            return original(client, names, *args, **kwargs)
+
+        with mock.patch.object(chats.common, 'call_method', side_effect=flaky):
+            result = chats.sync_im_conversations('acc1')
+        self.assertEqual(result['conversations_new'], 1)
+        self.assertEqual(result['messages'], 0)
+        self.assertTrue(result.get('warnings'), '单会话拉消息失败要留 warning，不整体失败')
+
+    # ------------------------------------------------------------------ 失败路径
+
+    def test_no_client_returns_structured_envelope(self):
+        clear_module(CLIENT_MODULE)
+
+        def no_client(account_id):
+            return None, {'success': False, 'message': '账号还没 Cookie', 'code': 'xianyu_not_ready'}
+
+        with mock.patch.object(chats.common, 'get_client', side_effect=no_client):
+            result = chats.sync_im_conversations('acc1')
+        self.assertEqual(result['code'], 'xianyu_not_ready')
+
+    def test_protocol_failure_becomes_envelope(self):
+        class Broken:
+            def fetch_conversations(self, start_timestamp=None, limit=50):
+                raise RuntimeError('网络断了')
+
+        install_client(Broken())
+        result = chats.sync_im_conversations('acc1')
+        self.assertFalse(result.get('success', True))
+        self.assertTrue(result.get('code'))
 
 
 if __name__ == '__main__':

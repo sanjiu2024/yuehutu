@@ -168,6 +168,34 @@ def incoming(payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
 # --------------------------------------------------------------------------- 单会话
 
 
+@router.post('/sync')
+def sync_from_platform(payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
+    """**把平台上的历史会话拉回本地**（会话页「同步会话」按钮）。
+
+    为什么需要这个入口：IM 入站只处理「正在发生」的推送帧，进程启动前就存在于平台上
+    的会话永远不会自己进库 —— 用户看到的就是「我账号上面的消息一个没读取过来」。
+    IM 入站挂上之后会自动回填一次（`im_service.start()`），这个接口是给用户手动补一次的。
+
+    body:
+      - `account_id` 必填
+      - `limit` 选填，最多拉多少个会话（默认 50，上限 200）
+      - `message_limit` 选填，每个会话最多拉多少条消息（默认 20，上限 100）
+
+    返回：`{"success": true, "data": {"account_id","scanned","conversations_new",
+    "messages","messages_skipped","skipped"}}`；重复调用**幂等**（会话 upsert、
+    消息按平台 msg id 去重），失败时是统一信封（如 `xianyu_not_ready` /
+    `verification_required`）。
+    """
+    account_id = str(payload.get('account_id') or '').strip()
+    if not account_id:
+        return _envelope(common.fail('缺少 account_id', 'invalid_fields'))
+    kwargs: Dict[str, Any] = {}
+    for key in ('limit', 'message_limit'):
+        if payload.get(key) not in (None, ''):
+            kwargs[key] = payload[key]
+    return _envelope(chats.sync_im_conversations(account_id, **kwargs))
+
+
 @router.get('/{conversation_id}')
 def get_conversation(conversation_id: int, user=Depends(current_user)):
     return _envelope(chats.get_conversation(conversation_id))

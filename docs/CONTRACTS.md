@@ -155,6 +155,17 @@ PUT    /api/chats/{conversation_id}/ai         {enabled}        -- 人工接管�
 POST   /api/chats/{conversation_id}/read
 POST   /api/chats/{conversation_id}/ai-draft   -> {draft}       -- 生成建议但不发送
 POST   /api/chats/classify                     {content} -> {intent,replies[]}  -- 规则话术（不花 LLM）
+POST   /api/chats/sync                         {account_id,limit?,message_limit?}
+      -> {account_id,scanned,conversations_new,messages,messages_skipped,skipped}
+      -- 把**平台上已经存在**的历史会话与最近消息拉回本地。IM 入站只处理「正在发生」
+      --   的推送帧，进程启动前就有的会话不会自己进库；IM 挂载成功时会自动回填一次
+      --   （`im_service.start()`），这个接口给用户手动补一次。**幂等**：会话按
+      --   (account_id, buyer_id) upsert，消息按平台 msg id（`messages.meta.external_id`）
+      --   去重，重复调用只增加 `messages_skipped`。
+      -- 失败是统一信封：没 Cookie -> `xianyu_not_ready`，登录态过期 ->
+      --   `verification_required`（同时写 login_state='need_relogin'），平台报错 ->
+      --   `protocol_error`。单个会话拉消息失败只进 `warnings`，不整体失败。
+      -- 路由**必须声明在 `/api/chats/{conversation_id}` 之前**，否则被动态段吞成 422。
 POST   /api/chats/incoming                     {account_id,content,buyer_id,item_id?,conversation_id?,msg_id?,...}
       -> {message,ai_reply,ai_result,ai_send,mode,duplicate}
       -- 买家来信的统一入口；给了 msg_id 即幂等。

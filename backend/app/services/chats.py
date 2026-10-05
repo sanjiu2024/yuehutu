@@ -1024,6 +1024,168 @@ def _first_image_url(payload: Any, depth: int = 6) -> str:
     return ''
 
 
+#: 一次回填最多拉多少会话、每个会话最多拉多少条消息（防止一次点「同步」打出几十个请求）。
+IM_SYNC_MAX_CONVERSATIONS = 50
+IM_SYNC_MESSAGE_LIMIT = 20
+
+
+def _stored_external_id(conversation_id: Any, external_id: str, direction: str = '') -> bool:
+    """这条平台消息 id 是否已经落过库（对**两个方向**都判，回填时用）。"""
+    params: List[Any] = [str(conversation_id), f'%{external_id}%']
+    clause = ''
+    if direction:
+        clause = ' AND direction = ?'
+        params.append(direction)
+    rows = db.query(
+        f'SELECT meta FROM messages WHERE conversation_id = ? AND meta LIKE ?{clause}',
+        params,
+    )
+    for row in rows:
+        try:
+            stored = json.loads(row['meta'] or '{}') or {}
+        except (TypeError, ValueError):
+            continue
+        if str(stored.get(EXTERNAL_ID_KEY) or '') == external_id:
+            return True
+    return False
+
+
+def sync_im_conversations(
+    account_id: str,
+    limit: int = IM_SYNC_MAX_CONVERSATIONS,
+    message_limit: int = IM_SYNC_MESSAGE_LIMIT,
+) -> Dict[str, Any]:
+    """把平台上的**历史会话与最近消息回填进本地库**（幂等）。
+
+    为什么必须有它：IM 入站只处理「正在发生」的推送帧，进程启动之前就存在于平台上
+    的会话**永远不会自己进库** —— 用户看到的现象就是「我账号上面的消息一个没读取
+    过来」（真机实测：账号有历史会话，而本地 `conversations` 表 0 行）。
+
+    去重口径（重复点「同步会话」不会把消息刷成一片重复）：
+    - 会话按 `(account_id, peer_user_id)` upsert（`ensure_conversation`）；
+    - 消息按平台 msg id 存进 `meta.external_id`，插入前先查一次，
+      出站回显（`is_self`）与入站来信都查，避免同一条被记两遍。
+
+    返回 `{'account_id','scanned','conversations','conversations_new','messages',
+    'messages_skipped','skipped'}`，单个会话拉消息失败时把原因收进 `warnings` 而
+    不是整个失败（会话已经入库了，如实报出来比丢掉更有用）。失败时返回统一信封。
+    """
+    account_id = str(account_id or '')
+    if not account_id:
+        return common.fail('缺少 account_id', 'invalid_fields')
+    client, failure = common.get_client(account_id)
+    if failure is not None:
+        return failure
+
+    limit = max(1, min(int(limit or IM_SYNC_MAX_CONVERSATIONS), 200))
+    message_limit = max(0, min(int(message_limit or IM_SYNC_MESSAGE_LIMIT), 100))
+
+    status, value = common.call_method(client, ('fetch_conversations',), limit=limit)
+    envelope = common.call_failed(status, value)
+    if envelope is not None:
+        return envelope
+    rows = common.extract_list(value, 'userConvs', 'conversations')
+
+    conversations_new = 0
+    messages_new = 0
+    messages_skipped = 0
+    skipped = 0
+    warnings: List[str] = []
+
+    for raw in rows:
+        if not isinstance(raw, dict):
+            skipped += 1
+            continue
+        buyer_id = str(raw.get('buyer_id') or '')
+        if not buyer_id:
+            # 宁可少一条会话，也不要凭空造一个 buyer_id 为空的会话（与入站同一口径）。
+            skipped += 1
+            continue
+
+        existed = db.query_one(
+            'SELECT id FROM conversations WHERE account_id = ? AND peer_user_id = ?',
+            (account_id, buyer_id),
+        ) is not None
+        conversation = ensure_conversation(
+            account_id,
+            buyer_id,
+            peer_nickname=str(raw.get('buyer_name') or ''),
+            item_id=str(raw.get('item_id') or ''),
+        )
+        if not existed:
+            conversations_new += 1
+
+        unread = int(raw.get('unread') or 0)
+        if unread > int(conversation.get('unread') or 0):
+            db.execute('UPDATE conversations SET unread = ? WHERE id = ?',
+                       (unread, conversation['id']))
+
+        cid = str(raw.get('cid') or '')
+        if not (cid and message_limit):
+            continue
+
+        status, value = common.call_method(
+            client, ('fetch_messages',), cid, limit=message_limit,
+        )
+        envelope = common.call_failed(status, value)
+        if envelope is not None:
+            warnings.append(f'会话 {buyer_id} 的历史消息拉取失败: {envelope.get("message")}')
+            continue
+
+        items = [one for one in common.extract_list(value, 'messages') if isinstance(one, dict)]
+        # 平台按时间倒序回，落库按时间正序，消息列表读起来才是对话顺序。
+        try:
+            items.sort(key=lambda one: int(one.get('time') or 0))
+        except (TypeError, ValueError):
+            pass
+
+        for item in items:
+            content = str(item.get('content') or '')
+            images = [str(url) for url in (item.get('images') or []) if url]
+            if not content and not images:
+                continue
+            msg_id = str(item.get('msg_id') or '')
+            if msg_id and _stored_external_id(conversation['id'], msg_id):
+                messages_skipped += 1
+                continue
+            meta: Dict[str, Any] = {'source': 'im', 'cid': cid}
+            if msg_id:
+                meta[EXTERNAL_ID_KEY] = msg_id
+            if images:
+                # 图片地址必须落进 meta（角色判定靠它选 vision，见任务 A2）。
+                meta['image_url'] = images[0]
+            is_self = bool(item.get('is_self'))
+            item_id = str(item.get('item_id') or raw.get('item_id') or '')
+            result = append_message(
+                conversation['id'],
+                'human' if is_self else 'buyer',
+                content,
+                item_id=item_id,
+                meta=meta,
+                sent_ok=True if is_self else None,
+                # 回填的是历史消息，不能把未读数再加一遍（unread 已按平台 redPoint 对齐）。
+                mark_unread=False,
+            )
+            if isinstance(result, dict) and result.get('id'):
+                messages_new += 1
+
+    summary: Dict[str, Any] = {
+        'account_id': account_id,
+        'scanned': len(rows),
+        'conversations_new': conversations_new,
+        'messages': messages_new,
+        'messages_skipped': messages_skipped,
+        'skipped': skipped,
+    }
+    if warnings:
+        summary['warnings'] = warnings
+    logger.info(
+        'sync_im_conversations: account={} scanned={} new_conversations={} new_messages={}',
+        account_id, len(rows), conversations_new, messages_new,
+    )
+    return summary
+
+
 def dispatch_im_message(account_id: str, payload: Any) -> Optional[Any]:
     """一帧 IM 推送 -> `handle_incoming`。
 

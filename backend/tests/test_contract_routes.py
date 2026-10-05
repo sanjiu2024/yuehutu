@@ -39,6 +39,7 @@ CONTRACT_ROUTES: dict[str, set[str]] = {
     '/api/items/{account_id}/operation-logs': {'GET'},
     '/api/chats/conversations': {'GET'},
     '/api/chats/incoming': {'POST'},
+    '/api/chats/sync': {'POST'},
     '/api/chats/{conversation_id}/messages': {'GET'},
     '/api/chats/{conversation_id}/send': {'POST'},
     '/api/chats/{conversation_id}/mode': {'POST'},

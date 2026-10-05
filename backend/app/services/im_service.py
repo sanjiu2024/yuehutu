@@ -176,10 +176,29 @@ def start(account_id: str) -> Any:
             'account_id': account_id,
             'attached': True,
             'connected': bool(getattr(session, 'connected', False)),
+            'backfill': _backfill_history(account_id),
         }
     except Exception as exc:  # noqa: BLE001 - 后台挂载路径不许把异常抛给调用方
         logger.warning(f'[{account_id}] 挂载 IM 会话异常: {exc}')
         return common.fail(f'IM 入站挂载异常: {exc}', 'protocol_error')
+
+
+def _backfill_history(account_id: str) -> Dict[str, Any]:
+    """刚挂上入站连接时顺手把**历史会话**回填一次。
+
+    入站 handler 只收「正在发生」的推送，进程启动前就存在的会话不会自己进库 ——
+    真机表现就是「账号上的消息一个都没读取过来」。回填失败不影响挂载本身，
+    原因照实塞进返回值里。
+    """
+    from . import chats  # 局部 import：避免服务层之间在模块级互相牵连
+    try:
+        result = chats.sync_im_conversations(account_id)
+    except Exception as exc:  # noqa: BLE001 - 回填失败不该拖垮 IM 挂载
+        logger.warning(f'[{account_id}] IM 历史会话回填异常: {exc}')
+        return {'error': str(exc)}
+    if isinstance(result, dict) and result.get('code'):
+        logger.warning(f'[{account_id}] IM 历史会话回填失败: {result.get("message")}')
+    return result if isinstance(result, dict) else {}
 
 
 def stop(account_id: str) -> Any:
