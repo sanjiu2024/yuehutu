@@ -54,6 +54,32 @@ class AgentsPromptsTest(unittest.TestCase):
         self.assertEqual(roles.role_for_conversation({'agent_role': '', 'item_id': ''}), 'cs')
         self.assertEqual(roles.role_for_conversation(None), 'cs')
 
+    def test_bargain_and_vision_are_reachable(self):
+        """`bargain`/`vision` 此前在角色表里但没有任何路径会选中它们 —— 死角色。"""
+        conv = {'agent_role': '', 'item_id': 'A'}
+        # 讲价 → 议价 AI（不是商品客服）
+        self.assertEqual(roles.role_for_conversation(conv, '能便宜点吗'), 'bargain')
+        self.assertEqual(roles.role_for_conversation(conv, '这个最低多少'), 'bargain')
+        # 买家发图 → 看图 AI
+        self.assertEqual(
+            roles.role_for_conversation(conv, {'content': '看看这个', 'meta': '{"image_url": "http://x/a.jpg"}'}),
+            'vision',
+        )
+        # 手工会话的 agent_role 仍然最高优先，不被消息内容顶掉
+        self.assertEqual(
+            roles.role_for_conversation({'agent_role': 'bargain', 'item_id': 'A'}, '有货吗'),
+            'bargain',
+        )
+        # 图 + 讲价同时出现时看图优先
+        self.assertEqual(
+            roles.role_for_conversation(conv, {'content': '能便宜点吗', 'meta': {'image': 'http://x/b.jpg'}}),
+            'vision',
+        )
+        # 普通问句不许被误判成讲价
+        self.assertEqual(roles.role_for_conversation(conv, '什么时候发货'), 'item')
+        self.assertEqual(roles.role_for_conversation(conv, '有货吗'), 'item')
+        self.assertEqual(roles.role_for_conversation(conv, {'content': '有货吗', 'meta': ''}), 'item')
+
     def test_get_and_update_role(self):
         before = roles.get_role('item')
         self.assertEqual(before['provider_id'], None)

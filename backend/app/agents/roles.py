@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import json
+
 from typing import Any, Dict, List, Optional
 
 from ..core import db
@@ -65,17 +67,55 @@ def default_temperature(role: str) -> float:
     return float(DEFAULT_ROLE_TEMPERATURES.get(role, 0.7))
 
 
-def role_for_conversation(conv: Any) -> str:
-    """会话 → 该由哪个角色接。
+_BARGAIN_WORDS = (
+    '便宜', '能少', '少点', '少一点', '少点儿', '优惠', '打折', '降价', '议价',
+    '砍价', '底价', '实价', '最低', '包邮吗', '抹零', '小刀',
+)
+
+
+def _message_text(message: Any) -> str:
+    """消息里的买家文本。message 可以是 dict/Row，也可以直接是字符串。"""
+    if isinstance(message, str):
+        return message
+    return str(_field(message, 'content', '') or '')
+
+
+def _message_image(message: Any) -> str:
+    """消息里带的图片地址（存在 `messages.meta` 的 json 里）。"""
+    if message is None or isinstance(message, str):
+        return ''
+    meta = _field(message, 'meta', None)
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta) if meta.strip() else {}
+        except ValueError:
+            meta = {}
+    if not isinstance(meta, dict):
+        return ''
+    return str(meta.get('image_url') or meta.get('image') or '')
+
+
+def role_for_conversation(conv: Any, message: Any = None) -> str:
+    """会话（+这条买家消息）→ 该由哪个角色接。
 
     规则（顺序固定，方便测试）：
     1. `conversations.agent_role` 合法 → 用它（前端/业务可以手工指定）；
-    2. 没有绑定商品（`item_id` 为空）→ `cs`（通用客服）；
-    3. 其余 → `item`（商品客服）。
+    2. 买家发来的是图片 → `vision`（看图 AI）；
+    3. 买家在讲价 → `bargain`（议价 AI）；
+    4. 没有绑定商品（`item_id` 为空）→ `cs`（通用客服）；
+    5. 其余 → `item`（商品客服）。
+
+    第 2/3 条需要 `message`。不传时行为与旧版完全一致，`bargain`/`vision` 就永远轮不到 ——
+    这正是它们此前不可达的原因：角色表里有这两个角色，却没有任何一条路径会选中它们。
     """
     role = str(_field(conv, 'agent_role', '') or '').strip()
     if is_role(role):
         return role
+    if _message_image(message):
+        return 'vision'
+    text = _message_text(message)
+    if any(word in text for word in _BARGAIN_WORDS):
+        return 'bargain'
     if not str(_field(conv, 'item_id', '') or '').strip():
         return 'cs'
     return 'item'

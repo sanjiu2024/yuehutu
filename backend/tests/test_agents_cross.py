@@ -218,6 +218,26 @@ class CrossAskTest(unittest.TestCase):
         """「全新/包邮」这类每个商品都有的词不能把无关商品算成命中。"""
         self.assertEqual(runtime.match_items('全新包邮吗', exclude_item_id='A'), [])
 
+    def test_match_items_ignores_condition_words(self):
+        """回归锁：纯问成色的消息不能匹到商品标题里的成色词。
+
+        买家只问一句「是九成新吗」，标题「二手九成新运动鞋」里的 `九成/成新` 两个
+        2-gram 会凑满阈值 → 为一句不含任何商品名的问句发起跨商品协查（同时误命中多个
+        商品）。根因是停用词**只清洗标题、不清洗问题**，且成色词不在停用词表里。
+        """
+        db.execute(
+            "INSERT INTO items(account_id, item_id, title, price, stock) "
+            "VALUES('acc1','C','二手九成新运动鞋',80,1)")
+        try:
+            self.assertEqual(runtime.match_items('是九成新吗', exclude_item_id='A'), [],
+                             '成色词又变成命中了：纯问成色不该触发跨商品协查')
+            self.assertEqual(runtime.match_items('这个几成新', exclude_item_id='A'), [])
+            # 反向对照：问商品名时仍然要命中（别把停用词清洗做成「一律不命中」）
+            matched = runtime.match_items('这双运动鞋还有吗', exclude_item_id='A')
+            self.assertEqual([m['item_id'] for m in matched], ['C'], f'正常匹配被误伤：{matched}')
+        finally:
+            db.execute("DELETE FROM items WHERE item_id = 'C'")
+
     def test_recent_agent_messages_limit_and_filter(self):
         db.execute("INSERT INTO agent_messages(conversation_id, from_agent, to_agent, kind) "
                    "VALUES(1,'a','b','ask')")

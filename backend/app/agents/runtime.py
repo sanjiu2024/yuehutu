@@ -161,11 +161,23 @@ def _ngrams(text: str, n: int = 2) -> set:
 # 命中多少个 2-gram 才算「买家在问这个商品」，太低会把通用词（全新、包邮）算进来
 _MATCH_MIN_SCORE = 2
 
-# 这些词几乎每个商品都有，不能作为「买家在问这个商品」的依据
+# 这些词几乎每个商品都有，不能作为「买家在问这个商品」的依据。
+# 成色词（九成新/八成新…）尤其重要：买家一句「是九成新吗」本身不含任何商品名，
+# 如果只从**标题**里剔停用词、不剔问题里的，标题里的「九成新」两个 2-gram 会凑满
+# `_MATCH_MIN_SCORE`，于是对一句纯问成色的消息发起跨商品协查（误命中多个商品）。
 _MATCH_STOPWORDS = {
     '全新', '包邮', '正品', '现货', '闲置', '专柜', '全新未', '可小刀', '支持', '价格', '便宜',
     '还有', '多少', '钱吗', '有货', '库存', '发发', '发货',
+    '九成新', '八成新', '七成新', '六成新', '五成新', '几成新', '成色', '成新', '新旧', '二手',
 }
+
+
+def _clean_for_match(text: str) -> str:
+    """两侧（问题与标题）都必须用同一套停用词清洗，否则通用词会变成命中。"""
+    cleaned = str(text or '').lower()
+    for word in _MATCH_STOPWORDS:
+        cleaned = cleaned.replace(word.lower(), '')
+    return cleaned
 
 
 def match_items(question: str, exclude_item_id: Optional[str] = None,
@@ -188,10 +200,10 @@ def match_items(question: str, exclude_item_id: Optional[str] = None,
         )
         return [dict(r) for r in rows if str(r['item_id']) != exclude][:limit]
 
-    question_lower = str(question or '').lower()
-    if not question_lower:
+    cleaned_question = _clean_for_match(question)
+    if not cleaned_question.strip():
         return []
-    q_grams = _ngrams(question_lower)
+    q_grams = _ngrams(cleaned_question)
     scored: List[tuple] = []
     for row in db.query('SELECT account_id, item_id, title, price, stock, status FROM items ORDER BY id DESC LIMIT 500'):
         if str(row['item_id']) == exclude:
@@ -199,9 +211,7 @@ def match_items(question: str, exclude_item_id: Optional[str] = None,
         title = str(row['title'] or '')
         if not title.strip():
             continue
-        cleaned = title.lower()
-        for word in _MATCH_STOPWORDS:
-            cleaned = cleaned.replace(word.lower(), '')
+        cleaned = _clean_for_match(title)
         hits = len(_ngrams(cleaned) & q_grams)
         if hits >= _MATCH_MIN_SCORE:
             scored.append((hits, len(title), dict(row)))
@@ -256,7 +266,7 @@ async def reply_for_message(conversation_id: int, message_id: int) -> Dict[str, 
     if message is None:
         return {'ok': False, 'error': f'消息 {message_id} 不存在'}
 
-    role = roles_mod.role_for_conversation(conv)
+    role = roles_mod.role_for_conversation(conv, message)
     content = str(message['content'] or '').strip()
 
     # 买家在 A 商品里问到 B 商品 → 先协查，把答复作为上下文
