@@ -58,6 +58,29 @@ STATUS_UNKNOWN = 'unknown'
 VIEW_DATA_RE = re.compile(r'window\.viewData\s*=\s*(\{.*?\});', re.S)
 
 
+def login_query() -> Dict[str, str]:
+    """mini_login.htm 与 generate.do 共用的查询参数。
+
+    **这些参数一个都不能省**：不带 ``appName`` 时 passport 照样返回 200，
+    但页面正文是「非法请求 [appNameError]」而没有 ``window.viewData``，
+    上层只能看到「未能解析出 viewData」，完全看不出真因（用户实测踩过）。
+    ``rnd`` 每次都要新生成。
+    """
+    return {
+        'lang': 'zh_cn',
+        'appName': 'xianyu',
+        'appEntrance': 'web',
+        'styleType': 'vertical',
+        'bizParams': '',
+        'notLoadSsoView': 'False',
+        'notKeepLogin': 'False',
+        'isMobile': 'False',
+        'qrCodeFirst': 'False',
+        'stie': '77',
+        'rnd': _random_rnd(),
+    }
+
+
 class QRLoginError(RuntimeError):
     """登录流程异常。"""
 
@@ -164,7 +187,7 @@ class QRLoginManager:
 
     async def _get_login_params(self, client) -> Dict[str, Any]:
         """取 ``loginFormData``。"""
-        response = await client.get(f'{PASSPORT_HOST}{API_MINI_LOGIN}')
+        response = await client.get(f'{PASSPORT_HOST}{API_MINI_LOGIN}', params=login_query())
         match = VIEW_DATA_RE.search(response.text or '')
         if not match:
             raise QRLoginError('未能从 mini_login 页面解析出 viewData')
@@ -185,19 +208,7 @@ class QRLoginManager:
     async def _generate_qr(self, client, params: Dict[str, Any]) -> Dict[str, Any]:
         """调 generate.do 拿二维码内容。"""
         query = dict(params)
-        query.update({
-            'lang': 'zh_cn',
-            'appName': 'xianyu',
-            'appEntrance': 'web',
-            'styleType': 'vertical',
-            'bizParams': '',
-            'notLoadSsoView': 'False',
-            'notKeepLogin': 'False',
-            'isMobile': 'False',
-            'qrCodeFirst': 'False',
-            'stie': '77',
-            'rnd': _random_rnd(),
-        })
+        query.update(login_query())
         response = await client.get(f'{PASSPORT_HOST}{API_GENERATE_QR}', params=query)
         try:
             payload = response.json()

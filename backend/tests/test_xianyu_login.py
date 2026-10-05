@@ -53,12 +53,15 @@ class _FakePlatform:
             'unb': '99887766', 'cookie2': 'c2', 'x5sec': 'PASS-TOKEN',
         }
         self.calls = []
+        # path -> 该次请求带回的 query 参数（回归用：mini_login.htm 必须带 appName 等）
+        self.queries = {}
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         url = str(request.url)
         # 用 path 而不是整串 URL 匹配：generate.do / query.do 都带一堆 query 参数。
         path = request.url.path
         self.calls.append((request.method, path))
+        self.queries.setdefault(path, dict(request.url.params))
 
         if 'h5api.m.goofish.com' in url and 'mtop.gaia' in url:
             # MTOP 握手：靠 Set-Cookie 种下 _m_h5_tk。
@@ -68,6 +71,12 @@ class _FakePlatform:
             )
 
         if path == qr_login.API_MINI_LOGIN:
+            # 复刻真实 passport 的行为：不带 appName 时返回 200 + 「非法请求
+            # [appNameError]」页面，正文里没有 window.viewData。少了这段，测试
+            # 对「漏传查询参数」完全无感（用户实测踩过一次）。
+            if request.url.params.get('appName') != 'xianyu':
+                return httpx.Response(
+                    200, text='<html><h3>非法请求 [appNameError]</h3></html>')
             return httpx.Response(200, text=VIEW_DATA_HTML)
 
         if path == qr_login.API_GENERATE_QR:
@@ -308,6 +317,40 @@ class ViewDataParsingTest(unittest.TestCase):
         self.assertIsNotNone(match)
         parsed = json.loads(match.group(1))
         self.assertEqual(parsed, {'loginFormData': {'t': '1'}})
+
+
+class LoginQueryParamsTest(unittest.TestCase):
+    """mini_login.htm 与 generate.do 都必须带上 appName 等参数。
+
+    真实 passport 少了 ``appName`` 会返回 200 + 「非法请求 [appNameError]」页面，
+    正文里没有 ``window.viewData``，上层只会报「未能解析出 viewData」，真因被吃掉。
+    """
+
+    def test_login_query_carries_required_params(self):
+        query = qr_login.login_query()
+        self.assertEqual(query['appName'], 'xianyu')
+        self.assertEqual(query['appEntrance'], 'web')
+        self.assertEqual(query['stie'], '77')
+        self.assertTrue(query['rnd'])
+
+    def test_rnd_changes_every_call(self):
+        self.assertNotEqual(qr_login.login_query()['rnd'], qr_login.login_query()['rnd'])
+
+    def test_start_sends_params_to_mini_login(self):
+        import asyncio
+
+        platform = _FakePlatform()
+        manager = qr_login.QRLoginManager(
+            transport=httpx.MockTransport(platform))
+        with _TempDB():
+            asyncio.run(manager.start())
+
+        sent = platform.queries.get(qr_login.API_MINI_LOGIN) or {}
+        self.assertEqual(sent.get('appName'), 'xianyu', f'mini_login 实收参数: {sent}')
+        self.assertEqual(sent.get('appEntrance'), 'web')
+
+        generated = platform.queries.get(qr_login.API_GENERATE_QR) or {}
+        self.assertEqual(generated.get('appName'), 'xianyu')
 
 
 class StoreTest(unittest.TestCase):
