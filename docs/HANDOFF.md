@@ -780,6 +780,12 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
   路由未被静态挂载吃掉）；`POST /api/auth/desktop` 200（桌面免密登录可用）。
   第八批重新打包后复验：产物 **9557793 字节**、`GET /` 里是 `index-x6fHQ3NA.js`、
   `POST /api/chats/sync` 401（= 已注册，不是 404）。
+  **第十二批（本轮 UI 重做后）重新打包的最新值**：产物 **9604905 字节**
+  （`2026-10-07 05:54:49`）、`GET /` 里是 `index-BfXGSc4s.js` + `index-CVX7lQDr.css`，
+  与 `frontend/dist/assets` 逐文件一致（`scripts/build_exe.ps1` 自己打印
+  「打包内前端: …（与快照逐文件一致）」）；`--port 18400` 上 `/api/health` 200
+  `frozen:true`、`MainWindowTitle=闲鱼 AI 工作台`。上面那行第八批的数字是**历史记录**，
+  别再当成当前产物。
 - **扫码登录真的通了**（唯一一处真打闲鱼平台的路径，且不涉及任何账号凭据）：
   - 源码直调：`_get_login_params` 拿到完整 `loginFormData`（`_csrf_token`/`umidToken`/
     `hsiz`/`bizParams=taobaoBizLoginFrom=web` 等），`_generate_qr` 拿到

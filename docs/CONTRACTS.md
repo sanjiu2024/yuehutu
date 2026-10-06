@@ -118,7 +118,7 @@ items(id INTEGER PK, account_id TEXT, item_id TEXT UNIQUE, title TEXT, price REA
   标成「需重新扫码」。同时 `common._is_session_expired()` 按 **MRO 类名**优先放行
   `ItemStatsUnavailable`，因为它的消息里会带平台原文（可能含 `Session过期` 字样），
   文案兜底会误判。
-- 三种原因各自成句：缺 itemId「缺少 itemId：商品数据接口只能按商品调用」；
+- 四种原因各自成句：缺 itemId「缺少 itemId：商品数据接口只能按商品调用」；
   会话拿不到「需要卖家工作台会话：这个接口族不接受网页版 Cookie（账号本身没掉线）」；
   其它协议错「接口不可用: <平台原文>」；响应认不出「平台响应里没有可识别的商品数据指标
   （data=...）」。
@@ -268,9 +268,10 @@ POST   /api/items/{account_id}/batch-edit      {item_ids:[...],patch:{price_delt
       --   会把「加 5 件」静默写成 5 件，那是改坏用户的真实库存。批量里被拒的商品进 `failed`，
       --   其余照常处理（恒等式 `total == ok + local_only + noop + len(failed)`）。
       --   负值一律钳到 0（`max(0, ...)`），不写负数库存 —— 这条只管**补丁字段**
-      --   `stock_set`/`stock_delta`/`price_set`/`price_delta`。直接写字段（`{"stock": -5}`、
-      --   `{"price": -1}`）是另一条路：回 400 `invalid_fields`「库存不能为负」，**不钳**
-      --   （字段是绝对值，用户明确给了个负数就是输错了，静默改成 0 会改坏真实库存）。
+      --   `stock_set`/`stock_delta`/`price_set`/`price_delta`。直接写字段（`{"stock": -5}`
+      --   回「库存不能为负」、`{"price": -1}` 回「价格不能为负」）是另一条路：
+      --   400 `invalid_fields`，**不钳**（字段是绝对值，用户明确给了个负数就是输错了，
+      --   静默改成 0 会改坏真实库存）。
       --   补丁数字字段的入参校验（第十二批修，独立审查 D4）：`null`/字符串非数字/列表/
       --   布尔/NaN/Inf 一律 400 `invalid_fields` + 「字段 <key> 需要数字，收到: <值>」；
       --   `stock_set`/`stock_delta` 还要求整数（`2.5` 静默截成 `2` 也是编数字）。
@@ -503,8 +504,10 @@ master_chat                       -- 把我的话转给主管 AI
 - **颜色/间距/圆角/阴影**：只用 CSS 变量。`styles.css` 的 `:root` 原有 20 个变量**名字与语义冻结**
   （`--bg/--bg-soft/--panel/--panel-2/--border/--border-soft/--text/--text-dim/--text-mute/--accent/
   --accent-hover/--ok/--warn/--danger/--ask/--answer/--notify/--radius/--radius-sm/--shadow`）；
-  第十一批追加了间距 `--sp-1..6`、字号 `--fs-11/12/13/14/16/20`（**没有 15/17/18/19**：
-  只有这六档，写别的档位要新加变量，不许硬编码 `font-size: 15px`）、`--radius-lg/--radius-pill`、
+  第十一批追加了间距 `--sp-1..6`、字号 `--fs-11/12/13/14/16/20`（第十二批又补了页面级
+  标题/正文实际在用的 `--fs-15/17/19`，所以现在共九档：**11/12/13/14/15/16/17/19/20**，
+  **没有 18**：写别的档位要新加变量，不许硬编码 `font-size: 15px`；历史遗留的其它硬编码
+  13.5/15.5/26/30px 不强制回改）、`--radius-lg/--radius-pill`、
   `--shadow-sm/md/lg`、成对语义色（`--ok-soft/--ok-line` 等）、表面 `--surface/--row-hover/
   --row-selected/--overlay`、`--focus`、`--dur-*/--ease`、`--sidebar-w`。**不许删改既有 class 名**
   （其它页面在用）；新样式写进各自页面的 CSS 文件（`components.css`、`pages/pages.css`、
