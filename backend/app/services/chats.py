@@ -101,6 +101,77 @@ def default_agent_role(item_id: Any) -> str:
     return 'item' if str(item_id or '').strip() else 'cs'
 
 
+def peer_nickname_candidate(nick: Any, *, buyer_id: Any = '', my_nick: Any = '') -> str:
+    """挑出**能当买家昵称**的串，挑不出返回空串。
+
+    丢掉四类：空串、纯数字（平台给未设置昵称的账号发的占位名）、等于 buyer_id 的、
+    等于**账号自己昵称**的（真机上 `reminderTitle` 会是发最后一条消息那个人的昵称，
+    自己发的就是自己的）。
+    """
+    nick = str(nick or '').strip()
+    if not nick or nick.isdigit():
+        return ''
+    if str(buyer_id or '').strip() and nick == str(buyer_id).strip():
+        return ''
+    if str(my_nick or '').strip() and nick == str(my_nick).strip():
+        return ''
+    return nick
+
+
+def _row_text(row: Any, key: str) -> str:
+    """安全读一行里的字符串字段（`db.query_one` 回的是 `sqlite3.Row`，没有 `.get()`）。"""
+    if row is None:
+        return ''
+    try:
+        return str(row[key] or '').strip()
+    except (IndexError, KeyError, TypeError):
+        return ''
+
+
+def _account_nickname(account_id: Any) -> str:
+    """账号**自己**的昵称（登录后落在 `accounts.nickname`），用来识别库里的脏昵称。"""
+    row = db.query_one('SELECT nickname FROM accounts WHERE id = ?', (str(account_id or ''),))
+    return _row_text(row, 'nickname')
+
+
+def _safe_peer_nickname(nick: Any, current: Any, my_nick: Any = '') -> str:
+    """算出「该往 `peer_nickname` 写什么」，返回空串表示**不写**。
+
+    只在两种情况下认新昵称：库里是空的，或库里存的正是账号自己的昵称（历史脏数据 ——
+    老版本把 `reminderTitle` 无条件当买家名，用户库里现在整列都是他自己的名字）。
+    库里已经是别的名字时**保留**：宁可留一个不完美的真买家名，也不要被来路不明的串冲掉。
+    """
+    nick = str(nick or '').strip()
+    if not nick:
+        return ''
+    current = str(current or '').strip()
+    if not current or current == nick:
+        return nick
+    if str(my_nick or '').strip() and current == str(my_nick).strip():
+        return nick
+    return ''
+
+
+def apply_peer_nickname(conversation_id: Any, nick: Any, my_nick: Any = '') -> str:
+    """按 `_safe_peer_nickname` 的规则写库，返回**真正写进去**的值（没写=空串）。
+
+    这是「永不用自己的昵称覆盖买家名」的唯一落库口：IM 同步与 IM 入站都走它。
+    """
+    try:
+        conv_id = int(conversation_id)
+    except (TypeError, ValueError):
+        return ''
+    row = db.query_one('SELECT peer_nickname FROM conversations WHERE id = ?', (conv_id,))
+    if row is None:
+        return ''
+    current = _row_text(row, 'peer_nickname')
+    target = _safe_peer_nickname(nick, current, my_nick=my_nick)
+    if not target or target == current:
+        return ''
+    db.execute('UPDATE conversations SET peer_nickname = ? WHERE id = ?', (target, conv_id))
+    return target
+
+
 def find_incoming_by_external_id(conversation_id: Any, external_id: str) -> Optional[Dict[str, Any]]:
     """按平台消息 id 找**已落库的买家消息**；没有就返回 None。
 
@@ -1080,8 +1151,14 @@ def sync_im_conversations(
       出站回显（`is_self`）与入站来信都查，避免同一条被记两遍。
 
     返回 `{'account_id','scanned','conversations','conversations_new','messages',
-    'messages_skipped','skipped'}`，单个会话拉消息失败时把原因收进 `warnings` 而
-    不是整个失败（会话已经入库了，如实报出来比丢掉更有用）。失败时返回统一信封。
+    'messages_skipped','skipped','nicknames_fixed'}`，单个会话拉消息失败时把原因收进
+    `warnings` 而不是整个失败（会话已经入库了，如实报出来比丢掉更有用）。失败时返回统一信封。
+
+    昵称口径（任务 21）：`peer_nickname` **只允许是买家的昵称**。
+    - 会话条目里的 `buyer_name` 由协议层确认过发送者不是自己，拿不到就是空串；
+    - 优先用**买家发来的消息**里的昵称；
+    - 已有会话只在「库里空着」或「库里存的正是账号自己的昵称」时才覆盖，
+      `nicknames_fixed` 报出这次修正了几条（用户库里现在这一列全是自己的名字）。
     """
     account_id = str(account_id or '')
     if not account_id:
@@ -1104,6 +1181,10 @@ def sync_im_conversations(
     messages_skipped = 0
     skipped = 0
     warnings: List[str] = []
+    # 账号自己的昵称：会话列表里那个「客户名」整列变成用户自己，就是没有它做比对。
+    my_nick = _account_nickname(account_id)
+    # 会话 id -> 候选买家昵称（先放会话条目里的，再被**买家消息**里的覆盖 = 后者更可信）
+    nick_candidates: Dict[int, str] = {}
 
     for raw in rows:
         if not isinstance(raw, dict):
@@ -1119,12 +1200,20 @@ def sync_im_conversations(
             'SELECT id FROM conversations WHERE account_id = ? AND peer_user_id = ?',
             (account_id, buyer_id),
         ) is not None
+        candidate_nick = peer_nickname_candidate(
+            raw.get('buyer_name'), buyer_id=buyer_id, my_nick=my_nick,
+        )
         conversation = ensure_conversation(
             account_id,
             buyer_id,
-            peer_nickname=str(raw.get('buyer_name') or ''),
+            # 新会话才在建立时写昵称；**已存在**的会话一律走下面的 `apply_peer_nickname`
+            # （只有「空着」或「存的是账号自己的昵称」时才覆盖），免得一个来路不明的名字
+            # 把库里正确的买家名冲掉。
+            peer_nickname='' if existed else candidate_nick,
             item_id=str(raw.get('item_id') or ''),
         )
+        if existed and candidate_nick:
+            nick_candidates[int(conversation['id'])] = candidate_nick
         if not existed:
             conversations_new += 1
 
@@ -1168,6 +1257,18 @@ def sync_im_conversations(
                 # 图片地址必须落进 meta（角色判定靠它选 vision，见任务 A2）。
                 meta['image_url'] = images[0]
             is_self = bool(item.get('is_self'))
+            # 昵称：只有**买家发来的消息**才作数（`sender_nick` 已由协议层确认发送者不是
+            # 自己）。自己发的消息里的昵称反过来用来学习「账号自己的昵称」，这样下一次同步
+            # 就能认出库里存的到底是不是自己的名字。
+            if is_self:
+                my_nick = my_nick or str(item.get('sender_nick_raw') or '').strip()
+            else:
+                buyer_nick = peer_nickname_candidate(
+                    item.get('sender_nick'), buyer_id=buyer_id, my_nick=my_nick,
+                )
+                if buyer_nick:
+                    # 消息按时间正序，后赋值的 = 更新的那条买家消息
+                    nick_candidates[int(conversation['id'])] = buyer_nick
             item_id = str(item.get('item_id') or raw.get('item_id') or '')
             result = append_message(
                 conversation['id'],
@@ -1182,6 +1283,13 @@ def sync_im_conversations(
             if isinstance(result, dict) and result.get('id'):
                 messages_new += 1
 
+    # 修正库里**已有的错昵称**（用户现在这一列全是自己的名字，就是老代码写的）。
+    # 只认「空着」或「存的正是账号自己昵称」的，别把真买家名覆盖掉。
+    nicknames_fixed = 0
+    for conv_id, nick in nick_candidates.items():
+        if apply_peer_nickname(conv_id, nick, my_nick=my_nick):
+            nicknames_fixed += 1
+
     summary: Dict[str, Any] = {
         'account_id': account_id,
         'scanned': len(rows),
@@ -1189,12 +1297,14 @@ def sync_im_conversations(
         'messages': messages_new,
         'messages_skipped': messages_skipped,
         'skipped': skipped,
+        'nicknames_fixed': nicknames_fixed,
     }
     if warnings:
         summary['warnings'] = warnings
     logger.info(
-        'sync_im_conversations: account={} scanned={} new_conversations={} new_messages={}',
-        account_id, len(rows), conversations_new, messages_new,
+        'sync_im_conversations: account={} scanned={} new_conversations={} new_messages={} '
+        'nicknames_fixed={}',
+        account_id, len(rows), conversations_new, messages_new, nicknames_fixed,
     )
     return summary
 
@@ -1224,6 +1334,16 @@ def dispatch_im_message(account_id: str, payload: Any) -> Optional[Any]:
     item_id = str(parsed.get('item_id') or '')
     # 不预写死 agent_role（任务 A2）：留给 roles 的规则 2/3 去选 vision / bargain。
     conversation = ensure_conversation(account_id, buyer_id, item_id=item_id)
+    # 昵称：入站帧里的昵称是**发送者**的，先按「不是账号自己」过滤；只在这个会话还没有
+    # 买家名（或库里存的是账号自己）时才写，绝不拿自己的昵称当客户名。
+    my_nick = _account_nickname(account_id)
+    inbound_nick = peer_nickname_candidate(
+        parsed.get('sender_nick'), buyer_id=buyer_id, my_nick=my_nick,
+    )
+    if inbound_nick:
+        written = apply_peer_nickname(conversation['id'], inbound_nick, my_nick=my_nick)
+        if written:
+            conversation['peer_nickname'] = written
     incoming_meta: Dict[str, Any] = {
         'source': 'im',
         'cid': str(parsed.get('cid') or ''),

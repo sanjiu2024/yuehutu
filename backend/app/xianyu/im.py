@@ -65,6 +65,42 @@ def _first_str(source: Dict[str, Any], *keys: str) -> str:
     return ''
 
 
+def _sender_uid_of(message: Any) -> str:
+    """从一条消息里取**发送者 uid**（``extension.senderUserId`` / ``sender.uid``）。
+
+    为什么先要 uid：``reminderTitle`` 是「最后一条消息**发送者**」的昵称，发送者是买家
+    还是账号自己都可能是它（我发最后一条时它就是账号自己的昵称）。不确认发送者就把它
+    当买家名，用户看到的会话列表会整列显示他自己的昵称。
+    """
+    if not isinstance(message, dict):
+        return ''
+    extension = message.get('extension')
+    extension = extension if isinstance(extension, dict) else {}
+    sender = message.get('sender')
+    sender = sender if isinstance(sender, dict) else {}
+    return _strip_goofish(
+        _first_str(extension, 'senderUserId', 'senderId')
+        or _first_str(sender, 'uid', 'userId', 'id')
+    )
+
+
+def _sender_nick_of(message: Any) -> str:
+    """一条消息里**发送者**的昵称（``extension.reminderTitle`` / ``senderNick``）。
+
+    返回的昵称不区分敌我（发送者是谁就是谁），纯数字的占位名直接丢掉 ——
+    归属判定由调用方（`parse_conversation` / `parse_message_item`）负责。
+    """
+    if not isinstance(message, dict):
+        return ''
+    extension = message.get('extension')
+    extension = extension if isinstance(extension, dict) else {}
+    nick = _first_str(extension, 'reminderTitle', 'senderNick', 'senderNickName')
+    if not nick:
+        nick = _first_str(message, 'senderNick', 'senderNickName', 'reminderTitle')
+    nick = str(nick or '').strip()
+    return '' if nick.isdigit() else nick
+
+
 def _decode_content(raw: Any) -> str:
     """把 LWP 消息的 ``content`` 归一化成纯文本。
 
@@ -195,6 +231,11 @@ def parse_conversation(raw: Any, my_id: str = '') -> Optional[Dict[str, Any]]:
 
     群聊条目（``groupChatUserConversation``）不是单聊，直接跳过：**取不到 cid 就
     返回 None**，绝不造一个空会话出来。
+
+    ``buyer_name`` / ``buyer_avatar`` **只认买家**：会话条目里根本没有买家昵称字段，
+    能拿到的只有 ``lastMessage.message.extension.reminderTitle``（= 最后一条消息发送者
+    的昵称）。所以先用 ``extension.senderUserId`` / ``sender.uid`` 确认发送者不是
+    ``my_id``，拿不到发送者或发送者就是自己时返回空串。
     """
     if not isinstance(raw, dict):
         return None
@@ -256,11 +297,22 @@ def parse_conversation(raw: Any, my_id: str = '') -> Optional[Dict[str, Any]]:
     last_extension = last_message.get('extension')
     last_extension = last_extension if isinstance(last_extension, dict) else {}
 
-    buyer_name = _first_str(last_extension, 'reminderTitle', 'senderNick', 'senderNickName')
-    if buyer_name.isdigit():
-        buyer_name = ''
-    if not buyer_name:
-        buyer_name = _first_str(last_wrapper, 'senderNick', 'senderNickName')
+    # 昵称与头像的归属必须是**买家**：`reminderTitle` / `senderAvatar` 属于「最后一条
+    # 消息的发送者」，自己发最后一条时那就是账号自己的昵称/头像（真机上报：客户名称整列
+    # 显示成用户自己）。所以先取发送者 uid，确认不是自己（且不是 buyer_id 本身）才认；
+    # 判定不了就留空 —— 宁可让前端兜底显示「买家 <id>」，也不能把错名字写进库。
+    sender_id = _sender_uid_of(last_message) or _strip_goofish(
+        _first_str(last_wrapper, 'senderUserId', 'senderId')
+    )
+    # my_id 判定得了就只认「发送者 != 我」；判定不了（my_id 为空）时唯一可用的证据是
+    # 「发送者 != buyer_id」—— 这时连 buyer_id 本身都可能是账号自己，所以格外保守。
+    if my_id:
+        sender_is_buyer = bool(sender_id) and sender_id != my_id
+    else:
+        sender_is_buyer = bool(sender_id) and sender_id != buyer_id
+    buyer_name = ''
+    if sender_is_buyer:
+        buyer_name = _sender_nick_of(last_message) or _sender_nick_of(last_wrapper)
 
     return {
         'cid': cid,
@@ -268,7 +320,7 @@ def parse_conversation(raw: Any, my_id: str = '') -> Optional[Dict[str, Any]]:
         'buyer_name': buyer_name,
         'buyer_avatar': _first_str(
             extension, 'avatar', 'avatarUrl', 'senderAvatar'
-        ) or _first_str(last_extension, 'senderAvatar'),
+        ) or (_first_str(last_extension, 'senderAvatar') if sender_is_buyer else ''),
         'item_id': _strip_goofish(_first_str(extension, 'itemId')),
         'item_title': _first_str(extension, 'itemTitle'),
         # 摘要要从 ``lastMessage`` 那一层取：整条 userConvs 项里并没有 ``message`` 键，
@@ -280,7 +332,12 @@ def parse_conversation(raw: Any, my_id: str = '') -> Optional[Dict[str, Any]]:
 
 
 def parse_message_item(model: Any, my_id: str = '') -> Optional[Dict[str, Any]]:
-    """把 ``listUserMessages`` 里的一条消息归一化成工作台字段。"""
+    """把 ``listUserMessages`` 里的一条消息归一化成工作台字段。
+
+    除正文/图片外还回发送者信息：``sender_id``、``is_self``、``sender_nick``（只有确认
+    发送者不是自己时才有值 = 买家昵称）、``sender_nick_raw``（不分敌我，用于学习账号自己
+    的昵称）。
+    """
     if not isinstance(model, dict):
         return None
     message = model.get('message')
@@ -303,11 +360,26 @@ def parse_message_item(model: Any, my_id: str = '') -> Optional[Dict[str, Any]]:
     if not msg_type:
         msg_type = 'image' if images else ('text' if text else 'system')
 
+    my_id = _strip_goofish(my_id)
+    is_self = bool(my_id) and sender_id == my_id
+    sender_nick_raw = _sender_nick_of(message)
+    # `sender_nick` 只放**能确认是买家**的昵称：`sync_im_conversations` 拿它补
+    # `conversations.peer_nickname`，空着顶多显示「买家 <id>」，写错了就是用户看到的
+    # 「客户名称显示不对」。确认不了（自己的消息 / 没有发送者 uid）一律空串。
+    sender_nick = (
+        sender_nick_raw if (sender_nick_raw and sender_id and my_id and not is_self) else ''
+    )
+
     return {
         'msg_id': _first_str(message, 'messageId', 'msgId', 'uuid'),
         'cid': _strip_goofish(_first_str(message, 'cid', 'conversationId')),
         'buyer_id': sender_id,
-        'is_self': bool(my_id) and sender_id == _strip_goofish(my_id),
+        'sender_id': sender_id,
+        'is_self': is_self,
+        # 发送者昵称：`sender_nick` 已确认不是自己（买家昵称），`sender_nick_raw` 不区分敌我
+        # （同步时用它学习「账号自己的昵称」，才能认出库里的脏昵称）。
+        'sender_nick': sender_nick,
+        'sender_nick_raw': sender_nick_raw,
         'content': text,
         'images': images,
         'msg_type': msg_type,
@@ -318,9 +390,12 @@ def parse_message_item(model: Any, my_id: str = '') -> Optional[Dict[str, Any]]:
 def parse_incoming_message(payload: Any) -> Optional[Dict[str, Any]]:
     """从一帧 IM 推送里抠出一条买家消息。
 
-    返回 ``{'msg_id','cid','buyer_id','seller_id','content','item_id'}``；
+    返回 ``{'msg_id','cid','buyer_id','seller_id','content','item_id','sender_nick'}``；
     **返回 None 表示这一帧不是可处理的买家文本消息**（心跳回帧、纯协议回帧等），
     调用方据此跳过，不要凭空造会话。
+
+    `sender_nick` 是这一帧发送者的昵称（可能是我自己发的回显帧）—— 归属由服务层判定，
+    协议层不猜。
 
     `msg_id` 是平台侧的幂等键，服务层拿它去重（见 `services.chats.handle_incoming`）。
     """
@@ -368,6 +443,7 @@ def parse_incoming_message(payload: Any) -> Optional[Dict[str, Any]]:
         ),
         'content': content,
         'item_id': item_id,
+        'sender_nick': _sender_nick_of(item),
     }
 
 

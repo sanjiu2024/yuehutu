@@ -846,6 +846,134 @@ class ImBackfillTest(_ChatsTestBase):
         self.assertTrue(result.get('code'))
 
 
+class PeerNicknameOwnershipTest(_ChatsTestBase):
+    """task-21：`conversations.peer_nickname` 只允许是**买家**的昵称。
+
+    真机上报：用户会话列表整列显示成他自己的昵称。会话条目里根本没有买家昵称字段，
+    而 `lastMessage.message.extension.reminderTitle` 是最后一条消息**发送者**的昵称 ——
+    自己发最后一条时那就是账号自己的名字（老代码无条件拿它当买家名）。
+    """
+
+    MY_NICK = '月狐兔_'
+    BUYER_NICK = '一蓑烟雨任平生'
+
+    def setUp(self):
+        super().setUp()
+        self.make_account('acc1')
+        db.execute('UPDATE accounts SET nickname = ? WHERE id = ?', (self.MY_NICK, 'acc1'))
+
+    # ------------------------------------------------------------------ 夹具
+
+    def _install(self, buyer_name='', messages=None):
+        """装一个只实现同步两个口子的假客户端（`buyer_name` = 会话条目里解析出的昵称）。"""
+        conversations = [{
+            'cid': 'cid-1', 'buyer_id': 'buyer-1', 'buyer_name': buyer_name,
+            'item_id': 'item-9', 'last_message': '', 'last_time': 1, 'unread': 0,
+        }]
+        rows = list(messages or [])
+
+        class FakeImClient:
+            def fetch_conversations(inner, start_timestamp=None, limit=50):
+                return conversations
+
+            def fetch_messages(inner, cid, start_timestamp=None, limit=20):
+                return rows
+
+        install_client(FakeImClient())
+
+    def _message(self, nick, *, mine, msg_id, time):
+        return {
+            'msg_id': msg_id, 'cid': 'cid-1', 'buyer_id': 'buyer-1', 'is_self': mine,
+            'content': '在吗', 'images': [], 'msg_type': 'text', 'time': time,
+            'sender_nick': '' if mine else nick, 'sender_nick_raw': nick,
+        }
+
+    def _nick(self, peer='buyer-1'):
+        row = db.query_one(
+            'SELECT peer_nickname FROM conversations WHERE peer_user_id = ?', (peer,),
+        )
+        return '' if row is None else str(row['peer_nickname'] or '')
+
+    def _frame(self, nick, buyer_id='buyer-1'):
+        return {
+            'lwp': '/r/MessageManager/listUserMessages',
+            'body': [{
+                'msgId': 'im-1', 'cid': 'conv-1@goofish',
+                'senderId': f'{buyer_id}@goofish',
+                'content': {'text': {'text': '这个还在吗'}},
+                'extension': {'reminderTitle': nick},
+            }],
+        }
+
+    # ------------------------------------------------------------------ 同步：修脏数据
+
+    def test_sync_repairs_my_own_nickname_already_stored(self):
+        """用户库里现在就是脏的：整列都是他自己的昵称，同步要把它改成买家名。"""
+        chats.ensure_conversation('acc1', 'buyer-1', peer_nickname=self.MY_NICK)
+        self._install(messages=[self._message(self.BUYER_NICK, mine=False, msg_id='m-b', time=2)])
+
+        result = chats.sync_im_conversations('acc1')
+
+        self.assertEqual(self._nick(), self.BUYER_NICK, '买家发来的消息里的昵称才是客户名')
+        self.assertEqual(result['nicknames_fixed'], 1)
+
+    def test_sync_never_writes_my_own_nickname(self):
+        """会话条目和自己消息里都只有我自己的昵称 -> 宁可空着，也不能当客户名。"""
+        self._install(
+            buyer_name=self.MY_NICK,
+            messages=[self._message(self.MY_NICK, mine=True, msg_id='m-s', time=1)],
+        )
+
+        result = chats.sync_im_conversations('acc1')
+
+        self.assertEqual(self._nick(), '', '拿不到买家昵称就留空（前端兜底「买家 <id>」）')
+        self.assertEqual(result['nicknames_fixed'], 0)
+
+    def test_sync_keeps_a_good_nickname_instead_of_overwriting_it(self):
+        """库里已经是别的买家名时不覆盖：别用一个来路不明的串把对的名字冲掉。"""
+        chats.ensure_conversation('acc1', 'buyer-1', peer_nickname='小明')
+        self._install(
+            buyer_name=self.MY_NICK,
+            messages=[self._message('新名字', mine=False, msg_id='m-b', time=2)],
+        )
+
+        result = chats.sync_im_conversations('acc1')
+
+        self.assertEqual(self._nick(), '小明')
+        self.assertEqual(result['nicknames_fixed'], 0)
+
+    def test_sync_learns_my_nickname_from_my_own_message(self):
+        """账号表里没有昵称时，靠自己发的消息学会「我是谁」，照样能认出脏昵称。"""
+        db.execute('UPDATE accounts SET nickname = ? WHERE id = ?', ('', 'acc1'))
+        chats.ensure_conversation('acc1', 'buyer-1', peer_nickname=self.MY_NICK)
+        self._install(messages=[
+            self._message(self.MY_NICK, mine=True, msg_id='m-s', time=1),
+            self._message(self.BUYER_NICK, mine=False, msg_id='m-b', time=2),
+        ])
+
+        result = chats.sync_im_conversations('acc1')
+
+        self.assertEqual(self._nick(), self.BUYER_NICK)
+        self.assertEqual(result['nicknames_fixed'], 1)
+
+    # ------------------------------------------------------------------ 入站帧
+
+    def test_inbound_frame_fills_the_nickname_of_a_new_conversation(self):
+        result = chats.dispatch_im_message('acc1', self._frame(self.BUYER_NICK))
+
+        self.assertIsNotNone(result, '买家来信要认得出来')
+        self.assertEqual(self._nick(), self.BUYER_NICK)
+
+    def test_inbound_frame_never_writes_my_own_nickname(self):
+        chats.dispatch_im_message('acc1', self._frame(self.MY_NICK))
+        self.assertEqual(self._nick(), '')
+
+    def test_inbound_frame_does_not_overwrite_a_good_nickname(self):
+        chats.ensure_conversation('acc1', 'buyer-1', peer_nickname='小明')
+        chats.dispatch_im_message('acc1', self._frame(self.BUYER_NICK))
+        self.assertEqual(self._nick(), '小明')
+
+
 class UnparsedFrameLogTest(unittest.TestCase):
     """真机日志噪声：平台例行帧不许按 WARNING 记。
 

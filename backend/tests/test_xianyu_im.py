@@ -163,7 +163,13 @@ def _real_conversation_payload() -> dict:
         'lastMessage': {
             'message': {
                 'content': {'custom': {'summary': '在吗？'}},
-                'extension': {'reminderTitle': '小明', 'senderNick': '小明'},
+                # 发送者 uid（真机都有）：最后一条是**买家**发的，`reminderTitle` 才是买家名。
+                # 少了它就无法判定发送者是谁，昵称必须留空（见 task-21 的新用例）。
+                'extension': {
+                    'reminderTitle': '小明',
+                    'senderNick': '小明',
+                    'senderUserId': '2200000001@goofish',
+                },
             }
         },
         'modifyTime': 1791245258792,
@@ -200,6 +206,160 @@ class ConversationParseTest(unittest.TestCase):
             {'singleChatUserConversation': {'cid': 'c-1', 'pairFirst': '0', 'pairSecond': '0'}}
         ))
         self.assertIsNone(im.parse_conversation('not-a-dict'))
+
+
+# --------------------------------------------------------------------------- 昵称归属
+
+
+def _last_message_payload(
+    nick: str,
+    sender_uid: str = '',
+    *,
+    sender_dict: bool = False,
+    avatar: str = '',
+) -> dict:
+    """照真机形状造一条会话条目：``lastMessage`` 里只有「发送者」的信息。
+
+    ``sender_uid`` 给空 = 老版本那样没有发送者字段（无从判定是谁发的）。
+    """
+    extension: dict = {'reminderTitle': nick}
+    if avatar:
+        extension['senderAvatar'] = avatar
+    if sender_uid and not sender_dict:
+        extension['senderUserId'] = f'{sender_uid}@goofish'
+    message: dict = {'content': {'custom': {'summary': '在吗？'}}, 'extension': extension}
+    if sender_uid and sender_dict:
+        message['sender'] = {'uid': sender_uid}
+    return {
+        'singleChatUserConversation': {
+            'cid': '2103ec' + ACCOUNT_ID + '@goofish',
+            'pairFirst': f'{ACCOUNT_ID}@goofish',
+            'pairSecond': '2200000002@goofish',
+            'extension': {'itemId': 'item-7777@goofish', 'itemTitle': '泰拉瑞亚模组定制'},
+        },
+        'lastMessage': {'message': message},
+        'modifyTime': 1791245258792,
+        'redPoint': 1,
+    }
+
+
+class BuyerNicknameOwnershipTest(unittest.TestCase):
+    """会话列表里的「客户名称」只能是**买家**的昵称。
+
+    真机上报：用户会话列表整列显示成他自己的昵称。原因是没有买家昵称字段 ——
+    `lastMessage.message.extension.reminderTitle` 是「最后一条消息**发送者**」的昵称：
+    买家发最后一条时是买家名，**我发最后一条时就是我自己的名字**。
+    """
+
+    def test_buyer_last_message_keeps_the_nickname(self):
+        one = im.parse_conversation(
+            _last_message_payload('一蓑烟雨任平生', '2200000002'), ACCOUNT_ID
+        )
+        assert one is not None
+        self.assertEqual(one['buyer_id'], '2200000002')
+        self.assertEqual(one['buyer_name'], '一蓑烟雨任平生')
+
+    def test_my_own_last_message_never_becomes_the_buyer_name(self):
+        # 真机原样：账号自己（月狐兔_）发了最后一条，reminderTitle 就是账号自己的昵称。
+        one = im.parse_conversation(_last_message_payload('月狐兔_', ACCOUNT_ID), ACCOUNT_ID)
+        assert one is not None
+        self.assertEqual(one['buyer_id'], '2200000002', '买家仍然是「不是我的那一半」')
+        self.assertEqual(one['buyer_name'], '', '自己的昵称绝不能写进买家名')
+
+    def test_sender_in_nested_sender_dict_is_recognized(self):
+        one = im.parse_conversation(
+            _last_message_payload('一蓑烟雨任平生', '2200000002', sender_dict=True),
+            ACCOUNT_ID,
+        )
+        assert one is not None
+        self.assertEqual(one['buyer_name'], '一蓑烟雨任平生', 'sender.uid 也是真机字段')
+
+    def test_self_sender_in_nested_sender_dict_is_rejected(self):
+        one = im.parse_conversation(
+            _last_message_payload('月狐兔_', ACCOUNT_ID, sender_dict=True), ACCOUNT_ID
+        )
+        assert one is not None
+        self.assertEqual(one['buyer_name'], '')
+
+    def test_unknown_sender_keeps_the_name_empty(self):
+        one = im.parse_conversation(_last_message_payload('小明'), ACCOUNT_ID)
+        assert one is not None
+        self.assertEqual(one['buyer_name'], '', '判定不了发送者就留空，宁可显示「买家 <id>」')
+
+    def test_without_my_id_only_a_sender_other_than_buyer_is_trusted(self):
+        # my_id 判不了时 buyer_id 本身就可能是账号自己，所以「发送者 == buyer_id」不作数
+        same = im.parse_conversation(_last_message_payload('小明', ACCOUNT_ID), '')
+        assert same is not None
+        self.assertEqual(same['buyer_name'], '', 'my_id 未知时不拿 buyer_id 当证据')
+        other = im.parse_conversation(_last_message_payload('小明', '2200000002'), None)
+        assert other is not None
+        self.assertEqual(other['buyer_name'], '小明', '发送者明确不是 buyer_id 才认')
+
+    def test_digit_placeholder_is_not_a_nickname(self):
+        one = im.parse_conversation(_last_message_payload('12345678', '2200000002'), ACCOUNT_ID)
+        assert one is not None
+        self.assertEqual(one['buyer_name'], '')
+
+    def test_my_own_avatar_is_not_used_as_buyer_avatar(self):
+        mine = im.parse_conversation(
+            _last_message_payload('月狐兔_', ACCOUNT_ID, avatar='https://img.example/me.jpg'),
+            ACCOUNT_ID,
+        )
+        assert mine is not None
+        self.assertEqual(mine['buyer_avatar'], '', '头像与昵称同一归属，别把自己的头像给买家')
+        buyer = im.parse_conversation(
+            _last_message_payload('小明', '2200000002', avatar='https://img.example/buyer.jpg'),
+            ACCOUNT_ID,
+        )
+        assert buyer is not None
+        self.assertEqual(buyer['buyer_avatar'], 'https://img.example/buyer.jpg')
+
+    # -------------------------------------------------------------- 单条消息 / 入站帧
+
+    def test_message_item_exposes_a_buyer_nickname_only_for_buyer(self):
+        mine = im.parse_message_item(
+            {'message': {'messageId': 'm-1', 'content': {'text': {'text': '在的'}},
+                         'extension': {'senderUserId': f'{ACCOUNT_ID}@goofish',
+                                       'reminderTitle': '月狐兔_'}}},
+            ACCOUNT_ID,
+        )
+        assert mine is not None
+        self.assertEqual(mine['sender_nick'], '', '自己的消息不能给出买家昵称')
+        self.assertEqual(mine['sender_nick_raw'], '月狐兔_', '原样的昵称要留给「学自己的名字」')
+
+        buyer = im.parse_message_item(
+            {'message': {'messageId': 'm-2', 'content': {'text': {'text': '在吗'}},
+                         'extension': {'senderUserId': '2200000002@goofish',
+                                       'reminderTitle': '一蓑烟雨任平生'}}},
+            ACCOUNT_ID,
+        )
+        assert buyer is not None
+        self.assertEqual(buyer['sender_id'], '2200000002')
+        self.assertEqual(buyer['sender_nick'], '一蓑烟雨任平生')
+
+    def test_message_item_without_my_id_does_not_guess_the_nickname(self):
+        one = im.parse_message_item(
+            {'message': {'messageId': 'm-3', 'content': {'text': {'text': '在吗'}},
+                         'extension': {'senderUserId': '2200000002@goofish',
+                                       'reminderTitle': '一蓑烟雨任平生'}}},
+            '',
+        )
+        assert one is not None
+        self.assertEqual(one['sender_nick'], '', '连自己是谁都不知道时不许猜')
+
+    def test_incoming_frame_carries_the_sender_nickname(self):
+        payload = {
+            'lwp': '/r/MessageManager/listUserMessages',
+            'body': [{
+                'msgId': 'im-1', 'cid': 'conv-1@goofish',
+                'senderId': '2200000002@goofish',
+                'content': {'text': {'text': '这个还在吗'}},
+                'extension': {'reminderTitle': '一蓑烟雨任平生'},
+            }],
+        }
+        one = im.parse_incoming_message(payload)
+        assert one is not None
+        self.assertEqual(one['sender_nick'], '一蓑烟雨任平生')
 
 
 # --------------------------------------------------------------------------- 消息解析
