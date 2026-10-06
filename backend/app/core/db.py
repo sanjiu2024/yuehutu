@@ -233,10 +233,23 @@ def connect(db_path: Optional[str] = None) -> sqlite3.Connection:
 
 
 def get_conn() -> sqlite3.Connection:
+    """返回当前线程的连接。
+
+    连接是按线程缓存的，所以「换库路径」必须对所有线程都生效：
+    共享事件循环线程（`services.common.shared_loop` 的 `xywb-asyncio`）活得很久，
+    只重置当前线程的连接不够——它会把上一个数据目录的连接一直用下去，
+    于是编排层读的是旧库（表现为「会话不存在」）。这里比对路径，对不上就重连。
+    """
+    path = str(config.DB_PATH)
     conn = getattr(_local, 'conn', None)
+    if conn is not None and getattr(_local, 'db_path', None) != path:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+        conn = None
     if conn is None:
         conn = connect()
         _local.conn = conn
+        _local.db_path = path
     return conn
 
 
@@ -278,6 +291,7 @@ def reset_connection() -> None:
         with contextlib.suppress(sqlite3.Error):
             conn.close()
         _local.conn = None
+        _local.db_path = None
 
 
 def row_to_dict(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
