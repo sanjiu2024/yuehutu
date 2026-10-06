@@ -274,6 +274,9 @@ PUSHABLE_EDIT_FIELDS = {'price', 'original_price', 'stock', 'title', 'descriptio
 #: URL 字符串（混合数组），协议层 ``_image_entry`` 两种都认。
 IMAGE_URL_KEYS = ('url', 'picUrl', 'imageUrl', 'fileUrl')
 
+#: 已卖出商品被编辑时给用户的说明（见 `update_item` 的保守闸门）。
+SOLD_WARNING = '该商品已卖出，平台不接受编辑，改动仅本地生效'
+
 #: 商品写操作成功后统一发的事件。前端各页订阅同一个 topic 做静默重拉，
 #: 所以 payload 里必须带够定位信息（哪个账号、哪些商品、干了什么）。
 ITEMS_UPDATED_TOPIC = 'items.updated'
@@ -412,6 +415,15 @@ def update_item(item_id: Any, fields: Dict[str, Any], account_id: Optional[str] 
 
     payload, local_only = _split_edit_fields(resolved)
 
+    # 已卖出商品（`items.status == 'sold'`）的**保守闸门**：不推平台，只落本地。
+    # 平台会接受已卖出商品的 edit 提交并把它重新上架（真机实测），所以这里必须拦在
+    # 协议层之前：payload 清空 + 这些字段转记进 local_only，让 `synced` 变成 False、
+    # warning 明说「已卖出…改动仅本地生效」。
+    sold_not_pushed = str(item.get('status') or '').strip().lower() == 'sold' and bool(payload)
+    if sold_not_pushed:
+        local_only = sorted(set(local_only) | set(payload))
+        payload = {}
+
     # 写库与推协议层**两套取值**：库里 images 只存 URL 字符串（前端 parseImages
     # 只认字符串），推协议层带完整条目（含 width/height）。空图片两边都跳过。
     db_values: Dict[str, Any] = {}
@@ -443,6 +455,11 @@ def update_item(item_id: Any, fields: Dict[str, Any], account_id: Optional[str] 
         warning = _push_update(client, item['account_id'], item['item_id'], payload)
     elif payload:
         warning = '协议层尚未就绪，改动仅本地生效'
+    if sold_not_pushed:
+        # 已卖出商品的编辑**绝不能推平台**：真机 1087247101297 提交后回帧带
+        # `publishScene="pcMainPublish"`，随后同步它的 status 就从 sold 变回 on_sale
+        # —— 相当于把卖掉的商品重新上架了。保守起见只落本地，由用户自己决定。
+        warning = f'{warning}；{SOLD_WARNING}' if warning else SOLD_WARNING
     if local_only:
         # 「假绿」修复：以前只看 warning，改标题+改 ai_enabled 会报 synced=True，
         # 用户看到「已修改并同步」而一半只落本地。

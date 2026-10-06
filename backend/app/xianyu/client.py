@@ -1004,6 +1004,28 @@ _MAJOR_IMAGE_KEYS = ('major', 'isMajor', 'isMajorPic')
 _IMAGE_RECURSE_SKIP = set(IMAGE_URL_KEYS) | set(_MAJOR_IMAGE_KEYS)
 
 
+#: 忽略 query/fragment 之后，路径必须以其中之一结尾才算图片。
+#: `.heic` 必须留着：真机库里 62 张真图里有 3 张是
+#: `..._xy_item.heic`（丢弃会让这 3 件商品一张图都不剩）。
+IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif')
+
+
+def _looks_like_image_url(url: str) -> bool:
+    """这个 URL 看起来是**图片**吗（忽略 query/fragment，只看路径后缀）。
+
+    真机踩过：图片字段里会混进闲鱼「以图搜同款」的**网页**，例如
+    ``https://h5.m.goofish.com/wow/moyu/moyu-project/idle-photo-search/pages/home?kun=true&wh_ttid=native&opaque=false&extra=%7B%22imageInfo%22%3A...``
+    （query 里带着 imageInfo）。它会被深扫当图片收进 `items.images`：编辑弹窗多一张
+    打不开的卡片，用户一保存还会把这条网页 URL 当成商品图推给平台（写入事故）。
+    所以只认图片后缀（`..._640x640q90.jpg` 这种也认），认不出就丢，**不用网页 URL 凑数**。
+    """
+    text = (url or '').strip()
+    if not text:
+        return False
+    path = text.split('#', 1)[0].split('?', 1)[0].lower()
+    return path.endswith(IMAGE_EXTENSIONS)
+
+
 def _iter_image_entries(raw: Any, depth: int = 0) -> Iterator[Tuple[bool, str]]:
     """从任意形态的图片字段里挖出 `(是否主图, URL)`。
 
@@ -1030,7 +1052,7 @@ def _iter_image_entries(raw: Any, depth: int = 0) -> Iterator[Tuple[bool, str]]:
             if parsed is not None and not isinstance(parsed, str):
                 yield from _iter_image_entries(parsed, depth + 1)
                 return
-        if text.startswith(('http://', 'https://', '//')):
+        if text.startswith(('http://', 'https://', '//')) and _looks_like_image_url(text):
             yield (False, text)
         return
     if isinstance(raw, (list, tuple)):
@@ -1040,7 +1062,7 @@ def _iter_image_entries(raw: Any, depth: int = 0) -> Iterator[Tuple[bool, str]]:
     if not isinstance(raw, dict):
         return
     url = _first_text(raw, *IMAGE_URL_KEYS)
-    if url:
+    if url and _looks_like_image_url(url):
         major = any(raw.get(key) in (True, 'true', 'True', 1, '1') for key in _MAJOR_IMAGE_KEYS)
         yield (major, url)
     for key, value in raw.items():

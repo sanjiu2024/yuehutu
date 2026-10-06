@@ -42,6 +42,7 @@ from backend.app.xianyu.client import (  # noqa: E402
     XianyuError,
     _extract_list_cards,
     _local_changes_to_edit,
+    _looks_like_image_url,
     build_edit_patch,
     build_edit_submit,
     build_image_info,
@@ -62,6 +63,24 @@ COOKIE = 'unb=2200123456; _m_h5_tk=abcdef123456_1712345678901; cookie2=xyz'
 REAL_IMAGE = ('http://img.alicdn.com/bao/uploaded/i4/O1CN01Pap3jiOC8yK2XrKe_'
               '!!2217970177348-2-fleamarket.png')
 REAL_IMAGE_HTTPS = REAL_IMAGE.replace('http://', 'https://')
+
+#: 真机详情帧里混进图片字段的闲鱼「以图搜同款」**网页**（不是图片）。
+#: 2026-10-07 排查真机库 `%APPDATA%\xianyu-ai-workbench\data\app.db`：45 件里 42 件
+#: （恰好是 `stock_refreshed=42` 那批走**详情**补库存的）的 images 都是
+#: 「真图, 网页, 真图, 网页, …」交替 —— 说明这条网页 URL 是**每个 imageInfo 条目旁边**
+#: 一起回来的（详情路径），而 20 张真机列表卡（`.dsh-tmp/item_card.json`）里
+#: `goofish.com` 出现 0 次、3 件只走列表同步的商品也干干净净。
+#: query 的 `extra.imageInfo` 解码后是
+#: `{"bizCode":"idledetail","reqFromPage":"idle_detail","source":"itempic","url":"http://.../xxx.png_640x640q90.jpg"}`
+#: —— `idledetail`/`idle_detail` 直接坐实了它来自**详情**响应。
+#: 路径以 `/pages/home` 结尾，没有图片后缀，必须被丢掉。
+REAL_SEARCH_PAGE = (
+    'https://h5.m.goofish.com/wow/moyu/moyu-project/idle-photo-search/pages/home'
+    '?kun=true&wh_ttid=native&opaque=false&extra=%7B%22imageInfo%22%3A%7B%22bizCode%22'
+    '%3A%22idledetail%22%2C%22reqFromPage%22%3A%22idle_detail%22%2C%22source%22%3A'
+    '%22itempic%22%2C%22url%22%3A%22http%3A%2F%2Fimg.alicdn.com%2Fbao%2Fuploaded%2Fi4'
+    '%2FO1CN01Pap3jiOC8yK2XrKe_!!2217970177348-2-fleamarket.png_640x640q90.jpg%22%7D%7D'
+)
 
 #: 真机列表卡的**原样**形状：`itemStatus` 是数字、图片挂三处、
 #: `detailParams.imageInfos` 是 JSON 字符串、**没有库存字段**。
@@ -439,6 +458,51 @@ class ListParseTest(ProtocolCase):
         item = normalize_list_card(card)
         self.assertEqual(item['images'],
                          ['https://img.alicdn.com/a.png', 'https://img.alicdn.com/b.png'])
+
+    def test_image_urls_keep_only_image_extensions(self):
+        """抽图只认图片后缀（忽略 query/fragment），认不出的 URL 一律丢。
+
+        `.heic` 必须留着：真机库 62 张真图里有 3 张是 `..._xy_item.heic`。
+        """
+        cases = {
+            'https://img.alicdn.com/a.png': True,
+            'https://img.alicdn.com/a_640x640q90.jpg': True,
+            'https://img.alicdn.com/a.JPG': True,
+            'https://img.alicdn.com/a.webp?t=1': True,
+            'https://img.alicdn.com/a.gif#frag': True,
+            'https://img.alicdn.com/a_xy_item.heic': True,
+            REAL_SEARCH_PAGE: False,
+            'https://img.alicdn.com/uploads/a': False,          # 无后缀
+            'https://h5.m.goofish.com/wow/moyu/x.html': False,  # 网页
+            '': False,
+        }
+        for url, expected in cases.items():
+            self.assertIs(_looks_like_image_url(url), expected, url)
+
+    def test_detail_images_drop_search_page_next_to_each_image(self):
+        """真机污染形态（详情路径）：每个 imageInfo 旁边挂一条搜同款网页。
+
+        库里那条是「真图, 网页, 真图, 网页…」，编辑弹窗会多出打不开的卡片，
+        用户一保存还会把网页 URL 当商品图推给平台。
+        """
+        detail = {'itemDO': {'itemId': '1', 'imageInfos': [
+            {'major': True, 'url': REAL_IMAGE, 'searchUrl': REAL_SEARCH_PAGE},
+            {'major': False, 'url': 'http://img.alicdn.com/x_xy_item.heic',
+             'searchUrl': REAL_SEARCH_PAGE},
+        ]}}
+        self.assertEqual(normalize_item(detail)['images'],
+                         [REAL_IMAGE_HTTPS, 'https://img.alicdn.com/x_xy_item.heic'])
+
+    def test_images_empty_when_only_search_page(self):
+        """三个来源全是网页 URL -> 返回空列表，**不拿网页凑数**。"""
+        card = json.loads(json.dumps(REAL_CARD))
+        card['cardData']['picInfo'] = {'picUrl': REAL_SEARCH_PAGE}
+        card['cardData']['detailParams']['picUrl'] = REAL_SEARCH_PAGE
+        card['cardData']['detailParams']['imageInfos'] = json.dumps(
+            [{'major': True, 'url': REAL_SEARCH_PAGE}])
+        self.assertEqual(normalize_list_card(card)['images'], [])
+        self.assertEqual(
+            normalize_item({'itemDO': {'itemId': '1', 'picDetailDO': REAL_SEARCH_PAGE}})['images'], [])
 
     def test_extract_list_cards_uses_card_list_when_topic_list_empty(self):
         """真机 `itemTopicList` 是**空 list**，真商品在 `cardList` 里。"""

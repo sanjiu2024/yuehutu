@@ -214,6 +214,24 @@ class ItemsApiTest(unittest.TestCase):
 
     # -- task-26：编辑改图 / 假绿（REST 层口径） ---------------------------
 
+    # -- task-30：已卖出商品的编辑闸门（REST 层） -------------------------
+
+    def test_single_edit_sold_item_is_not_pushed(self):
+        """已卖出商品走 REST 编辑：不推平台、synced=false、warning 说明原因。"""
+        seed('A1', account=ACC, status='sold')
+        fake = FakeClient(ACC)
+        install_fake_protocol(fake)
+        resp = self.client.post(f'/api/items/{ACC}/A1/edit',
+                                json={'price': 9.9}, headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertFalse(data['synced'], resp.text)
+        self.assertIn('已卖出', data['warning'])
+        self.assertEqual(data['local_only_fields'], ['price'])
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(data['item']['price'], 9.9)
+        self.assertEqual(data['item']['status'], 'sold')
+
     def test_single_edit_images_reaches_protocol_as_list(self):
         """改图走 REST：服务层交出去的 `images` 必须是列表，库里是 URL 字符串数组。"""
         seed('A1', account=ACC)

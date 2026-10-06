@@ -259,6 +259,45 @@ class ItemsServiceTest(unittest.TestCase):
         self.assertEqual(len(self.client.calls), 1)
         self.assertEqual(self.client.calls[0][0], 'edit_item')
 
+    # ------------------------------------------- 已卖出商品的编辑闸门（task-30）
+
+    def test_update_sold_item_is_not_pushed(self):
+        """已卖出的商品绝不能推编辑：平台会接受提交并把它**重新上架**。
+
+        真机 1087247101297：详情 `itemStatusStr="卖掉了"`，一次 edit 提交后回帧
+        `publishScene="pcMainPublish"`，随后同步 status 就从 sold 变回 on_sale。
+        """
+        install_fake_protocol(self.client)
+        self.seed('I1', status='sold')
+        result = items.update_item('I1', {'title': '改个标题'})
+        self.assertEqual(self.client.calls, [])            # 一次协议调用都不能发
+        self.assertFalse(result['synced'])
+        self.assertIn('已卖出', result['warning'])
+        self.assertEqual(result['local_only_fields'], ['title'])
+        # 改动仍落本地，并且**状态不能被改成在售**
+        self.assertEqual(items.get_item('I1')['title'], '改个标题')
+        self.assertEqual(items.get_item('I1')['status'], 'sold')
+
+    def test_update_on_sale_item_still_pushes(self):
+        """对照：在售商品照旧推平台（闸门只针对 sold）。"""
+        install_fake_protocol(self.client)
+        self.seed('I1', status='on_sale')
+        result = items.update_item('I1', {'title': '改个标题'})
+        self.assertTrue(result['synced'])
+        self.assertEqual(self.client.calls, [('edit_item', 'I1', {'title': '改个标题'})])
+
+    def test_batch_update_sold_items_are_warnings_not_ok(self):
+        """批量同一规则：sold 的商品进 warnings（不算 ok），也不发协议调用。"""
+        install_fake_protocol(self.client)
+        self.seed('I1', status='sold')
+        self.seed('I2', status='on_sale')
+        result = items.batch_update(['I1', 'I2'], {'price': 12}, account_id='acc1')
+        self.assertEqual(result['ok'], 1)
+        self.assertEqual(len(result['warnings']), 1)
+        self.assertEqual(result['warnings'][0]['id'], 'I1')
+        self.assertIn('已卖出', result['warnings'][0]['message'])
+        self.assertEqual([c[1] for c in self.client.calls], ['I2'])
+
     # ------------------------------------------------- 改图：白名单 / 空值 / 假绿（task-26）
 
     def _db_images(self, item_id: str = 'I1'):
