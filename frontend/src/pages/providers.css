@@ -1,0 +1,476 @@
+/**
+ * AI 配置页（task-34）：只定义 `.pv-` 前缀的类，避免和 styles.css 或其它页面互相踩。
+ *
+ * 两条纪律：
+ *   1. 颜色一律走 CSS 变量（深浅主题自动适配），需要淡化/着色时用 color-mix，不写死主题色；
+ *   2. 不依赖 styles.css 里的任何 layout class —— 那份文件正在被并行修改。
+ */
+
+/* ---------------- 页面骨架 ---------------- */
+
+.pv-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pv-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.pv-title {
+  font-size: 15.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.pv-sub {
+  margin-top: 4px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+.pv-head-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 胶囊式分栏：比原生 tab 更贴新骨架，也不需要 styles.css 的 .tabs */
+.pv-seg {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+.pv-seg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.pv-seg-btn:hover {
+  color: var(--text);
+}
+.pv-seg-btn.active {
+  background: var(--panel);
+  border-color: var(--border-soft);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.pv-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.pv-toolbar-hint {
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+/* 占位撑开：styles.css 的 .grow 只在 .notice 下生效，不能借用 */
+.pv-flex1 {
+  flex: 1 1 auto;
+}
+
+.pv-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+}
+
+/* ---------------- 卡片 ---------------- */
+
+.pv-card {
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  min-width: 0;
+}
+/* 默认提供者：只用一圈淡描边提示，不做成大色块（要「明显但克制」） */
+.pv-card-default {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border-soft));
+}
+.pv-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.pv-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  min-width: 0;
+}
+.pv-card-body {
+  padding: 14px;
+}
+.pv-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.pv-default-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.pv-state {
+  font-size: 11.5px;
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+.pv-state.on {
+  color: var(--ok);
+}
+
+/* ---------------- 键值网格 ---------------- */
+
+.pv-kv {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px 10px;
+  align-items: baseline;
+}
+.pv-kv-k {
+  font-size: 12px;
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+.pv-kv-v {
+  font-size: 12.5px;
+  color: var(--text);
+  min-width: 0;
+  /* 接口地址可能很长，绝不能让卡片横向溢出 */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.pv-key-state {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.pv-key-ok,
+.pv-key-miss {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 500;
+}
+.pv-key-ok {
+  color: var(--ok);
+}
+.pv-key-miss {
+  color: var(--warn);
+}
+.pv-mask {
+  font-size: 11.5px;
+  color: var(--text-mute);
+}
+
+/* 等宽：返回样例、掩码、base_url、角色代码用，别依赖 styles.css 的 .mono */
+.pv-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Cascadia Mono', monospace;
+}
+.pv-dim {
+  color: var(--text-mute);
+}
+.pv-ellipsis {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------- 连接测试结果 ---------------- */
+
+.pv-test-result {
+  margin-top: 12px;
+  padding: 9px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+.pv-test-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.pv-test-line > svg {
+  flex: none;
+  margin-top: 2px;
+}
+.pv-test-result.ok .pv-test-line {
+  color: var(--ok);
+}
+.pv-test-result.err .pv-test-line {
+  color: var(--danger);
+}
+/* 失败原因是排查的唯一线索：保留换行、不截断、不加省略号 */
+.pv-test-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.pv-test-meta {
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--text-mute);
+}
+.pv-test-sample {
+  margin-top: 8px;
+  padding: 8px 9px;
+  max-height: 120px;
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  scrollbar-width: thin;
+}
+/* 后端原始报错：等宽 + 保留换行，可以滚动但不能截断 */
+.pv-test-raw {
+  margin: 6px 0 0;
+  padding: 8px 9px;
+  max-height: 220px;
+  overflow: auto;
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 26%, transparent);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  scrollbar-width: thin;
+}
+
+/* 测试会真实调用一次模型（花钱），给一行低调提示 */
+.pv-cost-hint {
+  flex: 1 0 100%;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-mute);
+}
+
+/* 测试中的转圈：纯 CSS 旋转图标，不发任何请求 */
+.pv-spin {
+  display: inline-flex;
+  animation: pv-spin 0.9s linear infinite;
+}
+@keyframes pv-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------------- 空态 ---------------- */
+
+.pv-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 40px 16px;
+  text-align: center;
+  color: var(--text-dim);
+}
+.pv-empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin: 0 auto 10px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  color: var(--text-mute);
+}
+.pv-empty-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.pv-empty-desc {
+  max-width: 460px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+
+/* ---------------- 行内校验 / 小字提示 ---------------- */
+
+.pv-err {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--danger);
+}
+.pv-hint {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-mute);
+}
+.pv-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12.5px;
+  color: var(--accent);
+  text-decoration: none;
+}
+.pv-link:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+/* 弹窗里的密钥状态：只读展示，永远不放明文 */
+.pv-modal-keystate {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+/* ---------------- 角色 → 提供者 / 模型卡片 ---------------- */
+
+.pv-role-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.pv-role-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.pv-role-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.pv-role-code {
+  font-size: 11.5px;
+  color: var(--text-mute);
+}
+.pv-role-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+}
+.pv-role-current {
+  padding: 8px 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.pv-role-field {
+  display: block;
+}
+.pv-role-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11.5px;
+  color: var(--text-mute);
+}
+/* styles.css 正在被重写，输入控件宽度自己兜住，别指望那边的 input{width:100%} */
+.pv-role-field select,
+.pv-role-field input {
+  width: 100%;
+  box-sizing: border-box;
+}
+/* 角色基础提示词默认收起：六张卡同时展开会把角色面板撑得很长 */
+.pv-role-more {
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-soft);
+}
+.pv-role-more > summary {
+  cursor: pointer;
+  font-size: 11.5px;
+  color: var(--text-mute);
+}
+.pv-role-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 84px;
+  margin: 6px 0;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.pv-role-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--border-soft);
+}
+.pv-chip {
+  padding: 2px 7px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.pv-chip-on {
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}

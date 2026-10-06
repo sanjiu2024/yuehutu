@@ -80,7 +80,11 @@ export function useAsync<T>(
       })
       .finally(() => {
         if (cancelled || !alive.current) return
-        if (!isSilent) setLoading(false)
+        // 静默重拉也要收掉 loading：首屏请求还在飞的时候来一个 WS 事件，会先把上一次
+        // 那一跑 cancel 掉（它的 finally 直接 return，不再收 loading），而静默这一跑
+        // 自己不置 loading —— 结果就是列表永久转圈、真正的错误被盖住。静默刷新完成
+        // 意味着数据已经到位，把 loading 收掉总是对的（值本来就相同的话 React 会跳过）。
+        setLoading(false)
       })
     return () => {
       cancelled = true

@@ -1,0 +1,491 @@
+/**
+ * 提示词页（task-34 第 2 页）专属样式。
+ *
+ * 为什么全部自带 pr- 前缀：styles.css 正被另一位同事重写，只有 .btn/.row/.col/.grow/.dim/.mono/.ellipsis
+ * 是稳定契约，其余排版必须自己持有，否则同事一改公共样式这一页就散架。
+ * 颜色一律走共享 CSS 变量 + color-mix，深浅主题自动跟随，不写死色值。
+ */
+
+/* ---------------- 页面骨架 ---------------- */
+
+.pr-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pr-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.pr-head-main {
+  min-width: 0;
+}
+
+.pr-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 15.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.pr-sub {
+  margin-top: 4px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+
+.pr-head-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ---------------- 生效规则说明：醒目（左侧色条）但不抢列表的视觉重心 ---------------- */
+
+.pr-note {
+  display: flex;
+  gap: 10px;
+  padding: 11px 13px;
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--text-dim);
+}
+
+.pr-note-icon {
+  flex: none;
+  margin-top: 3px;
+  color: var(--accent);
+}
+
+.pr-note-text {
+  min-width: 0;
+}
+
+.pr-note-text strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* ---------------- 工具条 ---------------- */
+
+.pr-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.pr-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+}
+
+.pr-seg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.pr-seg-btn:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+}
+
+.pr-seg-btn.active {
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.pr-seg-count {
+  font-size: 11px;
+  color: var(--text-mute);
+}
+
+.pr-seg-btn.active .pr-seg-count {
+  color: var(--text-dim);
+}
+
+.pr-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--text-mute);
+}
+
+/* 带属性选择器是为了压过 styles.css 的 `input[type='text']`（两者特指度原本相同，
+   谁先加载谁输），搜索框必须是无边框的透明输入。 */
+.pr-search input[type='text'] {
+  width: 170px;
+  padding: 5px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+
+.pr-switch-line {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+/* ---------------- 三级分组卡片 ---------------- */
+
+.pr-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.pr-card {
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.pr-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.pr-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.pr-card-head-side {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pr-count {
+  font-size: 12px;
+  color: var(--text-mute);
+}
+
+.pr-card-body {
+  padding: 14px;
+}
+
+.pr-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 作用范围标签：左下角的序号就是拼接顺序（1 全局 → 2 账号 → 3 商品） */
+.pr-scope-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px 2px 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pr-scope-order {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--panel);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.pr-scope-chip.pr-scope-global {
+  background: color-mix(in srgb, var(--ok) 16%, transparent);
+  color: var(--ok);
+}
+
+.pr-scope-chip.pr-scope-account {
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  color: var(--warn);
+}
+
+.pr-scope-chip.pr-scope-item {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  color: var(--danger);
+}
+
+.pr-scope-desc {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-mute);
+}
+
+/* ---------------- 单条提示词 ---------------- */
+
+.pr-item {
+  padding: 11px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+}
+
+/* 停用的条目整体降一档存在感，开关与徽标仍是唯一的状态说明 */
+.pr-item-off {
+  opacity: 0.64;
+}
+
+.pr-item-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.pr-item-name {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-width: 0;
+}
+
+.pr-item-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.pr-item-actions {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 6px;
+}
+
+.pr-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--text-mute);
+}
+
+.pr-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  word-break: break-all;
+}
+
+.pr-item-content {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---------------- 空态（不用 Empty / AsyncBox.empty：它们内部是 emoji） ---------------- */
+
+.pr-empty {
+  padding: 40px 16px;
+  text-align: center;
+  color: var(--text-dim);
+}
+
+.pr-empty-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin: 0 auto 10px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  color: var(--text-mute);
+}
+
+.pr-empty-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.pr-empty-desc {
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.pr-empty-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.pr-group-empty {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 0;
+  font-size: 12.5px;
+  color: var(--text-mute);
+}
+
+/* ---------------- 表单（编辑器弹窗内） ---------------- */
+
+.pr-servererr {
+  margin-bottom: 12px;
+}
+
+.pr-form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.pr-form-left,
+.pr-form-right {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+@media (max-width: 780px) {
+  .pr-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.pr-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.pr-field > select,
+.pr-field > input {
+  width: 100%;
+}
+
+.pr-field > input.pr-input-sm {
+  width: 116px;
+}
+
+.pr-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.pr-req {
+  color: var(--danger);
+}
+
+.pr-tip {
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-mute);
+}
+
+/* 长文本：至少 8 行可见，只允许竖向拉高（横向拉宽会把两栏布局挤坏） */
+.pr-textarea {
+  min-height: 196px;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.pr-charcount {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-mute);
+}
+
+/* 「继续编辑其它提示词」：切换前会先确认，所以视觉上和上面的字段拉开一格 */
+.pr-switchto {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+/* ---------------- 行内错误：紧贴出错的那个控件 ---------------- */
+
+.pr-err {
+  margin-top: 4px;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+}

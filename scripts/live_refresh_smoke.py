@@ -62,9 +62,21 @@ def wait_for_text(page, needle: str, timeout: float = WAIT_REFRESH) -> tuple[boo
     return False, seen, time.time() - start
 
 
+def wait_page_ready(page, timeout: float = 15.0) -> None:
+    """等外壳 + 页面渲染完：导航高亮项出现，且正文有实质内容。
+
+    以前这里等的是具体文案（`text=账号列表` / `text=提示词`）—— 文案是会被改的东西
+    （第十一批 UI 重做就把「账号列表」改掉了），拿它当锚点会让脚本在**功能没坏**的时候
+    假失败。锚点只认结构与内容量。
+    """
+    ms = int(timeout * 1000)
+    page.wait_for_selector('.nav-item.active', timeout=ms)
+    page.wait_for_function("() => document.body.innerText.trim().length > 200", timeout=ms)
+
+
 def phase_accounts(page, base: str, token: str) -> dict:
     page.goto(f'{base}/#/accounts', wait_until='load', timeout=30000)
-    page.wait_for_selector('text=账号列表')
+    wait_page_ready(page)
     page.wait_for_timeout(2600)  # 外壳每 2s 轮询一次 WS 状态，不等会误判离线
 
     text = body_text(page)
@@ -93,7 +105,7 @@ def phase_accounts(page, base: str, token: str) -> dict:
 
 def phase_prompts(page, base: str, token: str) -> dict:
     page.goto(f'{base}/#/prompts', wait_until='load', timeout=30000)
-    page.wait_for_selector('text=提示词')
+    wait_page_ready(page)
     page.wait_for_timeout(2600)
 
     text = body_text(page)

@@ -1,0 +1,506 @@
+/**
+ * 主管 AI 页专属样式（只在 `pages/Master.tsx` 里 `import './master.css'`）。
+ *
+ * 约定（与 task-34 共享规范一致）：
+ *  - 只用设计令牌（--panel/--border/--text/--accent/--radius…），不写死颜色，
+ *    浅色/深色主题自动跟随；
+ *  - 半透明层用 `color-mix(in srgb, var(--text) N%, transparent)`，前面留一条 rgba 兜底；
+ *  - class 一律 `ms-` 前缀，绝不覆盖 styles.css 里的既有名字；
+ *  - 例外：`.btn` 与 `.grow` 是规范允许的稳定公共 class（不在这里重定义）。
+ */
+
+/* ---------------------------------------------------------------- 页面骨架 */
+
+.ms-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: 100%;
+  min-height: 420px;
+}
+
+.ms-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+
+.ms-title {
+  font-size: 15.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ms-sub {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  line-height: 1.6;
+  margin-top: 4px;
+  max-width: 76ch;
+}
+
+.ms-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+/* ---------------------------------------------------------------- 对话卡片 */
+
+.ms-card {
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+/* 卡片本身是一条竖向的对话列：头 / 消息流 / 输入区 */
+.ms-chat {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ms-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  flex: 0 0 auto;
+}
+
+.ms-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ms-chat-tip {
+  font-size: 11.5px;
+  color: var(--text-mute);
+}
+
+/* ---------------------------------------------------------------- 消息流 */
+
+.ms-stream-wrap {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.ms-stream {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+  padding: 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ms-scroll {
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.ms-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.ms-msg.user {
+  align-items: flex-end;
+}
+
+.ms-msg.assistant {
+  align-items: flex-start;
+}
+
+.ms-meta {
+  font-size: 12px;
+  color: var(--text-mute);
+  padding: 0 4px;
+}
+
+.ms-bubble {
+  max-width: min(78%, 720px);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* 卖家（我）靠右、accent 系；AI 靠左、panel-2 系。
+   先写令牌兜底、后写 color-mix：老内核拿不到混色也仍然是主题色，不会写死颜色。 */
+.ms-msg.user .ms-bubble {
+  background: var(--panel-2);
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel-2));
+  border: 1px solid var(--border-soft);
+  border-color: color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
+.ms-msg.assistant .ms-bubble {
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+}
+
+.ms-msg.failed .ms-bubble {
+  border-color: var(--danger);
+}
+
+.ms-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.ms-failed-tag {
+  margin-left: 6px;
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.ms-retry {
+  margin-top: 8px;
+}
+
+/* 「思考中」三点动画：styles.css 的 .spinner 不稳定，这里自带一份 */
+.ms-thinking {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+}
+
+.ms-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ms-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-mute);
+  animation: ms-dots-bounce 1.1s infinite ease-in-out;
+}
+
+.ms-dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.ms-dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes ms-dots-bounce {
+  0%,
+  60%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ms-dots i {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
+/* ---------------------------------------------------------------- 工具调用折叠块 */
+
+/* 低调：panel-2 系背景 + border-soft，不抢气泡的视觉 */
+.ms-tools {
+  margin-top: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  background: color-mix(in srgb, var(--text) 3%, var(--panel-2));
+  overflow: hidden;
+}
+
+.ms-tools-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.ms-tools-head::-webkit-details-marker {
+  display: none;
+}
+
+.ms-tools-head:hover {
+  color: var(--text);
+}
+
+.ms-tools-arrow {
+  flex: 0 0 auto;
+  color: var(--text-mute);
+  transition: transform 0.15s ease;
+}
+
+.ms-tools[open] .ms-tools-arrow {
+  transform: rotate(90deg);
+}
+
+.ms-tools-count {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+.ms-tools-names {
+  color: var(--text-mute);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ms-tools-body {
+  border-top: 1px solid var(--border-soft);
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ms-tool {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ms-tool-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ms-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  background: var(--bg-soft);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  border: 1px solid var(--border-soft);
+  color: var(--text-dim);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ms-tool-label {
+  font-size: 11.5px;
+  color: var(--text-mute);
+}
+
+/* ---------------------------------------------------------------- 代码 / JSON */
+
+.ms-code-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.ms-code-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 22px;
+}
+
+.ms-code-lang {
+  font-size: 11px;
+  color: var(--text-mute);
+}
+
+.ms-code {
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.ms-copy {
+  flex: 0 0 auto;
+  opacity: 0.7;
+}
+
+.ms-copy:hover {
+  opacity: 1;
+}
+
+/* ---------------------------------------------------------------- 空态 */
+
+.ms-empty {
+  margin: auto;
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--text-dim);
+  max-width: 640px;
+}
+
+.ms-empty-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  color: var(--text-mute);
+  margin: 0 auto 10px;
+}
+
+.ms-empty-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ms-empty-desc {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  line-height: 1.7;
+  margin-top: 4px;
+}
+
+.ms-samples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 14px;
+}
+
+.ms-sample {
+  text-align: left;
+}
+
+.ms-empty-note {
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--text-mute);
+}
+
+/* ---------------------------------------------------------------- 回到最新 */
+
+.ms-jump {
+  position: absolute;
+  right: 18px;
+  bottom: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--border-soft);
+  background: var(--panel);
+  color: var(--text-dim);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  padding: 0;
+}
+
+.ms-jump:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* ---------------------------------------------------------------- 输入区 */
+
+.ms-compose {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--panel);
+}
+
+.ms-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 44px;
+  max-height: 160px;
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-soft);
+  background: var(--bg-soft);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  resize: none;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.ms-input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.ms-input::placeholder {
+  color: var(--text-mute);
+}
+
+.ms-compose-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ms-hint {
+  font-size: 11.5px;
+  color: var(--text-mute);
+  line-height: 1.5;
+}

@@ -1,40 +1,103 @@
-/** AI 沟通：agent_messages 时间线 —— 一眼看出「商品 A 的 AI 去问了商品 B 的 AI」。
+/** AI 沟通：角色总览（ai_roles）+ AI 之间的沟通记录（agent_messages）+ 调用流水（agent_runs）。
  *
- * 后端落库的是扁平的 from→to 消息（kind = ask|answer|notify）。
- * 这里按 (conversation_id, topic) 聚合成「协查链」，把一次跨商品问询的
- * 完整往返画成一条链：item:A → cross → item:B → cross → item:A。
+ * 为什么不再用 Tab 把两块藏起来：这一页现在要同时回答「哪个角色开着、绑了什么模型」和
+ * 「AI 之间聊了什么、调用有没有炸」，三块摊开比来回切换省事。
+ *
+ * 上一版的「协查链」聚合视图按 task-34 给的列清单换成了扁平表格（时间/发起方/接收方/
+ * 类型/topic/payload）；跨商品协查这个信号没有丢，改成行内「跨商品」小标 + 本地筛选。
+ *
+ * 除角色开关写回后端外，这一页不发任何额外请求：所有统计与筛选都用已拿到的数据在本地算。
  */
 
-import { useMemo, useState } from 'react'
-import { api } from '../api'
-import { AsyncBox, Badge, Notice, Switch } from '../components'
+import { useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
+import { api, errorText } from '../api'
+import { AsyncBox, Badge, Notice, Switch, useToast } from '../components'
 import { useAsync } from '../hooks/useAsync'
-import { agentLabel, formatTime, kindLabel, payloadSummary, prettyJson, roleName } from '../format'
-import type { AgentMessage, AgentRun } from '../types'
+import {
+  IconAgents,
+  IconBox,
+  IconChart,
+  IconChat,
+  IconCheckCircle,
+  IconEye,
+  IconLink,
+  IconMaster,
+  IconRefresh,
+  IconTag,
+  IconUsers,
+  IconXCircle,
+} from '../icons'
+import {
+  agentLabel,
+  formatTime,
+  kindLabel,
+  payloadSummary,
+  prettyJson,
+  roleName,
+  splitAgent,
+  truncate,
+} from '../format'
+import type { AgentMessage, AgentRun, AiRole } from '../types'
+import './agents.css'
 
-interface Chain {
-  key: string
-  conversationId?: number
-  topic?: string
-  messages: AgentMessage[]
-  /** 参与的角色集合（不含 cross），用于判断是不是跨商品协查 */
-  roles: string[]
-  /** 涉及的商品 item_id */
-  items: string[]
-  startedAt?: string
+/** 卡片顺序固定成和后端 `agents/roles.py::ROLES` 一致：接口顺序变了卡片也不乱跳。 */
+const ROLE_ORDER: readonly string[] = ['master', 'item', 'cs', 'bargain', 'cross', 'vision']
+
+/** 角色职责文案（task-34 指定）；后端 description 只作兜底，接口缺字段时也不至于空白。 */
+const ROLE_DUTY: Record<string, string> = {
+  master: '主管 AI，唯一能调工具、直接与卖家对接的角色，把任务派给其它 AI。',
+  item: '每个商品一个常驻 AI，按商品维度的话术回答买家。',
+  cs: '通用客服：订单、物流、退换、售后政策。',
+  bargain: '议价 AI：在卖家设定的底价与幅度内和买家谈价。',
+  cross: '跨商品协查：买家在 A 商品里问 B 商品时，负责去问 B 的商品 AI 再汇总答复。',
+  vision: '看图 AI：买家发图问货时负责识图作答。',
 }
 
-function splitAgent(agent?: string): { role: string; itemId: string } {
-  if (!agent) return { role: '', itemId: '' }
-  const [role, itemId = ''] = agent.split(':')
-  return { role, itemId }
+/** 跑失败的判定：status 不是 ok/success，或者后端写了 error 原文（结果可能是空的）。 */
+function isRunFailed(run: AgentRun): boolean {
+  const status = (run.status || '').toLowerCase()
+  if (status && status !== 'ok' && status !== 'success') return true
+  return Boolean(run.error)
+}
+
+/** 跨商品协查：either 走 cross 角色，either 两端挂着不同的商品 id。 */
+function isCrossMessage(message: AgentMessage): boolean {
+  const from = splitAgent(message.from_agent)
+  const to = splitAgent(message.to_agent)
+  if (from.role === 'cross' || to.role === 'cross') return true
+  return Boolean(from.id && to.id && from.id !== to.id)
+}
+
+function RoleIcon({ role }: { role: string }) {
+  switch (role) {
+    case 'master':
+      return <IconMaster size={16} />
+    case 'item':
+      return <IconBox size={16} />
+    case 'cs':
+      return <IconChat size={16} />
+    case 'bargain':
+      return <IconTag size={16} />
+    case 'cross':
+      return <IconLink size={16} />
+    case 'vision':
+      return <IconEye size={16} />
+    default:
+      return <IconAgents size={16} />
+  }
 }
 
 export function AgentsPage() {
+  const toast = useToast()
   const [kindFilter, setKindFilter] = useState('')
+  const [topicFilter, setTopicFilter] = useState('')
   const [onlyCross, setOnlyCross] = useState(false)
-  const [showRaw, setShowRaw] = useState(false)
-  const [tab, setTab] = useState<'timeline' | 'runs'>('timeline')
+  const [runRoleFilter, setRunRoleFilter] = useState('')
+  const [onlyFailed, setOnlyFailed] = useState(false)
+  /** 开关的乐观值：写回期间先按用户点的显示，接口回来或 WS 事件到了再对齐。 */
+  const [pendingEnabled, setPendingEnabled] = useState<Record<string, boolean>>({})
+  const [savingRole, setSavingRole] = useState('')
 
   const messages = useAsync<AgentMessage[]>(() => api.get<AgentMessage[]>('/api/agents/messages'), [], true, [
     'agent.message',
@@ -46,238 +109,516 @@ export function AgentsPage() {
     'agent.reply_failed',
     'chats.ai_reply',
   ])
+  const roles = useAsync<AiRole[]>(() => api.get<AiRole[]>('/api/agents/roles'), [], true, ['providers.changed'])
 
-  const list = useMemo(() => {
-    const raw = messages.data ?? []
-    return [...raw].sort((a, b) => (a.id ?? 0) - (b.id ?? 0))
-  }, [messages.data])
+  // 新的在前：表是流水，最近发生的事应该在第一屏
+  const messageList = useMemo(
+    () => [...(messages.data ?? [])].sort((a, b) => (b.id ?? 0) - (a.id ?? 0)),
+    [messages.data],
+  )
+  const runList = useMemo(() => [...(runs.data ?? [])].sort((a, b) => (b.id ?? 0) - (a.id ?? 0)), [runs.data])
 
-  const chains = useMemo<Chain[]>(() => {
-    const groups = new Map<string, AgentMessage[]>()
-    for (const message of list) {
-      const key = `${message.conversation_id ?? 'x'}::${message.topic ?? ''}`
-      const bucket = groups.get(key)
-      if (bucket) bucket.push(message)
-      else groups.set(key, [message])
+  const roleList = useMemo(() => {
+    const order = (role: string): number => {
+      const index = ROLE_ORDER.indexOf(role)
+      return index < 0 ? ROLE_ORDER.length : index
     }
-    const result: Chain[] = []
-    groups.forEach((group, key) => {
-      const items: string[] = []
-      const roles = new Set<string>()
-      for (const message of group) {
-        for (const agent of [message.from_agent, message.to_agent]) {
-          const { role, itemId } = splitAgent(agent)
-          if (role && role !== 'cross' && role !== 'master') roles.add(role)
-          if (itemId && !items.includes(itemId)) items.push(itemId)
+    return [...(roles.data ?? [])].sort((a, b) => order(a.role) - order(b.role))
+  }, [roles.data])
+
+  const topics = useMemo(
+    () => Array.from(new Set(messageList.map((item) => item.topic).filter((topic): topic is string => Boolean(topic)))),
+    [messageList],
+  )
+  const runRoles = useMemo(
+    () => Array.from(new Set(runList.map((item) => item.role).filter((role): role is string => Boolean(role)))),
+    [runList],
+  )
+
+  const visibleMessages = useMemo(
+    () =>
+      messageList.filter((message) => {
+        if (kindFilter && message.kind !== kindFilter) return false
+        if (topicFilter && message.topic !== topicFilter) return false
+        if (onlyCross && !isCrossMessage(message)) return false
+        return true
+      }),
+    [messageList, kindFilter, topicFilter, onlyCross],
+  )
+
+  const visibleRuns = useMemo(
+    () =>
+      runList.filter((run) => {
+        if (runRoleFilter && run.role !== runRoleFilter) return false
+        if (onlyFailed && !isRunFailed(run)) return false
+        return true
+      }),
+    [runList, runRoleFilter, onlyFailed],
+  )
+
+  const roleEnabled = (role: AiRole): boolean =>
+    role.role in pendingEnabled ? pendingEnabled[role.role] : Boolean(role.enabled)
+  const enabledRoles = roleList.filter(roleEnabled).length
+  const failedRuns = runList.filter(isRunFailed).length
+  const crossMessages = messageList.filter(isCrossMessage).length
+
+  /** 后端回执或 WS 静默重拉已经反映出乐观值时，把临时覆盖删掉，免得两套状态长期漂移。 */
+  useEffect(() => {
+    if (!roles.data) return
+    setPendingEnabled((prev) => {
+      let dirty = false
+      const next = { ...prev }
+      for (const role of roles.data ?? []) {
+        if (role.role in next && Boolean(role.enabled) === next[role.role]) {
+          delete next[role.role]
+          dirty = true
         }
       }
-      result.push({
-        key,
-        conversationId: group[0]?.conversation_id ?? undefined,
-        topic: group[0]?.topic,
-        messages: group,
-        roles: [...roles],
-        items,
-        startedAt: group[0]?.created_at,
+      return dirty ? next : prev
+    })
+  }, [roles.data])
+
+  async function toggleRole(role: AiRole, next: boolean): Promise<void> {
+    const key = role.role
+    if (savingRole) return
+    setPendingEnabled((prev) => ({ ...prev, [key]: next }))
+    setSavingRole(key)
+    try {
+      const updated = await api.put<AiRole>(`/api/agents/roles/${encodeURIComponent(key)}`, {
+        enabled: next ? 1 : 0,
       })
-    })
-    // 新的在前
-    return result.sort((a, b) => {
-      const first = a.messages[0]?.id ?? 0
-      const second = b.messages[0]?.id ?? 0
-      return second - first
-    })
-  }, [list])
-
-  const visibleChains = useMemo(() => {
-    let result = chains
-    if (kindFilter) {
-      result = result.map((chain) => ({ ...chain, messages: chain.messages.filter((m) => m.kind === kindFilter) }))
-        .filter((chain) => chain.messages.length > 0)
+      if (updated && roles.data) {
+        roles.setData(roles.data.map((item) => (item.role === key ? updated : item)))
+      }
+      toast.success(`已${next ? '启用' : '停用'}「${role.label || roleName(key)}」`)
+    } catch (err) {
+      // 写回失败必须把乐观值撤回：否则页面显示的是「已启用」，后端其实没改
+      setPendingEnabled((prev) => {
+        const copy = { ...prev }
+        delete copy[key]
+        return copy
+      })
+      toast.error(errorText(err))
+    } finally {
+      setSavingRole('')
     }
-    if (onlyCross) {
-      // 跨商品协查：至少两个不同商品参与
-      result = result.filter((chain) => chain.items.length >= 2 || chain.messages.some((m) => splitAgent(m.to_agent).role === 'cross'))
-    }
-    return result
-  }, [chains, kindFilter, onlyCross])
+  }
 
-  const crossCount = chains.filter(
-    (chain) => chain.items.length >= 2 || chain.messages.some((m) => splitAgent(m.to_agent).role === 'cross'),
-  ).length
+  function reloadAll(): void {
+    messages.reload()
+    runs.reload()
+    roles.reload()
+  }
+
+  const messageFiltered = kindFilter !== '' || topicFilter !== '' || onlyCross
+  const runFiltered = runRoleFilter !== '' || onlyFailed
 
   return (
-    <div>
-      <div className="tabs">
-        <button className={`tab${tab === 'timeline' ? ' active' : ''}`} onClick={() => setTab('timeline')}>
-          AI 之间沟通（{chains.length} 条链）
-        </button>
-        <button className={`tab${tab === 'runs' ? ' active' : ''}`} onClick={() => setTab('runs')}>
-          AI 调用记录（{runs.data?.length ?? 0}）
-        </button>
+    <div className="ag-page">
+      <div className="ag-head">
+        <div>
+          <div className="ag-title">
+            <IconAgents size={16} /> AI 沟通
+          </div>
+          <div className="ag-sub">
+            六个 AI 角色的启用状态与模型绑定、AI 之间的沟通记录，以及每次模型调用的用量与耗时。
+          </div>
+        </div>
+        <div className="ag-head-actions">
+          <button
+            className="btn"
+            onClick={reloadAll}
+            disabled={messages.loading || runs.loading || roles.loading}
+          >
+            <IconRefresh size={14} /> 刷新
+          </button>
+        </div>
       </div>
 
-      {tab === 'timeline' ? (
-        <>
+      <div className="ag-stats">
+        <StatBox
+          label="已启用角色"
+          value={`${enabledRoles} / ${roleList.length || ROLE_ORDER.length}`}
+          tone="accent"
+          hint="停用的角色不会被派活"
+        />
+        <StatBox
+          label="AI 之间消息"
+          value={messageList.length}
+          hint={`其中跨商品协查 ${crossMessages} 条`}
+        />
+        <StatBox label="运行记录" value={runList.length} hint="后端一次最多返回 100 条" />
+        <StatBox
+          label="失败运行"
+          value={failedRuns}
+          tone={failedRuns > 0 ? 'danger' : 'ok'}
+          hint={failedRuns > 0 ? 'status 非 ok 或带 error 原文' : '没有失败记录'}
+        />
+      </div>
+
+      <div className="ag-card">
+        <div className="ag-card-head">
+          <div className="ag-card-title">
+            <IconUsers size={14} /> 角色总览
+          </div>
+          <div className="ag-card-meta">
+            {roles.loading ? '加载中…' : `共 ${roleList.length} 个角色 · ${enabledRoles} 个已启用`}
+          </div>
+        </div>
+        <div className="ag-card-body">
+          <AsyncBox
+            loading={roles.loading}
+            error={roles.error}
+            notReady={roles.notReady}
+            onRetry={roles.reload}
+          >
+            {roleList.length === 0 ? (
+              <AgEmpty
+                icon={<IconUsers size={22} />}
+                title="还没有角色配置"
+                desc="后端 ai_roles 表为空时会自动补 6 行默认角色，稍后点「刷新」再看。"
+              />
+            ) : (
+              <div className="ag-grid">
+                {roleList.map((role) => (
+                  <RoleCard
+                    key={role.role}
+                    role={role}
+                    enabled={roleEnabled(role)}
+                    saving={savingRole === role.role}
+                    disabled={savingRole !== ''}
+                    onToggle={toggleRole}
+                  />
+                ))}
+              </div>
+            )}
+          </AsyncBox>
+        </div>
+      </div>
+
+      <div className="ag-card">
+        <div className="ag-card-head">
+          <div className="ag-card-title">
+            <IconChat size={14} /> AI 之间沟通记录
+          </div>
+          <div className="ag-card-meta">
+            共 {messageList.length} 条
+            {messageFiltered ? ` · 筛出 ${visibleMessages.length} 条` : ''}
+          </div>
+        </div>
+        <div className="ag-card-body">
           <Notice kind="info">
-            一次跨商品问询会显示成一条链：<span className="mono">商品A的AI → cross → 商品B的AI → cross → 商品A的AI</span>。
-            标记为「跨商品」的链就是买家在 A 商品里问了 B 商品的事。
+            AI 之间的每次问询都落一条 from → to 消息。买家在 A 商品里问起 B 商品时会出现{' '}
+            <span className="mono">item:A → cross → item:B</span> 这样的往返，标了「跨商品」的就是。
           </Notice>
 
-          <div className="toolbar">
-            <select value={kindFilter} onChange={(e) => setKindFilter(e.target.value)} style={{ width: 150 }}>
-              <option value="">全部类型</option>
-              <option value="ask">提问 ask</option>
-              <option value="answer">回答 answer</option>
-              <option value="notify">通知 notify</option>
-            </select>
-            <Switch checked={onlyCross} onChange={setOnlyCross} label="只看跨商品协查" />
-            <Switch checked={showRaw} onChange={setShowRaw} label="显示原始 payload" />
-            <span className="spacer" />
-            <span className="dim" style={{ fontSize: 12 }}>共 {crossCount} 条跨商品链</span>
-            <button className="btn" onClick={messages.reload}>
-              刷新
-            </button>
+          <div className="ag-toolbar ag-toolbar-gap">
+            <label className="ag-field">
+              <span>类型</span>
+              <select className="ag-select" value={kindFilter} onChange={(e) => setKindFilter(e.target.value)}>
+                <option value="">全部</option>
+                <option value="ask">提问 ask</option>
+                <option value="answer">回答 answer</option>
+                <option value="notify">通知 notify</option>
+              </select>
+            </label>
+            <label className="ag-field">
+              <span>topic</span>
+              <select
+                className="ag-select"
+                value={topicFilter}
+                onChange={(e) => setTopicFilter(e.target.value)}
+                disabled={topics.length === 0}
+              >
+                <option value="">全部</option>
+                {topics.map((topic) => (
+                  <option key={topic} value={topic}>
+                    {topic}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <Switch checked={onlyCross} onChange={setOnlyCross} label="只看跨商品" />
+            <span className="ag-spacer" />
+            {messageFiltered && (
+              <button
+                className="btn sm ghost"
+                onClick={() => {
+                  setKindFilter('')
+                  setTopicFilter('')
+                  setOnlyCross(false)
+                }}
+              >
+                清空筛选
+              </button>
+            )}
           </div>
 
           <AsyncBox
             loading={messages.loading}
             error={messages.error}
             notReady={messages.notReady}
-            empty={visibleChains.length === 0}
-            emptyIcon="🤝"
-            emptyTitle={onlyCross ? '暂无跨商品协查记录' : '暂无 AI 之间沟通记录'}
-            emptyDesc="当买家在 A 商品里问起 B 商品，商品 A 的 AI 会去找 B 的 AI 问清楚，全过程记录在这里。"
             onRetry={messages.reload}
           >
-            <div className="timeline">
-              {visibleChains.map((chain) => (
-                <ChainCard key={chain.key} chain={chain} showRaw={showRaw} />
-              ))}
-            </div>
+            {visibleMessages.length === 0 ? (
+              <AgEmpty
+                icon={<IconChat size={22} />}
+                title={messageList.length === 0 ? '暂无 AI 之间沟通记录' : '没有符合筛选条件的消息'}
+                desc={
+                  messageList.length === 0
+                    ? '当买家在 A 商品里问起 B 商品，商品 A 的 AI 会去找 B 的 AI 问清楚，全过程记在这里。'
+                    : '换个类型或 topic，或者清空筛选再看。'
+                }
+              />
+            ) : (
+              <div className="ag-scroll">
+                <table className="ag-table">
+                  <thead>
+                    <tr>
+                      <th>时间</th>
+                      <th>发起方</th>
+                      <th>接收方</th>
+                      <th>类型</th>
+                      <th>会话</th>
+                      <th>topic</th>
+                      <th>payload 摘要</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleMessages.map((message) => {
+                      const kind = kindLabel(message.kind)
+                      const summary = payloadSummary(message.payload)
+                      const raw = prettyJson(message.payload)
+                      return (
+                        <tr key={message.id}>
+                          <td className="ag-nowrap dim">{formatTime(message.created_at)}</td>
+                          <td className="ag-nowrap">{agentLabel(message.from_agent)}</td>
+                          <td className="ag-nowrap">{agentLabel(message.to_agent)}</td>
+                          <td className="ag-nowrap">
+                            <Badge tone={kind.tone}>{kind.text}</Badge>
+                            {isCrossMessage(message) && <span className="ag-cross">跨商品</span>}
+                          </td>
+                          <td className="ag-nowrap dim mono">
+                            {message.conversation_id ? `#${message.conversation_id}` : '-'}
+                          </td>
+                          <td className="ag-nowrap dim">{message.topic || '-'}</td>
+                          <td className="ag-payload">
+                            {raw ? (
+                              <details className="ag-raw">
+                                <summary>{truncate(summary || raw, 90)}</summary>
+                                <pre className="ag-raw-pre">{raw}</pre>
+                              </details>
+                            ) : (
+                              <span className="dim">-</span>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </AsyncBox>
-        </>
-      ) : (
-        <AsyncBox
-          loading={runs.loading}
-          error={runs.error}
-          notReady={runs.notReady}
-          empty={(runs.data ?? []).length === 0}
-          emptyIcon="📊"
-          emptyTitle="暂无 AI 调用记录"
-          emptyDesc="AI 每次回复买家都会记一条，含 token 用量与耗时。"
-          onRetry={runs.reload}
-        >
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th className="nowrap">时间</th>
-                  <th className="nowrap">角色</th>
-                  <th>模型</th>
-                  <th className="nowrap">状态</th>
-                  <th className="nowrap">耗时</th>
-                  <th className="nowrap">Token</th>
-                  <th>错误</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(runs.data ?? []).map((run) => (
-                  <tr key={run.id}>
-                    <td className="nowrap dim" style={{ fontSize: 12 }}>{formatTime(run.created_at)}</td>
-                    <td className="nowrap">
-                      <Badge tone="muted">{roleName(run.role)}</Badge>
-                    </td>
-                    <td className="mono" style={{ fontSize: 11.5 }}>{run.model || '-'}</td>
-                    <td className="nowrap">
-                      <Badge tone={run.status === 'ok' || run.status === 'success' ? 'ok' : 'danger'}>
-                        {run.status || '未知'}
-                      </Badge>
-                    </td>
-                    <td className="num nowrap">{run.latency_ms !== undefined ? `${run.latency_ms}ms` : '-'}</td>
-                    <td className="num nowrap dim" style={{ fontSize: 11.5 }}>
-                      {run.prompt_tokens ?? 0} / {run.completion_tokens ?? 0}
-                    </td>
-                    <td className="dim" style={{ fontSize: 11.5 }}>{run.error || '-'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        </div>
+      </div>
+
+      <div className="ag-card">
+        <div className="ag-card-head">
+          <div className="ag-card-title">
+            <IconChart size={14} /> AI 运行流水
           </div>
-        </AsyncBox>
-      )}
+          <div className="ag-card-meta">
+            共 {runList.length} 条
+            {failedRuns > 0 ? ` · 失败 ${failedRuns} 条` : ''}
+          </div>
+        </div>
+        <div className="ag-card-body">
+          <div className="ag-toolbar">
+            <label className="ag-field">
+              <span>角色</span>
+              <select
+                className="ag-select"
+                value={runRoleFilter}
+                onChange={(e) => setRunRoleFilter(e.target.value)}
+                disabled={runRoles.length === 0}
+              >
+                <option value="">全部</option>
+                {runRoles.map((role) => (
+                  <option key={role} value={role}>
+                    {roleName(role)}（{role}）
+                  </option>
+                ))}
+              </select>
+            </label>
+            <Switch checked={onlyFailed} onChange={setOnlyFailed} label="只看失败" />
+            <span className="ag-spacer" />
+            {runFiltered && (
+              <button
+                className="btn sm ghost"
+                onClick={() => {
+                  setRunRoleFilter('')
+                  setOnlyFailed(false)
+                }}
+              >
+                清空筛选
+              </button>
+            )}
+          </div>
+
+          <AsyncBox loading={runs.loading} error={runs.error} notReady={runs.notReady} onRetry={runs.reload}>
+            {visibleRuns.length === 0 ? (
+              <AgEmpty
+                icon={onlyFailed && runList.length > 0 ? <IconCheckCircle size={22} /> : <IconChart size={22} />}
+                title={
+                  runList.length === 0
+                    ? '暂无 AI 运行记录'
+                    : onlyFailed
+                      ? '没有失败的调用记录'
+                      : '没有符合筛选条件的记录'
+                }
+                desc={
+                  runList.length === 0
+                    ? 'AI 每次回复买家都会记一条，含 token 用量与耗时。'
+                    : '换个角色，或者清空筛选再看。'
+                }
+              />
+            ) : (
+              <div className="ag-scroll">
+                <table className="ag-table">
+                  <thead>
+                    <tr>
+                      <th>时间</th>
+                      <th>角色</th>
+                      <th>会话</th>
+                      <th>模型服务 / 模型</th>
+                      <th>Token（prompt / completion）</th>
+                      <th>耗时</th>
+                      <th>状态</th>
+                      <th>错误</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleRuns.map((run) => {
+                      const failed = isRunFailed(run)
+                      const status = run.status || '未知'
+                      return (
+                        <tr key={run.id} className={failed ? 'ag-row-bad' : undefined}>
+                          <td className="ag-nowrap dim">{formatTime(run.created_at)}</td>
+                          <td className="ag-nowrap">
+                            <Badge tone="muted">{roleName(run.role)}</Badge>
+                          </td>
+                          <td className="ag-nowrap dim mono">
+                            {run.conversation_id ? `#${run.conversation_id}` : '-'}
+                          </td>
+                          <td className="ag-nowrap mono ag-small">
+                            {run.provider_id ? `#${run.provider_id} · ` : ''}
+                            {run.model || '未记录'}
+                          </td>
+                          <td className="ag-nowrap ag-num dim ag-small">
+                            {run.prompt_tokens ?? 0} / {run.completion_tokens ?? 0}
+                          </td>
+                          <td className="ag-nowrap ag-num">
+                            {typeof run.latency_ms === 'number' ? `${run.latency_ms} ms` : '-'}
+                          </td>
+                          <td className="ag-nowrap">
+                            <Badge tone={failed ? 'danger' : status === 'ok' || status === 'success' ? 'ok' : 'muted'}>
+                              {status}
+                            </Badge>
+                          </td>
+                          <td className={failed ? 'ag-err' : 'dim ag-small'}>
+                            {failed && <IconXCircle size={13} />}
+                            {failed ? run.error || '（后端没有写错误详情）' : '-'}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </AsyncBox>
+        </div>
+      </div>
     </div>
   )
 }
 
-/* ---------------- 一条协查链 ---------------- */
+/* ---------------- 页面内的小组件 ---------------- */
 
-function ChainCard({ chain, showRaw }: { chain: Chain; showRaw: boolean }) {
-  const isCross = chain.items.length >= 2 || chain.messages.some((m) => splitAgent(m.to_agent).role === 'cross')
-  const asked = chain.messages.find((m) => m.kind === 'ask')
-  const question = asked ? payloadSummary(asked.payload) : ''
-
+function StatBox({
+  label,
+  value,
+  hint,
+  tone,
+}: {
+  label: string
+  value: ReactNode
+  hint?: string
+  tone?: 'ok' | 'danger' | 'accent'
+}) {
   return (
-    <div className="tl-item">
-      <div className="tl-card">
-        <div className="tl-head">
-          <div className="tl-flow">
-            {chain.messages.map((message, index) => (
-              <span key={`hop-${message.id ?? index}`} className="row" style={{ gap: 7 }}>
-                {index === 0 && <span>{agentLabel(message.from_agent)}</span>}
-                <span className="tl-arrow">→</span>
-                <span>{agentLabel(message.to_agent)}</span>
-              </span>
-            ))}
-          </div>
-          {isCross && <Badge tone="ask">跨商品</Badge>}
-          {chain.topic && <Badge tone="muted">{chain.topic}</Badge>}
-          {chain.conversationId !== undefined && (
-            <span className="mono dim" style={{ fontSize: 11 }}>会话 #{chain.conversationId}</span>
-          )}
-          <span style={{ flex: 1 }} />
-          <span className="dim" style={{ fontSize: 11.5 }}>{formatTime(chain.startedAt)}</span>
-        </div>
+    <div className="ag-stat">
+      <div className="ag-stat-label">{label}</div>
+      <div className={`ag-stat-value${tone ? ` is-${tone}` : ''}`}>{value}</div>
+      {hint && <div className="ag-stat-hint">{hint}</div>}
+    </div>
+  )
+}
 
-        {question && (
-          <div className="tl-body">
-            <span className="dim">买家问题：</span>
-            {question}
-          </div>
-        )}
+/** 空态自己写：共享的 Empty / AsyncBox.empty 内部会渲染 emoji，全站禁 emoji。 */
+function AgEmpty({ icon, title, desc }: { icon: ReactNode; title: string; desc: string }) {
+  return (
+    <div className="ag-empty">
+      <span className="ag-empty-icon">{icon}</span>
+      <div className="ag-empty-title">{title}</div>
+      <div className="ag-empty-desc">{desc}</div>
+    </div>
+  )
+}
 
-        <div className="tl-pair" style={{ marginTop: 9 }}>
-          {chain.messages.map((message) => {
-            const kind = kindLabel(message.kind)
-            const summary = payloadSummary(message.payload)
-            const from = splitAgent(message.from_agent)
-            const to = splitAgent(message.to_agent)
-            return (
-              <div key={message.id} className="row wrap" style={{ alignItems: 'flex-start', gap: 8, padding: '5px 0' }}>
-                <Badge tone={kind.tone}>{kind.text}</Badge>
-                <span className="row" style={{ gap: 6, fontWeight: 600, fontSize: 12.5 }}>
-                  {agentLabel(message.from_agent)}
-                  <span className="tl-arrow">→</span>
-                  {agentLabel(message.to_agent)}
-                </span>
-                {from.itemId && to.itemId && from.itemId !== to.itemId && (
-                  <span className="dim" style={{ fontSize: 11.5 }}>
-                    （商品 {from.itemId.slice(-6)} 问商品 {to.itemId.slice(-6)}）
-                  </span>
-                )}
-                <span className="dim" style={{ fontSize: 11.5, marginLeft: 'auto' }}>
-                  {formatTime(message.created_at)}
-                </span>
-                {summary && (
-                  <div style={{ flexBasis: '100%', fontSize: 12.5, color: 'var(--text-dim)', paddingLeft: 4 }}>
-                    {summary}
-                  </div>
-                )}
-                {showRaw && message.payload && <div className="code-block" style={{ flexBasis: '100%' }}>{prettyJson(message.payload)}</div>}
-              </div>
-            )
-          })}
-        </div>
+function RoleCard({
+  role,
+  enabled,
+  saving,
+  disabled,
+  onToggle,
+}: {
+  role: AiRole
+  enabled: boolean
+  saving: boolean
+  disabled: boolean
+  onToggle: (role: AiRole, next: boolean) => void
+}) {
+  const label = role.label || roleName(role.role)
+  const duty = ROLE_DUTY[role.role] || role.description || ''
+  return (
+    <div className={`ag-card ag-role${enabled ? '' : ' is-off'}`}>
+      <div className="ag-role-head">
+        <span className="ag-role-icon">
+          <RoleIcon role={role.role} />
+        </span>
+        <span className="ag-role-name">{label}</span>
+        <span className="ag-role-key mono">{role.role}</span>
+        <span className="grow" />
+        {saving && <span className="ag-card-meta">保存中…</span>}
+        <Switch
+          checked={enabled}
+          disabled={disabled}
+          onChange={(next) => onToggle(role, next)}
+          label={enabled ? '已启用' : '已停用'}
+        />
+      </div>
+      <div className="ag-role-desc">{duty || '（后端没有给这个角色写说明）'}</div>
+      <div className="ag-kv">
+        <div className="ag-kv-k">模型服务</div>
+        <div className="ag-kv-v">{role.provider_id ? `#${role.provider_id}` : '未绑定'}</div>
+        <div className="ag-kv-k">模型</div>
+        <div className="ag-kv-v mono">{role.model || '未指定'}</div>
+        <div className="ag-kv-k">temperature</div>
+        <div className="ag-kv-v">{role.temperature ?? '-'}</div>
+        <div className="ag-kv-k">更新时间</div>
+        <div className="ag-kv-v">{role.updated_at ? formatTime(role.updated_at) : '-'}</div>
       </div>
     </div>
   )

@@ -1,8 +1,20 @@
 /** 应用外壳：左侧导航 + 顶部栏 + 9 个页面；未登录时显示登录页。 */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api, clearToken, errorText, getToken, isNotReady, setToken, setUnauthorizedHandler } from './api'
-import { Badge, ErrorBoundary, Notice, ToastProvider, useToast } from './components'
+import {
+  Badge,
+  BrandLogo,
+  ErrorBoundary,
+  Notice,
+  ThemeToggle,
+  ToastProvider,
+  applyTheme,
+  readTheme,
+  useToast,
+  type ThemeName,
+} from './components'
+import { ICONS, IconLogout, type IconName } from './icons'
 import { wsClient } from './ws'
 import { OverviewPage } from './pages/Overview'
 import { AccountsPage } from './pages/Accounts'
@@ -18,21 +30,61 @@ import type { SystemInfo } from './types'
 interface NavItem {
   key: string
   label: string
-  icon: string
+  icon: IconName
   desc: string
+  /** 该页自己画了页头（标题 + 说明 + 页级按钮）时置 true：顶栏就不再重复一遍标题与说明。 */
+  ownHeader?: boolean
 }
 
-const NAV: NavItem[] = [
-  { key: 'overview', label: '概览', icon: '📊', desc: '账号状态、今日消息、风控一览' },
-  { key: 'accounts', label: '账号', icon: '👤', desc: '扫码登录、账号状态与手动验证' },
-  { key: 'items', label: '商品', icon: '📦', desc: '商品列表、编辑、批量改价与上下架' },
-  { key: 'chats', label: '会话', icon: '💬', desc: '买家会话与人工接管' },
-  { key: 'agents', label: 'AI 沟通', icon: '🤝', desc: 'AI 之间在聊什么' },
-  { key: 'master', label: '主管 AI', icon: '🧠', desc: '和主管 AI 对话派活' },
-  { key: 'providers', label: 'AI 配置', icon: '🔑', desc: 'API Key、模型与角色映射' },
-  { key: 'prompts', label: '提示词', icon: '📝', desc: '全局 / 账号 / 商品三级提示词' },
-  { key: 'risk', label: '风控', icon: '🛡', desc: '熔断状态、冷却阶梯与自动滑块' },
+/**
+ * 9 个入口平铺一列太长、也看不出彼此关系，按用途分成 4 组。
+ * 分组只影响侧栏排版，`key` 与路由一一对应，**顺序/分组都不改变 hash 行为**。
+ */
+const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
+  {
+    title: '总览',
+    items: [
+      {
+        key: 'overview',
+        label: '概览',
+        icon: 'overview',
+        desc: '账号状态、今日消息、风控一览',
+        ownHeader: true,
+      },
+    ],
+  },
+  {
+    title: '运营',
+    items: [
+      { key: 'accounts', label: '账号', icon: 'user', desc: '扫码登录、账号状态与手动验证', ownHeader: true },
+      { key: 'items', label: '商品', icon: 'box', desc: '商品列表、编辑、批量改价与上下架' },
+      { key: 'chats', label: '会话', icon: 'chat', desc: '买家会话与人工接管' },
+    ],
+  },
+  {
+    title: 'AI',
+    items: [
+      { key: 'agents', label: 'AI 沟通', icon: 'agents', desc: 'AI 之间在聊什么' },
+      { key: 'master', label: '主管 AI', icon: 'master', desc: '和主管 AI 对话派活' },
+      { key: 'providers', label: 'AI 配置', icon: 'key', desc: 'API Key、模型与角色映射' },
+      { key: 'prompts', label: '提示词', icon: 'prompts', desc: '全局 / 账号 / 商品三级提示词' },
+    ],
+  },
+  {
+    title: '系统',
+    items: [
+      {
+        key: 'risk',
+        label: '风控',
+        icon: 'shield',
+        desc: '熔断状态、冷却阶梯与自动滑块',
+        ownHeader: true,
+      },
+    ],
+  },
 ]
+
+const NAV: NavItem[] = NAV_GROUPS.flatMap((group) => group.items)
 
 const PAGE_TITLES: Record<string, string> = Object.fromEntries(NAV.map((item) => [item.key, item.label]))
 
@@ -58,6 +110,12 @@ function Shell() {
   const [connected, setConnected] = useState(false)
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null)
   const [unread, setUnread] = useState(0)
+  const [theme, setTheme] = useState<ThemeName>(() => readTheme())
+
+  const changeTheme = useCallback((next: ThemeName) => {
+    setTheme(next)
+    applyTheme(next)
+  }, [])
 
   // hash 路由
   useEffect(() => {
@@ -71,7 +129,7 @@ function Shell() {
     setPage(next)
   }, [])
 
-  // 401 → 回到登录页
+  // 401 时回到登录页
   useEffect(() => {
     setUnauthorizedHandler(() => setAuthed(false))
     return () => setUnauthorizedHandler(null)
@@ -108,7 +166,8 @@ function Shell() {
   useEffect(() => {
     if (!authed) return
     wsClient.connect()
-    const timer = window.setInterval(() => setConnected(wsClient.isConnected()), 2000)
+    // 连接状态由 ws.ts 在 open/close 时推过来，不再每 2 秒问一次 isConnected()
+    const offStatus = wsClient.onStatus(setConnected)
     const unsubscribe = wsClient.subscribe((event) => {
       if (event.topic === 'chat.message' || event.topic === 'message') {
         const payload = event.payload as { direction?: string }
@@ -116,7 +175,7 @@ function Shell() {
       }
     })
     return () => {
-      window.clearInterval(timer)
+      offStatus()
       unsubscribe()
     }
   }, [authed])
@@ -126,17 +185,8 @@ function Shell() {
     if (page === 'chats') setUnread(0)
   }, [page])
 
-  const nav = useMemo(
-    () =>
-      NAV.map((item) => ({
-        ...item,
-        badge: item.key === 'chats' ? unread : 0,
-      })),
-    [unread],
-  )
-
   if (!authed) {
-    return <LoginPage onSuccess={() => setAuthed(true)} />
+    return <LoginPage onSuccess={() => setAuthed(true)} theme={theme} onThemeChange={changeTheme} />
   }
 
   const current = NAV.find((item) => item.key === page) ?? NAV[0]
@@ -145,54 +195,79 @@ function Shell() {
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          <h1>闲鱼 AI 工作台</h1>
-          <div className="sub">Xianyu AI Workbench</div>
+          <span className="brand-logo">
+            <BrandLogo size={20} />
+          </span>
+          <div className="brand-text">
+            <h1>闲鱼 AI 工作台</h1>
+            <div className="sub">Xianyu AI Workbench</div>
+          </div>
         </div>
+
         <nav className="nav">
-          {nav.map((item) => (
-            <button
-              key={item.key}
-              className={`nav-item${item.key === page ? ' active' : ''}`}
-              onClick={() => goto(item.key)}
-              title={item.desc}
-            >
-              <span className="nav-icon">{item.icon}</span>
-              <span>{item.label}</span>
-              {item.badge > 0 && <span className="nav-badge">{item.badge > 99 ? '99+' : item.badge}</span>}
-            </button>
+          {NAV_GROUPS.map((group) => (
+            <div className="nav-group" key={group.title}>
+              <div className="nav-group-title">{group.title}</div>
+              {group.items.map((item) => {
+                const badge = item.key === 'chats' ? unread : 0
+                const Icon = ICONS[item.icon]
+                return (
+                  <button
+                    key={item.key}
+                    className={`nav-item${item.key === page ? ' active' : ''}`}
+                    onClick={() => goto(item.key)}
+                    title={item.desc}
+                  >
+                    <span className="nav-icon">
+                      <Icon size={17} />
+                    </span>
+                    <span>{item.label}</span>
+                    {badge > 0 && <span className="nav-badge">{badge > 99 ? '99+' : badge}</span>}
+                  </button>
+                )
+              })}
+            </div>
           ))}
         </nav>
+
         <div className="sidebar-foot">
-          <div>
+          <div className="sidebar-status">
             <span className={`ws-dot${connected ? ' on' : ''}`} />
             {connected ? '实时连接已建立' : '实时连接未建立'}
           </div>
-          <div style={{ marginTop: 4 }}>
+          <div className="sidebar-meta">
             {systemInfo?.version ? `版本 ${systemInfo.version}` : '版本未知'}
             {systemInfo?.frozen ? ' · 打包版' : ''}
           </div>
           <button
-            className="btn sm ghost"
-            style={{ marginTop: 8 }}
+            className="btn sm ghost btn-with-icon"
             onClick={() => {
               clearToken()
               wsClient.disconnect()
               setAuthed(false)
             }}
           >
-            退出登录
+            <IconLogout size={14} />
+            <span>退出登录</span>
           </button>
         </div>
       </aside>
 
       <main className="main">
         <header className="topbar">
-          <h2>{current.label}</h2>
-          <span className="dim" style={{ fontSize: 12 }}>
-            {current.desc}
-          </span>
+          {/* 概览 / 账号 / 风控 这三页自己画了页头（标题 + 说明 + 页级按钮），
+              顶栏再写一遍就成了同一句话出现两次 —— 那三页顶栏只留状态与主题开关。 */}
+          {!current.ownHeader && (
+            <div className="topbar-head">
+              <h2>{current.label}</h2>
+              <span className="page-desc">{current.desc}</span>
+            </div>
+          )}
           <span className="spacer" />
-          <Badge tone={connected ? 'ok' : 'muted'}>{connected ? '实时在线' : '离线'}</Badge>
+          <div className="topbar-actions">
+            <Badge tone={connected ? 'ok' : 'muted'}>{connected ? '实时在线' : '离线'}</Badge>
+            <ThemeToggle theme={theme} onChange={changeTheme} />
+          </div>
         </header>
         <div className="content">
           {/* key=page 让切页面时错误边界自动复位；否则一个页面崩了会一直卡在错误态 */}
@@ -215,7 +290,15 @@ function Shell() {
 
 /* ---------------- 登录页 ---------------- */
 
-function LoginPage({ onSuccess }: { onSuccess: () => void }) {
+function LoginPage({
+  onSuccess,
+  theme,
+  onThemeChange,
+}: {
+  onSuccess: () => void
+  theme: ThemeName
+  onThemeChange: (next: ThemeName) => void
+}) {
   const toast = useToast()
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
@@ -274,8 +357,13 @@ function LoginPage({ onSuccess }: { onSuccess: () => void }) {
 
   return (
     <div className="login-wrap">
+      <div className="login-theme">
+        <ThemeToggle theme={theme} onChange={onThemeChange} />
+      </div>
       <div className="login-card">
-        <div className="login-logo">🐟</div>
+        <div className="login-logo">
+          <BrandLogo size={32} />
+        </div>
         <h1>闲鱼 AI 工作台</h1>
         <div className="sub">登录后即可管理账号、商品与 AI</div>
 
@@ -298,7 +386,7 @@ function LoginPage({ onSuccess }: { onSuccess: () => void }) {
         <button className="btn primary block" onClick={submit} disabled={busy}>
           {busy ? '登录中…' : '登录'}
         </button>
-        <div className="dim" style={{ fontSize: 11.5, marginTop: 12, lineHeight: 1.7 }}>
+        <div className="login-foot">
           默认账号 admin，初始密码见 README。
           <br />
           如果是桌面版，打开程序时会自动登录。

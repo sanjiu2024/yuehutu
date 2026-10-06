@@ -1,0 +1,464 @@
+/**
+ * 概览页样式（task-33 重做）。
+ *
+ * 全部 class 以 `ov-` 前缀命名，只在本页生效；颜色/圆角/阴影一律走 `styles.css`
+ * 里的设计变量，不写死主题色。指标卡与待办项都是可点击的 `<button>`，所以样式里
+ * 统一做了一次按钮 reset（字体、对齐、光标），避免继承浏览器默认外观。
+ */
+
+.ov-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ---------------- 页头 ---------------- */
+
+.ov-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.ov-head-text h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px;
+  font-size: 19px;
+  letter-spacing: 0.2px;
+}
+
+.ov-head-text p {
+  margin: 0;
+  max-width: 660px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-dim);
+}
+
+/* ---------------- 四个关键指标 ---------------- */
+
+.ov-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.ov-metric {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  transition: border-color 0.15s, transform 0.15s;
+}
+
+.ov-metric:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.ov-metric.alert {
+  border-color: color-mix(in srgb, var(--warn) 42%, var(--border-soft));
+}
+
+.ov-metric-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: var(--text-dim);
+}
+
+.ov-metric-icon.ok {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 16%, var(--panel-2));
+}
+
+.ov-metric-icon.ask {
+  color: var(--ask);
+  background: color-mix(in srgb, var(--ask) 16%, var(--panel-2));
+}
+
+.ov-metric-icon.warn {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 16%, var(--panel-2));
+}
+
+.ov-metric-icon.danger {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 16%, var(--panel-2));
+}
+
+.ov-metric-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ov-metric-label {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.ov-metric-value {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.ov-metric-total {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-mute);
+}
+
+.ov-metric-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-mute);
+}
+
+.ov-metric-hint.danger {
+  color: var(--danger);
+}
+
+/* ---------------- 两栏 ---------------- */
+
+.ov-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.32fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.ov-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.ov-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.ov-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ov-card-head h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ov-card-hint {
+  font-size: 12px;
+  color: var(--text-mute);
+}
+
+/* ---------------- 需要处理的事 ---------------- */
+
+.ov-todos {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ov-todo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: 1px solid var(--border-soft);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+}
+
+.ov-todo:hover {
+  border-color: var(--accent);
+}
+
+.ov-todo.warn {
+  border-left-color: var(--warn);
+}
+
+.ov-todo.danger {
+  border-left-color: var(--danger);
+}
+
+.ov-todo.info {
+  border-left-color: var(--ask);
+}
+
+.ov-todo-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text-dim);
+}
+
+.ov-todo-icon.warn {
+  color: var(--warn);
+}
+
+.ov-todo-icon.danger {
+  color: var(--danger);
+}
+
+.ov-todo-icon.info {
+  color: var(--ask);
+}
+
+.ov-todo-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.ov-todo-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ov-todo-desc {
+  font-size: 12px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------- 列表通用 ---------------- */
+
+.ov-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ov-conv,
+.ov-acct {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+}
+
+.ov-conv:hover,
+.ov-acct:hover {
+  border-color: var(--border);
+}
+
+.ov-conv-main,
+.ov-acct-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.ov-conv-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ov-conv-top strong {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ov-conv-time {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--text-mute);
+}
+
+.ov-conv-text {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ov-conv-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--text-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ov-conv-side,
+.ov-acct-badges {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex: none;
+}
+
+.ov-conv-unread {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.ov-acct-id {
+  font-size: 11.5px;
+  color: var(--text-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------- 风控行 ---------------- */
+
+.ov-risk {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+}
+
+.ov-risk-id {
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ov-risk-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.ov-risk-hits {
+  font-size: 11.5px;
+  color: var(--text-mute);
+}
+
+/* ---------------- 空态 ---------------- */
+
+.ov-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 22px 14px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  text-align: center;
+}
+
+.ov-empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  color: var(--text-mute);
+}
+
+.ov-empty-icon.ok {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 14%, var(--panel-2));
+}
+
+.ov-empty-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ov-empty-desc {
+  max-width: 440px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-dim);
+}
+
+/* 窄屏：两栏变一栏 */
+@media (max-width: 1080px) {
+  .ov-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

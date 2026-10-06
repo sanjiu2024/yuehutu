@@ -1,4 +1,8 @@
-/** 商品：列表 + 单条编辑 + 批量选择后批量改价/改标题/改描述 + 上下架 + 发布。 */
+/**
+ * 商品：列表 + 商品数据 + 单条编辑 + 批量选择后批量改价/改标题/改描述/改库存 + 上下架 + 发布。
+ *
+ * 本文件的样式都在同目录的 `items.css`（`it-` 前缀），不碰共享的 styles.css / components.tsx。
+ */
 
 import {
   useCallback,
@@ -15,9 +19,25 @@ import {
 } from 'react'
 import { api, errorText, getToken, uploadImage, type ImageInput } from '../api'
 import { AsyncBox, Badge, ConfirmDialog, Field, Modal, Notice, Switch, useToast } from '../components'
+import {
+  IconBox,
+  IconChart,
+  IconChevronDown,
+  IconChevronLeft,
+  IconChevronRight,
+  IconClose,
+  IconCopy,
+  IconEye,
+  IconImage,
+  IconPlus,
+  IconRefresh,
+  IconSearch,
+  IconTrash,
+} from '../icons'
 import { useAsync } from '../hooks/useAsync'
 import { bool, formatMoney, formatTime, itemStatusLabel, parseImages, truncate } from '../format'
 import type { Account, BatchResult, Item, ItemListResult, OperationLog } from '../types'
+import './items.css'
 
 /**
  * 把批量接口的逐条结果翻成一句人话。
@@ -95,53 +115,145 @@ function singleEditAsBatch(
   return merged
 }
 
-/* ---------------- 列表缩略图 / 库存口径 ---------------- */
+/* ---------------- 列表缩略图 / 大图查看 / 库存口径 ---------------- */
 
-/** 列表缩略图边长（固定尺寸，有没有图片行高都一样，不会因为缺图塌陷）。 */
-const LIST_THUMB_SIZE = 46
-
-const listThumbStyle: CSSProperties = {
-  width: LIST_THUMB_SIZE,
-  height: LIST_THUMB_SIZE,
-  flex: 'none',
-  display: 'block',
-  borderRadius: 6,
-  objectFit: 'cover',
-  background: 'rgba(255,255,255,.05)',
-  border: '1px solid rgba(255,255,255,.12)',
+/**
+ * 列表缩略图（主图 = `images[0]`），48×48 圆角。
+ *
+ * 三种状态都不塌陷，也绝不出现浏览器的破图图标：
+ *   有图 → hover 放大（`.it-thumb:hover`）、点击开大图；
+ *   无图 → 同尺寸占位图标（`IconImage`，不是 emoji）；
+ *   加载失败 → 同上占位，title 说明原因。
+ * 多于一张时右下角显示张数，提示「点开能翻」。
+ */
+function ItemThumb({ urls, alt, onOpen }: { urls: string[]; alt: string; onOpen: () => void }) {
+  const [failed, setFailed] = useState(false)
+  const url = urls[0]
+  const usable = Boolean(url) && !failed
+  return (
+    <button
+      type="button"
+      className="it-thumb"
+      title={
+        usable
+          ? urls.length > 1
+            ? `点击查看大图（共 ${urls.length} 张）`
+            : '点击查看大图'
+          : failed
+            ? '图片加载失败'
+            : '没有图片'
+      }
+      onClick={(event) => {
+        // 整行点击 = 选中，缩略图点击 = 看大图：各自 stopPropagation，
+        // 否则用户想看大图却顺手把这一行选中了。
+        event.stopPropagation()
+        if (usable) onOpen()
+      }}
+    >
+      {usable ? (
+        <img src={url} alt={alt} loading="lazy" onError={() => setFailed(true)} />
+      ) : (
+        <span className="it-thumb-ph">
+          <IconImage size={18} />
+        </span>
+      )}
+      {urls.length > 1 && <span className="it-thumb-count">{urls.length}</span>}
+    </button>
+  )
 }
 
 /**
- * 商品缩略图（主图 = `images[0]`）。
- * 无图或加载失败都退回同尺寸占位块 —— 绝不显示浏览器的破图图标。
+ * 大图查看：点击缩略图后看主图，多图可左右翻（键盘 ←/→ 翻页、Esc 关闭）。
+ *
+ * 这里不复用 components.tsx 的 `Modal`：那个是表单弹窗（固定 620/900px 宽、标题栏+底栏），
+ * 看图要的是接近全屏的画布和翻页控件。本任务的写范围允许新增 `items.css`，
+ * 所以用自带的 `.it-lightbox*` 一套，不去改共享组件。
  */
-function ItemThumb({ url, alt }: { url?: string; alt: string }) {
+function ImageLightbox({
+  urls,
+  start = 0,
+  title,
+  onClose,
+}: {
+  urls: string[]
+  start?: number
+  title: string
+  onClose: () => void
+}) {
+  const [index, setIndex] = useState(Math.min(Math.max(start, 0), Math.max(urls.length - 1, 0)))
   const [failed, setFailed] = useState(false)
-  if (!url || failed) {
-    return (
-      <span
-        style={{
-          ...listThumbStyle,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontSize: 18,
-          color: 'rgba(255,255,255,.26)',
-        }}
-        title={failed ? '图片加载失败' : '没有图片'}
-      >
-        🖼
-      </span>
-    )
-  }
+
+  const go = useCallback(
+    (step: number) => {
+      if (urls.length < 2) return
+      setFailed(false)
+      setIndex((prev) => (prev + step + urls.length) % urls.length)
+    },
+    [urls.length],
+  )
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+      else if (event.key === 'ArrowLeft') go(-1)
+      else if (event.key === 'ArrowRight') go(1)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [go, onClose])
+
+  const current = urls[index] || ''
+
   return (
-    <img
-      src={url}
-      alt={alt}
-      loading="lazy"
-      style={listThumbStyle}
-      onError={() => setFailed(true)}
-    />
+    <div className="it-lightbox-mask" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="it-lightbox" role="dialog" aria-modal="true" aria-label="查看商品大图">
+        <div className="it-lightbox-head">
+          <span className="it-lightbox-title ellipsis" title={title}>
+            {title}
+          </span>
+          <span className="it-lightbox-count">
+            {index + 1} / {urls.length}
+          </span>
+          <button className="btn sm ghost" onClick={onClose} title="关闭（Esc）">
+            <IconClose size={15} />
+          </button>
+        </div>
+        <div className="it-lightbox-body">
+          {current && !failed ? (
+            <img src={current} alt={`${title} 第 ${index + 1} 张`} onError={() => setFailed(true)} />
+          ) : (
+            <div className="it-lightbox-err">{failed ? '这张图打不开了（地址失效或图床不回源）' : '没有图片可看'}</div>
+          )}
+          {urls.length > 1 && (
+            <>
+              <button className="btn it-lightbox-nav prev" onClick={() => go(-1)} title="上一张（←）">
+                <IconChevronLeft size={18} />
+              </button>
+              <button className="btn it-lightbox-nav next" onClick={() => go(1)} title="下一张（→）">
+                <IconChevronRight size={18} />
+              </button>
+            </>
+          )}
+        </div>
+        {urls.length > 1 && (
+          <div className="it-lightbox-foot">
+            {urls.map((url, i) => (
+              <button
+                key={`${i}-${url}`}
+                className={`it-lightbox-thumb${i === index ? ' active' : ''}`}
+                onClick={() => {
+                  setFailed(false)
+                  setIndex(i)
+                }}
+                title={`第 ${i + 1} 张${i === 0 ? '（主图）' : ''}`}
+              >
+                <img src={url} alt={`第 ${i + 1} 张`} loading="lazy" />
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -155,6 +267,9 @@ function stockText(stock: number | null | undefined): { text: string; unknown: b
   if (!Number.isFinite(value) || value < 0) return { text: '-', unknown: true }
   return { text: String(value), unknown: false }
 }
+
+/** 未知库存的通用说明（列表、弹窗、预览都用同一句，避免三处口径不一致）。 */
+const UNKNOWN_STOCK_TIP = '未同步（平台没返回库存），显示 - 而不是 0'
 
 /**
  * `items.images` → 有序 URL 列表。
@@ -182,6 +297,8 @@ function itemImageUrls(images?: unknown): string[] {
 export function ItemsPage() {
   const toast = useToast()
   const accounts = useAsync<Account[]>(() => api.get<Account[]>('/api/accounts'), [], true, ['accounts.changed'])
+  /** 页内两个视图：商品列表 / 商品数据。用全局已有的 `.tabs/.tab` 样式，不引第三方 tab 组件。 */
+  const [tab, setTab] = useState<'list' | 'data'>('list')
   const [accountId, setAccountId] = useState('')
   const [status, setStatus] = useState('')
   const [query, setQuery] = useState('')
@@ -191,9 +308,21 @@ export function ItemsPage() {
   const [batchOpen, setBatchOpen] = useState(false)
   const [logsOpen, setLogsOpen] = useState(false)
   const [busy, setBusy] = useState(false)
+  /** 当前展开「更多」菜单的行 key（`account_id/item_id`），同一时间只开一个。 */
+  const [menuFor, setMenuFor] = useState<string | null>(null)
+  /** 大图查看：点缩略图后打开，多图可翻页。 */
+  const [lightbox, setLightbox] = useState<{ urls: string[]; index: number; title: string } | null>(null)
   const [confirmAction, setConfirmAction] = useState<{ title: string; message: ReactNode; run: () => Promise<void> } | null>(null)
 
   const accountList = accounts.data ?? []
+
+  // 菜单开着时，点页面任何其他地方（含另一个菜单按钮）就收起：避免多个菜单叠在一起。
+  useEffect(() => {
+    if (!menuFor) return
+    const close = () => setMenuFor(null)
+    document.addEventListener('click', close)
+    return () => document.removeEventListener('click', close)
+  }, [menuFor])
 
   const items = useAsync<ItemListResult>(
     () =>
@@ -307,10 +436,63 @@ export function ItemsPage() {
     })
   }
 
+  /** 复制商品 ID：http / 无权限环境下剪贴板可能不可用，失败就如实说，不假装成功。 */
+  const copyId = async (itemId: string) => {
+    try {
+      await navigator.clipboard.writeText(itemId)
+      toast.success(`已复制商品 ID：${itemId}`)
+    } catch {
+      toast.info(`复制失败，请手动选中：${itemId}`)
+    }
+  }
+
+  /**
+   * 删除商品记录。
+   *
+   * `DELETE /api/items/{account_id}/{item_id}` **只删本地记录**（平台侧没有删除接口），
+   * 文案必须讲明白：闲鱼上架着的商品不会被自动下架，下次「同步商品」可能又拉回来。
+   * 会话与消息不受影响 —— 买家当初问的是哪件商品，历史里还得查得到。
+   */
+  const removeItem = (item: Item) => {
+    setConfirmAction({
+      title: '删除商品',
+      message: (
+        <>
+          确定要删除 <strong>{truncate(item.title || item.item_id, 40)}</strong> 吗？
+          <div className="dim" style={{ marginTop: 6 }}>
+            只删本地记录：闲鱼上架着的商品不会被自动下架，下次「同步商品」可能又拉回来。
+          </div>
+        </>
+      ),
+      run: async () => {
+        try {
+          await api.del(`/api/items/${encodeURIComponent(item.account_id)}/${encodeURIComponent(item.item_id)}`)
+          toast.success('已删除本地记录')
+          setSelected((prev) => {
+            const next = new Set(prev)
+            next.delete(item.item_id)
+            return next
+          })
+          items.reload()
+        } catch (err) {
+          toast.error(errorText(err))
+        }
+      },
+    })
+  }
+
   return (
     <div>
       <div className="toolbar">
-        <select value={accountId} onChange={(e) => { setAccountId(e.target.value); setSelected(new Set()) }} style={{ width: 190 }}>
+        <select
+          value={accountId}
+          onChange={(e) => {
+            setAccountId(e.target.value)
+            setSelected(new Set())
+          }}
+          style={{ width: 180 }}
+          title="商品按账号隔离：批量操作一次只能作用在一个账号上"
+        >
           <option value="">全部账号</option>
           {accountList.map((account) => (
             <option key={account.id} value={account.id}>
@@ -318,44 +500,75 @@ export function ItemsPage() {
             </option>
           ))}
         </select>
-        <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ width: 130 }}>
+        <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ width: 120 }}>
           <option value="">全部状态</option>
           <option value="onsale">在售</option>
           <option value="offline">已下架</option>
           <option value="sold">已售出</option>
         </select>
-        <input
-          type="search"
-          placeholder="搜索标题 / 商品 ID"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          style={{ width: 200 }}
-        />
-        <button className="btn" onClick={items.reload}>
+        <label className="it-search" title="按标题或商品 ID 搜索">
+          <IconSearch size={14} />
+          <input
+            type="search"
+            placeholder="搜索标题 / 商品 ID"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            style={{ width: 190 }}
+          />
+        </label>
+        <button className="btn" onClick={items.reload} disabled={items.loading}>
+          <span className="it-ico">
+            <IconRefresh size={14} />
+          </span>
           刷新
         </button>
-        <span className="spacer" />
-        <button className="btn" onClick={sync} disabled={busy || !accountId} title={!accountId ? '请先选择账号' : '从闲鱼拉取在售商品'}>
+        <span className="it-spacer" />
+        <button className="btn" onClick={sync} disabled={busy || !accountId} title={!accountId ? '请先选择账号' : '从闲鱼拉取在售商品并入库'}>
+          <span className="it-ico">
+            <IconRefresh size={14} />
+          </span>
           同步商品
         </button>
-        <button className="btn" onClick={() => setLogsOpen(true)} disabled={!accountId}>
+        <button className="btn" onClick={() => setLogsOpen(true)} disabled={!accountId} title={!accountId ? '请先选择账号' : '查看这个账号的操作日志'}>
           操作日志
         </button>
-        <button className="btn primary" onClick={() => setPublishOpen(true)} disabled={!accountId} title={!accountId ? '请先选择账号' : ''}>
-          ＋ 发布商品
+        <button className="btn primary" onClick={() => setPublishOpen(true)} disabled={!accountId} title={!accountId ? '请先选择账号' : '发布新商品到闲鱼'}>
+          <span className="it-ico">
+            <IconPlus size={14} />
+          </span>
+          发布商品
         </button>
       </div>
 
+      <div className="tabs">
+        <button className={`tab${tab === 'list' ? ' active' : ''}`} onClick={() => setTab('list')}>
+          <span className="it-ico">
+            <IconBox size={14} />
+          </span>
+          商品列表
+        </button>
+        <button className={`tab${tab === 'data' ? ' active' : ''}`} onClick={() => setTab('data')} title="曝光 / 浏览 / 下单等平台数据">
+          <span className="it-ico">
+            <IconChart size={14} />
+          </span>
+          商品数据
+        </button>
+      </div>
+
+      {tab === 'data' && <ItemDataView accountId={accountId} />}
+
+      {tab === 'list' && (<>
+
       {selected.size > 0 && (
-        <div className="card" style={{ borderColor: 'var(--accent)' }}>
+        <div className="card it-selbar">
           <div className="row wrap">
             <strong>已选 {selected.size} 个商品</strong>
             {mixedAccounts && <Badge tone="warn">跨账号，批量接口只支持单账号</Badge>}
-            <span className="spacer" />
+            <span className="it-spacer" />
             <button className="btn sm" onClick={() => setSelected(new Set())}>
               取消选择
             </button>
-            <button className="btn sm primary" disabled={mixedAccounts} onClick={() => setBatchOpen(true)}>
+            <button className="btn sm primary" disabled={mixedAccounts} onClick={() => setBatchOpen(true)} title="可批量改价格 / 标题 / 描述 / 库存">
               批量修改
             </button>
             <button className="btn sm" disabled={mixedAccounts} onClick={() => batchShelf('relist')}>
@@ -383,25 +596,37 @@ export function ItemsPage() {
           error={items.error}
           notReady={items.notReady}
           empty={list.length === 0}
-          emptyIcon="📦"
+          emptyIcon="box"
           emptyTitle="没有商品"
-          emptyDesc={accountId ? '点「同步商品」从闲鱼拉取在售商品入库。' : '先选择一个账号，或点「同步商品」。'}
+          emptyDesc={accountId ? '点「同步商品」把闲鱼在售商品拉下来。' : '先在上方选择一个账号，或点「同步商品」。'}
           onRetry={items.reload}
         >
-          <div className="table-wrap">
-            <table>
+          <div className="table-wrap it-table-wrap">
+            <table className="it-table">
               <thead>
                 <tr>
-                  <th style={{ width: 36 }}>
-                    <input type="checkbox" checked={allChecked} onChange={toggleAll} />
+                  <th style={{ width: 34 }}>
+                    <input type="checkbox" checked={allChecked} onChange={toggleAll} title="全选当前列表" />
                   </th>
                   <th>商品</th>
-                  <th className="nowrap">价格</th>
-                  <th className="nowrap">库存</th>
-                  <th className="nowrap">状态</th>
-                  <th className="nowrap">AI</th>
-                  <th className="nowrap">更新时间</th>
-                  <th className="nowrap">操作</th>
+                  <th className="nowrap" style={{ width: 96 }}>
+                    价格
+                  </th>
+                  <th className="nowrap" style={{ width: 68 }}>
+                    库存
+                  </th>
+                  <th className="nowrap" style={{ width: 78 }}>
+                    状态
+                  </th>
+                  <th className="nowrap" style={{ width: 52 }}>
+                    AI
+                  </th>
+                  <th className="nowrap" style={{ width: 132 }}>
+                    更新时间
+                  </th>
+                  <th className="nowrap" style={{ width: 164 }}>
+                    操作
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -410,38 +635,39 @@ export function ItemsPage() {
                   const checked = selected.has(item.item_id)
                   const imageList = itemImageUrls(item.images)
                   const stock = stockText(item.stock)
+                  const rowKey = `${item.account_id}-${item.item_id}`
+                  const onsale = state.text === '在售'
                   return (
-                    <tr key={`${item.account_id}-${item.item_id}`} className={checked ? 'selected' : ''}>
+                    <tr key={rowKey} className={`it-row${checked ? ' selected' : ''}`}>
                       <td>
                         <input type="checkbox" checked={checked} onChange={() => toggleOne(item.item_id)} />
                       </td>
-                      <td style={{ maxWidth: 340 }}>
-                        <div className="row" style={{ gap: 10, alignItems: 'flex-start', flexWrap: 'nowrap' }}>
-                          <ItemThumb url={imageList[0]} alt={item.title || item.item_id} />
-                          <div style={{ minWidth: 0 }}>
-                            <div className="ellipsis" title={item.title}>
+                      <td className="it-cell-item">
+                        <div className="it-item">
+                          <ItemThumb
+                            urls={imageList}
+                            alt={item.title || item.item_id}
+                            onOpen={() => setLightbox({ urls: imageList, index: 0, title: item.title || item.item_id })}
+                          />
+                          <div className="it-item-main">
+                            <button className="it-title" onClick={() => setEditing(item)} title="点击编辑这个商品">
                               {item.title || '(无标题)'}
-                            </div>
-                            <div className="mono dim" style={{ fontSize: 11 }}>
+                            </button>
+                            <div className="it-meta mono">
                               {item.item_id} · {item.account_id}
+                              {imageList.length > 1 ? ` · ${imageList.length} 张图` : ''}
                             </div>
-                            {imageList.length > 1 && (
-                              <div className="dim" style={{ fontSize: 11 }}>
-                                共 {imageList.length} 张图
-                              </div>
-                            )}
                           </div>
                         </div>
                       </td>
                       <td className="num nowrap">
-                        {formatMoney(item.price)}
-                        {item.original_price ? (
-                          <div className="dim" style={{ fontSize: 11, textDecoration: 'line-through' }}>
-                            {formatMoney(item.original_price)}
-                          </div>
-                        ) : null}
+                        <div>{formatMoney(item.price)}</div>
+                        {item.original_price ? <div className="it-was">{formatMoney(item.original_price)}</div> : null}
                       </td>
-                      <td className="num nowrap" title={stock.unknown ? '未同步（平台没返回库存）' : ''}>
+                      <td
+                        className={`num nowrap${stock.unknown ? ' it-unknown' : ''}`}
+                        title={stock.unknown ? UNKNOWN_STOCK_TIP : `平台库存：${stock.text}`}
+                      >
                         {stock.text}
                       </td>
                       <td className="nowrap">
@@ -450,24 +676,59 @@ export function ItemsPage() {
                       <td className="nowrap">
                         <Badge tone={bool(item.ai_enabled) ? 'ok' : 'muted'}>{bool(item.ai_enabled) ? '开' : '关'}</Badge>
                       </td>
-                      <td className="nowrap dim" style={{ fontSize: 12 }}>
-                        {formatTime(item.updated_at)}
-                      </td>
+                      <td className="nowrap it-time">{formatTime(item.updated_at)}</td>
                       <td className="nowrap">
-                        <div className="row" style={{ gap: 5 }}>
+                        <div className="it-acts">
                           <button className="btn sm" onClick={() => setEditing(item)}>
                             编辑
                           </button>
-                          {itemStatusLabel(item.status).text === '在售' ? (
-                            <button className="btn sm ghost" onClick={() => setShelf(item, 'delist')}>
-                              下架
-                            </button>
-                          ) : (
-                            <button className="btn sm ghost" onClick={() => setShelf(item, 'relist')}>
-                              上架
-                            </button>
-                          )}
+                          <button className="btn sm ghost" onClick={() => setShelf(item, onsale ? 'delist' : 'relist')}>
+                            {onsale ? '下架' : '上架'}
+                          </button>
+                          <button
+                            className="btn sm ghost"
+                            title="更多操作"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              setMenuFor((prev) => (prev === rowKey ? null : rowKey))
+                            }}
+                          >
+                            <IconChevronDown size={14} />
+                          </button>
                         </div>
+                        {/* 菜单做成「行内展开」而不是绝对定位浮层：表格容器是 overflow-x:auto，
+                            浮层会被裁掉一半，展开在单元格里最稳。 */}
+                        {menuFor === rowKey && (
+                          <div className="it-menu" onClick={(event) => event.stopPropagation()}>
+                            <button
+                              disabled={imageList.length === 0}
+                              title={imageList.length === 0 ? '这个商品没有图片' : '查看大图'}
+                              onClick={() => {
+                                setMenuFor(null)
+                                setLightbox({ urls: imageList, index: 0, title: item.title || item.item_id })
+                              }}
+                            >
+                              <IconEye size={13} /> 查看大图
+                            </button>
+                            <button
+                              onClick={() => {
+                                setMenuFor(null)
+                                void copyId(item.item_id)
+                              }}
+                            >
+                              <IconCopy size={13} /> 复制商品 ID
+                            </button>
+                            <button
+                              className="danger"
+                              onClick={() => {
+                                setMenuFor(null)
+                                removeItem(item)
+                              }}
+                            >
+                              <IconTrash size={13} /> 删除
+                            </button>
+                          </div>
+                        )}
                       </td>
                     </tr>
                   )
@@ -475,8 +736,12 @@ export function ItemsPage() {
               </tbody>
             </table>
           </div>
+          <div className="it-legend">
+            库存 <code>-</code> = 未同步（平台没返回），不是 0 也不是缺货；点标题进编辑，点缩略图看大图。
+          </div>
         </AsyncBox>
       </div>
+      </>)}
 
       {editing && (
         <EditItemModal
@@ -514,6 +779,15 @@ export function ItemsPage() {
 
       {logsOpen && <OperationLogsModal accountId={accountId} onClose={() => setLogsOpen(false)} />}
 
+      {lightbox && (
+        <ImageLightbox
+          urls={lightbox.urls}
+          start={lightbox.index}
+          title={lightbox.title}
+          onClose={() => setLightbox(null)}
+        />
+      )}
+
       {confirmAction && (
         <ConfirmDialog
           title={confirmAction.title}
@@ -533,6 +807,282 @@ export function ItemsPage() {
               setBusy(false)
             }
           }}
+        />
+      )}
+    </div>
+  )
+}
+
+/* ---------------- 商品数据（曝光 / 浏览 / 下单等平台指标） ---------------- */
+
+/** `GET /api/items/{account_id}/stats` 的返回行（types.ts 不在本任务写范围内，所以本地定义）。 */
+interface ItemStatsRow {
+  item_id: string
+  title?: string
+  images?: string[]
+  price?: number | null
+  status?: string
+  exposure?: number | null
+  visits?: number | null
+  visitors?: number | null
+  orders?: number | null
+  buyers?: number | null
+  paid_orders?: number | null
+}
+
+interface ItemStatsResult {
+  items: ItemStatsRow[]
+  updated_at?: string
+  /** `local` = 只有本地入库数据（平台数据接口没接通）；其它值原样当平台数据。 */
+  source?: string
+  /** 拿不到平台数据时后端给的中文原因，原样展示，不自己编。 */
+  warnings?: string[]
+}
+
+/**
+ * 数据来源：与后端 `GET /api/items/{account_id}/stats?source=` 一一对应
+ * （`auto` = 平台能用就用、用不了降级本地；`local` = 完全不碰平台；`platform` = 必须拿到平台数据）。
+ * 后端**没有**时间范围参数，所以这里不做「近 N 天」筛选，免得点了没反应像假数据。
+ */
+const STATS_SOURCES: Array<{ value: 'auto' | 'local' | 'platform'; label: string; tip: string }> = [
+  { value: 'auto', label: '自动', tip: '平台数据能用就用，用不了降级为本地统计并列出原因' },
+  { value: 'local', label: '仅本地', tip: '完全不请求闲鱼平台，只看本地库（未登录也能用）' },
+  { value: 'platform', label: '平台', tip: '必须拿到平台数据，拿不到会直接报错' },
+]
+
+/** 平台指标列：`key` 必须与后端返回字段名一致；写错了只会一直显示 -，不会崩。 */
+const STATS_COLUMNS: Array<{ key: keyof ItemStatsRow; label: string }> = [
+  { key: 'exposure', label: '曝光次数' },
+  { key: 'visits', label: '浏览次数' },
+  { key: 'visitors', label: '浏览人数' },
+  { key: 'orders', label: '下单人数' },
+  { key: 'buyers', label: '支付人数' },
+  { key: 'paid_orders', label: '支付订单数' },
+]
+
+const STATS_MISSING_TIP = '平台没返回这个数值：按要求显示 - 而不是 0'
+
+/**
+ * 数值口径：拿不到（null / undefined / 空串 / 非数字 / 负数）一律显示 `-`，
+ * **绝不显示 0 或假数据**。0 是有意义的真实值，所以只判「拿不到」，不判 falsy。
+ */
+function statValue(value: unknown): { text: string; unknown: boolean } {
+  if (value === null || value === undefined || value === '') return { text: '-', unknown: true }
+  const num = Number(value)
+  if (!Number.isFinite(num) || num < 0) return { text: '-', unknown: true }
+  return { text: num.toLocaleString('zh-CN'), unknown: false }
+}
+
+/**
+ * 商品数据视图：曝光 / 浏览 / 下单等平台指标。
+ *
+ * 后端接口：`GET /api/items/{account_id}/stats`（实现在 `backend/app/api` 的 `item_stats.py`，
+ * 返回 `{items, updated_at, source, warnings}`）。这里必须做到：**接口未就绪也能正常渲染页面**
+ * （`AsyncBox` 的 notReady 分支），拿不到的数值一律 `-` 并标出原因，`source === 'local'` 时明说「平台数据未接通」。
+ */
+function ItemDataView({ accountId }: { accountId: string }) {
+  /** 数据来源。后端目前只支持账号维度、**没有时间范围参数**，所以不做「近 N 天」。 */
+  const [sourceMode, setSourceMode] = useState<'auto' | 'local' | 'platform'>('auto')
+  const [lightbox, setLightbox] = useState<{ urls: string[]; index: number; title: string } | null>(null)
+  const stats = useAsync<ItemStatsResult>(
+    () => api.get<ItemStatsResult>(`/api/items/${encodeURIComponent(accountId)}/stats`, { source: sourceMode }),
+    [accountId, sourceMode],
+    Boolean(accountId),
+    ['items.updated'],
+  )
+
+  const rows = stats.data?.items ?? []
+  const source = String(stats.data?.source ?? '').toLowerCase()
+  const warnings = stats.data?.warnings ?? []
+
+  // 合计只累加「拿得到」的数值；一个都没拿到就显示 -，不用 0 假装统计过。
+  const sums = useMemo(() => {
+    const result: Record<string, { text: string; unknown: boolean; known: number }> = {}
+    for (const column of STATS_COLUMNS) {
+      let total = 0
+      let known = 0
+      for (const row of rows) {
+        if (!statValue(row[column.key]).unknown) {
+          total += Number(row[column.key])
+          known += 1
+        }
+      }
+      result[column.key as string] =
+        known === 0
+          ? { text: '-', unknown: true, known }
+          : { text: total.toLocaleString('zh-CN'), unknown: false, known }
+    }
+    return result
+  }, [rows])
+
+  const anyMetric = useMemo(
+    () => rows.some((row) => STATS_COLUMNS.some((column) => !statValue(row[column.key]).unknown)),
+    [rows],
+  )
+
+  if (!accountId) {
+    return (
+      <div className="card">
+        <h3>商品数据</h3>
+        <Notice kind="info">先在上方选择一个账号：平台数据是按账号查的，选「全部账号」看不出是哪家的数据。</Notice>
+      </div>
+    )
+  }
+
+  return (
+    <div className="card">
+      <h3>
+        商品数据
+        <span className="hint">
+          曝光 / 浏览 / 下单等平台指标
+          {stats.data?.updated_at ? ` · 更新于 ${formatTime(stats.data.updated_at)}` : ''}
+        </span>
+      </h3>
+
+      <div className="row wrap it-data-bar">
+        <div className="it-seg" role="group" aria-label="数据来源">
+          {STATS_SOURCES.map((item) => (
+            <button
+              key={item.value}
+              className={`it-seg-item${sourceMode === item.value ? ' active' : ''}`}
+              onClick={() => setSourceMode(item.value)}
+              title={item.tip}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        <span className="it-legend">
+          平台接口目前只返回累计口径：近 1 天 / 7 天 / 30 天筛选需要后端先加时间范围参数，所以这里没做。
+        </span>
+        <span className="it-spacer" />
+        <button className="btn sm" onClick={stats.reload} disabled={stats.loading}>
+          <span className="it-ico">
+            <IconRefresh size={13} />
+          </span>
+          刷新
+        </button>
+      </div>
+
+      {(source === 'local' || warnings.length > 0) && (
+        <div className="it-notes">
+          {source === 'local' && (
+            <Notice kind="warn">平台数据接口未接通，仅显示本地数据：曝光 / 浏览 / 下单这些平台指标拿不到，一律显示 -。</Notice>
+          )}
+          {warnings.map((text, index) => (
+            <Notice key={`${index}-${text}`} kind="warn">
+              {text}
+            </Notice>
+          ))}
+        </div>
+      )}
+
+      <AsyncBox
+        loading={stats.loading}
+        error={stats.error}
+        notReady={stats.notReady}
+        empty={rows.length === 0}
+        emptyIcon="box"
+        emptyTitle="还没有商品数据"
+        emptyDesc="先在「商品列表」里点「同步商品」把闲鱼商品拉下来，再回来看数据。"
+        onRetry={stats.reload}
+      >
+        {!anyMetric && (
+          <Notice kind="info">这张表的平台指标现在都是 -：平台数据接口没返回数值（未接通或未登录），所以不用 0 顶替。</Notice>
+        )}
+
+        <div className="grid grid-4 it-sums">
+          {STATS_COLUMNS.slice(0, 4).map((column) => {
+            const sum = sums[column.key as string]
+            return (
+              <div className="stat" key={`sum-${column.key as string}`}>
+                <div className="label">{column.label}合计</div>
+                <div
+                  className={`value${sum.unknown ? ' it-unknown' : ''}`}
+                  title={sum.unknown ? STATS_MISSING_TIP : `已汇总 ${sum.known}/${rows.length} 个商品`}
+                >
+                  {sum.text}
+                </div>
+                <div className="it-sum-note">
+                  已汇总 {sum.known}/{rows.length} 个商品
+                </div>
+              </div>
+            )
+          })}
+        </div>
+
+        <div className="table-wrap it-table-wrap">
+          <table className="it-table">
+            <thead>
+              <tr>
+                <th>商品</th>
+                <th className="nowrap num" style={{ width: 92 }}>
+                  价格
+                </th>
+                <th className="nowrap" style={{ width: 76 }}>
+                  状态
+                </th>
+                {STATS_COLUMNS.map((column) => (
+                  <th key={column.key as string} className="nowrap num" style={{ width: 92 }}>
+                    {column.label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                const state = itemStatusLabel(row.status)
+                const imageList = itemImageUrls(row.images)
+                return (
+                  <tr key={row.item_id} className="it-row">
+                    <td className="it-cell-item">
+                      <div className="it-item">
+                        <ItemThumb
+                          urls={imageList}
+                          alt={row.title || row.item_id}
+                          onOpen={() => setLightbox({ urls: imageList, index: 0, title: row.title || row.item_id })}
+                        />
+                        <div className="it-item-main">
+                          <div className="it-title it-title-static ellipsis" title={row.title || row.item_id}>
+                            {row.title || '(无标题)'}
+                          </div>
+                          <div className="it-meta mono">{row.item_id}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="num nowrap">{formatMoney(row.price)}</td>
+                    <td className="nowrap">
+                      <Badge tone={state.tone}>{state.text}</Badge>
+                    </td>
+                    {STATS_COLUMNS.map((column) => {
+                      const value = statValue(row[column.key])
+                      return (
+                        <td
+                          key={column.key as string}
+                          className={`num nowrap${value.unknown ? ' it-unknown' : ''}`}
+                          title={value.unknown ? STATS_MISSING_TIP : `${column.label}：${value.text}`}
+                        >
+                          {value.text}
+                        </td>
+                      )
+                    })}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div className="it-legend">
+          <code>-</code> = 平台没返回这个数值（不是 0，也不是没有）；合计只累加拿得到的商品，覆盖不到的在卡片里标出「已汇总 N/M」。
+        </div>
+      </AsyncBox>
+
+      {lightbox && (
+        <ImageLightbox
+          urls={lightbox.urls}
+          start={lightbox.index}
+          title={lightbox.title}
+          onClose={() => setLightbox(null)}
         />
       )}
     </div>
@@ -899,7 +1449,7 @@ function ImageField({
         >
           每行一个 URL
         </button>
-        <span className="spacer" />
+        <span style={{ flex: 1 }} />
         <span className="dim" style={{ fontSize: 11.5 }}>
           共 {urls.length} 张{urls.length > 0 ? ' · 第一张是主图' : ''}
         </span>
@@ -1177,6 +1727,10 @@ function EditItemModal({ item, onClose, onSaved }: { item: Item; onClose: () => 
   }, [])
 
   const busy = saving || uploadingCount > 0
+  /** 平台没给库存（`stock < 0` / 缺失）→ 输入框留空，并解释为什么是空的。 */
+  const stockUnknown =
+    stock === '' &&
+    (item.stock === undefined || item.stock === null || !Number.isFinite(Number(item.stock)) || Number(item.stock) < 0)
 
   const save = async () => {
     if (uploadingCount > 0) {
@@ -1248,16 +1802,35 @@ function EditItemModal({ item, onClose, onSaved }: { item: Item; onClose: () => 
           </Field>
           <div className="row" style={{ gap: 12 }}>
             <div style={{ flex: 1 }}>
-              <Field label="价格（元）">
-                <input type="number" step="0.01" min="0" value={price} onChange={(e) => setPrice(e.target.value)} />
+              <Field label="价格（元）" tip="留空 = 不改动">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={price}
+                  onChange={(e) => setPrice(e.target.value)}
+                  placeholder="例如 99.9"
+                />
               </Field>
             </div>
             <div style={{ flex: 1 }}>
-              <Field label="库存" tip="留空 = 未同步/不改动（平台没给库存时是 -1）">
-                <input type="number" min="0" value={stock} onChange={(e) => setStock(e.target.value)} />
+              <Field label="库存 / 数量（件）" tip="留空 = 不改动；填 0 就是把库存改成 0">
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={stock}
+                  onChange={(e) => setStock(e.target.value)}
+                  placeholder={stockUnknown ? '平台未同步' : '留空不改'}
+                />
               </Field>
             </div>
           </div>
+          {stockUnknown && (
+            <Notice kind="info">
+              平台没返回这个商品的库存（列表里显示 -），所以这里是空的。填上真实件数再保存，就会按这个数改库存。
+            </Notice>
+          )}
           <Field label="商品 ID" tip="只读">
             <input type="text" value={item.item_id} readOnly className="mono" />
           </Field>
@@ -1287,6 +1860,7 @@ function EditItemModal({ item, onClose, onSaved }: { item: Item; onClose: () => 
 type PriceMode = 'set' | 'delta' | 'percent'
 type TitleMode = 'set' | 'prefix' | 'suffix' | 'replace'
 type DescMode = 'replace' | 'append' | 'prepend'
+type StockMode = 'set' | 'increase' | 'decrease'
 
 function BatchEditModal({
   items,
@@ -1307,17 +1881,42 @@ function BatchEditModal({
   const [descOn, setDescOn] = useState(false)
   const [descMode, setDescMode] = useState<DescMode>('append')
   const [descValue, setDescValue] = useState('')
+  const [stockOn, setStockOn] = useState(false)
+  const [stockMode, setStockMode] = useState<StockMode>('set')
+  const [stockValue, setStockValue] = useState('')
   const [saving, setSaving] = useState(false)
 
   const accountId = items[0]?.account_id ?? ''
+  /** 库存未知（`stock < 0` 或缺失）的选中商品：加减库存只能按增量提交。 */
+  const unknownStockItems = items.filter(
+    (item) =>
+      item.stock === undefined || item.stock === null || !Number.isFinite(Number(item.stock)) || Number(item.stock) < 0,
+  )
 
   const preview = (item: Item): string => {
     const parts: string[] = []
     if (priceOn && priceValue !== '') {
       const value = Number(priceValue)
-      const base = Number(item.price) || 0
-      const next = priceMode === 'set' ? value : priceMode === 'delta' ? base + value : base * (1 + value / 100)
-      parts.push(`价格 ${formatMoney(base)} → ${formatMoney(Math.max(0, next))}`)
+      if (Number.isFinite(value)) {
+        const base = Number(item.price) || 0
+        const next = priceMode === 'set' ? value : priceMode === 'delta' ? base + value : base * (1 + value / 100)
+        parts.push(`价格 ${formatMoney(base)} → ${formatMoney(Math.max(0, next))}`)
+      }
+    }
+    if (stockOn && stockValue !== '') {
+      const size = Math.abs(Math.round(Number(stockValue)))
+      if (Number.isFinite(size)) {
+        if (stockMode === 'set') parts.push(`库存 → ${size}`)
+        else {
+          const base = Number(item.stock)
+          const known = item.stock !== undefined && item.stock !== null && Number.isFinite(base) && base >= 0
+          parts.push(
+            known
+              ? `库存 ${base} → ${Math.max(0, base + (stockMode === 'increase' ? size : -size))}`
+              : `库存未知，按${stockMode === 'increase' ? '增加' : '减少'} ${size} 提交`,
+          )
+        }
+      }
     }
     if (titleOn && titleValue) {
       if (titleMode === 'prefix') parts.push(`标题加前缀「${titleValue}」`)
@@ -1333,9 +1932,10 @@ function BatchEditModal({
 
   /** 只用来判断「用户到底勾了没有」，不参与请求体构造。 */
   const hasSelection = (): boolean => {
-    if (priceOn && priceValue !== '' && !Number.isNaN(Number(priceValue))) return true
+    if (priceOn && priceValue !== '' && Number.isFinite(Number(priceValue))) return true
     if (titleOn && titleValue.trim()) return true
     if (descOn && descValue.trim()) return true
+    if (stockOn && stockValue.trim() !== '' && Number.isFinite(Number(stockValue))) return true
     return false
   }
 
@@ -1352,10 +1952,34 @@ function BatchEditModal({
     const patch: Record<string, unknown> = {}
     if (priceOn && priceValue !== '') {
       const value = Number(priceValue)
-      if (!Number.isNaN(value)) {
+      // 必须用 `isFinite`：`Number('1e999')` 是 `Infinity`（不是 NaN），
+      // `JSON.stringify(Infinity)` 会变成 `null`，后端现在会拿它当「没给数字」400。
+      if (Number.isFinite(value)) {
         const base = Number(item.price) || 0
         const next = priceMode === 'set' ? value : priceMode === 'delta' ? base + value : base * (1 + value / 100)
         patch.price = Math.max(0, Math.round(next * 100) / 100)
+      }
+    }
+    if (stockOn && stockValue !== '') {
+      const size = Math.abs(Math.round(Number(stockValue)))
+      // 同上：`1e999` 得 `Infinity`，`JSON.stringify` 会把它变成 `null`
+      if (Number.isFinite(size)) {
+        if (stockMode === 'set') {
+          // 设为固定值：所有商品同一个数 —— 走后端已支持的 `stock_set`。
+          patch.stock_set = Math.max(0, size)
+        } else {
+          const base = Number(item.stock)
+          const known = item.stock !== undefined && item.stock !== null && Number.isFinite(base) && base >= 0
+          if (known) {
+            // 当前库存已知 → 直接算成绝对值（今天的后端就支持），不依赖 stock_delta。
+            patch.stock = Math.max(0, base + (stockMode === 'increase' ? size : -size))
+          } else {
+            // 当前库存未知 → 只能提交增量（后端 task-35 的 `stock_delta`）。
+            // 后端还没支持时它会逐条给出中文原因（例如「库存未知，已跳过」），
+            // 我把那个原因原样展示，不自己编。
+            patch.stock_delta = stockMode === 'increase' ? size : -size
+          }
+        }
       }
     }
     if (titleOn && titleValue) {
@@ -1508,6 +2132,47 @@ function BatchEditModal({
 
       <div className="card">
         <h3>
+          <Switch checked={stockOn} onChange={setStockOn} />
+          库存 / 数量
+        </h3>
+        <div className="row wrap">
+          <select
+            value={stockMode}
+            onChange={(e) => setStockMode(e.target.value as StockMode)}
+            style={{ width: 160 }}
+            disabled={!stockOn}
+          >
+            <option value="set">设为固定值</option>
+            <option value="increase">增加</option>
+            <option value="decrease">减少</option>
+          </select>
+          <input
+            type="number"
+            min="0"
+            step="1"
+            value={stockValue}
+            onChange={(e) => setStockValue(e.target.value)}
+            disabled={!stockOn}
+            placeholder={stockMode === 'set' ? '例如 50' : '例如 5'}
+            style={{ width: 140 }}
+          />
+          <span className="dim" style={{ fontSize: 12 }}>
+            {stockMode === 'set'
+              ? '所有选中商品统一改成这个库存数'
+              : `在当前库存上加${stockMode === 'increase' ? '' : '减'}这个数量（不会低于 0）`}
+          </span>
+        </div>
+        {stockOn && stockMode !== 'set' && unknownStockItems.length > 0 && (
+          <div className="it-note">
+            选中的商品里有 {unknownStockItems.length} 个库存未知（列表显示 -）：后端拿不到当前库存，
+            <b>不能用「增加/减少」</b>（算出来的是编的数字），这些商品会被逐条拒掉并写明原因。
+            想改它们请把上面切成「设为固定值」，或先点「同步商品」把库存取回来。
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <h3>
           <Switch checked={descOn} onChange={setDescOn} />
           描述
         </h3>
@@ -1568,12 +2233,15 @@ function PublishItemModal({
   const [imageSizes, setImageSizes] = useState<ImageSizes>({})
   const [uploadingCount, setUploadingCount] = useState(0)
   const [saving, setSaving] = useState(false)
+  /** 点过「发布」之后才显示必填项红字：一打开弹窗就一片红很劝退。 */
+  const [touched, setTouched] = useState(false)
 
   const rememberSize = useCallback((url: string, size: { width: number; height: number }) => {
     setImageSizes((prev) => ({ ...prev, [url]: size }))
   }, [])
 
   const submit = async () => {
+    setTouched(true)
     if (!title.trim()) {
       toast.info('请填写商品标题')
       return
@@ -1609,6 +2277,8 @@ function PublishItemModal({
     }
   }
 
+  const canPublish = Boolean(title.trim()) && images.length > 0 && uploadingCount === 0 && !saving
+
   return (
     <Modal
       title="发布新商品"
@@ -1616,11 +2286,23 @@ function PublishItemModal({
       wide
       footer={
         <>
+          <span className="dim" style={{ fontSize: 12, marginRight: 'auto' }}>
+            {uploadingCount > 0
+              ? `${uploadingCount} 张图片正在上传，传完才能发布`
+              : canPublish
+                ? `将上传 ${images.length} 张图，第一张是主图`
+                : '标题和至少一张图片是必填的'}
+          </span>
           <button className="btn ghost" onClick={onClose} disabled={saving}>
             取消
           </button>
-          <button className="btn primary" onClick={submit} disabled={saving || uploadingCount > 0}>
-            {saving ? '发布中…' : uploadingCount > 0 ? '等待上传…' : '发布'}
+          <button
+            className="btn primary"
+            onClick={submit}
+            disabled={saving || uploadingCount > 0}
+            title={canPublish ? '发布到闲鱼' : '先填标题并上传至少一张图片'}
+          >
+            {saving ? '发布中…' : uploadingCount > 0 ? '等待上传…' : '发布到闲鱼'}
           </button>
         </>
       }
@@ -1628,38 +2310,92 @@ function PublishItemModal({
       <Notice kind="info">
         将发布到账号 <span className="mono">{accountId}</span>。闲鱼对发布频率敏感，建议一次只发一个。
       </Notice>
+
+      {/* 买家视角预览：填的时候就能看到「主图 + 标题 + 价格」长什么样，别等发出去才发现写错。 */}
+      <div className="it-hero">
+        <div className="it-hero-thumb">
+          {images[0] ? (
+            <img src={images[0]} alt="主图预览" />
+          ) : (
+            <span className="it-hero-ph">
+              <IconImage size={20} />
+            </span>
+          )}
+        </div>
+        <div className="it-hero-main">
+          <div className="it-hero-title">{title.trim() || '还没填标题'}</div>
+          <div className="it-hero-price">
+            {price !== '' && !Number.isNaN(Number(price)) ? formatMoney(Number(price)) : '未定价'}
+            {originalPrice !== '' && !Number.isNaN(Number(originalPrice)) ? (
+              <span className="it-was">{formatMoney(Number(originalPrice))}</span>
+            ) : null}
+            {stock !== '' ? <span className="it-hero-stock">库存 {stock}</span> : null}
+          </div>
+          <div className="it-hero-note">这是买家大致会看到的样子：主图 + 标题 + 价格</div>
+        </div>
+      </div>
+
       <div className="split">
         <div className="left">
-          <Field label="标题 *">
-            <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="例如：全新未拆封 蓝牙耳机" />
+          <div className="it-sec-title">基本信息</div>
+          <Field label="标题 *" tip="最多 60 个字：品牌 / 成色 / 规格写清楚">
+            <input
+              type="text"
+              value={title}
+              maxLength={80}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="例如：全新未拆封 蓝牙耳机 白色"
+              className={touched && !title.trim() ? 'it-invalid' : ''}
+            />
+            <div className={`it-count${title.length > 60 ? ' it-count-over' : ''}`}>{title.length} / 60</div>
           </Field>
+          {touched && !title.trim() && <div className="it-err">标题必须填：买家就是靠它搜到你的商品</div>}
           <div className="row" style={{ gap: 12 }}>
             <div style={{ flex: 1 }}>
-              <Field label="售价（元）">
-                <input type="number" step="0.01" min="0" value={price} onChange={(e) => setPrice(e.target.value)} />
+              <Field label="售价（元）" tip="留空 = 让闲鱼自己定">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={price}
+                  onChange={(e) => setPrice(e.target.value)}
+                  placeholder="0.00"
+                />
               </Field>
             </div>
             <div style={{ flex: 1 }}>
-              <Field label="原价（元）">
-                <input type="number" step="0.01" min="0" value={originalPrice} onChange={(e) => setOriginalPrice(e.target.value)} />
+              <Field label="原价（元）" tip="会被划掉的价格，可留空">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={originalPrice}
+                  onChange={(e) => setOriginalPrice(e.target.value)}
+                  placeholder="0.00"
+                />
+              </Field>
+            </div>
+            <div style={{ flex: 1 }}>
+              <Field label="库存（件）" tip="默认 1">
+                <input type="number" min="0" step="1" value={stock} onChange={(e) => setStock(e.target.value)} />
               </Field>
             </div>
           </div>
-          <div className="row" style={{ gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <Field label="库存">
-                <input type="number" min="0" value={stock} onChange={(e) => setStock(e.target.value)} />
-              </Field>
-            </div>
-            <div style={{ flex: 1 }}>
-              <Field label="分类 ID" tip="可留空">
-                <input type="text" value={categoryId} onChange={(e) => setCategoryId(e.target.value)} />
-              </Field>
-            </div>
-          </div>
+          <Field label="分类 ID" tip="可留空：不确定就交给平台默认分类">
+            <input
+              type="text"
+              value={categoryId}
+              onChange={(e) => setCategoryId(e.target.value)}
+              placeholder="可留空"
+            />
+          </Field>
         </div>
         <div className="right">
-          <Field label="商品图片" tip="拖拽 / 点击 / 粘贴上传，第一张是主图">
+          <div className="it-sec-title">
+            图片与描述
+            <span className="hint">{images.length > 0 ? `${images.length} 张，第一张是主图` : '至少要一张'}</span>
+          </div>
+          <Field label="商品图片 *" tip="拖拽 / 点击 / 粘贴上传；第一张是主图，可拖动排序">
             <ImageField
               accountId={accountId}
               urls={images}
@@ -1668,8 +2404,14 @@ function PublishItemModal({
               onUploaded={rememberSize}
             />
           </Field>
-          <Field label="描述">
-            <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={8} />
+          {touched && images.length === 0 && <div className="it-err">至少要上传一张商品图片，否则平台会拒绝发布</div>}
+          <Field label="描述" tip="成色、规格、发货方式写清楚，能明显少些砍价和退货">
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={9}
+              placeholder="例如：全新未拆封，支持验货，工作日当天发货。"
+            />
           </Field>
         </div>
       </div>
@@ -1704,7 +2446,7 @@ function OperationLogsModal({ accountId, onClose }: { accountId: string; onClose
         error={logs.error}
         notReady={logs.notReady}
         empty={list.length === 0}
-        emptyIcon="🧾"
+        emptyIcon="box"
         emptyTitle="暂无操作日志"
         onRetry={logs.reload}
       >

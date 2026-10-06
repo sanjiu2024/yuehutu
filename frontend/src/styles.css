@@ -1,6 +1,19 @@
-/* 闲鱼 AI 工作台 —— 深色主题（原生 CSS，无 UI 库） */
+/* 闲鱼 AI 工作台 —— 设计令牌与基础层（原生 CSS，无 UI 库）
+ *
+ * 分三层，改样式前先想清楚new规则该放哪一层：
+ *   1. styles.css      —— 令牌 + 既有 class（其它 9 个页面都在用，**类名与变量名不可删改**）
+ *   2. components.css  —— 共享组件的新样式（弹窗/通知/骨架/导航/外壳…）
+ *   3. pages/pages.css —— 页面级通用件（页头、区块、筛选栏…）
+ *
+ * 主题：默认深色；`html[data-theme='light']` 只覆盖变量，不改任何选择器。
+ * 因此写组件样式请一律用变量，不要写死颜色 —— 否则浅色主题下必然出对比度事故。
+ */
 
 :root {
+  /* 让原生控件（复选框、下拉弹层、滚动条）跟随深色主题渲染 */
+  color-scheme: dark;
+
+  /* ---- 基础色板（变量名不可改，其它页面依赖） ---- */
   --bg: #0b1220;
   --bg-soft: #111a2b;
   --panel: #16203a;
@@ -21,7 +34,130 @@
   --radius: 10px;
   --radius-sm: 6px;
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+
+  /* ---- 间距：只用这六档，别再随手写 7px/18px ---- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+
+  /* ---- 圆角 ---- */
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+
+  /* ---- 阴影：三级，别用 --shadow 以外的手写值 ---- */
+  --shadow-sm: 0 1px 2px rgba(3, 7, 18, 0.3), 0 1px 3px rgba(3, 7, 18, 0.22);
+  --shadow-md: 0 6px 18px rgba(3, 7, 18, 0.36);
+  --shadow-lg: 0 20px 52px rgba(3, 7, 18, 0.5);
+
+  /* ---- 字号 ---- */
+  --fs-11: 11px;
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-14: 14px;
+  --fs-16: 16px;
+  --fs-20: 20px;
+
+  /* ---- 语义色：主色 + 柔和底 + 描边（三件套，成套用） ---- */
+  --success: var(--ok);
+  --info: #60a5fa;
+  --accent-soft: rgba(59, 130, 246, 0.13);
+  --accent-line: rgba(59, 130, 246, 0.36);
+  --ok-soft: rgba(52, 211, 153, 0.14);
+  --ok-line: rgba(52, 211, 153, 0.3);
+  --warn-soft: rgba(251, 191, 36, 0.14);
+  --warn-line: rgba(251, 191, 36, 0.3);
+  --danger-soft: rgba(248, 113, 113, 0.14);
+  --danger-line: rgba(248, 113, 113, 0.34);
+  --info-soft: rgba(96, 165, 250, 0.14);
+  --info-line: rgba(96, 165, 250, 0.32);
+  --ask-soft: rgba(96, 165, 250, 0.14);
+  --ask-line: rgba(96, 165, 250, 0.3);
+  --answer-soft: rgba(52, 211, 153, 0.14);
+  --answer-line: rgba(52, 211, 153, 0.3);
+  --notify-soft: rgba(167, 139, 250, 0.14);
+  --notify-line: rgba(167, 139, 250, 0.3);
+  --muted-soft: rgba(148, 163, 184, 0.12);
+  --muted-line: rgba(148, 163, 184, 0.22);
+
+  /* ---- 表面 / 交互态 ---- */
+  --surface: #0e1728; /* 输入框、代码块这类「比面板再深一层」的底 */
+  --row-hover: rgba(59, 130, 246, 0.06);
+  --row-selected: rgba(59, 130, 246, 0.13);
+  --overlay: rgba(4, 8, 16, 0.72);
+  --text-inv: #ffffff; /* 落在 accent/danger 实底上的文字 */
+  --skeleton-1: rgba(148, 163, 184, 0.1);
+  --skeleton-2: rgba(148, 163, 184, 0.2);
+
+  /* ---- 焦点环 / 动效 ---- */
+  --focus: 0 0 0 3px rgba(59, 130, 246, 0.45);
+  --focus-color: #7fb0ff;
+  --dur-1: 120ms;
+  --dur-2: 160ms;
+  --dur-3: 180ms;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ---- 外壳尺寸 ---- */
+  --sidebar-w: 240px;
 }
+
+/* 浅色主题：只覆盖变量。深色是默认值，不写 html[data-theme='dark'] 也能正常工作。 */
+html[data-theme='light'] {
+  /* 浅色下原生控件也要走浅色，否则复选框、下拉弹层仍是深色，和页面不搭 */
+  color-scheme: light;
+
+  --bg: #f3f5fa;
+  --bg-soft: #ffffff;
+  --panel: #ffffff;
+  --panel-2: #f6f8fc;
+  --border: #d5dceb;
+  --border-soft: #e6ebf4;
+  --text: #16203a;
+  --text-dim: #4a5878;
+  --text-mute: #78849d;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --ok: #047857;
+  --warn: #a16207;
+  --danger: #b91c1c;
+  --ask: #1d4ed8;
+  --answer: #047857;
+  --notify: #6d28d9;
+  --info: #1d4ed8;
+  --shadow: 0 8px 28px rgba(24, 39, 75, 0.14);
+  --shadow-sm: 0 1px 2px rgba(24, 39, 75, 0.08), 0 1px 3px rgba(24, 39, 75, 0.06);
+  --shadow-md: 0 6px 18px rgba(24, 39, 75, 0.12);
+  --shadow-lg: 0 20px 52px rgba(24, 39, 75, 0.18);
+  --accent-soft: rgba(37, 99, 235, 0.09);
+  --accent-line: rgba(37, 99, 235, 0.3);
+  --ok-soft: rgba(4, 120, 87, 0.09);
+  --ok-line: rgba(4, 120, 87, 0.28);
+  --warn-soft: rgba(161, 98, 7, 0.1);
+  --warn-line: rgba(161, 98, 7, 0.3);
+  --danger-soft: rgba(185, 28, 28, 0.09);
+  --danger-line: rgba(185, 28, 28, 0.3);
+  --info-soft: rgba(29, 78, 216, 0.09);
+  --info-line: rgba(29, 78, 216, 0.28);
+  --ask-soft: rgba(29, 78, 216, 0.09);
+  --ask-line: rgba(29, 78, 216, 0.28);
+  --answer-soft: rgba(4, 120, 87, 0.09);
+  --answer-line: rgba(4, 120, 87, 0.28);
+  --notify-soft: rgba(109, 40, 217, 0.09);
+  --notify-line: rgba(109, 40, 217, 0.28);
+  --muted-soft: rgba(100, 116, 139, 0.1);
+  --muted-line: rgba(100, 116, 139, 0.24);
+  --surface: #ffffff;
+  --row-hover: rgba(37, 99, 235, 0.05);
+  --row-selected: rgba(37, 99, 235, 0.1);
+  --overlay: rgba(24, 39, 75, 0.34);
+  --skeleton-1: rgba(24, 39, 75, 0.07);
+  --skeleton-2: rgba(24, 39, 75, 0.13);
+  --focus: 0 0 0 3px rgba(37, 99, 235, 0.3);
+  --focus-color: #2563eb;
+}
+
 
 * {
   box-sizing: border-box;
@@ -1095,3 +1231,170 @@ td.num {
   font-size: 30px;
   margin-bottom: 6px;
 }
+
+/* =====================================================================
+ * 令牌化覆盖：早期规则里写死的深色值改成变量。
+ * 同选择器、后置生效 —— 这样既不用改（更不能删）上面任何一个既有 class，
+ * 又能让浅色主题真正可用（否则浅底上会出现 #bcd4fb 这种浅色文字）。
+ * 深色下的取值与原来完全一致，观感不降级。
+ * ===================================================================== */
+
+.btn:hover:not(:disabled) {
+  background: var(--panel-2);
+  border-color: var(--border);
+}
+.btn.danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger-line);
+}
+input[type='text'],
+input[type='number'],
+input[type='password'],
+input[type='search'],
+select,
+textarea {
+  background: var(--surface);
+}
+tbody tr:hover {
+  background: var(--row-hover);
+}
+tbody tr.selected {
+  background: var(--row-selected);
+}
+
+.badge.ok {
+  background: var(--ok-soft);
+  border-color: var(--ok-line);
+}
+.badge.warn {
+  background: var(--warn-soft);
+  border-color: var(--warn-line);
+}
+.badge.danger {
+  background: var(--danger-soft);
+  border-color: var(--danger-line);
+}
+.badge.muted {
+  background: var(--muted-soft);
+  border-color: var(--muted-line);
+}
+.badge.ask {
+  background: var(--ask-soft);
+  border-color: var(--ask-line);
+}
+.badge.answer {
+  background: var(--answer-soft);
+  border-color: var(--answer-line);
+}
+.badge.notify {
+  background: var(--notify-soft);
+  border-color: var(--notify-line);
+}
+
+.notice.info {
+  background: var(--info-soft);
+  border-color: var(--info-line);
+  color: var(--text);
+}
+.notice.warn {
+  background: var(--warn-soft);
+  border-color: var(--warn-line);
+  color: var(--text);
+}
+.notice.error {
+  background: var(--danger-soft);
+  border-color: var(--danger-line);
+  color: var(--text);
+}
+
+.spinner {
+  border-color: var(--border);
+  border-top-color: var(--accent);
+}
+.modal-mask {
+  background: var(--overlay);
+  backdrop-filter: blur(2px);
+}
+.toast.success {
+  border-color: var(--ok-line);
+  color: var(--ok);
+}
+.toast.error {
+  border-color: var(--danger-line);
+  color: var(--danger);
+}
+.toast.info {
+  border-color: var(--info-line);
+  color: var(--info);
+}
+.chat-list-item.active {
+  background: var(--accent-soft);
+}
+.code-block,
+.prompt-preview {
+  background: var(--surface);
+}
+
+/* =====================================================================
+ * 基础层增强：可见焦点环 / 减少动效 / 滚动条 / 选中色
+ * ===================================================================== */
+
+/* 焦点环只给键盘用户看（:focus-visible），鼠标点击不闪蓝边 */
+:focus-visible {
+  outline: 2px solid var(--focus-color);
+  outline-offset: 1px;
+}
+.btn:focus-visible,
+.nav-item:focus-visible,
+.tab:focus-visible,
+.chat-list-item:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus);
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+/* 细滚动条：默认的粗滚动条在深色面板上很扎眼 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: var(--radius-pill);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-mute);
+  background-clip: padding-box;
+}
+
+/* 动效降级：前庭功能敏感的用户关掉系统动画时，全部动画/过渡归零 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+

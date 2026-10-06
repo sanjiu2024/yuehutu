@@ -1,11 +1,37 @@
-/** 账号：扫码登录（二维码 base64 图片）、账号列表、状态、手动验证。 */
+/**
+ * 账号：扫码登录（二维码 base64 图片）、账号卡片、状态、手动验证。
+ *
+ * 字段来源与后端契约（重做 UI 时不动）：
+ *  - `GET /api/accounts` → `Account[]`（`login_state` / `runtime_state` / `blocked` / `remaining_seconds` …）；
+ *  - 「重新登录」`POST /api/accounts/{id}/relogin`，**新二维码内联返回**；
+ *  - 「扫码添加」`POST /api/accounts/qr/start`；两者都用 `GET /api/accounts/qr/{ticket}` 轮询；
+ *  - 「刷新资料」`POST /api/accounts/{id}/refresh-profile`，**成功与否看 `refreshed`**，不是看昵称有没有值；
+ *  - 「手动验证」`POST /api/accounts/{id}/captcha`（异步触发，立刻返回）。
+ */
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { api, errorText, isNotReady } from '../api'
-import { AsyncBox, Badge, ConfirmDialog, Modal, Notice, Switch, useToast } from '../components'
+import { AsyncBox, Badge, ConfirmDialog, Field, Modal, Notice, Stat, Switch, useToast } from '../components'
+import {
+  IconCheck,
+  IconCheckCircle,
+  IconClock,
+  IconClose,
+  IconEdit,
+  IconKey,
+  IconQr,
+  IconRefresh,
+  IconSearch,
+  IconShield,
+  IconTrash,
+  IconUser,
+  IconWarn,
+  IconXCircle,
+} from '../icons'
 import { useAsync } from '../hooks/useAsync'
-import { bool, formatTime, loginStateLabel, runtimeStateLabel } from '../format'
+import { bool, formatDuration, formatTime, loginStateLabel, runtimeStateLabel } from '../format'
 import type { Account, CaptchaResult, QrPoll, QrStart, QrState } from '../types'
+import './accounts.css'
 
 const QR_STATE_TEXT: Record<QrState, string> = {
   pending: '请用闲鱼 App 扫描二维码',
@@ -15,47 +41,41 @@ const QR_STATE_TEXT: Record<QrState, string> = {
   failed: '登录失败，请重新获取二维码',
 }
 
+/** 扫码三步：等待扫码 → 手机确认 → 登录完成。 */
+const QR_STEPS = ['等待扫码', '手机确认', '登录完成'] as const
+
+function qrStepIndex(state: QrState): number {
+  if (state === 'pending') return 0
+  if (state === 'scanned') return 1
+  if (state === 'confirmed') return 2
+  return -1 // expired / failed：整条流程作废，不标进度
+}
+
 /**
  * 账号头像。
  *
  * `avatar_url` 大概率拿不到（闲鱼资料接口未就绪时后端宁缺勿错，会下发空串），
- * 所以必须有个**不塌陷**的兜底：昵称/账号 ID 首字母。加载失败也走同一兜底，
+ * 所以必须有个**不塌陷**的兜底：昵称/备注/账号 ID 首字母。加载失败也走同一兜底，
  * 不能让浏览器破图图标占着位置。
  */
-function AccountAvatar({ account, size = 36 }: { account: Account; size?: number }) {
-  const [failed, setFailed] = useState(false)
+function AccountAvatar({ account, size = 44 }: { account: Account; size?: number }) {
+  // 记「失败的那个 URL」而不是布尔值：刷新资料拿到新 URL 后要重新试着加载，
+  // 否则一次失败就把这个账号永久钉在首字母兜底上，必须整页刷新才恢复。
+  const [failedUrl, setFailedUrl] = useState('')
   const nickname = (account.nickname || '').trim()
-  const letter = (nickname[0] || account.id?.[0] || '?').toUpperCase()
-  const box: CSSProperties = {
-    width: size,
-    height: size,
-    flex: 'none',
-    borderRadius: '50%',
-    overflow: 'hidden',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: Math.round(size * 0.42),
-    fontWeight: 600,
-    color: '#fff',
-    background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
-    border: '1px solid rgba(255,255,255,.14)',
-  }
-  if (account.avatar_url && !failed) {
+  const letter = (nickname[0] || (account.remark || '')[0] || account.id?.[0] || '?').toUpperCase()
+  const style: CSSProperties = { width: size, height: size, fontSize: Math.round(size * 0.4) }
+  const title = nickname || account.remark || account.id
+  const url = account.avatar_url || ''
+  if (url && url !== failedUrl) {
     return (
-      <span style={box} title={nickname || account.id}>
-        <img
-          src={account.avatar_url}
-          alt={nickname || account.id}
-          loading="lazy"
-          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-          onError={() => setFailed(true)}
-        />
+      <span className="ac-avatar" style={style} title={title}>
+        <img src={url} alt={title} loading="lazy" onError={() => setFailedUrl(url)} />
       </span>
     )
   }
   return (
-    <span style={box} title={nickname || account.id}>
+    <span className="ac-avatar" style={style} title={title} aria-hidden>
       {letter}
     </span>
   )
@@ -72,8 +92,27 @@ export function AccountsPage() {
   const [removing, setRemoving] = useState<Account | null>(null)
   const [busyId, setBusyId] = useState('')
   const [busy, setBusy] = useState(false)
+  const [keyword, setKeyword] = useState('')
 
   const list = accounts.data ?? []
+
+  const filtered = useMemo(() => {
+    const q = keyword.trim().toLowerCase()
+    if (!q) return list
+    return list.filter((account) =>
+      [account.nickname, account.remark, account.id, account.xianyu_user_id]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(q)),
+    )
+  }, [list, keyword])
+
+  const metrics = useMemo(() => {
+    const online = list.filter((a) => loginStateLabel(a.login_state).tone === 'ok').length
+    const needRelogin = list.filter((a) => loginStateLabel(a.login_state).tone === 'danger').length
+    const running = list.filter((a) => a.runtime_state === 'running').length
+    const blocked = list.filter((a) => bool(a.blocked)).length
+    return { online, needRelogin, running, blocked, total: list.length }
+  }, [list])
 
   const patchAccount = async (account: Account, patch: Partial<Account>) => {
     setBusyId(account.id)
@@ -161,114 +200,230 @@ export function AccountsPage() {
   }
 
   return (
-    <div>
-      <div className="toolbar">
-        <button className="btn primary" onClick={() => setQrOpen(true)}>
-          ＋ 扫码添加账号
-        </button>
-        <span className="spacer" />
-        <button className="btn" onClick={accounts.reload}>
-          刷新
-        </button>
+    <div className="ac-page">
+      <div className="ac-head">
+        <div className="ac-head-text">
+          <h2>账号</h2>
+          <p>
+            扫码登录闲鱼账号；每个账号可以独立开关「启用」与「AI 自动回复」，登录态和运行态都在这里看。
+          </p>
+        </div>
+        <div className="ac-head-actions">
+          <button className="btn primary" onClick={() => setQrOpen(true)}>
+            <IconQr size={16} /> 扫码添加账号
+          </button>
+          <button className="btn" onClick={accounts.reload} disabled={accounts.loading}>
+            <IconRefresh size={15} /> 刷新
+          </button>
+        </div>
       </div>
 
-      <div className="card">
-        <h3>
-          账号列表
-          <span className="hint">共 {list.length} 个</span>
-        </h3>
-        <AsyncBox
-          loading={accounts.loading}
-          error={accounts.error}
-          notReady={accounts.notReady}
-          empty={list.length === 0}
-          emptyIcon="👤"
-          emptyTitle="还没有闲鱼账号"
-          emptyDesc="点上方「扫码添加账号」，用闲鱼 App 扫码即可绑定。"
-          onRetry={accounts.reload}
-        >
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>账号</th>
-                  <th>登录状态</th>
-                  <th>运行状态</th>
-                  <th className="nowrap">启用</th>
-                  <th className="nowrap">自动回复</th>
-                  <th>备注</th>
-                  <th className="nowrap">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {list.map((account) => {
-                  const login = loginStateLabel(account.login_state)
-                  const runtime = runtimeStateLabel(account.runtime_state)
-                  const rowBusy = busyId === account.id
-                  return (
-                    <tr key={account.id}>
-                      <td>
-                        <div className="row" style={{ gap: 10, flexWrap: 'nowrap' }}>
-                          <AccountAvatar account={account} />
-                          <div style={{ minWidth: 0 }}>
-                            <strong>{account.nickname || '(未命名)'}</strong>
-                            <div className="mono dim">{account.id}</div>
-                          </div>
-                        </div>
-                      </td>
-                      <td>
-                        <Badge tone={login.tone}>{login.text}</Badge>
-                      </td>
-                      <td>
-                        <Badge tone={runtime.tone}>{runtime.text}</Badge>
-                      </td>
-                      <td>
-                        <Switch
-                          checked={bool(account.enabled)}
-                          disabled={rowBusy}
-                          onChange={(next) => patchAccount(account, { enabled: next })}
-                        />
-                      </td>
-                      <td>
-                        <Switch
-                          checked={bool(account.auto_reply)}
-                          disabled={rowBusy}
-                          onChange={(next) => patchAccount(account, { auto_reply: next })}
-                        />
-                      </td>
-                      <td className="dim">{account.remark || '-'}</td>
-                      <td className="nowrap">
-                        <div className="row" style={{ gap: 5 }}>
-                          <button className="btn sm" disabled={rowBusy} onClick={() => setReloginTarget(account)}>
-                            重新登录
-                          </button>
-                          <button
-                            className="btn sm"
-                            disabled={rowBusy}
-                            onClick={() => refreshProfile(account)}
-                            title="从闲鱼重新拉取昵称与头像"
-                          >
-                            刷新资料
-                          </button>
-                          <button className="btn sm" disabled={rowBusy} onClick={() => captcha(account)} title="打开浏览器窗口手动完成滑块验证">
-                            手动验证
-                          </button>
-                          <button className="btn sm ghost" onClick={() => setEditing(account)}>
-                            编辑
-                          </button>
-                          <button className="btn sm danger" onClick={() => setRemoving(account)}>
-                            删除
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </AsyncBox>
+      <div className="grid grid-4 ac-metrics">
+        <Stat
+          label="账号总数"
+          value={accounts.loading ? '…' : metrics.total}
+          extra={<span className="ac-metric-hint">已绑定到本机</span>}
+        />
+        <Stat
+          label="登录正常"
+          value={accounts.loading ? '…' : metrics.online}
+          tone={metrics.online > 0 ? 'var(--ok)' : undefined}
+          extra={
+            <span className="ac-metric-hint">
+              {metrics.needRelogin > 0 ? `需重新登录 ${metrics.needRelogin} 个` : '全部登录态正常'}
+            </span>
+          }
+        />
+        <Stat
+          label="运行中"
+          value={accounts.loading ? '…' : metrics.running}
+          extra={<span className="ac-metric-hint">IM 已连上、正在收消息</span>}
+        />
+        <Stat
+          label="风控熔断"
+          value={accounts.loading ? '…' : metrics.blocked}
+          tone={metrics.blocked > 0 ? 'var(--danger)' : 'var(--ok)'}
+          extra={<span className="ac-metric-hint">{metrics.blocked > 0 ? '建议先去风控页看原因' : '没有账号被熔断'}</span>}
+        />
       </div>
+
+      <div className="ac-toolbar">
+        <span className="ac-search">
+          <IconSearch size={15} />
+          <input
+            type="text"
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            placeholder="按昵称 / 备注 / 账号 ID 筛选"
+            aria-label="筛选账号"
+          />
+          {keyword && (
+            <button type="button" className="ac-search-clear" onClick={() => setKeyword('')} aria-label="清空筛选">
+              <IconClose size={13} />
+            </button>
+          )}
+        </span>
+        <span className="ac-toolbar-count">
+          共 <b>{list.length}</b> 个账号{keyword ? `，匹配 ${filtered.length} 个` : ''}
+        </span>
+      </div>
+
+      <AsyncBox
+        loading={accounts.loading}
+        error={accounts.error}
+        notReady={accounts.notReady}
+        onRetry={accounts.reload}
+      >
+        {list.length === 0 ? (
+          <div className="ac-empty">
+            <span className="ac-empty-icon">
+              <IconUser size={22} />
+            </span>
+            <span className="ac-empty-title">还没有闲鱼账号</span>
+            <span className="ac-empty-desc">
+              点右上角「扫码添加账号」，用手机闲鱼 App 扫一下二维码就能绑定；建议先在手机上关掉「二次验证」以免频繁重登。
+            </span>
+            <span className="ac-empty-actions">
+              <button className="btn primary sm" onClick={() => setQrOpen(true)}>
+                <IconQr size={14} /> 扫码添加账号
+              </button>
+            </span>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="ac-empty">
+            <span className="ac-empty-icon">
+              <IconSearch size={22} />
+            </span>
+            <span className="ac-empty-title">没有匹配的账号</span>
+            <span className="ac-empty-desc">换个关键词试试，或清空筛选。</span>
+            <span className="ac-empty-actions">
+              <button className="btn sm" onClick={() => setKeyword('')}>
+                <IconClose size={14} /> 清空筛选
+              </button>
+            </span>
+          </div>
+        ) : (
+          <div className="ac-grid">
+            {filtered.map((account) => {
+              const login = loginStateLabel(account.login_state)
+              const runtime = runtimeStateLabel(account.runtime_state)
+              const rowBusy = busyId === account.id
+              const blocked = bool(account.blocked)
+              const name = account.nickname || account.remark || '(未命名)'
+              return (
+                <div key={account.id} className={`ac-card${blocked ? ' blocked' : ''}`}>
+                  <div className="ac-card-head">
+                    <AccountAvatar account={account} />
+                    <div className="ac-card-id">
+                      <div className="ac-card-name" title={name}>
+                        {name}
+                      </div>
+                      <div className="ac-card-sub mono" title={account.id}>
+                        {account.id}
+                      </div>
+                    </div>
+                    <div className="ac-card-badges">
+                      <Badge tone={login.tone}>{login.text}</Badge>
+                      <Badge tone={runtime.tone}>{runtime.text}</Badge>
+                    </div>
+                  </div>
+
+                  <div className="ac-facts">
+                    <span className="ac-fact">
+                      <span className="ac-fact-k">闲鱼用户 ID</span>
+                      <span className="ac-fact-v mono">{account.xianyu_user_id || '未获取'}</span>
+                    </span>
+                    <span className="ac-fact">
+                      <span className="ac-fact-k">备注</span>
+                      <span className="ac-fact-v" title={account.remark || ''}>
+                        {account.remark || '-'}
+                      </span>
+                    </span>
+                    <span className="ac-fact">
+                      <span className="ac-fact-k">最近更新</span>
+                      <span className="ac-fact-v">{formatTime(account.updated_at)}</span>
+                    </span>
+                    <span className="ac-fact">
+                      <span className="ac-fact-k">凭据</span>
+                      <span className="ac-fact-v ac-chips">
+                        <span className={`ac-chip${account.has_cookie ? ' ok' : ' off'}`}>
+                          {account.has_cookie ? 'Cookie 已存' : '无 Cookie'}
+                        </span>
+                        <span className={`ac-chip${account.has_x5sec ? ' ok' : ' off'}`}>
+                          {account.has_x5sec ? 'x5sec 已存' : '无 x5sec'}
+                        </span>
+                      </span>
+                    </span>
+                  </div>
+
+                  {blocked && (
+                    <Notice kind="warn">
+                      风控熔断中：连续命中 {Number(account.consecutive_hits) || 0} 次
+                      {typeof account.remaining_seconds === 'number' && account.remaining_seconds > 0
+                        ? `，约 ${formatDuration(account.remaining_seconds)} 后自动解除`
+                        : '，暂时不会再向平台发请求'}
+                      。
+                      <button className="ac-inline-link" type="button" onClick={() => captcha(account)}>
+                        手动验证
+                      </button>
+                    </Notice>
+                  )}
+
+                  {login.tone === 'danger' && account.relogin_reason && (
+                    <div className="ac-reason">
+                      <IconWarn size={13} /> {account.relogin_reason}
+                    </div>
+                  )}
+
+                  <div className="ac-toggles">
+                    <Switch
+                      checked={bool(account.enabled)}
+                      disabled={rowBusy}
+                      label="启用该账号"
+                      onChange={(next) => patchAccount(account, { enabled: next })}
+                    />
+                    <Switch
+                      checked={bool(account.auto_reply)}
+                      disabled={rowBusy}
+                      label="AI 自动回复"
+                      onChange={(next) => patchAccount(account, { auto_reply: next })}
+                    />
+                    {!bool(account.enabled) && <Badge tone="muted">已停用</Badge>}
+                  </div>
+
+                  <div className="ac-actions">
+                    <button className="btn sm" disabled={rowBusy} onClick={() => setReloginTarget(account)}>
+                      <IconKey size={14} /> 重新登录
+                    </button>
+                    <button
+                      className="btn sm"
+                      disabled={rowBusy}
+                      onClick={() => refreshProfile(account)}
+                      title="从闲鱼重新拉取昵称与头像"
+                    >
+                      <IconRefresh size={14} /> 刷新资料
+                    </button>
+                    <button
+                      className="btn sm"
+                      disabled={rowBusy}
+                      onClick={() => captcha(account)}
+                      title="打开浏览器窗口手动完成滑块验证"
+                    >
+                      <IconShield size={14} /> 手动验证
+                    </button>
+                    <button className="btn sm ghost" disabled={rowBusy} onClick={() => setEditing(account)}>
+                      <IconEdit size={14} /> 编辑
+                    </button>
+                    <button className="btn sm danger" disabled={rowBusy} onClick={() => setRemoving(account)}>
+                      <IconTrash size={14} /> 删除
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </AsyncBox>
 
       {qrOpen && (
         <QrLoginModal
@@ -346,6 +501,7 @@ function QrLoginModal({
   const [message, setMessage] = useState('')
   const [starting, setStarting] = useState(true)
   const [error, setError] = useState('')
+  const [left, setLeft] = useState<number | null>(null)
   const pollRef = useRef<number | null>(null)
   const doneRef = useRef(false)
   // 连续失败计数。轮询要跑满二维码有效期（默认每 2 秒一次 ≈ 150 次），中间
@@ -353,6 +509,15 @@ function QrLoginModal({
   // 一次抖动不该让整次登录失败，连续失败才判死。
   const failRef = useRef(0)
   const MAX_POLL_FAILURES = 5
+  // 回调存进 ref：父组件传进来的是行内箭头函数（每次重渲染都是新引用），
+  // 直接放进轮询 effect 的依赖里会让「toast / accounts.changed 推送到来」就重建
+  // interval —— 每 2 秒的节奏被打断、还会立刻多发一次请求。
+  const onCloseRef = useRef(onClose)
+  const onSuccessRef = useRef(onSuccess)
+  useEffect(() => {
+    onCloseRef.current = onClose
+    onSuccessRef.current = onSuccess
+  }, [onClose, onSuccess])
 
   const start = useCallback(async () => {
     setStarting(true)
@@ -360,6 +525,7 @@ function QrLoginModal({
     setQr(null)
     setState('pending')
     setMessage('')
+    setLeft(null)
     doneRef.current = false
     failRef.current = 0
     try {
@@ -389,22 +555,36 @@ function QrLoginModal({
     if (!qr?.ticket || doneRef.current) return
     const ticket = qr.ticket
 
+    // 二维码作废/确认/判死后要**马上停**：只置 doneRef 的话 interval 还活着，
+    // 会继续每 2 秒拿一个死 ticket 打 `GET /api/accounts/qr/{ticket}`，直到关弹窗。
+    const stop = () => {
+      if (pollRef.current !== null) window.clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+
+    // 这张二维码作废的标记：点「重新获取二维码」后 start() 会把 doneRef 重置为 false，
+    // 上一张 ticket 的在途响应若晚到，会把**新**二维码盖上「已过期」并停掉新轮询。
+    let cancelled = false
+
     const poll = async () => {
+      if (cancelled || doneRef.current) return
       try {
         const result = await api.get<QrPoll>(`/api/accounts/qr/${encodeURIComponent(ticket)}`)
-        if (doneRef.current) return
+        if (cancelled || doneRef.current) return
         failRef.current = 0
         setState(result.state)
         if (result.message) setMessage(result.message)
         if (result.state === 'confirmed') {
           doneRef.current = true
-          onSuccess()
-          window.setTimeout(onClose, 900)
+          stop()
+          onSuccessRef.current()
+          window.setTimeout(() => onCloseRef.current(), 900)
         } else if (result.state === 'expired' || result.state === 'failed') {
           doneRef.current = true
+          stop()
         }
       } catch (err) {
-        if (doneRef.current) return
+        if (cancelled || doneRef.current) return
         failRef.current += 1
         if (failRef.current < MAX_POLL_FAILURES) {
           // 还没到判死线：继续下一轮，只是提示一下，不清空二维码也别停轮询。
@@ -412,6 +592,7 @@ function QrLoginModal({
           return
         }
         doneRef.current = true
+        stop()
         setError(errorText(err))
       }
     }
@@ -419,12 +600,29 @@ function QrLoginModal({
     void poll()
     pollRef.current = window.setInterval(poll, 2000)
     return () => {
-      if (pollRef.current !== null) window.clearInterval(pollRef.current)
-      pollRef.current = null
+      cancelled = true
+      stop()
     }
-  }, [qr?.ticket, onClose, onSuccess])
+  }, [qr?.ticket])
 
-  const tone = state === 'confirmed' ? 'ok' : state === 'expired' || state === 'failed' ? 'danger' : 'warn'
+  // 倒计时：只用后端给的 expires_in 起算，不猜。
+  useEffect(() => {
+    if (typeof qr?.expires_in !== 'number') {
+      setLeft(null)
+      return
+    }
+    setLeft(qr.expires_in)
+    const timer = window.setInterval(() => {
+      setLeft((value) => (value === null || value <= 1 ? 0 : value - 1))
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [qr])
+
+  const bad = state === 'expired' || state === 'failed'
+  const confirmed = state === 'confirmed'
+  const step = qrStepIndex(state)
+  const tone = confirmed ? 'ok' : bad ? 'danger' : 'warn'
+  const counting = typeof left === 'number' && left > 0 && !bad && !confirmed
 
   return (
     <Modal
@@ -436,7 +634,7 @@ function QrLoginModal({
             关闭
           </button>
           <button className="btn primary" onClick={() => void start()} disabled={starting}>
-            {starting ? '获取中…' : '重新获取二维码'}
+            <IconRefresh size={15} /> {starting ? '获取中…' : '重新获取二维码'}
           </button>
         </>
       }
@@ -444,28 +642,93 @@ function QrLoginModal({
       {error && <Notice kind="error">{error}</Notice>}
 
       {starting && !qr && (
-        <div className="loading-box">
+        <div className="ac-qr-loading">
           <span className="spinner" />
           <span>正在向闲鱼请求二维码…</span>
         </div>
       )}
 
       {qr && (
-        <div className="qr-box">
-          {qr.qr_image_b64 ? (
-            <img
-              src={qr.qr_image_b64.startsWith('data:') ? qr.qr_image_b64 : `data:image/png;base64,${qr.qr_image_b64}`}
-              alt="闲鱼登录二维码"
-            />
-          ) : (
-            <Notice kind="warn">后端没有返回二维码图片，请点「重新获取二维码」。</Notice>
-          )}
-          <Badge tone={tone}>{QR_STATE_TEXT[state] || state}</Badge>
-          {message && <div className="dim" style={{ fontSize: 12 }}>{message}</div>}
-          <div className="dim" style={{ fontSize: 12, textAlign: 'center', lineHeight: 1.8 }}>
-            打开手机闲鱼 → 我的 → 设置 → 扫码登录
-            <br />
-            二维码有效期 {qr.expires_in ? `${qr.expires_in} 秒` : '约 2 分钟'}，过期请重新获取
+        <div className="ac-qr">
+          <div className="ac-qr-left">
+            <div className={`ac-qr-frame${confirmed ? ' ok' : ''}${bad ? ' bad' : ''}`}>
+              {qr.qr_image_b64 ? (
+                <img
+                  src={
+                    qr.qr_image_b64.startsWith('data:')
+                      ? qr.qr_image_b64
+                      : `data:image/png;base64,${qr.qr_image_b64}`
+                  }
+                  alt="闲鱼登录二维码"
+                />
+              ) : (
+                <span className="ac-qr-noframe">
+                  <IconWarn size={26} />
+                  <span>后端没有返回二维码图片</span>
+                </span>
+              )}
+              {bad && (
+                <span className="ac-qr-mask bad">
+                  <IconXCircle size={30} />
+                  <strong>{state === 'expired' ? '二维码已过期' : '登录失败'}</strong>
+                  <span>点下方「重新获取二维码」</span>
+                </span>
+              )}
+              {confirmed && (
+                <span className="ac-qr-mask ok">
+                  <IconCheckCircle size={30} />
+                  <strong>登录成功</strong>
+                  <span>正在返回账号列表…</span>
+                </span>
+              )}
+            </div>
+            {counting && (
+              <span className="ac-count">
+                <IconClock size={14} /> 剩余 {left} 秒
+              </span>
+            )}
+            {typeof left === 'number' && left === 0 && !bad && !confirmed && (
+              <span className="ac-count warn">二维码应已过期，建议重新获取</span>
+            )}
+          </div>
+
+          <div className="ac-qr-right">
+            <ol className="ac-steps">
+              {QR_STEPS.map((label, index) => (
+                <li
+                  key={label}
+                  className={`ac-step${step === index ? ' active' : ''}${step > index ? ' done' : ''}${
+                    step < 0 ? ' void' : ''
+                  }`}
+                >
+                  <span className="ac-step-dot">{step > index ? <IconCheck size={13} /> : index + 1}</span>
+                  <span className="ac-step-label">{label}</span>
+                </li>
+              ))}
+            </ol>
+
+            <div className="ac-qr-status">
+              <Badge tone={tone}>{QR_STATE_TEXT[state] || state}</Badge>
+              {message && <span className="ac-qr-msg">{message}</span>}
+            </div>
+
+            <div className="ac-qr-tips">
+              <span className="ac-qr-tip">
+                <IconQr size={14} /> 手机闲鱼 → 我的 → 右上角设置 → 扫码登录
+              </span>
+              <span className="ac-qr-tip">
+                <IconClock size={14} /> 二维码有效期 {qr.expires_in ? `${qr.expires_in} 秒` : '约 2 分钟'}
+              </span>
+              {bad ? (
+                <span className="ac-qr-tip warn">
+                  <IconWarn size={14} /> 连续失败就先在账号页点「手动验证」过掉滑块，再回来重新扫码
+                </span>
+              ) : (
+                <span className="ac-qr-tip">
+                  <IconCheck size={14} /> 扫码后需要在手机上点「确认登录」，电脑这边会自动跳转
+                </span>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -522,17 +785,25 @@ function EditAccountModal({
         </>
       }
     >
-      <div className="kv" style={{ marginBottom: 14 }}>
-        <span className="k">账号 ID</span>
-        <span className="v mono">{account.id}</span>
-        <span className="k">最近更新</span>
-        <span className="v">{formatTime(account.updated_at)}</span>
+      <div className="ac-kv">
+        <span className="ac-kv-k">账号 ID</span>
+        <span className="ac-kv-v mono">{account.id}</span>
+        <span className="ac-kv-k">闲鱼用户 ID</span>
+        <span className="ac-kv-v mono">{account.xianyu_user_id || '未获取'}</span>
+        <span className="ac-kv-k">最近更新</span>
+        <span className="ac-kv-v">{formatTime(account.updated_at)}</span>
       </div>
-      <div className="field">
-        <label>备注</label>
-        <input type="text" value={remark} onChange={(e) => setRemark(e.target.value)} placeholder="给这个账号起个好记的名字" />
-      </div>
-      <div className="row" style={{ gap: 20, marginTop: 6 }}>
+
+      <Field label="备注" tip="只影响本机显示，不会改平台上的昵称">
+        <input
+          type="text"
+          value={remark}
+          onChange={(e) => setRemark(e.target.value)}
+          placeholder="给这个账号起个好记的名字"
+        />
+      </Field>
+
+      <div className="ac-edit-switches">
         <Switch checked={enabled} onChange={setEnabled} label="启用该账号" />
         <Switch checked={autoReply} onChange={setAutoReply} label="允许 AI 自动回复" />
       </div>

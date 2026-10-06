@@ -9,14 +9,23 @@ import { getToken } from './api'
 import type { WsEvent } from './types'
 
 type Listener = (event: WsEvent) => void
+type StatusListener = (connected: boolean) => void
 
 export class WsClient {
   private socket: WebSocket | null = null
   private listeners = new Set<Listener>()
+  private statusListeners = new Set<StatusListener>()
   private retry = 0
   private timer: number | null = null
   private closedByUs = false
   private connected = false
+
+  /** 连接状态变化的唯一出口：先比后发，避免同一状态重复通知。 */
+  private setConnected(next: boolean): void {
+    if (this.connected === next) return
+    this.connected = next
+    this.statusListeners.forEach((fn) => fn(next))
+  }
 
   connect(): void {
     const token = getToken()
@@ -35,7 +44,7 @@ export class WsClient {
 
     socket.onopen = () => {
       this.retry = 0
-      this.connected = true
+      this.setConnected(true)
       // 后端 receive_text() 等待心跳；定期发个占位消息保活
       this.timer = window.setInterval(() => {
         if (socket.readyState === WebSocket.OPEN) socket.send('ping')
@@ -53,7 +62,7 @@ export class WsClient {
     }
 
     socket.onclose = () => {
-      this.connected = false
+      this.setConnected(false)
       this.cleanup()
       if (!this.closedByUs) this.scheduleReconnect()
     }
@@ -79,11 +88,21 @@ export class WsClient {
 
   disconnect(): void {
     this.closedByUs = true
+    this.setConnected(false)
     this.cleanup()
   }
 
   isConnected(): boolean {
     return this.connected
+  }
+
+  /** 订阅连接状态；订阅时立刻回灌当前状态，调用方不必自己再问一次。 */
+  onStatus(listener: StatusListener): () => void {
+    this.statusListeners.add(listener)
+    listener(this.connected)
+    return () => {
+      this.statusListeners.delete(listener)
+    }
   }
 
   subscribe(listener: Listener): () => void {

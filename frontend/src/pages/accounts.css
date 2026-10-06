@@ -1,0 +1,620 @@
+/**
+ * 账号页样式（task-33 重做）。
+ *
+ * 全部 class 都以 `ac-` 前缀命名，只在本页生效；颜色/圆角/阴影一律走 `styles.css`
+ * 里的设计变量（`--panel` / `--border` / `--accent` / `--radius` …），不写死色值，
+ * 这样别的页面改主题时这里跟着变。
+ */
+
+.ac-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ---------------- 页头 ---------------- */
+
+.ac-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.ac-head-text h2 {
+  margin: 0 0 4px;
+  font-size: 19px;
+  letter-spacing: 0.2px;
+}
+
+.ac-head-text p {
+  margin: 0;
+  max-width: 620px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-dim);
+}
+
+.ac-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ac-metrics {
+  margin: 0;
+}
+
+.ac-metric-hint {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* ---------------- 工具条 ---------------- */
+
+.ac-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ac-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 260px;
+  padding: 0 10px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--text-mute);
+}
+
+.ac-search:focus-within {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ac-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.ac-search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--panel-2);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.ac-search-clear:hover {
+  color: var(--text);
+}
+
+.ac-toolbar-count {
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.ac-toolbar-count b {
+  color: var(--text);
+}
+
+/* ---------------- 账号卡片 ---------------- */
+
+.ac-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 12px;
+}
+
+.ac-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.ac-card.blocked {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border-soft));
+}
+
+.ac-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ac-avatar {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  overflow: hidden;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--notify));
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.ac-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.ac-card-id {
+  min-width: 0;
+  flex: 1;
+}
+
+.ac-card-name {
+  font-weight: 600;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ac-card-sub {
+  font-size: 11.5px;
+  color: var(--text-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ac-card-badges {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex: none;
+}
+
+/* 关键字段：两列小网格，label 在上、值在下，值过长省略 */
+.ac-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.ac-fact {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ac-fact-k {
+  font-size: 11px;
+  color: var(--text-mute);
+}
+
+.ac-fact-v {
+  font-size: 12.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ac-chips {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ac-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.ac-chip.ok {
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
+  color: var(--ok);
+}
+
+.ac-chip.off {
+  color: var(--text-mute);
+}
+
+.ac-inline-link {
+  margin-left: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12.5px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.ac-reason {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--warn);
+}
+
+.ac-toggles {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.ac-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: auto;
+}
+
+/* ---------------- 空态 ---------------- */
+
+.ac-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 34px 18px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  text-align: center;
+}
+
+.ac-empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  color: var(--text-mute);
+}
+
+.ac-empty-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ac-empty-desc {
+  max-width: 460px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-dim);
+}
+
+.ac-empty-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* ---------------- 扫码弹窗 ---------------- */
+
+.ac-qr-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 40px 0;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.ac-qr {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.ac-qr-left {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.ac-qr-frame {
+  position: relative;
+  width: 240px;
+  height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+  overflow: hidden;
+}
+
+.ac-qr-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.ac-qr-frame.ok {
+  border-color: var(--ok);
+}
+
+.ac-qr-frame.bad {
+  border-color: var(--danger);
+}
+
+.ac-qr-noframe {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-mute);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+/* 过期/失败/成功时盖一层，避免用户对着废二维码继续扫 */
+.ac-qr-mask {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  backdrop-filter: blur(2px);
+  font-size: 12.5px;
+  text-align: center;
+  padding: 12px;
+}
+
+.ac-qr-mask strong {
+  font-size: 14px;
+}
+
+.ac-qr-mask span {
+  color: var(--text-dim);
+}
+
+.ac-qr-mask.bad {
+  background: color-mix(in srgb, var(--danger) 82%, #000);
+  color: #fff;
+}
+
+.ac-qr-mask.bad span {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.ac-qr-mask.ok {
+  background: color-mix(in srgb, var(--ok) 82%, #000);
+  color: #fff;
+}
+
+.ac-qr-mask.ok span {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.ac-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.ac-count.warn {
+  color: var(--warn);
+}
+
+.ac-qr-right {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* 步骤条：竖排，激活项高亮，已完成项打勾 */
+.ac-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.ac-step {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0 12px;
+  font-size: 12.5px;
+  color: var(--text-mute);
+}
+
+.ac-step:not(:last-child)::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: 22px;
+  bottom: 2px;
+  width: 1px;
+  background: var(--border);
+}
+
+.ac-step-dot {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 21px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  font-size: 11.5px;
+}
+
+.ac-step.active {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.ac-step.active .ac-step-dot {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel-2));
+  color: var(--accent);
+}
+
+.ac-step.done {
+  color: var(--ok);
+}
+
+.ac-step.done .ac-step-dot {
+  border-color: color-mix(in srgb, var(--ok) 55%, var(--border));
+  background: color-mix(in srgb, var(--ok) 22%, var(--panel-2));
+  color: var(--ok);
+}
+
+.ac-step.void {
+  opacity: 0.5;
+}
+
+/* 步骤文案：字号/颜色都从 `.ac-step` 继承，这里只负责占满剩余宽度并允许换行
+   （不加这条时类名是「悬空」的 —— 独立审查把它记成了无样式类）。 */
+.ac-step-label {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.5;
+}
+
+.ac-qr-status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.ac-qr-msg {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+.ac-qr-tips {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.ac-qr-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+
+.ac-qr-tip svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.ac-qr-tip.warn {
+  color: var(--warn);
+}
+
+/* ---------------- 编辑弹窗 ---------------- */
+
+.ac-kv {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 12px;
+  margin-bottom: 14px;
+  font-size: 12.5px;
+}
+
+.ac-kv-k {
+  color: var(--text-mute);
+}
+
+.ac-kv-v {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ac-edit-switches {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+/* 窄屏：二维码与步骤条改上下排列 */
+@media (max-width: 720px) {
+  .ac-qr {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ac-qr-left {
+    align-items: center;
+  }
+
+  .ac-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

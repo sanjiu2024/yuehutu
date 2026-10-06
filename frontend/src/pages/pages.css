@@ -1,0 +1,366 @@
+/* 页面级通用件（task-31 新建）
+ *
+ * 这是给**所有页面**复用的一层「零件库」，目的是把 9 个页面里各写一遍的
+ * 页头、筛选栏、键值表、缩略图、进度条收敛成同一套尺寸与留白。
+ *
+ * 用法：页面根节点用 `.page`，里面按需取用。所有取值都走令牌，
+ * 深浅两套主题自动适配 —— 页面里**不要**再写死颜色。
+ *
+ * 命名约定：`.xyb-*` 前缀留给「必须与既有 class 区分开」的场合；
+ * 其余沿用短横线小写（`.section-head`、`.meta-list`）。
+ */
+
+/* =====================================================================
+ * 页面骨架
+ * ===================================================================== */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+
+/* 页头：标题 + 说明 + 右侧操作。左侧可换行，右侧永不被挤压 */
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+}
+.page-header-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.page-title {
+  margin: 0;
+  font-size: var(--fs-20);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.page-desc {
+  margin: 0;
+  color: var(--text-mute);
+  font-size: var(--fs-12);
+  line-height: 1.6;
+}
+.page-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: none;
+  flex-wrap: wrap;
+}
+
+/* =====================================================================
+ * 区块
+ * ===================================================================== */
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+.section-title {
+  margin: 0;
+  font-size: var(--fs-14);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.section-desc {
+  margin: 0;
+  color: var(--text-mute);
+  font-size: var(--fs-12);
+}
+.section-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: none;
+}
+/* 区块内嵌卡片时去掉卡片的重复描边 */
+.section > .card {
+  box-shadow: none;
+}
+
+/* =====================================================================
+ * 筛选栏
+ * ===================================================================== */
+
+.filter-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.filter-bar .field {
+  margin: 0;
+  min-width: 140px;
+}
+.filter-bar .spacer {
+  flex: 1;
+}
+.filter-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+/* 一行内并排的紧凑控件组 */
+.field-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+.field-row .field {
+  margin: 0;
+  flex: 1 1 160px;
+}
+
+/* =====================================================================
+ * 表格补充（基础 .table-wrap / table / th / td 在 styles.css）
+ * ===================================================================== */
+
+/* 行内操作按钮：平时半透明，hover 行时才完全显形，表格不至于被按钮塞满 */
+.table-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+tbody tr .table-actions {
+  opacity: 0.72;
+  transition: opacity var(--dur-1) var(--ease);
+}
+tbody tr:hover .table-actions,
+tbody tr:focus-within .table-actions {
+  opacity: 1;
+}
+/* 表格里的次要说明（ID、账号、时间） */
+.cell-sub {
+  display: block;
+  color: var(--text-mute);
+  font-size: var(--fs-11);
+  margin-top: 2px;
+}
+.cell-main {
+  display: block;
+  color: var(--text);
+}
+
+/* =====================================================================
+ * 竖排键值对（不同于 styles.css 里横排的 .kv）
+ * ===================================================================== */
+
+.meta-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--sp-3) var(--sp-4);
+}
+.meta-item {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.meta-key {
+  color: var(--text-mute);
+  font-size: var(--fs-11);
+  letter-spacing: 0.02em;
+}
+.meta-value {
+  color: var(--text);
+  font-size: var(--fs-13);
+  word-break: break-word;
+}
+.meta-value.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* =====================================================================
+ * 缩略图 / 列表行
+ * ===================================================================== */
+
+/* 统一尺寸的方形缩略图容器：img 用 object-fit:cover 填满，不会把行高撑变 */
+.thumb {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  color: var(--text-mute);
+}
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.thumb-46 {
+  width: 46px;
+  height: 46px;
+}
+.thumb-64 {
+  width: 64px;
+  height: 64px;
+}
+.thumb-96 {
+  width: 96px;
+  height: 96px;
+}
+.thumb-lg {
+  border-radius: var(--radius);
+}
+
+.list-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-1) var(--ease);
+}
+.list-row:hover {
+  background: var(--row-hover);
+}
+.list-row.selected {
+  background: var(--row-selected);
+}
+.list-row-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* =====================================================================
+ * 小零件
+ * ===================================================================== */
+
+/* 进度条 */
+.progress {
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--muted-soft);
+  overflow: hidden;
+}
+.progress > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--radius-pill);
+  transition: width var(--dur-2) var(--ease);
+}
+
+/* 标签组 */
+.tag-list {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex-wrap: wrap;
+}
+
+/* 行内代码/标识符 */
+.inline-code {
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+}
+
+/* 看似链接的按钮（无边框） */
+.link-btn {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.link-btn:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.divider {
+  height: 1px;
+  background: var(--border-soft);
+  border: none;
+  margin: var(--sp-2) 0;
+}
+
+/* 长内容页底部常驻操作条（保存/取消） */
+.sticky-actions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  padding: var(--sp-3) 0;
+  background: linear-gradient(to top, var(--bg) 70%, transparent);
+}
+
+/* 左右分栏：左侧列表固定宽，右侧详情自适应。窄屏自动上下堆叠 */
+.split-pane {
+  display: flex;
+  gap: var(--sp-4);
+  align-items: flex-start;
+}
+.split-pane > .pane-side {
+  flex: 0 0 300px;
+  min-width: 0;
+}
+.split-pane > .pane-main {
+  flex: 1;
+  min-width: 0;
+}
+
+/* =====================================================================
+ * 窄屏适配
+ * 只做「不塌即可」的收敛：分栏堆叠、侧栏收窄、表格可横向滚动。
+ * 注意：这个文件里如果以后还要追加规则，请写在所有 @media 之前。
+ * ===================================================================== */
+
+@media (max-width: 1100px) {
+  .split-pane {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .split-pane > .pane-side {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+}
+
+@media (max-width: 900px) {
+  .page-header {
+    flex-direction: column;
+  }
+  .page-actions {
+    width: 100%;
+  }
+}

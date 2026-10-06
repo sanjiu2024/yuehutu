@@ -1,0 +1,490 @@
+/* 共享组件层（task-31 新建）
+ *
+ * 放 `components.tsx` 里那些组件的样式。页面级通用件在 `pages/pages.css`。
+ * 规则：颜色/间距/圆角/阴影/时长**一律走 styles.css 的令牌**，
+ * 写死颜色会让浅色主题出对比度事故（这是本次重做要根治的问题之一）。
+ * 选择器都带类名，不要在这里写元素级全局规则 —— 那属于 styles.css 的基础层。
+ */
+
+/* =====================================================================
+ * 骨架屏 Skeleton
+ * 比转圈的 spinner 更好：位置固定、不跳动、能预期内容布局。
+ * ===================================================================== */
+
+.skeleton {
+  display: block;
+  background: linear-gradient(
+    90deg,
+    var(--skeleton-1) 25%,
+    var(--skeleton-2) 37%,
+    var(--skeleton-1) 63%
+  );
+  background-size: 400% 100%;
+  border-radius: var(--radius-sm);
+  animation: skeleton-shimmer 1.4s var(--ease) infinite;
+}
+
+.skeleton-text {
+  height: 12px;
+  margin: var(--sp-1) 0;
+}
+.skeleton-title {
+  height: 16px;
+  margin: var(--sp-2) 0 var(--sp-3);
+}
+.skeleton-block {
+  height: 96px;
+  border-radius: var(--radius);
+}
+.skeleton-circle {
+  border-radius: 50%;
+}
+/* 让最后一行短一点，模仿真实段落 */
+.skeleton-group > .skeleton:last-child {
+  width: 62%;
+}
+/* 多行骨架里行距交给 .skeleton-group 的 gap，行自身的 margin 会翻倍 */
+.skeleton-group > .skeleton-text {
+  margin: 0;
+}
+.skeleton-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
+}
+
+/* 骨架卡片容器：卡片里塞几行骨架时统一留白 */
+.skeleton-card {
+  padding: var(--sp-4) var(--sp-5);
+}
+
+/* =====================================================================
+ * 弹窗 v2
+ * styles.css 里 .modal 已经是 flex 列 + max-height:88vh、.modal-body 已 overflow-y:auto，
+ * 这里只补齐「头脚不参与滚动」和观感。
+ * ===================================================================== */
+
+.modal-head {
+  flex: 0 0 auto;
+  gap: var(--sp-3);
+}
+.modal-head .modal-title {
+  /* 显式写死，不依赖「本文件在 styles.css 之后加载」这个隐式前提：
+     styles.css 的 .modal-head h3 带 flex:1，撑开由旁边的 .grow 负责 */
+  flex: none;
+  margin: 0;
+  font-size: var(--fs-16);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.modal-head .modal-sub {
+  color: var(--text-mute);
+  font-size: var(--fs-12);
+  font-weight: 400;
+  margin: var(--sp-1) 0 0;
+}
+.modal-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.modal-close:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.modal-foot {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border-soft);
+}
+.modal.wide {
+  max-width: 960px;
+}
+/* 弹窗里第一/最后一个元素不要顶出多余留白 */
+.modal-body > :first-child {
+  margin-top: 0;
+}
+.modal-body > :last-child {
+  margin-bottom: 0;
+}
+
+/* =====================================================================
+ * 通知 Notice v2
+ * ===================================================================== */
+
+.notice {
+  align-items: flex-start;
+  line-height: 1.6;
+}
+.notice-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  margin-top: 1px;
+}
+.notice.info .notice-icon {
+  background: var(--info-soft);
+  color: var(--info);
+}
+.notice.warn .notice-icon {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.notice.error .notice-icon {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.notice-body {
+  min-width: 0;
+  flex: 1;
+}
+.notice-body > :first-child {
+  margin-top: 0;
+}
+.notice-body > :last-child {
+  margin-bottom: 0;
+}
+.notice-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* =====================================================================
+ * 轻提示 Toast v2
+ * ===================================================================== */
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  line-height: 1.5;
+}
+.toast-icon {
+  flex: none;
+  margin-top: 1px;
+}
+.toast-text {
+  min-width: 0;
+  flex: 1;
+  word-break: break-word;
+}
+
+/* =====================================================================
+ * 空态 Empty v2：图标放进柔和圆底，比裸字符稳重
+ * ===================================================================== */
+
+.empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  margin: 0 auto var(--sp-3);
+  border-radius: 50%;
+  background: var(--muted-soft);
+  color: var(--text-dim);
+}
+.empty-icon > svg {
+  display: block;
+}
+
+/* =====================================================================
+ * 导航与外壳 v2
+ * ===================================================================== */
+
+.sidebar {
+  width: var(--sidebar-w);
+  flex: 0 0 var(--sidebar-w);
+  gap: 0;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.brand-logo {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+}
+.brand-text {
+  min-width: 0;
+}
+.brand h1 {
+  font-size: var(--fs-14);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  margin: 0;
+}
+
+/* 导航分组：9 个入口平铺太长，按用途分 4 组 */
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  overflow-y: auto;
+}
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nav-group-title {
+  padding: 0 var(--sp-3) var(--sp-1);
+  color: var(--text-mute);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.nav-item {
+  position: relative;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+/* 选中态用「柔和底 + 左侧竖条」，比整块实心 accent 更克制、浅色下也不刺眼 */
+.nav-item.active {
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 600;
+}
+.nav-item.active .nav-icon {
+  color: var(--accent);
+}
+/* 选中态左侧竖条：比整块变色更克制，也不会盖住 hover 色 */
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 18px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+}
+.nav-item .nav-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.nav-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sidebar-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--border-soft);
+}
+.sidebar-status {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-12);
+  color: var(--text-dim);
+}
+.ws-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-mute);
+}
+.ws-dot.on {
+  background: var(--ok);
+  box-shadow: 0 0 0 3px var(--ok-soft);
+}
+.sidebar-meta {
+  font-size: var(--fs-11);
+  color: var(--text-mute);
+  line-height: 1.5;
+}
+
+/* 顶栏 v2 */
+.topbar {
+  gap: var(--sp-4);
+}
+.topbar-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.topbar h2 {
+  font-size: var(--fs-20);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.topbar .page-desc {
+  color: var(--text-mute);
+  font-size: var(--fs-12);
+}
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: none;
+}
+
+/* =====================================================================
+ * 分段控件 / 主题切换
+ * ===================================================================== */
+
+.seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--panel-2);
+}
+.seg-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
+  height: 26px;
+  padding: 0 var(--sp-3);
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: var(--fs-12);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.seg-btn:hover {
+  color: var(--text);
+}
+.seg-btn.active {
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+.seg-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+
+/* =====================================================================
+ * 登录页 v2
+ * ===================================================================== */
+
+.login-wrap {
+  background:
+    radial-gradient(1200px 600px at 50% -10%, var(--accent-soft), transparent 60%),
+    var(--bg);
+}
+.login-card {
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: var(--sp-6) var(--sp-5);
+  width: 340px;
+}
+.login-card .login-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  margin: 0 auto var(--sp-4);
+  border-radius: var(--radius-lg);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+}
+.login-card h1 {
+  text-align: center;
+  font-size: var(--fs-20);
+  letter-spacing: 0.02em;
+}
+.login-card .sub {
+  text-align: center;
+}
+.login-card .field {
+  margin-bottom: var(--sp-4);
+}
+.login-card .hint {
+  text-align: center;
+}
+.login-foot {
+  margin-top: var(--sp-4);
+  text-align: center;
+  color: var(--text-mute);
+  font-size: var(--fs-11);
+  line-height: 1.6;
+}
+
+/* =====================================================================
+ * 统计卡 Stat：一屏多个指标时的网格
+ * ===================================================================== */
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--sp-3);
+}
+/* Stat 的数值用等宽数字，多张卡并排时数字不会左右抖动 */
+.stat .value {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+/* =====================================================================
+ * 杂项
+ * ===================================================================== */
+
+/* 图标 + 文字 的按钮：靠 flex 保证图标垂直居中、不撑高行 */
+.btn-with-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+}
+
+/* 登录页右上角的主题切换（登录页也得能切主题，否则浅色用户第一眼就是深色登录页） */
+.login-wrap {
+  position: relative;
+}
+.login-theme {
+  position: absolute;
+  top: var(--sp-5);
+  right: var(--sp-5);
+}
+
