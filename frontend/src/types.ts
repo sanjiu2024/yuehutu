@@ -146,6 +146,11 @@ export interface BatchResult {
   failed: BatchEntry[]
   /** 完全没改的 id 索引（= failed 的 id 列表）。 */
   skipped?: string[]
+  /**
+   * **没有任何实际改动**的条数（后端 task-26 起）：「本次不改图」这类输入（`images: []`）
+   * 既不推平台也不算失败。**不能算进 `ok`** —— 显示「已修改并同步」是假话。
+   */
+  noop?: number
   updated?: string[]
   status?: string
   fields?: Record<string, unknown>

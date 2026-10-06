@@ -23,6 +23,19 @@ const MODES: Array<{ value: string; label: string; desc: string }> = [
   { value: 'off', label: 'AI 关闭', desc: 'AI 完全不参与这个会话' },
 ]
 
+/**
+ * 买家显示名。
+ *
+ * `peer_nickname` 后端拿不到时会下发**空串**（宁缺勿错，不猜名字），
+ * 这时显示「买家 <peer_user_id>」—— 比空白或错的名字有用，也方便对着闲鱼核对。
+ */
+function peerName(conversation: Conversation): string {
+  const nickname = (conversation.peer_nickname || '').trim()
+  if (nickname) return nickname
+  const userId = (conversation.peer_user_id || '').trim()
+  return userId ? `买家 ${userId}` : '买家'
+}
+
 /** 会话的 last_message 后端给的是**对象**（chats.py:116-121），不是字符串。 */
 function lastMessageText(conversation: Conversation): string {
   const last = conversation.last_message
@@ -190,7 +203,7 @@ export function ChatsPage() {
                   onClick={() => setActiveId(conversation.id)}
                 >
                   <div className="top">
-                    <span className="name">{conversation.peer_nickname || conversation.peer_user_id || '买家'}</span>
+                    <span className="name" title={peerName(conversation)}>{truncate(peerName(conversation), 18)}</span>
                     {Number(conversation.unread) > 0 && <span className="nav-badge">{conversation.unread}</span>}
                   </div>
                   <div className="preview">{lastMessageText(conversation)}</div>
@@ -348,7 +361,7 @@ function ChatWindow({
   return (
     <>
       <div className="chat-head">
-        <span className="who">{conversation.peer_nickname || conversation.peer_user_id || '买家'}</span>
+        <span className="who" title={peerName(conversation)}>{peerName(conversation)}</span>
         <Badge tone={mode.tone}>{mode.text}</Badge>
         {conversation.item_id && <span className="mono dim" style={{ fontSize: 11 }}>商品 {conversation.item_id}</span>}
         <span style={{ flex: 1 }} />

@@ -1,7 +1,7 @@
 /** 账号：扫码登录（二维码 base64 图片）、账号列表、状态、手动验证。 */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, errorText } from '../api'
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
+import { api, errorText, isNotReady } from '../api'
 import { AsyncBox, Badge, ConfirmDialog, Modal, Notice, Switch, useToast } from '../components'
 import { useAsync } from '../hooks/useAsync'
 import { bool, formatTime, loginStateLabel, runtimeStateLabel } from '../format'
@@ -13,6 +13,52 @@ const QR_STATE_TEXT: Record<QrState, string> = {
   confirmed: '登录成功！',
   expired: '二维码已过期，请重新获取',
   failed: '登录失败，请重新获取二维码',
+}
+
+/**
+ * 账号头像。
+ *
+ * `avatar_url` 大概率拿不到（闲鱼资料接口未就绪时后端宁缺勿错，会下发空串），
+ * 所以必须有个**不塌陷**的兜底：昵称/账号 ID 首字母。加载失败也走同一兜底，
+ * 不能让浏览器破图图标占着位置。
+ */
+function AccountAvatar({ account, size = 36 }: { account: Account; size?: number }) {
+  const [failed, setFailed] = useState(false)
+  const nickname = (account.nickname || '').trim()
+  const letter = (nickname[0] || account.id?.[0] || '?').toUpperCase()
+  const box: CSSProperties = {
+    width: size,
+    height: size,
+    flex: 'none',
+    borderRadius: '50%',
+    overflow: 'hidden',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: Math.round(size * 0.42),
+    fontWeight: 600,
+    color: '#fff',
+    background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
+    border: '1px solid rgba(255,255,255,.14)',
+  }
+  if (account.avatar_url && !failed) {
+    return (
+      <span style={box} title={nickname || account.id}>
+        <img
+          src={account.avatar_url}
+          alt={nickname || account.id}
+          loading="lazy"
+          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+          onError={() => setFailed(true)}
+        />
+      </span>
+    )
+  }
+  return (
+    <span style={box} title={nickname || account.id}>
+      {letter}
+    </span>
+  )
 }
 
 /** 二维码有效期到期后自动重新拉一张（后端默认 300 秒）。 */
@@ -56,6 +102,44 @@ export function AccountsPage() {
       toast.success(result?.message || '已打开人工验证窗口，请在弹出的浏览器里完成滑块')
     } catch (err) {
       toast.error(errorText(err))
+    } finally {
+      setBusyId('')
+    }
+  }
+
+  /**
+   * 从平台重新拉这个账号的昵称/头像。
+   *
+   * 契约（backed by `backend/app/api/accounts.py:282`）：
+   * `POST /api/accounts/{id}/refresh-profile` → `{account_id, nickname, avatar_url, refreshed}`
+   * （拉失败时**仍然 200**，多给一个 `message`）。
+   *
+   * 所以判定成功与否要看 `refreshed`，不能只看 `nickname` 有没有值 ——
+   * 平台就是没给昵称时 `refreshed` 也可能为 false，那时要说清楚是「没拉到」，
+   * 而不是骗用户「已刷新」。
+   */
+  const refreshProfile = async (account: Account) => {
+    setBusyId(account.id)
+    try {
+      const result = await api.post<{
+        account_id?: string
+        nickname?: string
+        avatar_url?: string
+        refreshed?: boolean
+        message?: string
+      }>(`/api/accounts/${encodeURIComponent(account.id)}/refresh-profile`)
+      if (result?.refreshed && result.nickname) {
+        toast.success(`已刷新资料：${result.nickname}`)
+      } else if (result?.refreshed) {
+        // 拿到了平台资料，但里面没有昵称（后端宁缺勿错下发空串）。
+        toast.info(result.message || '已刷新，但平台这次没给昵称')
+      } else {
+        toast.error(result?.message || '没能从闲鱼拉到账号资料，可能是 Cookie 已失效，试试重新扫码登录')
+      }
+      accounts.reload()
+    } catch (err) {
+      if (isNotReady(err)) toast.error('「刷新资料」接口还没就绪，请稍后再试')
+      else toast.error(errorText(err))
     } finally {
       setBusyId('')
     }
@@ -124,10 +208,13 @@ export function AccountsPage() {
                   return (
                     <tr key={account.id}>
                       <td>
-                        <div className="row">
-                          <strong>{account.nickname || '(未命名)'}</strong>
+                        <div className="row" style={{ gap: 10, flexWrap: 'nowrap' }}>
+                          <AccountAvatar account={account} />
+                          <div style={{ minWidth: 0 }}>
+                            <strong>{account.nickname || '(未命名)'}</strong>
+                            <div className="mono dim">{account.id}</div>
+                          </div>
                         </div>
-                        <div className="mono dim">{account.id}</div>
                       </td>
                       <td>
                         <Badge tone={login.tone}>{login.text}</Badge>
@@ -154,6 +241,14 @@ export function AccountsPage() {
                         <div className="row" style={{ gap: 5 }}>
                           <button className="btn sm" disabled={rowBusy} onClick={() => setReloginTarget(account)}>
                             重新登录
+                          </button>
+                          <button
+                            className="btn sm"
+                            disabled={rowBusy}
+                            onClick={() => refreshProfile(account)}
+                            title="从闲鱼重新拉取昵称与头像"
+                          >
+                            刷新资料
                           </button>
                           <button className="btn sm" disabled={rowBusy} onClick={() => captcha(account)} title="打开浏览器窗口手动完成滑块验证">
                             手动验证

@@ -1,7 +1,19 @@
 /** 商品：列表 + 单条编辑 + 批量选择后批量改价/改标题/改描述 + 上下架 + 发布。 */
 
-import { useMemo, useState, type ReactNode } from 'react'
-import { api, errorText } from '../api'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type CSSProperties,
+  type Dispatch,
+  type DragEvent,
+  type ReactNode,
+  type SetStateAction,
+} from 'react'
+import { api, errorText, getToken, uploadImage, type ImageInput } from '../api'
 import { AsyncBox, Badge, ConfirmDialog, Field, Modal, Notice, Switch, useToast } from '../components'
 import { useAsync } from '../hooks/useAsync'
 import { bool, formatMoney, formatTime, itemStatusLabel, parseImages, truncate } from '../format'
@@ -26,12 +38,16 @@ function showBatchNotice(
   const ok = Number(result?.ok) || 0
   const warnings = result?.warnings ?? []
   const failed = result?.failed ?? []
+  const noop = Number(result?.noop) || 0
   const parts: string[] = []
   if (ok > 0) parts.push(`已${verb}并同步 ${ok} 个`)
   if (warnings.length > 0) {
     parts.push(`${warnings.length} 个仅本地生效（未同步到闲鱼：${warnings[0]?.message ?? '未知原因'}）`)
   }
   if (failed.length > 0) parts.push(`${failed.length} 个没成功（${failed[0]?.message ?? '未知原因'}）`)
+  // `noop` 是后端明确「这次没有实际改动」（例如只传了表示不改图的空图片列表）：
+  // 不能并进 `ok` 报「已修改并同步」，那是在骗用户。
+  if (noop > 0) parts.push(`${noop} 个没有需要改动的内容`)
   const text = `${label}${verb}：${parts.join('；') || `没有可处理的商品（共 ${Number(result?.total) || 0} 个）`}`
   if (failed.length > 0) toast.error(text)
   else if (warnings.length > 0) toast.info(text)
@@ -53,10 +69,18 @@ function mergeBatch(): BatchResult & { warnings: NonNullable<BatchResult['warnin
  * 这里折成批量形状：`synced=false` 时把 `warning` 记成一条 `not_pushed`。
  */
 function singleEditAsBatch(
-  result: { item?: Item; synced?: boolean; warning?: string; updated_fields?: string[] } | undefined,
+  result:
+    | { item?: Item; synced?: boolean; warning?: string; updated_fields?: string[]; noop?: boolean }
+    | undefined,
 ): BatchResult & { warnings: NonNullable<BatchResult['warnings']> } {
   const merged = mergeBatch()
   merged.total = 1
+  if (result?.noop) {
+    // 后端 task-26 起可以返回 `noop: true`（这次没有任何实际改动）。
+    // 不能落进下面的 synced 分支 —— 那会报「已修改并同步 1 个」，而实际一个字都没改。
+    merged.noop = 1
+    return merged
+  }
   if (result?.synced) {
     merged.ok = 1
     merged.synced = 1
@@ -69,6 +93,90 @@ function singleEditAsBatch(
   })
   merged.local_only = 1
   return merged
+}
+
+/* ---------------- 列表缩略图 / 库存口径 ---------------- */
+
+/** 列表缩略图边长（固定尺寸，有没有图片行高都一样，不会因为缺图塌陷）。 */
+const LIST_THUMB_SIZE = 46
+
+const listThumbStyle: CSSProperties = {
+  width: LIST_THUMB_SIZE,
+  height: LIST_THUMB_SIZE,
+  flex: 'none',
+  display: 'block',
+  borderRadius: 6,
+  objectFit: 'cover',
+  background: 'rgba(255,255,255,.05)',
+  border: '1px solid rgba(255,255,255,.12)',
+}
+
+/**
+ * 商品缩略图（主图 = `images[0]`）。
+ * 无图或加载失败都退回同尺寸占位块 —— 绝不显示浏览器的破图图标。
+ */
+function ItemThumb({ url, alt }: { url?: string; alt: string }) {
+  const [failed, setFailed] = useState(false)
+  if (!url || failed) {
+    return (
+      <span
+        style={{
+          ...listThumbStyle,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 18,
+          color: 'rgba(255,255,255,.26)',
+        }}
+        title={failed ? '图片加载失败' : '没有图片'}
+      >
+        🖼
+      </span>
+    )
+  }
+  return (
+    <img
+      src={url}
+      alt={alt}
+      loading="lazy"
+      style={listThumbStyle}
+      onError={() => setFailed(true)}
+    />
+  )
+}
+
+/**
+ * 库存显示口径：后端 `stock = -1` 表示**未知/未同步**（不是「缺货」，也不能当 0），
+ * 必须显示成 `-`；`>= 0` 才是平台真实库存。
+ */
+function stockText(stock: number | null | undefined): { text: string; unknown: boolean } {
+  if (stock === null || stock === undefined) return { text: '-', unknown: true }
+  const value = Number(stock)
+  if (!Number.isFinite(value) || value < 0) return { text: '-', unknown: true }
+  return { text: String(value), unknown: false }
+}
+
+/**
+ * `items.images` → 有序 URL 列表。
+ *
+ * 约定是库里**只存 URL 字符串**（对象形状只是编辑请求的传输形状、不该落库）。这里
+ * 仍然多兜一层 `{url}` 对象：万一哪天库列里混进了对象，`String(obj)` 会变成
+ * `"[object Object]"`，缩略图和 `<img src>` 会一起废掉 —— 三行容错换掉一次回归。
+ */
+function itemImageUrls(images?: unknown): string[] {
+  if (!Array.isArray(images)) {
+    return parseImages(images as string | string[] | null | undefined)
+  }
+  return images
+    .map((entry) => {
+      if (typeof entry === 'string') return entry.trim()
+      if (entry && typeof entry === 'object') {
+        const url = (entry as { url?: unknown }).url
+        return typeof url === 'string' ? url.trim() : ''
+      }
+      return ''
+    })
+    .filter(Boolean)
 }
 
 export function ItemsPage() {
@@ -300,17 +408,29 @@ export function ItemsPage() {
                 {list.map((item) => {
                   const state = itemStatusLabel(item.status)
                   const checked = selected.has(item.item_id)
+                  const imageList = itemImageUrls(item.images)
+                  const stock = stockText(item.stock)
                   return (
                     <tr key={`${item.account_id}-${item.item_id}`} className={checked ? 'selected' : ''}>
                       <td>
                         <input type="checkbox" checked={checked} onChange={() => toggleOne(item.item_id)} />
                       </td>
-                      <td style={{ maxWidth: 320 }}>
-                        <div className="ellipsis" title={item.title}>
-                          {item.title || '(无标题)'}
-                        </div>
-                        <div className="mono dim" style={{ fontSize: 11 }}>
-                          {item.item_id} · {item.account_id}
+                      <td style={{ maxWidth: 340 }}>
+                        <div className="row" style={{ gap: 10, alignItems: 'flex-start', flexWrap: 'nowrap' }}>
+                          <ItemThumb url={imageList[0]} alt={item.title || item.item_id} />
+                          <div style={{ minWidth: 0 }}>
+                            <div className="ellipsis" title={item.title}>
+                              {item.title || '(无标题)'}
+                            </div>
+                            <div className="mono dim" style={{ fontSize: 11 }}>
+                              {item.item_id} · {item.account_id}
+                            </div>
+                            {imageList.length > 1 && (
+                              <div className="dim" style={{ fontSize: 11 }}>
+                                共 {imageList.length} 张图
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </td>
                       <td className="num nowrap">
@@ -321,7 +441,9 @@ export function ItemsPage() {
                           </div>
                         ) : null}
                       </td>
-                      <td className="num">{item.stock ?? '-'}</td>
+                      <td className="num nowrap" title={stock.unknown ? '未同步（平台没返回库存）' : ''}>
+                        {stock.text}
+                      </td>
                       <td className="nowrap">
                         <Badge tone={state.tone}>{state.text}</Badge>
                       </td>
@@ -417,30 +539,677 @@ export function ItemsPage() {
   )
 }
 
+/* ---------------- 图片上传区（拖拽 / 点击 / 粘贴 + 排序） ---------------- */
+
+/** 刚上传图片的真实尺寸，按 URL 记（URL 在数组里是唯一键）。 */
+type ImageSizes = Record<string, { width: number; height: number }>
+
+/**
+ * 有序 URL 列表 + 已知尺寸 → 提交给后端的 `images` 数组。
+ *
+ * **有尺寸的传对象，没尺寸的传字符串**：
+ * 平台 `imageInfoDOList` 的 `widthSize`/`heightSize` 要真实尺寸；上传接口给了就带上，
+ * 库里读出来的历史图没有尺寸 —— 那就交给协议层填占位 `'0'`（它明确拒绝硬编码 1254，
+ * 因为那是对每一张图撒谎），前端不编。
+ */
+function imagePayload(urls: string[], sizes: ImageSizes): ImageInput[] {
+  return urls.map((url) => {
+    const size = sizes[url]
+    return size ? { url, width: size.width, height: size.height } : url
+  })
+}
+
+const IMAGE_CELL_SIZE = 96
+const imageCellStyle: CSSProperties = {
+  position: 'relative',
+  width: IMAGE_CELL_SIZE,
+  height: IMAGE_CELL_SIZE,
+  flex: 'none',
+  borderRadius: 8,
+  overflow: 'hidden',
+  border: '1px solid rgba(255,255,255,.14)',
+  background: 'rgba(255,255,255,.04)',
+  cursor: 'grab',
+}
+
+const imageCellImgStyle: CSSProperties = { width: '100%', height: '100%', objectFit: 'cover', display: 'block' }
+
+const thumbDeleteStyle: CSSProperties = {
+  position: 'absolute',
+  top: 4,
+  right: 4,
+  width: 20,
+  height: 20,
+  padding: 0,
+  lineHeight: '18px',
+  borderRadius: '50%',
+  border: 'none',
+  cursor: 'pointer',
+  background: 'rgba(0,0,0,.66)',
+  color: '#fff',
+  fontSize: 13,
+  fontWeight: 700,
+}
+
+const dropZoneBaseStyle: CSSProperties = {
+  border: '1.5px dashed rgba(255,255,255,.22)',
+  borderRadius: 10,
+  padding: '14px 16px',
+  textAlign: 'center',
+  fontSize: 12.5,
+  lineHeight: 1.9,
+  cursor: 'pointer',
+  color: 'rgba(255,255,255,.6)',
+  background: 'rgba(255,255,255,.02)',
+}
+
+const dropZoneActiveStyle: CSSProperties = {
+  ...dropZoneBaseStyle,
+  borderColor: 'var(--accent)',
+  background: 'rgba(59,130,246,.14)',
+  color: '#dbeafe',
+}
+
+/** 上传进度条的槽（底条），填充部分按百分比宽度画。 */
+const progressTrackStyle: CSSProperties = {
+  position: 'absolute',
+  left: 0,
+  right: 0,
+  bottom: 0,
+  height: 4,
+  background: 'rgba(0,0,0,.5)',
+}
+
+// 只放后端真的收的四种（`backend/app/services/uploads.py:44` ALLOWED_EXTENSIONS）。
+// 故意不把 gif/bmp/avif/heic 写进来：放行它们只会让用户白等一次上传再收到
+// 「格式不支持」，不如当场说清楚。
+const IMAGE_EXT = /\.(png|jpe?g|webp)$/i
+// 与后端 MAX_UPLOAD_BYTES 对齐（`backend/app/services/uploads.py:48`，10MB）。
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
+/** 从后端给的 `local_path` 里取出文件名，喂给 `GET /api/uploads/local/{name}`。 */
+function localFileName(localPath?: string | null): string {
+  if (!localPath) return ''
+  const parts = String(localPath).split(/[\\/]/)
+  return parts[parts.length - 1] || ''
+}
+
+interface UploadTask {
+  key: string
+  name: string
+  /** 本地 object URL，上传中就靠它显示预览（服务端地址还没拿到）。 */
+  preview: string
+  percent: number
+  error: string
+}
+
+/**
+ * 商品图片编辑区。
+ *
+ * 契约（Lead 定，不得改）：
+ *  - 上传：`POST /api/uploads/images`，multipart 字段 `file`（+ 可选 `account_id`）
+ *    → `{url, file_id, width, height, name, local_path}`；
+ *  - 保存时把图片数组放进既有编辑请求体的 `images`，**第一张是主图**。数组里
+ *    **刚上传的图是 `{url,width,height}` 对象**（上传接口回了真实尺寸），
+ *    **库里读出来的历史图是裸 URL 字符串**（没有尺寸，不瞎编）；混合数组后端认。
+ *    （形状由调用方用 `imagePayload()` 拼，本组件只负责「顺序 + 每张的真实尺寸」。）
+ *
+ * 交互：
+ *  - 拖入（dragenter/dragover/drop，进入时整块高亮）、点击选择、Ctrl+V 粘贴；
+ *  - 缩略图网格，单张删除，**拖动排序**（HTML5 draggable + drop 到目标格，第一张即主图）；
+ *  - 每张上传独立显示真实进度（XHR 的 upload.onprogress），失败的只标自己那一张，
+ *    不影响已经传好的图；只要还有图在传，调用方就禁用「保存」。
+ *  - 「每行一个 URL」纯文本模式保留为兼容入口（分段控件切换），用于手工粘贴平台地址。
+ */
+function ImageField({
+  accountId,
+  urls,
+  setUrls,
+  onUploadingChange,
+  onUploaded,
+}: {
+  accountId: string
+  /** 只存 http(s) URL 的**有序**列表：渲染、去重、排序、删除都在这一层做。 */
+  urls: string[]
+  /** 用父级的 setState 直通，多个上传并发追加时不会丢结果（不做陈旧闭包）。 */
+  setUrls: Dispatch<SetStateAction<string[]>>
+  onUploadingChange: Dispatch<SetStateAction<number>>
+  /** 上传成功时把真实尺寸报给父级，父级据此把这张图拼成 `{url,width,height}`。 */
+  onUploaded?: (url: string, size: { width: number; height: number }) => void
+}) {
+  const toast = useToast()
+  const [mode, setMode] = useState<'upload' | 'text'>('upload')
+  const [dragOver, setDragOver] = useState(false)
+  const [tasks, setTasks] = useState<UploadTask[]>([])
+  const [dragIndex, setDragIndex] = useState<number | null>(null)
+  const [overIndex, setOverIndex] = useState<number | null>(null)
+  const [text, setText] = useState('')
+  const [broken, setBroken] = useState<Record<string, boolean>>({})
+  // 刚上传的图拿到的是闲鱼图床 URL；图床偶尔不能立刻回源。后端为这种情况留了
+  // `GET /api/uploads/local/{name}`（落盘原图，`<img>` 带不了 Bearer 头，所以它也收 `?token=`）。
+  // 这里记下 url → 本地文件名，远程图拉不到时退回来源本地，最后才认「打不开」。
+  const [localNames, setLocalNames] = useState<Record<string, string>>({})
+  const [srcOverride, setSrcOverride] = useState<Record<string, string>>({})
+  const inputRef = useRef<HTMLInputElement>(null)
+  // dragenter/dragleave 会随子元素冒泡反复触发，用计数抵消，避免高亮闪烁。
+  const depthRef = useRef(0)
+
+  // 只上报**还在传**的张数给父级（决定「保存」是否禁用）。
+  // 传失败的张数不能算进去 —— 否则用户一旦有一张图传失败，保存就被永久锁死。
+  const inFlight = tasks.filter((task) => !task.error).length
+  useEffect(() => {
+    onUploadingChange(inFlight)
+  }, [inFlight, onUploadingChange])
+
+  // 兜底：编辑弹窗开着时，把整个文档的文件投放默认行为掐掉。
+  // 否则用户把文件掉到虚线框外面一点点，浏览器就会直接跳到那个文件（本地路径），
+  // 单页应用被卸载 —— 用户看到的是「白屏/文件内容」，比丢一张图严重得多。
+  useEffect(() => {
+    const swallow = (event: Event) => event.preventDefault()
+    window.addEventListener('dragover', swallow)
+    window.addEventListener('drop', swallow)
+    return () => {
+      window.removeEventListener('dragover', swallow)
+      window.removeEventListener('drop', swallow)
+    }
+  }, [])
+
+  const addUrls = useCallback(
+    (incoming: string[]) => {
+      setUrls((prev) => [...prev, ...incoming.filter((url) => !prev.includes(url))])
+    },
+    [setUrls],
+  )
+
+  const uploadOne = useCallback(
+    async (file: File) => {
+      const key = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const preview = URL.createObjectURL(file)
+      setTasks((prev) => [...prev, { key, name: file.name || '图片', preview, percent: 0, error: '' }])
+      try {
+        const result = await uploadImage(file, {
+          accountId: accountId || undefined,
+          onProgress: (percent) => setTasks((prev) => prev.map((task) => (task.key === key ? { ...task, percent } : task))),
+        })
+        if (!result?.url) throw new Error('上传完成了，但后端没有返回图片地址')
+        addUrls([result.url])
+        // 把真实尺寸报给父级：平台 imageInfoDOList 的 widthSize/heightSize 就
+        // 不用退化成占位 '0'。**拿不到就不报** —— 宁可让协议层去填 '0'（它明确
+        // 拒绝硬编码 1254，因为那是对每张图撒谎），也不能在这里编一个尺寸。
+        const width = Number(result.width)
+        const height = Number(result.height)
+        if (onUploaded && Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+          onUploaded(result.url, { width, height })
+        }
+        // 记下本地副本名，远程 URL 拉不到时可以退回它
+        const localName = localFileName(result.local_path)
+        if (localName) setLocalNames((prev) => ({ ...prev, [result.url as string]: localName }))
+        setTasks((prev) => prev.filter((task) => task.key !== key))
+        URL.revokeObjectURL(preview)
+      } catch (err) {
+        // 单张失败只落在这一张上：已传好的图原样保留，其余并发的上传继续跑。
+        setTasks((prev) => prev.map((task) => (task.key === key ? { ...task, error: errorText(err) } : task)))
+      }
+    },
+    [accountId, addUrls, onUploaded],
+  )
+
+  const pickFiles = (files: FileList | File[] | null | undefined) => {
+    if (!files) return
+    const all = Array.from(files)
+    const images = all.filter((file) => file.type.startsWith('image/') || IMAGE_EXT.test(file.name))
+    const skipped = all.length - images.length
+    if (skipped > 0) toast.info(`已跳过 ${skipped} 个不是图片的文件`)
+    if (images.length === 0) {
+      if (all.length === 0) toast.info('没有读到文件，试试直接点这个区域选择图片')
+      return
+    }
+    // 超限的当场拦下：服务端上限 10MB，与其让它传完再被退回，不如现在就说清楚。
+    const tooBig = images.filter((file) => file.size > MAX_IMAGE_BYTES)
+    const accepted = images.filter((file) => file.size <= MAX_IMAGE_BYTES)
+    if (tooBig.length > 0) {
+      const names = tooBig.map((file) => `${file.name}（${(file.size / 1024 / 1024).toFixed(1)}MB）`).join('、')
+      toast.error(`超过 10MB 的图片传不了：${truncate(names, 60)}`)
+    }
+    if (accepted.length === 0) return
+    // 并发上传：每张各自成败，不排队、不互相阻塞。
+    for (const file of accepted) void uploadOne(file)
+  }
+
+  const removeTask = (key: string) => {
+    setTasks((prev) => {
+      const target = prev.find((task) => task.key === key)
+      if (target) URL.revokeObjectURL(target.preview)
+      return prev.filter((task) => task.key !== key)
+    })
+  }
+
+  /** 把第 from 张移到 to 位置（第一张 = 主图）。 */
+  const reorder = (from: number, to: number) => {
+    if (from === to || from < 0 || to < 0) return
+    setUrls((prev) => {
+      if (from >= prev.length || to >= prev.length) return prev
+      const next = prev.slice()
+      const [moved] = next.splice(from, 1)
+      next.splice(to, 0, moved)
+      return next
+    })
+  }
+
+  const onWrapperDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    depthRef.current = 0
+    setDragOver(false)
+    // 「每行一个 URL」模式下不走拖拽上传：那时用户是在编辑文本，
+    // 收下图片只会让 textarea 里的内容和真正要保存的 urls 对不上。
+    if (mode !== 'upload') return
+    // 缩略图之间的「排序拖动」没有 files（数据在 text/plain 里），别当成文件投放。
+    if (event.dataTransfer.files && event.dataTransfer.files.length > 0) pickFiles(event.dataTransfer.files)
+  }
+
+  const onPaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    // 文本模式下 textarea 才是粘贴目标 —— 这里一旦 preventDefault，
+    // 用户往 textarea 里粘一行 URL 就会发现「一个字都没进去」。
+    if (mode !== 'upload') return
+    const files = event.clipboardData?.files
+    if (files && files.length > 0) {
+      event.preventDefault()
+      pickFiles(files)
+      return
+    }
+    // 从别处复制来的图片地址也直接收下
+    const raw = event.clipboardData?.getData('text') || ''
+    const found = raw
+      .split(/\s+/)
+      .map((part) => part.trim())
+      .filter((part) => /^https?:\/\//i.test(part))
+    if (found.length > 0) {
+      event.preventDefault()
+      addUrls(found)
+      toast.success(`已添加 ${found.length} 个图片地址`)
+    }
+  }
+
+  const failedTasks = tasks.filter((task) => task.error)
+
+  /**
+   * 缩略图加载失败时的两级退让：先试后端的本地副本，再认「打不开」。
+   * 顺序不能反 —— 远程图床 URL 才是真正要提交给平台的地址，本地副本只是预览兜底。
+   */
+  const onImageError = (url: string) => {
+    const name = localNames[url]
+    if (name && !srcOverride[url]) {
+      const token = getToken()
+      const query = token ? `?token=${encodeURIComponent(token)}` : ''
+      setSrcOverride((prev) => ({ ...prev, [url]: `/api/uploads/local/${encodeURIComponent(name)}${query}` }))
+      return
+    }
+    setBroken((prev) => ({ ...prev, [url]: true }))
+  }
+
+  return (
+    <div
+      onDragEnter={(event) => {
+        // 文本模式下没有拖拽上传，别让虚线框高亮（那会儿虚线框根本没渲染）
+        if (mode !== 'upload') return
+        // 缩略图之间的「排序拖动」不是「拖文件进来」，别让虚线框跟着高亮喊「松手就开始上传」
+        if (dragIndex !== null) return
+        if (!event.dataTransfer.types.includes('Files')) return
+        event.preventDefault()
+        depthRef.current += 1
+        setDragOver(true)
+      }}
+      onDragOver={(event) => {
+        if (mode !== 'upload') return
+        if (dragIndex !== null) return
+        if (!event.dataTransfer.types.includes('Files')) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'copy'
+        setDragOver(true)
+      }}
+      onDragLeave={(event) => {
+        if (depthRef.current <= 0) return
+        event.preventDefault()
+        depthRef.current -= 1
+        if (depthRef.current <= 0) {
+          depthRef.current = 0
+          setDragOver(false)
+        }
+      }}
+      onDrop={onWrapperDrop}
+      onPaste={onPaste}
+    >
+      <div className="row" style={{ marginBottom: 8 }}>
+        <button
+          type="button"
+          className={`btn sm${mode === 'upload' ? ' primary' : ''}`}
+          onClick={() => setMode('upload')}
+        >
+          拖拽上传
+        </button>
+        <button
+          type="button"
+          className={`btn sm${mode === 'text' ? ' primary' : ''}`}
+          onClick={() => {
+            if (mode !== 'text') setText(urls.join('\n'))
+            setMode('text')
+          }}
+          style={{ marginLeft: -1 }}
+          title="兼容入口：直接粘贴图片 URL"
+        >
+          每行一个 URL
+        </button>
+        <span className="spacer" />
+        <span className="dim" style={{ fontSize: 11.5 }}>
+          共 {urls.length} 张{urls.length > 0 ? ' · 第一张是主图' : ''}
+        </span>
+      </div>
+
+      {mode === 'upload' ? (
+        <>
+          <div
+            tabIndex={0}
+            style={dragOver ? dropZoneActiveStyle : dropZoneBaseStyle}
+            onClick={(event) => {
+              // 点在缩略图上不触发选文件（缩略图有自己的删除/排序交互）
+              if ((event.target as HTMLElement).closest('[data-thumb]')) return
+              inputRef.current?.click()
+            }}
+          >
+            {dragOver ? (
+              <strong>松手就开始上传</strong>
+            ) : (
+              <>
+                <div>
+                  <strong>把图片拖进来</strong>，或点击这里选择文件
+                </div>
+                <div style={{ fontSize: 11.5 }}>
+                  也可以先点一下这里再按 Ctrl+V 粘贴 · 支持 png / jpg / webp / gif，可一次多张
+                </div>
+              </>
+            )}
+          </div>
+
+          <input
+            ref={inputRef}
+            type="file"
+            multiple
+            accept="image/*"
+            style={{ display: 'none' }}
+            onChange={(event) => {
+              pickFiles(event.target.files)
+              event.target.value = ''
+            }}
+          />
+
+          {(urls.length > 0 || tasks.length > 0) && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 12 }}>
+              {urls.map((url, index) => (
+                <div
+                  key={`${index}-${url}`}
+                  data-thumb
+                  draggable
+                  title="按住拖动可调整顺序（第一张是主图）"
+                  onDragStart={(event) => {
+                    event.stopPropagation()
+                    setDragIndex(index)
+                    event.dataTransfer.effectAllowed = 'move'
+                    event.dataTransfer.setData('text/plain', String(index))
+                  }}
+                  onDragEnter={(event) => event.stopPropagation()}
+                  onDragOver={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    event.dataTransfer.dropEffect = 'move'
+                    setOverIndex(index)
+                  }}
+                  onDragLeave={(event) => {
+                    event.stopPropagation()
+                    setOverIndex((prev) => (prev === index ? null : prev))
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    const raw = event.dataTransfer.getData('text/plain')
+                    const from = /^\d+$/.test(raw) ? Number(raw) : dragIndex
+                    if (from !== null) reorder(from, index)
+                    setDragIndex(null)
+                    setOverIndex(null)
+                  }}
+                  onDragEnd={() => {
+                    setDragIndex(null)
+                    setOverIndex(null)
+                  }}
+                  style={{
+                    ...imageCellStyle,
+                    opacity: dragIndex === index ? 0.4 : 1,
+                    outline: overIndex === index && dragIndex !== null && dragIndex !== index ? '2px solid var(--accent)' : 'none',
+                    outlineOffset: 1,
+                  }}
+                >
+                  <img
+                    src={srcOverride[url] || url}
+                    alt={`图片 ${index + 1}`}
+                    loading="lazy"
+                    style={imageCellImgStyle}
+                    onError={() => onImageError(url)}
+                  />
+                  {broken[url] && (
+                    <span
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        background: 'rgba(0,0,0,.6)',
+                        color: '#fca5a5',
+                        fontSize: 11.5,
+                      }}
+                    >
+                      图片打不开
+                    </span>
+                  )}
+                  {index === 0 && (
+                    <span
+                      style={{
+                        position: 'absolute',
+                        left: 4,
+                        bottom: 4,
+                        padding: '1px 6px',
+                        borderRadius: 4,
+                        fontSize: 10.5,
+                        background: 'rgba(59,130,246,.9)',
+                        color: '#fff',
+                      }}
+                    >
+                      主图
+                    </span>
+                  )}
+                  <span
+                    style={{
+                      position: 'absolute',
+                      right: 4,
+                      bottom: 4,
+                      fontSize: 10.5,
+                      color: 'rgba(255,255,255,.75)',
+                    }}
+                  >
+                    {index + 1}
+                  </span>
+                  <button
+                    type="button"
+                    style={thumbDeleteStyle}
+                    title="删除这张"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      setUrls((prev) => prev.filter((_, i) => i !== index))
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+
+              {tasks.map((task) => (
+                <div key={task.key} data-thumb style={imageCellStyle}>
+                  <img src={task.preview} alt={task.name} style={{ ...imageCellImgStyle, opacity: task.error ? 0.35 : 0.55 }} />
+                  {task.error ? (
+                    <span
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        background: 'rgba(0,0,0,.55)',
+                        color: '#fca5a5',
+                        fontSize: 11.5,
+                      }}
+                    >
+                      上传失败
+                    </span>
+                  ) : (
+                    <>
+                      <div style={progressTrackStyle}>
+                        <div
+                          style={{
+                            height: '100%',
+                            width: `${task.percent}%`,
+                            background: 'var(--accent)',
+                            transition: 'width .15s',
+                          }}
+                        />
+                      </div>
+                      <span
+                        style={{
+                          position: 'absolute',
+                          left: 4,
+                          bottom: 6,
+                          fontSize: 10.5,
+                          color: 'rgba(255,255,255,.9)',
+                        }}
+                      >
+                        {task.percent}%
+                      </span>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    style={thumbDeleteStyle}
+                    title={task.error ? '移除这张失败的图片' : '取消这张上传'}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      removeTask(task.key)
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {failedTasks.map((task) => (
+            <Notice key={task.key} kind="error">
+              <strong>{task.name}</strong> 上传失败：{task.error}
+            </Notice>
+          ))}
+        </>
+      ) : (
+        <textarea
+          value={text}
+          onChange={(event) => {
+            setText(event.target.value)
+            setUrls(
+              event.target.value
+                .split('\n')
+                .map((line) => line.trim())
+                .filter(Boolean),
+            )
+          }}
+          rows={6}
+          placeholder={'https://…（每行一个，第一行是主图）'}
+          className="mono"
+        />
+      )}
+    </div>
+  )
+}
+
 /* ---------------- 单条编辑 ---------------- */
 
 function EditItemModal({ item, onClose, onSaved }: { item: Item; onClose: () => void; onSaved: () => void }) {
   const toast = useToast()
   const [title, setTitle] = useState(item.title || '')
   const [price, setPrice] = useState(item.price !== undefined && item.price !== null ? String(item.price) : '')
-  const [stock, setStock] = useState(item.stock !== undefined && item.stock !== null ? String(item.stock) : '')
+  // `stock < 0` 是后端的「未知」哨兵值（首次入库 / 平台列表没给库存），**不是**真实库存。
+  // 千万不能把它预填进输入框：用户随手一保存就把 -1 发回去，后端
+  // `normalize_fields` 会以「库存不能为负」返回 400，用户看到的是莫名其妙的报错。
+  // 未知就留空 —— 留空等于「这次不改库存」。
+  const [stock, setStock] = useState(
+    item.stock !== undefined && item.stock !== null && Number(item.stock) >= 0 ? String(item.stock) : '',
+  )
   const [description, setDescription] = useState(item.description || '')
-  const [images, setImages] = useState(parseImages(item.images).join('\n'))
+  const [images, setImages] = useState<string[]>(() => itemImageUrls(item.images))
+  /**
+   * 刚上传图片的真实尺寸（URL → {width,height}）。
+   *
+   * 库里的 `items.images` **只存 URL 字符串**，历史图没有尺寸；用户这次新传的图
+   * 上传接口回了尺寸，就记在这儿 —— 提交时 `imagePayload()` 把有尺寸的拼成
+   * `{url,width,height}` 对象、其余保持字符串。两者混在一个数组里后端认。
+   */
+  const [imageSizes, setImageSizes] = useState<ImageSizes>({})
+  /** 有过上传/删除/排序才提交 `images` —— 否则没动图片的编辑会把平台主图清掉。 */
+  const [imagesTouched, setImagesTouched] = useState(false)
+  const [uploadingCount, setUploadingCount] = useState(0)
   const [aiEnabled, setAiEnabled] = useState(bool(item.ai_enabled))
   const [saving, setSaving] = useState(false)
 
+  const applyImages: Dispatch<SetStateAction<string[]>> = useCallback((updater) => {
+    setImagesTouched(true)
+    setImages((prev) => (typeof updater === 'function' ? updater(prev) : updater))
+  }, [])
+
+  /** 上传成功：记下真实尺寸（只有上传路径会调它，粘贴 URL 拿不到尺寸，如实留空）。 */
+  const rememberSize = useCallback((url: string, size: { width: number; height: number }) => {
+    setImageSizes((prev) => ({ ...prev, [url]: size }))
+  }, [])
+
+  const busy = saving || uploadingCount > 0
+
   const save = async () => {
+    if (uploadingCount > 0) {
+      toast.info('还有图片正在上传，等传完再保存')
+      return
+    }
+    // 后端会把 `images` 翻成平台的 `imageInfoDOList`，**空数组会被拒**
+    // （商品图不允许清空）。在本地就拦下来，别让用户白等一次往返。
+    if (imagesTouched && images.length === 0) {
+      toast.error('商品至少要留一张图：不能把所有图片都删掉再保存')
+      return
+    }
     setSaving(true)
     try {
       const patch: Record<string, unknown> = { title, description }
       if (price !== '') patch.price = Number(price)
       if (stock !== '') patch.stock = Number(stock)
-      const imageList = images.split('\n').map((s) => s.trim()).filter(Boolean)
-      if (imageList.length) patch.images = imageList
-      // 单条编辑返回 {item, synced, updated_fields, warning?}（**不是**批量形状）：
-      // ok 才算真的改到闲鱼上了；只有 warning 时是「本地已改、未同步」，
-      // 不能报「已保存」了事，也绝不能因为形状不对报「共 0 个」。
-      const result = await api.post<{ item?: Item; synced?: boolean; warning?: string; updated_fields?: string[] }>(
+      // 契约：`images` 数组里，**刚上传的图带真实尺寸**（`{url,width,height}`）、
+      // **历史图是裸 URL 字符串**（库里只有地址），第一张是主图（后端转成平台
+      // imageInfoDOList，混合数组后端认）。只有用户真的动过图片才带上这个字段
+      // —— 协议层对 `[]`/`None` 直接抛错，没动图就不该有这个键。
+      if (imagesTouched) patch.images = imagePayload(images, imageSizes)
+      // 单条编辑返回 {item, synced, updated_fields, warning?, local_only_fields?, noop?}
+      // （**不是**批量形状）：ok 才算真的改到闲鱼上了；只有 warning 时是「本地已改、
+      // 未同步」，不能报「已保存」了事，也绝不能因为形状不对报「共 0 个」。
+      const result = await api.post<{
+        item?: Item
+        synced?: boolean
+        warning?: string
+        updated_fields?: string[]
+        local_only_fields?: string[]
+        noop?: boolean
+      }>(
         `/api/items/${encodeURIComponent(item.account_id)}/${encodeURIComponent(item.item_id)}/edit`,
         patch,
       )
@@ -460,11 +1229,14 @@ function EditItemModal({ item, onClose, onSaved }: { item: Item; onClose: () => 
       wide
       footer={
         <>
+          <span className="dim" style={{ fontSize: 12, marginRight: 'auto' }}>
+            {uploadingCount > 0 ? `${uploadingCount} 张图片正在上传，传完才能保存` : ''}
+          </span>
           <button className="btn ghost" onClick={onClose} disabled={saving}>
             取消
           </button>
-          <button className="btn primary" onClick={save} disabled={saving}>
-            {saving ? '保存中…' : '保存'}
+          <button className="btn primary" onClick={save} disabled={busy}>
+            {saving ? '保存中…' : uploadingCount > 0 ? '等待上传…' : '保存'}
           </button>
         </>
       }
@@ -481,7 +1253,7 @@ function EditItemModal({ item, onClose, onSaved }: { item: Item; onClose: () => 
               </Field>
             </div>
             <div style={{ flex: 1 }}>
-              <Field label="库存">
+              <Field label="库存" tip="留空 = 未同步/不改动（平台没给库存时是 -1）">
                 <input type="number" min="0" value={stock} onChange={(e) => setStock(e.target.value)} />
               </Field>
             </div>
@@ -492,11 +1264,17 @@ function EditItemModal({ item, onClose, onSaved }: { item: Item; onClose: () => 
           <Switch checked={aiEnabled} onChange={setAiEnabled} label="允许该商品的 AI 自动回复（仅本地标记）" />
         </div>
         <div className="right">
+          <Field label="商品图片" tip="拖拽 / 点击 / 粘贴上传，第一张是主图">
+            <ImageField
+              accountId={item.account_id}
+              urls={images}
+              setUrls={applyImages}
+              onUploadingChange={setUploadingCount}
+              onUploaded={rememberSize}
+            />
+          </Field>
           <Field label="描述">
             <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={8} />
-          </Field>
-          <Field label="图片链接" tip="每行一个 URL">
-            <textarea value={images} onChange={(e) => setImages(e.target.value)} rows={5} />
           </Field>
         </div>
       </div>
@@ -785,12 +1563,28 @@ function PublishItemModal({
   const [stock, setStock] = useState('1')
   const [categoryId, setCategoryId] = useState('')
   const [description, setDescription] = useState('')
-  const [images, setImages] = useState('')
+  const [images, setImages] = useState<string[]>([])
+  /** 发布路径的图**全是这次新传的**，所以每张都能带真实尺寸（不走历史图那条路）。 */
+  const [imageSizes, setImageSizes] = useState<ImageSizes>({})
+  const [uploadingCount, setUploadingCount] = useState(0)
   const [saving, setSaving] = useState(false)
+
+  const rememberSize = useCallback((url: string, size: { width: number; height: number }) => {
+    setImageSizes((prev) => ({ ...prev, [url]: size }))
+  }, [])
 
   const submit = async () => {
     if (!title.trim()) {
       toast.info('请填写商品标题')
+      return
+    }
+    if (uploadingCount > 0) {
+      toast.info('还有图片正在上传，等传完再发布')
+      return
+    }
+    // 后端会把 `images` 翻成平台的 `imageInfoDOList`，空数组会被拒 —— 发布必须有图。
+    if (images.length === 0) {
+      toast.info('请先至少上传一张商品图片')
       return
     }
     setSaving(true)
@@ -799,7 +1593,8 @@ function PublishItemModal({
         title: title.trim(),
         description,
         category_id: categoryId || undefined,
-        images: images.split('\n').map((s) => s.trim()).filter(Boolean),
+        // 契约：第一张是主图；新传的图带真实尺寸 {url,width,height}，没有尺寸的用裸 URL。
+        images: imagePayload(images, imageSizes),
       }
       if (price !== '') payload.price = Number(price)
       if (originalPrice !== '') payload.original_price = Number(originalPrice)
@@ -824,8 +1619,8 @@ function PublishItemModal({
           <button className="btn ghost" onClick={onClose} disabled={saving}>
             取消
           </button>
-          <button className="btn primary" onClick={submit} disabled={saving}>
-            {saving ? '发布中…' : '发布'}
+          <button className="btn primary" onClick={submit} disabled={saving || uploadingCount > 0}>
+            {saving ? '发布中…' : uploadingCount > 0 ? '等待上传…' : '发布'}
           </button>
         </>
       }
@@ -864,11 +1659,17 @@ function PublishItemModal({
           </div>
         </div>
         <div className="right">
+          <Field label="商品图片" tip="拖拽 / 点击 / 粘贴上传，第一张是主图">
+            <ImageField
+              accountId={accountId}
+              urls={images}
+              setUrls={setImages}
+              onUploadingChange={setUploadingCount}
+              onUploaded={rememberSize}
+            />
+          </Field>
           <Field label="描述">
             <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={8} />
-          </Field>
-          <Field label="图片链接" tip="每行一个 URL">
-            <textarea value={images} onChange={(e) => setImages(e.target.value)} rows={4} />
           </Field>
         </div>
       </div>

@@ -155,6 +155,66 @@ function buildUrl(path: string, query?: RequestOptions['query']): string {
   return url
 }
 
+/**
+ * 把一次 HTTP 响应（fetch 或 XHR 拿到的）翻成 `T` 或抛出 `ApiError`。
+ *
+ * 抽出来是为了让 JSON 接口与 multipart 上传共用**同一套**信封/401/未就绪判定，
+ * 免得上传路径自己再写一遍错误映射、两边判断不一致。
+ */
+function handleResponse<T>(
+  status: number,
+  statusText: string,
+  text: string,
+  ok: boolean,
+  anonymous: boolean,
+  sentToken: boolean,
+): T {
+  let envelope: Envelope<T> | null = null
+  if (text) {
+    try {
+      envelope = JSON.parse(text) as Envelope<T>
+    } catch {
+      envelope = null
+    }
+  }
+
+  if (status === 401) {
+    // 只有「真的带了 token 出去的请求」才说明会话失效。
+    // 匿名请求（anonymous: true）收到 401 只意味着「这个接口需要登录」，
+    // 不能据此清掉用户的会话 —— 否则挂载时那次匿名的探测会把刚登录的用户立刻踢回登录页。
+    if (!anonymous && sentToken) {
+      clearToken()
+      onUnauthorized?.()
+    }
+    throw new ApiError('登录状态已失效，请重新登录', 'unauthorized', 401)
+  }
+
+  if (!ok) {
+    // FastAPI 的默认错误处理器返回 {"detail": "..."}，**没有** success 字段；
+    // 后端业务失败走 common.respond，一定带 success/code。据此区分
+    // 「路由根本不存在」与「路由在、但这单业务失败了（如账号不存在）」。
+    const isFrameworkError = !envelope || typeof envelope.success !== 'boolean'
+    const rawMessage =
+      envelope?.message ||
+      (envelope as unknown as { detail?: string } | null)?.detail ||
+      statusText ||
+      ''
+    const code = envelope?.code || `http_${status}`
+    // 后端尚未实现该路由时 FastAPI 直接 404/405；这类才算「未就绪」。
+    const notReady = isFrameworkError && (status === 404 || status === 405 || status === 501)
+    throw new ApiError(friendlyMessage(status, rawMessage, code), code, status, notReady)
+  }
+
+  if (envelope && envelope.success === false) {
+    const code = envelope.code || 'error'
+    throw new ApiError(friendlyMessage(status, envelope.message || '', code), code, status)
+  }
+
+  if (envelope && 'data' in envelope) return envelope.data as T
+  // 少数接口（如 /api/auth/logout）成功时不带 data
+  return undefined as T
+}
+
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = 'GET', body, query, anonymous = false, signal } = options
   const headers: Record<string, string> = {}
@@ -182,50 +242,102 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   }
 
   const text = await response.text()
-  let envelope: Envelope<T> | null = null
-  if (text) {
-    try {
-      envelope = JSON.parse(text) as Envelope<T>
-    } catch {
-      envelope = null
+  return handleResponse<T>(response.status, response.statusText, text, response.ok, anonymous, sentToken)
+}
+
+/** `POST /api/uploads/images` 成功的返回。 */
+export interface UploadedImage {
+  /** 平台可用的 https 图片地址（提交编辑/发布时放进 `images` 的就是它）。 */
+  url: string
+  file_id?: string
+  width?: number
+  height?: number
+  name?: string
+  /** 后端本地落盘路径，仅调试用，不要展示给用户。 */
+  local_path?: string
+}
+
+export interface UploadOptions {
+  /** 可选：带上账号，后端据此决定图片落到哪个账号的目录/平台。 */
+  accountId?: string
+  /** 真实上传进度（0-100）。浏览器只在 XHR 上给得到 `upload.onprogress`。 */
+  onProgress?: (percent: number) => void
+  signal?: AbortSignal
+}
+
+/**
+ * 编辑/发布请求体里 `images` 数组的一项。**同一个数组里两种都允许**：
+ *
+ * - **刚上传的图** → `{url, width, height}`：`uploadImage` 已经回了真实尺寸，
+ *   平台 `imageInfoDOList` 的 `widthSize`/`heightSize` 就不用退化成占位 `'0'`；
+ * - **库里读出来的历史图** → 裸 URL 字符串：库里只存了地址，没有尺寸。
+ *   尺寸是**编不出来的**（协议层宁可填 `'0'` 也不硬编码 1254，因为那是撒谎），
+ *   所以这里也绝不瞎猜，缺尺寸就老实传字符串。
+ *
+ * 后端 `_image_entry`（`backend/app/xianyu/client.py:1211`）两种形态都认，
+ * 并且只有 **URL 字符串**会落进 `items.images` 列。
+ */
+export type ImageInput = string | { url: string; width?: number; height?: number }
+
+/**
+ * 上传单张图片到 `POST /api/uploads/images`（multipart，字段 `file`）。
+ *
+ * 为什么用 XHR 而不是 fetch：只有 `XMLHttpRequest.upload.onprogress` 能在**发送过程中**
+ * 拿到已上传字节数，fetch 至今没有请求体进度。用户拖进几张图后需要看到进度条，
+ * 否则不知道是卡住了还是在传。
+ * 注意**不要**手写 `Content-Type` —— multipart 的 boundary 必须由浏览器生成。
+ */
+export function uploadImage(file: File, options: UploadOptions = {}): Promise<UploadedImage> {
+  const { accountId, onProgress, signal } = options
+  return new Promise<UploadedImage>((resolve, reject) => {
+    const form = new FormData()
+    form.append('file', file, file.name || 'image')
+    if (accountId) form.append('account_id', accountId)
+
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', '/api/uploads/images')
+    const token = getToken()
+    let sentToken = false
+    if (token) {
+      xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+      sentToken = true
     }
-  }
 
-  if (response.status === 401) {
-    // 只有「真的带了 token 出去的请求」才说明会话失效。
-    // 匿名请求（anonymous: true）收到 401 只意味着「这个接口需要登录」，
-    // 不能据此清掉用户的会话 —— 否则挂载时那次匿名的探测会把刚登录的用户立刻踢回登录页。
-    if (!anonymous && sentToken) {
-      clearToken()
-      onUnauthorized?.()
+    if (signal) {
+      if (signal.aborted) {
+        reject(new ApiError('上传已取消', 'aborted', 0))
+        return
+      }
+      signal.addEventListener('abort', () => xhr.abort(), { once: true })
     }
-    throw new ApiError('登录状态已失效，请重新登录', 'unauthorized', 401)
-  }
 
-  if (!response.ok) {
-    // FastAPI 的默认错误处理器返回 {"detail": "..."}，**没有** success 字段；
-    // 后端业务失败走 common.respond，一定带 success/code。据此区分
-    // 「路由根本不存在」与「路由在、但这单业务失败了（如账号不存在）」。
-    const isFrameworkError = !envelope || typeof envelope.success !== 'boolean'
-    const rawMessage =
-      envelope?.message ||
-      (envelope as unknown as { detail?: string } | null)?.detail ||
-      response.statusText ||
-      ''
-    const code = envelope?.code || `http_${response.status}`
-    // 后端尚未实现该路由时 FastAPI 直接 404/405；这类才算「未就绪」。
-    const notReady = isFrameworkError && (response.status === 404 || response.status === 405 || response.status === 501)
-    throw new ApiError(friendlyMessage(response.status, rawMessage, code), code, response.status, notReady)
-  }
+    xhr.upload.onprogress = (event) => {
+      if (!onProgress) return
+      onProgress(event.lengthComputable && event.total > 0 ? Math.round((event.loaded / event.total) * 100) : 0)
+    }
+    xhr.onload = () => {
+      try {
+        resolve(
+          handleResponse<UploadedImage>(
+            xhr.status,
+            xhr.statusText,
+            xhr.responseText,
+            xhr.status >= 200 && xhr.status < 300,
+            false,
+            sentToken,
+          ),
+        )
+      } catch (err) {
+        reject(err)
+      }
+    }
+    xhr.onerror = () =>
+      reject(new ApiError('图片上传失败：无法连接后端服务，请确认程序是否正在运行', 'network_error', 0, true))
+    xhr.ontimeout = () => reject(new ApiError('图片上传超时，请重试', 'timeout', 0, true))
+    xhr.onabort = () => reject(new ApiError('上传已取消', 'aborted', 0))
 
-  if (envelope && envelope.success === false) {
-    const code = envelope.code || 'error'
-    throw new ApiError(friendlyMessage(response.status, envelope.message || '', code), code, response.status)
-  }
-
-  if (envelope && 'data' in envelope) return envelope.data as T
-  // 少数接口（如 /api/auth/logout）成功时不带 data
-  return undefined as T
+    xhr.send(form)
+  })
 }
 
 export const api = {
