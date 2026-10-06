@@ -14,6 +14,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -843,6 +844,32 @@ class ImBackfillTest(_ChatsTestBase):
         result = chats.sync_im_conversations('acc1')
         self.assertFalse(result.get('success', True))
         self.assertTrue(result.get('code'))
+
+
+class UnparsedFrameLogTest(unittest.TestCase):
+    """真机日志噪声：平台例行帧不许按 WARNING 记。
+
+    上线后每 30 秒一次心跳回帧、每分钟一次同步包，全打成 WARNING 会把真正的
+    「认不出的买家消息」淹掉 —— 而那条日志是首上线唯一的线索（`/s/vulcan` 里
+    带的 bizType 370 是商品草稿推送，跟私信无关）。
+    """
+
+    def _summary(self, frame_type):
+        fake = SimpleNamespace(frame_summary=lambda payload: {'type': frame_type, 'body': '{}'})
+        return fake
+
+    def test_routine_frames_are_quiet(self):
+        for frame_type in ('/s/sync', '/s/vulcan', ''):
+            with mock.patch.object(chats.logger, 'warning') as warn:
+                chats._warn_unparsed_frame(self._summary(frame_type), {'a': 1}, '不是可处理的买家文本消息')
+            warn.assert_not_called()
+
+    def test_unknown_frame_still_warns(self):
+        with mock.patch.object(chats.logger, 'warning') as warn:
+            chats._warn_unparsed_frame(
+                self._summary('/r/MessageManager/listUserMessages'), {'a': 1}, '不是可处理的买家文本消息',
+            )
+        warn.assert_called_once()
 
 
 if __name__ == '__main__':

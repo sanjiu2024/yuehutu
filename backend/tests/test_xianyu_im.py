@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import sys
@@ -98,6 +99,49 @@ class ReplyErrorTest(unittest.TestCase):
         frame = {'lwp': '/reg', 'headers': {'mid': 'm3'}}
         for code in (0, 200, 399, None):
             im.ImSession._raise_on_error(frame, {'code': code, 'body': {}})
+
+
+class RegisterCodeTest(unittest.TestCase):
+    """``/reg`` 的成功码是 **200**，不是 0。
+
+    真机回帧（2026-10-06）：``{"headers": {"reg-uid": "2217970177348@goofish"},
+    "code": 200, "body": {"unitName": "PNM", "timestamp": ...}}``。
+    曾经这里写 ``if code: raise``，把 200 当失败 —— 结果是 IM 明明注册成功却报
+    「IM 注册未成功(code=200)」、入站一行帧都收不到。
+    """
+
+    def _register_with(self, response):
+        session = im.ImSession(COOKIE, 'tok', ACCOUNT_ID)
+
+        async def fake_request(frame):
+            return response
+
+        session.request = fake_request  # type: ignore[assignment]
+        return asyncio.run(session._register())
+
+    def test_200_is_success(self):
+        # 真机形状：注册成功。不许抛。
+        self._register_with({'code': 200, 'body': {'unitName': 'PNM'}})
+
+    def test_zero_and_2xx_are_success(self):
+        for code in (0, 200, 201, 299, None):
+            with self.subTest(code=code):
+                self._register_with({'code': code, 'body': {}})
+
+    def test_401_still_raises_with_reason(self):
+        with self.assertRaises(im.ImError) as ctx:
+            self._register_with({
+                'code': 401,
+                'body': {'reason': 'device id or appkey is not equal'},
+            })
+        message = str(ctx.exception)
+        self.assertIn('IM 注册未成功(code=401)', message)
+        self.assertIn('device id or appkey is not equal', message, '平台原文不能丢')
+
+    def test_5xx_raises_without_body(self):
+        with self.assertRaises(im.ImError) as ctx:
+            self._register_with({'code': 503, 'body': {}})
+        self.assertIn('503', str(ctx.exception))
 
 
 # --------------------------------------------------------------------------- 会话解析
@@ -265,6 +309,103 @@ class FetchShapesTest(unittest.TestCase):
         session = self._session(response)
         items = asyncio.run(session.fetch_messages('conv-1'))
         self.assertEqual([one['content'] for one in items], ['你好'])
+
+    def test_messages_read_from_user_message_models(self):
+        """真机键名是 ``body['userMessageModels']``（不是 ``messages``）。
+
+        真机抓帧（2026-10-06）：``{"code": 200, "body": {"nextCursor": ...,
+        "hasMore": ..., "userMessageModels": [{"message": {...}}, ...]}}``。
+        我们曾经只认 ``messages``/``list``/``data`` —— 会话列表能出来，
+        点开却一条消息都没有，用户看到的就是「消息一个没读取过来」。
+        """
+        import asyncio
+
+        raw = json.dumps({'contentType': 1, 'text': '在的'}, ensure_ascii=False)
+        encoded = base64.b64encode(raw.encode('utf-8')).decode()
+        response = {
+            'code': 200,
+            'body': {
+                'nextCursor': 1791136339472,
+                'hasMore': False,
+                'userMessageModels': [
+                    {
+                        'readStatus': 2,
+                        'message': {
+                            'messageId': '4340883858291.PNM',
+                            'cid': '67420662141@goofish',
+                            'createAt': 1791275602627,
+                            'content': {'custom': {'data': encoded}},
+                            'extension': {'senderUserId': '2222886507942@goofish'},
+                        },
+                    }
+                ],
+            },
+        }
+        session = self._session(response)
+        items = asyncio.run(session.fetch_messages('67420662141'))
+        self.assertEqual([one['content'] for one in items], ['在的'])
+        self.assertEqual(items[0]['buyer_id'], '2222886507942')
+
+
+class RealThreeLayerShapeTest(unittest.TestCase):
+    """真机会话条目的**三层嵌套**：字段分散在三层里，只认一层就整列解析成空。"""
+
+    def _item(self) -> dict:
+        return {
+            'type': 2,
+            'singleChatUserConversation': {
+                'visible': 1,
+                'modifyTime': 1791275531921,
+                'redPoint': 0,
+                'joinTime': 1791135943288,
+                # 最后一条消息在**中间层**
+                'lastMessage': {
+                    'message': {
+                        'content': {'custom': {'summary': '[请确认微信收款]'}},
+                        'extension': {
+                            'reminderTitle': 'x***2',
+                            'senderUserId': '2222886507942',
+                        },
+                    }
+                },
+                # cid / pairFirst / pairSecond / extension 在**最内层**
+                'singleChatConversation': {
+                    'cid': '67420662141@goofish',
+                    'pairFirst': '2222886507942@goofish',
+                    'pairSecond': f'{ACCOUNT_ID}@goofish',
+                    'bizType': '1',
+                    'createAt': 1791135930000,
+                    'extension': {
+                        'itemId': '1087247101297@goofish',
+                        'itemTitle': '我的世界MC开服一条龙',
+                    },
+                },
+            },
+        }
+
+    def test_all_three_layers_are_read(self):
+        one = im.parse_conversation(self._item(), ACCOUNT_ID)
+        self.assertIsNotNone(one, '三层结构解析不出来 = 真机会话列表永远空')
+        self.assertEqual(one['cid'], '67420662141')
+        self.assertEqual(one['buyer_id'], '2222886507942', 'pairFirst 是买家')
+        self.assertEqual(one['buyer_name'], 'x***2')
+        self.assertEqual(one['item_id'], '1087247101297')
+        self.assertEqual(one['item_title'], '我的世界MC开服一条龙')
+        self.assertEqual(one['last_message'], '[请确认微信收款]')
+        self.assertEqual(one['last_time'], 1791275531921, 'modifyTime 在中间层')
+        self.assertEqual(one['unread'], 0)
+
+    def test_my_id_in_first_slot_still_finds_the_buyer(self):
+        item = self._item()
+        inner = item['singleChatUserConversation']['singleChatConversation']
+        inner['pairFirst'] = f'{ACCOUNT_ID}@goofish'
+        inner['pairSecond'] = '2222886507942@goofish'
+        one = im.parse_conversation(item, ACCOUNT_ID)
+        self.assertEqual(one['buyer_id'], '2222886507942')
+
+    def test_group_conversation_is_skipped(self):
+        group = {'type': 1, 'groupChatUserConversation': {'cid': 'g-1@goofish'}}
+        self.assertIsNone(im.parse_conversation(group, ACCOUNT_ID))
 
 
 if __name__ == '__main__':

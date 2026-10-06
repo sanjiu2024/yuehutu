@@ -929,6 +929,11 @@ def im_handler_for(account_id: str):
     return handler
 
 
+#: 平台**例行**推送的帧类型（同步位点 `/s/sync`、商品草稿推送 `/s/vulcan`、心跳回帧）。
+#: 真机实测它们永远不含买家消息，日志按 DEBUG 记（见 `_warn_unparsed_frame`）。
+NON_MESSAGE_FRAME_TYPES = ('/s/sync', '/s/vulcan', '')
+
+
 def _warn_unparsed_frame(im_module: Any, payload: Any, reason: str) -> None:
     """认不出的入站帧留一条 WARNING：type + 截断 body。
 
@@ -944,6 +949,14 @@ def _warn_unparsed_frame(im_module: Any, payload: Any, reason: str) -> None:
             info = {}
     if not info:
         info = {'type': type(payload).__name__, 'body': repr(payload)[:200]}
+    # 平台例行推送按 DEBUG 记：真机上每 30 秒一次心跳回帧、每分钟左右一次同步包，
+    # 全是 WARNING 会把真正的「认不出的买家消息」淹掉（首上线唯一的线索就是那条）。
+    if str(info.get('type') or '') in NON_MESSAGE_FRAME_TYPES:
+        logger.debug(
+            'IM 例行帧（{}）: type={} body={}',
+            reason, info.get('type', ''), info.get('body', ''),
+        )
+        return
     logger.warning(
         'IM 入站帧已跳过（{}）: type={} body={}',
         reason, info.get('type', ''), info.get('body', ''),

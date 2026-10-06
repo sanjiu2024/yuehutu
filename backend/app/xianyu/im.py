@@ -178,30 +178,78 @@ def extract_message_summary(model: Dict[str, Any], limit: int = 80) -> str:
 def parse_conversation(raw: Any, my_id: str = '') -> Optional[Dict[str, Any]]:
     """把会话列表里的一条 ``userConvs`` 项归一化成工作台字段。
 
-    真实结构是 ``{'singleChatUserConversation': {...}, 'lastMessage': {...}}``，
-    也有版本直接摊平；**取不到 cid 就返回 None**，绝不造一个空会话出来。
+    **真实结构是三层**（真机抓帧 2026-10-06）::
+
+        userConvs[i] = {'singleChatUserConversation': {...}, 'type': ...}
+        singleChatUserConversation = {
+            'cid'?: ..., 'pairFirst'?: ..., 'pairSecond'?: ..., 'extension'?: ...,
+            'lastMessage': {...}, 'modifyTime': ..., 'redPoint': ...,
+            'singleChatConversation': {'cid': ..., 'pairFirst': ...,
+                                       'pairSecond': ..., 'extension': {...}},
+        }
+
+    字段落在哪一层**会随版本变**（实测 ``cid`` / ``pairFirst`` / ``pairSecond`` /
+    ``extension`` 只在最内层 ``singleChatConversation`` 里，而 ``lastMessage`` /
+    ``modifyTime`` / ``redPoint`` 在中间层）。所以这里「内层优先、外层兜底」逐层找 ——
+    只认某一层的结果就是**整个会话列表解析成空**（真机上买家消息一条都看不到）。
+
+    群聊条目（``groupChatUserConversation``）不是单聊，直接跳过：**取不到 cid 就
+    返回 None**，绝不造一个空会话出来。
     """
     if not isinstance(raw, dict):
+        return None
+    if 'singleChatUserConversation' not in raw and 'groupChatUserConversation' in raw:
         return None
     conversation = raw.get('singleChatUserConversation')
     if not isinstance(conversation, dict):
         conversation = raw
-    cid = _strip_goofish(conversation.get('cid'))
+    inner = conversation.get('singleChatConversation')
+    inner = inner if isinstance(inner, dict) else {}
+
+    def pick(*keys: str) -> str:
+        return (
+            _first_str(inner, *keys)
+            or _first_str(conversation, *keys)
+            or _first_str(raw, *keys)
+        )
+
+    def pick_number(*keys: str) -> int:
+        for source in (conversation, inner, raw):
+            for key in keys:
+                value = source.get(key)
+                if isinstance(value, bool):
+                    continue
+                if isinstance(value, (int, float)):
+                    return int(value)
+                if isinstance(value, str) and value.strip().lstrip('-').isdigit():
+                    return int(value.strip())
+        return 0
+
+    cid = _strip_goofish(pick('cid'))
     if not cid:
         return None
 
-    first = _strip_goofish(conversation.get('pairFirst'))
-    second = _strip_goofish(conversation.get('pairSecond'))
+    first = _strip_goofish(pick('pairFirst'))
+    second = _strip_goofish(pick('pairSecond'))
     my_id = _strip_goofish(my_id)
     buyer_id = second if first == my_id else first
     if not buyer_id or buyer_id == '0':
-        buyer_id = _strip_goofish(conversation.get('pairFirst') or conversation.get('pairSecond'))
+        buyer_id = _strip_goofish(pick('pairFirst', 'pairSecond'))
     if not buyer_id or buyer_id == '0':
         return None
 
-    extension = conversation.get('extension')
-    extension = extension if isinstance(extension, dict) else {}
-    last_wrapper = raw.get('lastMessage')
+    extension: Dict[str, Any] = {}
+    for source in (conversation, inner, raw):
+        candidate = source.get('extension')
+        if isinstance(candidate, dict) and candidate:
+            extension = candidate
+            break
+
+    last_wrapper = conversation.get('lastMessage')
+    if not isinstance(last_wrapper, dict):
+        last_wrapper = raw.get('lastMessage')
+    if not isinstance(last_wrapper, dict):
+        last_wrapper = inner.get('lastMessage')
     last_wrapper = last_wrapper if isinstance(last_wrapper, dict) else {}
     last_message = last_wrapper.get('message')
     last_message = last_message if isinstance(last_message, dict) else {}
@@ -221,13 +269,13 @@ def parse_conversation(raw: Any, my_id: str = '') -> Optional[Dict[str, Any]]:
         'buyer_avatar': _first_str(
             extension, 'avatar', 'avatarUrl', 'senderAvatar'
         ) or _first_str(last_extension, 'senderAvatar'),
-        'item_id': _strip_goofish(extension.get('itemId')),
+        'item_id': _strip_goofish(_first_str(extension, 'itemId')),
         'item_title': _first_str(extension, 'itemTitle'),
         # 摘要要从 ``lastMessage`` 那一层取：整条 userConvs 项里并没有 ``message`` 键，
         # 直接传 raw 会永远解析出空字符串（会话列表「最后一条消息」全空白）。
         'last_message': extract_message_summary(last_wrapper or raw),
-        'last_time': int(raw.get('modifyTime') or 0),
-        'unread': int(raw.get('redPoint') or 0),
+        'last_time': pick_number('modifyTime', 'createAt'),
+        'unread': pick_number('redPoint'),
     }
 
 
@@ -622,11 +670,21 @@ class ImSession:
         旧实现发完就睡一秒，服务端回 401 也没人看 —— 于是「device id 对不上」
         这种硬失败在库里表现成「IM 已挂载、只是没有消息」，用户看到的就是
         一条私信都同步不过来。注册没成功必须当场抛错。
+
+        **成功码是 200 不是 0**（真机回帧 2026-10-06：
+        ``{"headers": {"reg-uid": "2217970177348@goofish", ...}, "code": 200,
+        "body": {"unitName": "PNM", "timestamp": ...}}``）。这里曾把「非 0」当成
+        失败，导致注册明明成功却报「IM 注册未成功(code=200)」、IM 一直挂不上 ——
+        凡 2xx 都算成功，只有真正的错误码才抛。
         """
         response = await self.request(build_reg_frame(self.token, self.device_id))
         code = int((response or {}).get('code') or 0)
-        if code:
-            raise ImError(f'IM 注册未成功(code={code})')
+        if code and not 200 <= code < 300:
+            body = (response or {}).get('body') or {}
+            reason = ''
+            if isinstance(body, dict):
+                reason = str(body.get('reason') or body.get('developerMessage') or '')
+            raise ImError(f'IM 注册未成功(code={code})' + (f': {reason}' if reason else ''))
 
     async def close(self) -> None:
         for task in (self._heartbeat, self._reader):
@@ -732,8 +790,14 @@ class ImSession:
                              limit: int = 20) -> List[Dict[str, Any]]:
         """拉一个会话的历史消息（归一化后的字段）。
 
-        真实响应有两种形状：消息直接挂在 ``body`` 下，或包在 ``body['data']`` 里。
-        只读一层时另一种会永远拿到空列表，表现为「点开会话看不到任何消息」。
+        真实响应形状（真机抓帧 2026-10-06）是 ``body['userMessageModels']``::
+
+            {"code": 200, "body": {"nextCursor": ..., "hasMore": ...,
+                                   "userMessageModels": [{"message": {...}}, ...]}}
+
+        也见过消息直接挂在 ``body`` 下、或包在 ``body['data']`` 里。键名读错的结果
+        是**永远拿到空列表** —— 真机上就表现为「会话能列出来，点开一条消息都没有」，
+        与「平台确实没有历史消息」不可区分。所以这里把三段都认。
         """
         response = await self.request(
             build_list_messages_frame(cid, start_timestamp, limit)
@@ -742,7 +806,12 @@ class ImSession:
         inner = body.get('data') if isinstance(body, dict) and isinstance(body.get('data'), dict) else body
         if isinstance(inner, dict):
             raw_items = (
-                inner.get('messages') or inner.get('list') or inner.get('data') or []
+                inner.get('userMessageModels')
+                or inner.get('messages')
+                or inner.get('messageModels')
+                or inner.get('list')
+                or inner.get('data')
+                or []
             )
         else:
             raw_items = inner or []

@@ -22,6 +22,7 @@ import concurrent.futures
 import importlib
 import inspect
 import json
+import threading
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from loguru import logger
@@ -233,23 +234,58 @@ CALL_MISSING = 'missing'
 CALL_ERROR = 'error'
 
 
+_loop_lock = threading.Lock()
+_loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+def shared_loop() -> asyncio.AbstractEventLoop:
+    """进程级唯一的事件循环（在一个 daemon 线程里 `run_forever`）。
+
+    **为什么不能每次 `asyncio.run()`**：IM 会话是「一个 WebSocket + 一个读循环任务」，
+    它的生命周期长过多半个进程。以前每次 `call_method` 都 `asyncio.run()` 一个临时
+    loop，函数一返回 loop 就关，挂在它上面的读循环随之被销毁、连接断掉 —— 下一个
+    请求抛 `no close frame received or sent`。真机表现就是「同步会话只进会话不进
+    消息」、`ensure_im` 建好会话后立刻变成死连接。
+
+    懒建：第一次用到时才起线程，测试里纯同步假实现根本不会碰它。
+    """
+    global _loop
+    with _loop_lock:
+        if _loop is None or _loop.is_closed():
+            loop = asyncio.new_event_loop()
+            thread = threading.Thread(
+                target=loop.run_forever, name='xywb-asyncio', daemon=True,
+            )
+            thread.start()
+            _loop = loop
+        return _loop
+
+
+async def _resolve(value: Any) -> Any:
+    """把任意 awaitable 收敛成协程，好交给共享循环跑。"""
+    return await value
+
+
 def run_awaitable(value: Any) -> Any:
     """跑一个可能是协程的返回值，返回其结果。
 
     服务层是同步的，但协议层与编排层有 `async def` 方法。三种情况：
     - 不是 awaitable（测试里的同步假实现）-> 原样返回
-    - 没有正在跑的事件循环 -> `asyncio.run()`
-    - 已经在 async 路由的事件循环里 -> 另开线程跑，避免 "loop already running"
+    - 普通情况 -> 丢进**共享事件循环**（见 `shared_loop`）同步等结果
+    - 已经站在共享循环里（协程中同步调用服务层）-> 阻塞等自己会死锁，
+      退回「另开一个临时 loop」的老路
     """
     if not inspect.isawaitable(value):
         return value
+    loop = shared_loop()
     try:
-        asyncio.get_running_loop()
+        current = asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(value)  # type: ignore[arg-type]
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, value).result()
+        current = None
+    if current is loop:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, _resolve(value)).result()
+    return asyncio.run_coroutine_threadsafe(_resolve(value), loop).result()
 
 
 def _is_session_expired(exc: Any) -> bool:
