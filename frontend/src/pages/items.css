@@ -1100,7 +1100,7 @@ textarea.it-invalid:focus {
   gap: var(--sp-2);
   margin-top: 6px;
   color: var(--danger);
-  font-size: 15px;
+  font-size: var(--fs-15);
   font-weight: 600;
 }
 

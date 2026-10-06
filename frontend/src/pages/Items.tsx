@@ -1950,14 +1950,20 @@ function BatchEditModal({
    */
   const patchFor = (item: Item): Record<string, unknown> => {
     const patch: Record<string, unknown> = {}
-    if (priceOn && priceValue !== '') {
+    // `.trim()` 不能省：`Number(' ')` 是 0 且 `Number.isFinite(0)` 为真，
+    // 价格框里只敲一个空格会静默把价格改成 0（库存分支早就 trim 了）。
+    if (priceOn && priceValue.trim() !== '') {
       const value = Number(priceValue)
       // 必须用 `isFinite`：`Number('1e999')` 是 `Infinity`（不是 NaN），
       // `JSON.stringify(Infinity)` 会变成 `null`，后端现在会拿它当「没给数字」400。
       if (Number.isFinite(value)) {
         const base = Number(item.price) || 0
         const next = priceMode === 'set' ? value : priceMode === 'delta' ? base + value : base * (1 + value / 100)
-        patch.price = Math.max(0, Math.round(next * 100) / 100)
+        // 光校验输入不够：百分比模式下 `base * (1 + value / 100)` 自己会溢出
+        // （`value=1e308` 是有限数，乘完就是 `Infinity`）。算出来的值也要守。
+        if (Number.isFinite(next)) {
+          patch.price = Math.max(0, Math.round(next * 100) / 100)
+        }
       }
     }
     if (stockOn && stockValue !== '') {
