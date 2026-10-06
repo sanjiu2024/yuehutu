@@ -780,6 +780,186 @@ class ItemsServiceTest(unittest.TestCase):
         self.assertIn('items.status_changed', topics)
 
 
+class DeleteItemTest(ItemsServiceTest):
+    """删除商品 = **只删本地记录**（平台侧没有删除接口，闲鱼上的商品不受影响）。"""
+
+    def test_delete_removes_row_and_publishes(self):
+        self.seed('I1')
+        self.seed('I2')
+        before = len(events.recent(limit=500))
+        result = items.delete_item('acc1', 'I1')
+        self.assertTrue(result.get('success', True))
+        self.assertTrue(result['deleted'])
+        self.assertIsNone(db.query_one('SELECT id FROM items WHERE item_id = ?', ('I1',)))
+        self.assertIsNotNone(db.query_one('SELECT id FROM items WHERE item_id = ?', ('I2',)))
+        payloads = [e['payload'] for e in events.recent(limit=500)[before:]
+                    if e['topic'] == items.ITEMS_UPDATED_TOPIC]
+        self.assertTrue(any(p.get('action') == 'delete' for p in payloads), payloads)
+
+    def test_delete_keeps_conversation_and_message_history(self):
+        """会话/消息是聊天历史，删商品记录不许把它们一起删掉。"""
+        self.seed('I1')
+        conv_id = db.execute(
+            'INSERT INTO conversations(account_id, peer_user_id, peer_nickname, item_id) '
+            "VALUES('acc1','peer1','买家甲','I1')")
+        db.execute(
+            'INSERT INTO messages(conversation_id, direction, sender, content) '
+            "VALUES(?,'in','buyer','还有货吗')", (conv_id,))
+        items.delete_item('acc1', 'I1')
+        self.assertIsNotNone(db.query_one('SELECT id FROM conversations WHERE id = ?', (conv_id,)))
+        self.assertIsNotNone(
+            db.query_one('SELECT id FROM messages WHERE conversation_id = ?', (conv_id,)))
+
+    def test_delete_cross_account_and_unknown_are_rejected(self):
+        self.seed('I1', account='acc1')
+        result = items.delete_item('acc2', 'I1')
+        self.assertFalse(result['success'])
+        self.assertEqual(result['code'], 'not_found')
+        self.assertIsNotNone(db.query_one('SELECT id FROM items WHERE item_id = ?', ('I1',)))
+        self.assertEqual(items.delete_item('acc1', 'nope')['code'], 'not_found')
+
+    def test_delete_is_logged(self):
+        self.seed('I1')
+        items.delete_item('acc1', 'I1')
+        log = db.query_one(
+            "SELECT * FROM operation_logs WHERE action = 'delete_item' ORDER BY id DESC LIMIT 1")
+        self.assertIsNotNone(log)
+        self.assertEqual(int(log['success']), 1)
+
+
+class StockPatchTest(ItemsServiceTest):
+    """库存补丁：`stock_set`（固定值）与 `stock_delta`（增减）。
+
+    用户第 5 轮实测原话：「怎么没有修改数量」—— 批量弹窗里确实没有库存区块。
+    这里锁的是后端口径，尤其是**未知库存（-1）不许参与加减**：`-1 + 5 = 4` 是个
+    看起来很正常、其实纯属编造的数字，会被推到平台当真实库存。
+    """
+
+    def test_stock_set_fixed_value(self):
+        self.seed('I1', stock=3)
+        result = items.update_item('I1', {'stock_set': 10})
+        self.assertNotIn('success', result)
+        self.assertEqual(result['item']['stock'], 10)
+
+    def test_stock_set_negative_is_clamped_to_zero(self):
+        # 平台不接受负库存；钳掉比报错更符合用户预期（用户就是想卖光）。
+        self.seed('I1', stock=3)
+        result = items.update_item('I1', {'stock_set': -5})
+        self.assertEqual(result['item']['stock'], 0)
+
+    def test_stock_delta_increases_then_decreases(self):
+        self.seed('I1', stock=3)
+        up = items.update_item('I1', {'stock_delta': 5})
+        self.assertEqual(up['item']['stock'], 8)
+        down = items.update_item('I1', {'stock_delta': -2})
+        self.assertEqual(down['item']['stock'], 6)
+
+    def test_stock_delta_clamps_at_zero(self):
+        self.seed('I1', stock=1)
+        result = items.update_item('I1', {'stock_delta': -5})
+        self.assertEqual(result['item']['stock'], 0)
+
+    def test_stock_delta_on_unknown_stock_is_rejected(self):
+        self.seed('I1', stock=-1)  # 平台列表没返回库存 = 未知
+        result = items.update_item('I1', {'stock_delta': 5})
+        self.assertFalse(result['success'])
+        self.assertEqual(result['code'], 'unknown_stock')
+        self.assertIn('库存未知', result['message'])
+        row = db.query_one("SELECT stock FROM items WHERE item_id = 'I1'")
+        self.assertEqual(row['stock'], -1)  # 一个字节都没改
+        logs = db.query("SELECT * FROM operation_logs WHERE action = 'update_item'")
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0]['success'], 0)
+
+    def test_stock_set_on_unknown_stock_is_allowed(self):
+        # 明确指定固定值 = 把未知覆盖成已知，是合理操作，不能一起拦掉。
+        self.seed('I1', stock=-1)
+        result = items.update_item('I1', {'stock_set': 20})
+        self.assertNotIn('success', result)
+        self.assertEqual(result['item']['stock'], 20)
+
+    def test_stock_delta_pushed_to_protocol(self):
+        self.seed('I1', stock=7)
+        install_fake_protocol(self.client)
+        result = items.update_item('I1', {'stock_delta': 3}, account_id='acc1')
+        self.assertTrue(result['synced'])
+        self.assertEqual(result['item']['stock'], 10)
+        pushed = [c for c in self.client.calls if c[0] == 'edit_item']
+        self.assertEqual(pushed[0][2]['stock'], 10)
+
+    def test_batch_stock_set_applies_to_every_item(self):
+        self.seed('A1', stock=1)
+        self.seed('A2', stock=-1)
+        result = items.batch_update(['A1', 'A2'], {'stock_set': 66}, account_id='acc1')
+        self.assertEqual(result['total'], 2)
+        self.assertEqual(result['failed'], [])
+        rows = {r['item_id']: r['stock'] for r in db.query('SELECT item_id, stock FROM items')}
+        self.assertEqual(rows, {'A1': 66, 'A2': 66})
+
+    def test_batch_stock_delta_skips_unknown_and_keeps_identity(self):
+        self.seed('A1', stock=5)
+        self.seed('A2', stock=-1)
+        result = items.batch_update(['A1', 'A2'], {'stock_delta': 10}, account_id='acc1')
+        # 恒等式：total == ok + local_only + noop + len(failed)
+        self.assertEqual(result['total'], result['ok'] + result['local_only'] + result['noop'] + len(result['failed']))
+        self.assertEqual(len(result['failed']), 1)
+        self.assertEqual(result['failed'][0]['id'], 'A2')
+        self.assertEqual(result['failed'][0]['code'], 'unknown_stock')
+        rows = {r['item_id']: r['stock'] for r in db.query('SELECT item_id, stock FROM items')}
+        self.assertEqual(rows['A1'], 15)
+        self.assertEqual(rows['A2'], -1)  # 未知那条动都没动
+
+    def test_bad_patch_number_is_invalid_fields_not_exception(self):
+        """独立审查 D4：`null`/字符串/列表/布尔/小数一律回 `invalid_fields`，
+        **不许**让 `int(float(value))` 抛出去变成 500。"""
+        self.seed('I1', stock=5)
+        for patch in ({'stock_delta': None}, {'stock_set': 'abc'}, {'stock_delta': []},
+                      {'stock_set': True}, {'stock_set': 2.5}, {'price_set': None},
+                      {'price_delta': {}}):
+            with self.subTest(patch=patch):
+                result = items.update_item('I1', patch)
+                self.assertFalse(result['success'], f'{patch} 应该被拒')
+                self.assertEqual(result['code'], 'invalid_fields', result)
+                self.assertIn(list(patch)[0], result['message'])
+                self.assertEqual(
+                    db.query_one("SELECT stock FROM items WHERE item_id = 'I1'")['stock'], 5,
+                    '非法补丁一个字节都不许落库')
+
+    def test_numeric_patch_accepts_numeric_strings(self):
+        """表单/前端偶尔会发字符串数字 —— 那是能认的，别一起拒掉。"""
+        self.seed('I1', stock=5)
+        self.assertEqual(items.update_item('I1', {'stock_delta': '3'})['item']['stock'], 8)
+        self.assertEqual(items.update_item('I1', {'stock_set': '20'})['item']['stock'], 20)
+
+    def test_batch_bad_patch_number_is_per_item_failure(self):
+        """批量里同样的非法值：逐条进 `failed`，不是整批抛异常。"""
+        self.seed('A1', stock=1)
+        self.seed('A2', stock=2)
+        result = items.batch_update(['A1', 'A2'], {'stock_delta': None}, account_id='acc1')
+        self.assertEqual(result['ok'], 0)
+        self.assertEqual(len(result['failed']), 2)
+        self.assertTrue(all(f['code'] == 'invalid_fields' for f in result['failed']), result['failed'])
+        self.assertEqual(result['total'],
+                         result['ok'] + result['local_only'] + result['noop'] + len(result['failed']))
+        rows = {r['item_id']: r['stock'] for r in db.query('SELECT item_id, stock FROM items')}
+        self.assertEqual(rows, {'A1': 1, 'A2': 2})
+
+    def test_single_and_batch_agree_on_unknown_delta(self):
+        self.seed('A2', stock=-1)
+        single = items.update_item('A2', {'stock_delta': 1}, account_id='acc1')
+        batch = items.batch_update(['A2'], {'stock_delta': 1}, account_id='acc1')
+        self.assertEqual(single['code'], 'unknown_stock')
+        self.assertEqual(batch['failed'][0]['code'], single['code'])
+        self.assertEqual(batch['failed'][0]['message'], single['message'])
+
+    def test_inventory_value_ignores_unknown_stock(self):
+        # 库存 -1 不能把「库存总价值」算成负数（那也是个编出来的数字）。
+        self.seed('I1', price=100.0, stock=2, status='on_sale')
+        self.seed('I2', price=1000.0, stock=-1, status='on_sale')
+        stats = items.item_stats()
+        self.assertEqual(stats['inventory_value'], 200.0)
+
+
 class FakeClientSignatureTest(unittest.TestCase):
     """**假协议层必须和真协议层同签名**（I6 的回归锁）。
 

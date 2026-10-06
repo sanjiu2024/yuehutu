@@ -184,6 +184,12 @@ def get_item_for_account(account_id: str, item_id: str, user=Depends(current_use
     return _envelope(items.get_item_by_account(account_id, item_id))
 
 
+@router.delete('/{account_id}/{item_id}')
+def delete_item_for_account(account_id: str, item_id: str, user=Depends(current_user)):
+    """只删本地记录（平台侧没有删除接口，闲鱼上的商品不受影响）。"""
+    return _envelope(items.delete_item(account_id, item_id))
+
+
 @router.post('/{account_id}/{item_id}/edit')
 def edit_item(account_id: str, item_id: str, payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
     return _envelope(items.update_item(item_id, payload, account_id=account_id))

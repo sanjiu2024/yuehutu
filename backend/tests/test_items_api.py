@@ -97,10 +97,10 @@ def fake_item(item_id: str, title: str = '测试商品', price: float = 100.0,
 
 
 def seed(item_id: str, account: str = ACC, price: float = 100.0,
-         status: str = 'on_sale') -> None:
+         status: str = 'on_sale', stock: int = 1) -> None:
     db.execute(
         'INSERT INTO items(account_id, item_id, title, price, stock, status) VALUES(?,?,?,?,?,?)',
-        (account, item_id, f'商品 {item_id}', price, 1, status),
+        (account, item_id, f'商品 {item_id}', price, stock, status),
     )
 
 
@@ -182,6 +182,31 @@ class ItemsApiTest(unittest.TestCase):
     def test_get_single_item_cross_account_is_404(self):
         seed('A1', account=ACC)
         resp = self.client.get(f'/api/items/{OTHER}/A1', headers=self.headers)
+        self.assertEqual(resp.status_code, 404, resp.text)
+        self.assertFalse(resp.json()['success'])
+
+    # -- 删除本地记录（商品页「删除」按钮的真实后端） ----------------------
+
+    def test_delete_item_removes_local_record_and_publishes(self):
+        seed('A1', account=ACC)
+        resp = self.client.delete(f'/api/items/{ACC}/A1', headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertTrue(resp.json()['data']['deleted'])
+        self.assertIsNone(db.query_one('SELECT id FROM items WHERE item_id = ?', ('A1',)))
+        # 列表接口里也不该再出现
+        listed = self.client.get(f'/api/items/{ACC}', headers=self.headers).json()['data']['items']
+        self.assertEqual([i['item_id'] for i in listed], [])
+        self.assertTrue(any(u.get('action') == 'delete' for u in updates()), updates())
+
+    def test_delete_item_cross_account_is_404_and_keeps_row(self):
+        """路径里的 account_id 必须真的起作用：拿别的账号删不到，也不许删掉。"""
+        seed('A1', account=ACC)
+        resp = self.client.delete(f'/api/items/{OTHER}/A1', headers=self.headers)
+        self.assertEqual(resp.status_code, 404, resp.text)
+        self.assertIsNotNone(db.query_one('SELECT id FROM items WHERE item_id = ?', ('A1',)))
+
+    def test_delete_item_unknown_is_404(self):
+        resp = self.client.delete(f'/api/items/{ACC}/nope', headers=self.headers)
         self.assertEqual(resp.status_code, 404, resp.text)
         self.assertFalse(resp.json()['success'])
 
@@ -287,6 +312,111 @@ class ItemsApiTest(unittest.TestCase):
         body = resp.json()
         self.assertFalse(body['success'])
         self.assertEqual(body['code'], 'invalid_fields')
+
+    def test_single_edit_stock_delta_is_pushed(self):
+        """库存增减：7 + 3 = 10，并且真的推给了协议层（用户第 5 轮：「怎么没有修改数量」）。"""
+        seed('A1', account=ACC, stock=7)
+        fake = FakeClient(ACC)
+        install_fake_protocol(fake)
+        resp = self.client.post(f'/api/items/{ACC}/A1/edit',
+                                json={'stock_delta': 3}, headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertTrue(data['synced'], resp.text)
+        self.assertEqual(data['item']['stock'], 10)
+        self.assertEqual([c for c in fake.calls if c[0] == 'edit_item'][0][2]['stock'], 10)
+
+    def test_single_edit_unknown_stock_delta_is_400(self):
+        """未知库存（-1）不许加减：会算出编造的数字。"""
+        seed('A1', account=ACC, stock=-1)
+        resp = self.client.post(f'/api/items/{ACC}/A1/edit',
+                                json={'stock_delta': 3}, headers=self.headers)
+        self.assertEqual(resp.status_code, 400, resp.text)
+        body = resp.json()
+        self.assertFalse(body['success'])
+        self.assertEqual(body['code'], 'unknown_stock')
+        self.assertIn('库存未知', body['message'])
+        self.assertEqual(db.query_one("SELECT stock FROM items WHERE item_id = 'A1'")['stock'], -1)
+
+    def test_single_edit_stock_set_on_unknown_is_allowed(self):
+        seed('A1', account=ACC, stock=-1)
+        resp = self.client.post(f'/api/items/{ACC}/A1/edit',
+                                json={'stock_set': 66}, headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json()['data']['item']['stock'], 66)
+
+    def test_batch_edit_stock_delta_skips_unknown(self):
+        """批量：已知库存的被改，未知库存那条进 failed 且明细带原因，恒等式仍成立。"""
+        seed('A1', account=ACC, stock=5)
+        seed('A2', account=ACC, stock=-1)
+        resp = self.client.post(f'/api/items/{ACC}/batch-edit',
+                                json={'item_ids': ['A1', 'A2'], 'patch': {'stock_delta': 10}},
+                                headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertEqual(data['total'], 2)
+        self.assertEqual(len(data['failed']), 1)
+        self.assertEqual(data['failed'][0]['id'], 'A2')
+        self.assertEqual(data['failed'][0]['code'], 'unknown_stock')
+        self.assertEqual(data['total'], data['ok'] + data['local_only'] + data['noop'] + len(data['failed']))
+        rows = {r['item_id']: r['stock'] for r in db.query('SELECT item_id, stock FROM items')}
+        self.assertEqual(rows['A1'], 15)
+        self.assertEqual(rows['A2'], -1)
+
+    # -- 补丁字段非法时必须是 400/逐条失败，不是 500（独立审查 D4） ---------
+
+    def test_single_edit_stock_delta_null_is_400(self):
+        """`stock_delta: null` 是**前端真会发出来的**：输入框为空时
+        `Math.max(0, NaN)` 得 NaN，`JSON.stringify(NaN)` 就是 `null`。
+
+        旧行为：`int(float(None))` → TypeError → 500（用户看到「服务器错误」，
+        完全不知道是哪个字段的问题）。
+        """
+        seed('A1', account=ACC, stock=5)
+        resp = self.client.post(f'/api/items/{ACC}/A1/edit',
+                                json={'stock_delta': None}, headers=self.headers)
+        self.assertEqual(resp.status_code, 400, resp.text)
+        body = resp.json()
+        self.assertEqual(body['code'], 'invalid_fields')
+        self.assertIn('stock_delta', body['message'])
+        self.assertEqual(db.query_one("SELECT stock FROM items WHERE item_id = 'A1'")['stock'], 5,
+                         '非法输入不许落库')
+
+    def test_single_edit_stock_set_non_numeric_is_400(self):
+        seed('A1', account=ACC, stock=5)
+        for bad in ('abc', [], {}, True, 'nan', 'inf'):
+            with self.subTest(bad=bad):
+                resp = self.client.post(f'/api/items/{ACC}/A1/edit',
+                                        json={'stock_set': bad}, headers=self.headers)
+                self.assertEqual(resp.status_code, 400, resp.text)
+                self.assertEqual(resp.json()['code'], 'invalid_fields')
+
+    def test_single_edit_stock_set_fraction_is_400(self):
+        """半件库存没有意义：`2.5` 静默截成 `2` 也是编数字。"""
+        seed('A1', account=ACC, stock=5)
+        resp = self.client.post(f'/api/items/{ACC}/A1/edit',
+                                json={'stock_set': 2.5}, headers=self.headers)
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertEqual(resp.json()['code'], 'invalid_fields')
+
+    def test_batch_edit_stock_delta_null_fails_every_item_not_500(self):
+        """批量里同样的 `null`：整批不能 500，必须逐条进 `failed` 且恒等式成立。"""
+        seed('A1', account=ACC, stock=5)
+        seed('A2', account=ACC, stock=6)
+        resp = self.client.post(f'/api/items/{ACC}/batch-edit',
+                                json={'item_ids': ['A1', 'A2'], 'patch': {'stock_delta': None}},
+                                headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertEqual(data['total'], 2)
+        self.assertEqual(data['ok'], 0)
+        self.assertEqual(len(data['failed']), 2)
+        self.assertEqual({f['id'] for f in data['failed']}, {'A1', 'A2'})
+        self.assertTrue(all(f['code'] == 'invalid_fields' for f in data['failed']), data['failed'])
+        self.assertEqual(data['total'],
+                         data['ok'] + data['local_only'] + data['noop'] + len(data['failed']))
+        rows = {r['item_id']: r['stock'] for r in db.query('SELECT item_id, stock FROM items')}
+        self.assertEqual(rows, {'A1': 5, 'A2': 6})
 
     # -- 写操作后的 items.updated 事件 ------------------------------------
 

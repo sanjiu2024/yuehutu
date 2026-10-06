@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -57,7 +58,37 @@ NUMERIC_FIELDS = {'price', 'original_price', 'stock'}
 JSON_FIELDS = {'images'}
 
 # 批量补丁里的计算型字段（CONTRACTS §3 的 batch-edit）
-PATCH_KEYS = {'price_delta', 'price_set', 'title_tpl', 'title_prefix', 'title_suffix', 'stock_set'}
+PATCH_KEYS = {'price_delta', 'price_set', 'title_tpl', 'title_prefix', 'title_suffix',
+              'stock_set', 'stock_delta'}
+
+#: 补丁里必须是数字的字段。前端「增减」输入框为空时 `Math.max(0, NaN)` 得到 `NaN`，
+#: 而 `JSON.stringify(NaN)` 就是 `null` —— 不在这里拦，`_apply_patch` 会
+#: `int(float(None))` 抛 TypeError，单条回 500、批量整单 500（连哪条出错都不说）。
+NUMERIC_PATCH_KEYS = {'price_delta', 'price_set', 'stock_set', 'stock_delta'}
+
+#: 其中必须是整数的（库存没有半件）。`2.5` 静默截成 `2` 也是编数字。
+INTEGER_PATCH_KEYS = {'stock_set', 'stock_delta'}
+
+
+def _patch_number(key: str, value: Any) -> float:
+    """补丁数字字段 → `float`；非法一律抛 `ValueError`（消息可直接给用户看）。"""
+    number: Optional[float] = None
+    if isinstance(value, bool) or value is None:
+        number = None
+    elif isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        try:
+            number = float(value.strip())
+        except ValueError:
+            number = None
+    if number is None:
+        raise ValueError(f'字段 {key} 需要数字，收到: {value!r}')
+    if not math.isfinite(number):
+        raise ValueError(f'字段 {key} 需要有限数字，收到: {value!r}')
+    if key in INTEGER_PATCH_KEYS and number != int(number):
+        raise ValueError(f'字段 {key} 需要整数，收到: {value!r}')
+    return number
 
 
 def _row_to_item(row: Any) -> Dict[str, Any]:
@@ -161,12 +192,34 @@ def get_item_by_account(account_id: str, item_id: Any) -> Any:
     return _row_to_item(row)
 
 
+def delete_item(account_id: str, item_id: Any) -> Any:
+    """**只删本地记录**：闲鱼上架着的商品不会被动，平台侧没有删除接口。
+
+    用途是清掉本地残留（平台已下架/已删除、或同步前手动加的记录）。下次「同步商品」
+    如果平台还返回它，会被重新写回 —— 前端文案已经这么告诉用户了，不要在这里假装
+    「已从闲鱼删除」。会话/消息/订单都不删：它们是聊天与交易历史，删了就查不到
+    「这个买家当初问的是哪件商品」。
+    """
+    row = _find_row_for_account(account_id, item_id)
+    if row is None:
+        return common.fail(f'商品不存在: {account_id}/{item_id}', 'not_found')
+    with db.tx() as conn:
+        conn.execute('DELETE FROM items WHERE id = ?', (row['id'],))
+    deleted_id = str(row['item_id'])
+    _publish_updated(account_id, [deleted_id], 'delete')
+    common.log_operation(account_id, 'delete_item', deleted_id, True, '已删除本地记录')
+    return {'deleted': True, 'account_id': str(account_id), 'item_id': deleted_id}
+
+
 def item_stats() -> Dict[str, Any]:
     by_status = {
         r['status']: int(r['n'])
         for r in db.query('SELECT status, COUNT(*) AS n FROM items GROUP BY status')
     }
-    total_row = db.query_one('SELECT COUNT(*) AS n, COALESCE(SUM(price * stock), 0) AS v FROM items')
+    total_row = db.query_one(
+        'SELECT COUNT(*) AS n, '
+        'COALESCE(SUM(CASE WHEN stock >= 0 THEN price * stock ELSE 0 END), 0) AS v FROM items'
+    )
     accounts = db.query('SELECT account_id, COUNT(*) AS n FROM items GROUP BY account_id')
     return {
         'total': int(total_row['n']) if total_row else 0,
@@ -206,10 +259,17 @@ def normalize_fields(fields: Optional[Dict[str, Any]]) -> Any:
     for key, value in fields.items():
         column = FIELD_ALIASES.get(str(key))
         if column is None:
-            if str(key) in PATCH_KEYS:
-                patch[str(key)] = value
+            name = str(key)
+            if name in PATCH_KEYS:
+                if name in NUMERIC_PATCH_KEYS:
+                    try:
+                        patch[name] = _patch_number(name, value)
+                    except ValueError as exc:
+                        return common.fail(str(exc), 'invalid_fields')
+                else:
+                    patch[name] = value
                 continue
-            unknown.append(str(key))
+            unknown.append(name)
             continue
         if column in NUMERIC_FIELDS:
             try:
@@ -233,6 +293,29 @@ def normalize_fields(fields: Optional[Dict[str, Any]]) -> Any:
     return patch
 
 
+UNKNOWN_STOCK_DELTA_MESSAGE = (
+    '该商品库存未知（平台列表没有返回库存），不能用「增加/减少」；'
+    '请改用「设为固定值」，或先同步商品把库存取回来'
+)
+
+
+def _stock_delta_blocked(item: Dict[str, Any], patch: Dict[str, Any]) -> Optional[str]:
+    """`stock_delta` 只对已知库存成立。
+
+    未知库存库里存 `-1`（列表卡确实没有库存字段），拿它去加减会算出 `-1 + 5 = 4`
+    这种**看起来很正常其实是编的**数字，然后被推给平台当真库存 —— 比报错更坏。
+    所以未知库存时直接拒绝这一条（`code='unknown_stock'`），前端原样展示原因；
+    `stock_set`（用户明确指定固定值）不受影响，那是把未知覆盖成已知。
+    """
+    if 'stock_delta' not in patch:
+        return None
+    try:
+        current = int(item.get('stock'))
+    except (TypeError, ValueError):
+        current = -1
+    return UNKNOWN_STOCK_DELTA_MESSAGE if current < 0 else None
+
+
 def _apply_patch(item: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
     """在单条商品上应用补丁（含 price_delta / title_tpl 这类计算字段）。"""
     resolved: Dict[str, Any] = {}
@@ -242,7 +325,12 @@ def _apply_patch(item: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
         elif key == 'price_set':
             resolved['price'] = round(float(value), 2)
         elif key == 'stock_set':
-            resolved['stock'] = int(float(value))
+            # 固定值也钳到 0：负数库存平台不接受，钳掉比报错更符合用户预期。
+            resolved['stock'] = max(0, int(float(value)))
+        elif key == 'stock_delta':
+            # 增减只对**已知**库存有意义；未知库存在 `_stock_delta_blocked` 里已被拦下，
+            # 这里再兜一次 `or 0`（防止有人绕过 update_item 直接调本函数）。
+            resolved['stock'] = max(0, int(item.get('stock') or 0) + int(float(value)))
         elif key == 'title_prefix':
             resolved['title'] = f'{value}{item.get("title") or ""}'
         elif key == 'title_suffix':
@@ -409,6 +497,11 @@ def update_item(item_id: Any, fields: Dict[str, Any], account_id: Optional[str] 
     if common.is_failure(patch):
         common.log_operation(item['account_id'], 'update_item', item['item_id'], False, patch['message'])
         return patch
+    blocked = _stock_delta_blocked(item, patch)
+    if blocked:
+        # 未知库存走「增减」= 会算出假数字，宁可这条不生效并如实报原因。
+        common.log_operation(item['account_id'], 'update_item', item['item_id'], False, blocked)
+        return common.fail(blocked, 'unknown_stock')
     resolved = _apply_patch(item, patch)
     if not resolved:
         return common.fail('没有可修改的字段', 'invalid_fields')

@@ -86,6 +86,19 @@ IM_TOKEN_VERSION = '1.0'
 IM_TOKEN_SPM = 'a21ybx.im.0.0'
 USER_PROFILE_API = 'mtop.idle.web.user.page.head'
 
+# 「商品数据」（曝光次数 / 浏览次数 / 想要人数）。全平台只有**卖家工作台**
+# （seller.goofish.com）有这一个商品级统计接口 —— www.goofish.com 的 27 个页面
+# chunk 里没有任何统计页与统计接口（2026-10-07 全量拉取比对）。
+# 接口名与参数从工作台 0.1.68 的打包产物里反解出来（`vendors.js`）：
+#     wP = function (eu) {
+#         return G({api: 'mtop.alibaba.idle.seller.pc.item.stats.query',
+#                   v: '1.0', data: {itemId: eu}});
+#     }
+# 版本号硬编码：本项目铁律是 mtop 版本同族不统一，必须逐个从真机/产物确认取值。
+ITEM_STATS_API = 'mtop.alibaba.idle.seller.pc.item.stats.query'
+ITEM_STATS_VERSION = '1.0'
+ITEM_STATS_SPM = 'a21ybx.im.0.0'
+
 
 class XianyuError(RuntimeError):
     """协议层通用错误。
@@ -111,6 +124,20 @@ class RiskControlError(XianyuError):
     def __init__(self, message: str, retry_after: int = 0):
         super().__init__(message)
         self.retry_after = retry_after
+
+
+class ItemStatsUnavailable(XianyuError):
+    """商品数据接口这次拿不到数据（**不是账号掉线**）。
+
+    `item_stats()` 早先在这三种情况下统一 `return None`，上层看到的是「调用成功
+    但没有内容」——于是「卖家工作台会话拿不到」「接口改名/下线」「响应里没有指标」
+    在接口和界面上长得一模一样（一律「平台返回的商品数据无法识别: 」），用户拿不到
+    任何可行动的信息。现在带上原因抛出来，由 `services/item_stats.py` 如实转达。
+
+    **故意不继承 `SessionExpiredError`**：`seller.pc.*` 这个接口族对 web Cookie
+    天然拒绝，账号本身是好的；继承的话 `services/common.py` 会
+    `store.mark_need_relogin()`，把好账号标成「需重新登录」。
+    """
 
 
 class XianyuClient:
@@ -602,6 +629,61 @@ class XianyuClient:
         )
         return parse_user_profile(result.get('data') or {})
 
+    async def item_stats(self, item_id: str = '') -> Optional[Dict[str, Any]]:
+        """商品数据：曝光次数 / 浏览次数 / 想要人数。拿不到时抛 ``ItemStatsUnavailable``。
+
+        三个字段是平台真名（``data.exposureNum`` / ``data.showNum`` /
+        ``data.wantNum``，出处是卖家工作台组件渲染这三行时的读法），这里只做
+        「原样解析 + 改写成服务层认的别名」，**不补 0、不猜数**：
+        ``0`` 与「平台没给」在前端是两回事，硬塞 0 会让用户以为商品真没人看。
+
+        ⚠️ **为什么必须自己吞掉 ``SessionExpiredError``**：这个接口属于
+        ``seller.pc.*`` 族，要的是卖家工作台会话。真机实测（2026-10-07，账号
+        ``2217970177348``，共 9 次只读调用）：同一个 Cookie 打
+        ``mtop.idle.web.user.page.head`` 回 ``SUCCESS::调用成功``，打这个接口却回
+        ``FAIL_SYS_SESSION_EXPIRED::Session过期``（补上工作台的
+        ``Origin``/``Referer`` 也一样）。可见被拒的是**接口族**，不是账号登录态。
+        而 ``services/common.py`` 收到 ``SessionExpiredError`` 会
+        ``store.mark_need_relogin()`` —— 让「商品数据」这种只读的降级调用把好账号
+        标成「需重新登录」，用户会莫名其妙被提示掉线。所以这里本地消化掉，
+        同时**不累加风控计数**（``mtop`` 对登录态过期本来就不熔断）。
+
+        风控异常照旧往上抛：真被风控了要让上层知道（冷却计数已经记在
+        ``risk.registry`` 里，瞒下来反而让用户看不到原因）。
+
+        「本地消化」= 换成 ``ItemStatsUnavailable``（带上原因）而不是
+        ``return None``：返回 None 时上层只能看到「调用成功但没内容」，
+        于是「会话拿不到 / 接口下线 / 响应没指标」在界面上全变成同一句
+        「无法识别」，用户没有任何可行动的信息。
+        """
+        if not item_id:
+            raise ItemStatsUnavailable('缺少 itemId：商品数据接口只能按商品调用')
+        try:
+            result = await self.mtop(
+                ITEM_STATS_API, {'itemId': str(item_id)},
+                v=ITEM_STATS_VERSION, spm_cnt=ITEM_STATS_SPM,
+            )
+        except RiskControlError:
+            raise
+        except SessionExpiredError:
+            logger.info(
+                f'[{self.cookie_id}] 商品数据接口需要卖家工作台会话，'
+                f'当前 Cookie 拿不到（不是账号掉线），降级为无平台数据'
+            )
+            raise ItemStatsUnavailable(
+                '需要卖家工作台会话：这个接口族不接受网页版 Cookie（账号本身没掉线）'
+            ) from None
+        except XianyuError as exc:
+            logger.info(f'[{self.cookie_id}] 商品数据接口不可用，降级: {exc}')
+            raise ItemStatsUnavailable(f'接口不可用: {exc}') from exc
+        parsed = parse_item_stats(result.get('data'))
+        if parsed is None:
+            # 拿到了响应但认不出指标：也要说清是「这一次响应没指标」，不是「平台没有这个接口」
+            raise ItemStatsUnavailable(
+                f'平台响应里没有可识别的商品数据指标（data={str(result.get("data"))[:200]}）'
+            )
+        return parsed
+
     # -- 图片上传 ---------------------------------------------------------
 
     async def upload_image(self, path: str) -> Dict[str, Any]:
@@ -883,6 +965,72 @@ def parse_user_profile(data: Dict[str, Any]) -> Dict[str, Any]:
         'followers': _count(social.get('followerNum')),
         'following': _count(social.get('followingNum')),
     }
+
+
+#: 平台真名 → 服务层别名。``services/item_stats.py::METRIC_ALIASES`` 只认
+#: ``exposure`` / ``visits`` / ``visitors``，而 ``exposureNum`` / ``showNum``
+#: **不在别名表里** —— 直接把平台响应透传过去会被判「返回内容里没有可识别的
+#: 指标」而整条丢掉，所以必须在这里改写键名。
+#: ``wantNum``（想要人数）服务层目前没有对应指标，先叫 ``wants``：宁可多带一个
+#: 没人消费的键，也不要把「想要」硬塞进「访客数」—— 那是两个口径。
+ITEM_STATS_FIELDS = (
+    ('exposureNum', 'exposure'),   # 曝光次数
+    ('showNum', 'visits'),         # 浏览次数
+    ('wantNum', 'wants'),          # 想要人数
+)
+
+
+def _metric_value(value: Any) -> Any:
+    """平台计数 → ``int``；不是干净数字就**原样保留字符串**；空值返回 ``None``。
+
+    不做单位换算：``'1.2万'`` 这类文案原样透传（工作台自己就是照字符串渲染的），
+    换错比不换更糟。``None`` / ``''`` 一律当「平台没给」，**不折算成 0**。
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return int(float(text.replace(',', '')))
+    except ValueError:
+        return text
+
+
+def parse_item_stats(data: Any) -> Optional[Dict[str, Any]]:
+    """解析 ``mtop.alibaba.idle.seller.pc.item.stats.query`` 的 ``data``。
+
+    响应形状（卖家工作台组件的读法，取的是 ``resp.data.data``）::
+
+        data.exposureNum   曝光（次）
+        data.showNum       浏览（次）
+        data.wantNum       想要（人）
+
+    **这个接口没有的**：曝光人数 / 浏览人数 / 下单人数 / 支付人数 / 支付订单数，
+    也没有任何时间窗口参数（近 1 天 / 7 天 / 30 天都取不到）—— 它只给三个累计值。
+    缺的键一律不放进来：前端显示「—」比显示 0 诚实。
+
+    识别不出任何指标（``data`` 是空 dict 或形状不对）时返回 ``None``。
+    """
+    if not isinstance(data, dict):
+        return None
+    stats: Dict[str, Any] = {}
+    raw: Dict[str, Any] = {}
+    for platform_key, alias in ITEM_STATS_FIELDS:
+        if platform_key not in data:
+            continue
+        value = _metric_value(data.get(platform_key))
+        if value is None:
+            continue
+        stats[alias] = value
+        raw[platform_key] = data.get(platform_key)
+    if not stats:
+        return None
+    # 留一份原始键值便于对着真机响应核对（服务层按别名取值，多余的键不影响）。
+    stats['raw'] = raw
+    return stats
 
 
 def _https(url: str) -> str:

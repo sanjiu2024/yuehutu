@@ -296,6 +296,15 @@ def _is_session_expired(exc: Any) -> bool:
     2. MRO 里有没有 `SessionExpiredError` 这个名字（测试里的假实现、被包装过的异常）；
     3. `xianyu.risk.is_session_expired(str(exc))` 文案兜底。
     """
+    # 协议层**明确声明**「这次不是登录态过期」的异常要先放行：`ItemStatsUnavailable`
+    # 会把平台原文带在消息里（`seller.pc.*` 族对 web Cookie 天然回 `Session过期`），
+    # 走第 3 路文案兜底会把它误判成掉线，于是好账号被 `mark_need_relogin()`。
+    # 类型声明优先于文案搜索（按 MRO 认名，子类/包装过也算）。
+    try:
+        if any(klass.__name__ == 'ItemStatsUnavailable' for klass in type(exc).__mro__):
+            return False
+    except Exception:  # noqa: BLE001 - 怪异元类，继续往下判
+        pass
     client_mod = protocol_module('client')
     cls = getattr(client_mod, 'SessionExpiredError', None) if client_mod is not None else None
     try:

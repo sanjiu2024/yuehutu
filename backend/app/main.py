@@ -36,6 +36,10 @@ ROUTE_MODULES: List[str] = [
     'system',
     'ws',
     'accounts',
+    # `item_stats` 必须排在 `items` **之前**：`GET /api/items/{account_id}/stats` 会被
+    # `items` 里的 `GET /api/items/{account_id}/{item_id}` 抢先匹配，把字面量 `stats`
+    # 当成 item_id（真机探针实测：挂错顺序 → 404「商品不存在: probe_acc/stats」）。
+    'item_stats',
     'items',
     'chats',
     'uploads',

@@ -37,9 +37,15 @@ from backend.app.xianyu.client import (  # noqa: E402
     ITEM_LIST_API,
     ITEM_LIST_SPM,
     ITEM_LIST_VERSION,
+    ITEM_STATS_API,
+    ITEM_STATS_SPM,
+    ITEM_STATS_VERSION,
     PUBLISH_API,
+    RiskControlError,
+    SessionExpiredError,
     XianyuClient,
     XianyuError,
+    ItemStatsUnavailable,
     _extract_list_cards,
     _local_changes_to_edit,
     _looks_like_image_url,
@@ -52,6 +58,7 @@ from backend.app.xianyu.client import (  # noqa: E402
     images_to_image_infos,
     normalize_item,
     normalize_list_card,
+    parse_item_stats,
     to_cent,
 )
 
@@ -1041,6 +1048,153 @@ class EditImagesTest(ProtocolCase):
         with self.assertRaises(XianyuError):
             run(client.edit_item('9001', {'images': ['not-a-url']}))
         self.assertEqual(stub.calls, [])
+
+
+class ItemStatsTest(ProtocolCase):
+    """「商品数据」接口：`mtop.alibaba.idle.seller.pc.item.stats.query`。
+
+    接口名 / 版本 / 参数 / 字段名都来自**卖家工作台**（seller.goofish.com）
+    0.1.68 的打包产物：
+
+        wP = function (eu) {
+            return G({api: 'mtop.alibaba.idle.seller.pc.item.stats.query',
+                      v: '1.0', data: {itemId: eu}});
+        }
+        // 组件渲染：'曝光：', eT?.exposureNum, '｜浏览：', eT?.showNum, '｜想要：', eT?.wantNum
+
+    ⚠️ 夹具是**按产物推出来的响应形状**，不是抓到的成功真机包：同一个 Cookie 打
+    `mtop.idle.web.user.page.head` 回 SUCCESS，打这个接口回
+    `FAIL_SYS_SESSION_EXPIRED::Session过期`（真机 9 次只读调用，2026-10-07）。
+    也就是说「接口存在、字段名确定」，但「能不能用这个 Cookie 调通」**未被验证**。
+    """
+
+    ITEM_ID = '1087247101297'
+
+    def test_request_shape_and_parse(self):
+        """请求打对了接口/版本/spm/data，响应按别名解析出三个指标。"""
+        client, stub = make_client({
+            ITEM_STATS_API: {'exposureNum': 123, 'showNum': 45, 'wantNum': 6},
+        })
+        result = run(client.item_stats(self.ITEM_ID))
+
+        self.assertEqual(stub.apis(), [ITEM_STATS_API])
+        self.assertEqual(stub.calls[0]['version'], ITEM_STATS_VERSION)
+        self.assertEqual(stub.calls[0]['spm_cnt'], ITEM_STATS_SPM)
+        self.assertEqual(stub.calls[0]['payload'], {'itemId': self.ITEM_ID})
+        # 键名必须改写：协议层给服务层的是 `exposure`/`visits`/`wants` 这套别名
+        # （服务层的别名表也认 exposureNum/showNum，但那只是第二道保险）
+        self.assertEqual(result['exposure'], 123)
+        self.assertEqual(result['visits'], 45)
+        self.assertEqual(result['wants'], 6)
+        self.assertEqual(result['raw'], {'exposureNum': 123, 'showNum': 45, 'wantNum': 6})
+
+    def test_real_zero_is_kept_but_missing_is_not_zero(self):
+        """平台真回 0 要如实显示 0；**没给**的字段不许补 0（拿不到就是拿不到）。"""
+        client, _ = make_client({ITEM_STATS_API: {'exposureNum': 0, 'showNum': None}})
+        result = run(client.item_stats(self.ITEM_ID))
+
+        self.assertEqual(result, {'exposure': 0, 'raw': {'exposureNum': 0}})
+        self.assertNotIn('visits', result)
+        self.assertNotIn('wants', result)
+
+    def test_wants_is_not_folded_into_visitors(self):
+        """「想要人数」不是「访客数」：宁可多一个没人消费的键，也不许张冠李戴。"""
+        client, _ = make_client({ITEM_STATS_API: {'wantNum': 6}})
+        result = run(client.item_stats(self.ITEM_ID))
+
+        self.assertEqual(result, {'wants': 6, 'raw': {'wantNum': 6}})
+        self.assertNotIn('visits', result)
+        self.assertNotIn('visitors', result)
+
+    def test_metric_text_is_passed_through_not_guessed(self):
+        """`'1,234'` 是干净数字就转 int；`'1.2万'` 带单位**原样透传**，不猜倍数。"""
+        client, _ = make_client({ITEM_STATS_API: {'exposureNum': '1,234', 'showNum': '1.2万'}})
+        result = run(client.item_stats(self.ITEM_ID))
+
+        self.assertEqual(result['exposure'], 1234)
+        self.assertEqual(result['visits'], '1.2万')
+
+    def test_bool_is_not_a_count(self):
+        """`True` 是 `int` 子类，不当计数（否则 1 次曝光的假数据会被当真）。
+
+        认不出指标 = 这次没有平台数据 → 抛 `ItemStatsUnavailable`（带原因），
+        不再是「成功但返回 None」。
+        """
+        client, stub = make_client({ITEM_STATS_API: {'exposureNum': True}})
+        with self.assertRaises(ItemStatsUnavailable) as ctx:
+            run(client.item_stats(self.ITEM_ID))
+        self.assertIn('没有可识别的商品数据指标', str(ctx.exception))
+        self.assertEqual(stub.apis(), [ITEM_STATS_API])
+
+    def test_unparsable_data_returns_none(self):
+        """空/形状不对一律返回 None，不是空 dict——服务层据此走降级。"""
+        self.assertIsNone(parse_item_stats({}))
+        self.assertIsNone(parse_item_stats(None))
+        self.assertIsNone(parse_item_stats([]))
+        self.assertIsNone(parse_item_stats({'somethingElse': 1}))
+        self.assertIsNone(parse_item_stats({'exposureNum': ''}))
+
+    def test_missing_item_id_never_calls_platform(self):
+        client, stub = make_client({ITEM_STATS_API: {'exposureNum': 1}})
+        with self.assertRaises(ItemStatsUnavailable) as ctx:
+            run(client.item_stats(''))
+        self.assertIn('缺少 itemId', str(ctx.exception))
+        self.assertEqual(stub.calls, [])
+
+    def test_session_expired_degrades_without_marking_relogin(self):
+        """**这条是这个接口最重要的行为**：seller.pc.* 族对 web Cookie 天然
+        `SESSION_EXPIRED`，此时必须**不累加熔断计数、也不把账号标成需重登** ——
+        否则 `services/common.py` 会 `store.mark_need_relogin()`，把好账号标成需重登。
+
+        但「吞掉」不等于「丢掉原因」：异常换成 `ItemStatsUnavailable`（**故意不继承
+        `SessionExpiredError`**），文案要能告诉用户是会话拿不到，而不是空字符串。
+        """
+        stub = MtopStub({}, {ITEM_STATS_API: 'FAIL_SYS_SESSION_EXPIRED::Session过期'})
+        client = XianyuClient(COOKIE, transport=httpx.MockTransport(stub))
+
+        with self.assertRaises(ItemStatsUnavailable) as ctx:
+            run(client.item_stats(self.ITEM_ID))
+        self.assertIn('卖家工作台会话', str(ctx.exception))
+        self.assertNotIsInstance(ctx.exception, SessionExpiredError)
+        guard = risk.registry.get('2200123456')
+        self.assertEqual(guard.status()['consecutive_hits'], 0)
+        self.assertFalse(guard.is_blocked)
+
+    def test_unavailable_is_not_treated_as_session_expired_by_services(self):
+        """`ItemStatsUnavailable` 必须**不**被服务层判成登录态过期。
+
+        `services/common.py::_is_session_expired` 的第 3 路是**文案兜底**，而这个异常
+        会把平台原文带在消息里；一旦判成过期，`mark_need_relogin()` 会把好账号标成
+        需重登（用户被逼重新扫码）。所以类型声明要优先于文案。
+        """
+        from backend.app.services import common
+
+        exc = ItemStatsUnavailable('需要卖家工作台会话：这个接口族不接受网页版 Cookie（账号本身没掉线）')
+        self.assertFalse(common._is_session_expired(exc))
+        # 反过来：真的 SessionExpiredError 仍然要判成过期（别把放行写成全局关闭）
+        self.assertTrue(common._is_session_expired(SessionExpiredError('Session过期')))
+        # 平台原文里带 `Session过期` 标记时也不许误判
+        self.assertFalse(common._is_session_expired(
+            ItemStatsUnavailable('接口不可用: FAIL_SYS_SESSION_EXPIRED::Session过期')))
+
+    def test_risk_control_still_propagates(self):
+        """真风控不能瞒：协议层照旧抛 `RiskControlError`（冷却已记进 registry）。"""
+        stub = MtopStub({}, {ITEM_STATS_API: 'FAIL_SYS_USER_VALIDATE::哎哟喂,被挤爆啦，请稍后重试'})
+        client = XianyuClient(COOKIE, transport=httpx.MockTransport(stub))
+
+        with self.assertRaises(RiskControlError):
+            run(client.item_stats(self.ITEM_ID))
+        self.assertGreater(risk.registry.get('2200123456').status()['consecutive_hits'], 0)
+
+    def test_unknown_api_failure_degrades_to_none(self):
+        """接口改名/下线（`FAIL_SYS_API_NOT_FOUND`）时降级，不把整个商品页打挂；
+        但原因要带出来（和「会话拿不到」区分得开）。"""
+        stub = MtopStub({}, {ITEM_STATS_API: 'FAIL_SYS_API_NOT_FOUND::接口不存在'})
+        client = XianyuClient(COOKIE, transport=httpx.MockTransport(stub))
+        with self.assertRaises(ItemStatsUnavailable) as ctx:
+            run(client.item_stats(self.ITEM_ID))
+        self.assertIn('接口不可用', str(ctx.exception))
+        self.assertIn('FAIL_SYS_API_NOT_FOUND', str(ctx.exception))
 
 
 if __name__ == '__main__':
