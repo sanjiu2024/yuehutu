@@ -93,6 +93,42 @@ items(id INTEGER PK, account_id TEXT, item_id TEXT UNIQUE, title TEXT, price REA
       --   旧代码把 `1` 当 `on_sale` 且用 `or` 链吞掉 falsy 的 `0`，会把每件在售商品判成下架，已修；
       --   列表与详情两条路径必须用同一套映射，否则同一商品两处状态互相打架。
 
+-- 商品数据（曝光/浏览/想要）：接口真实存在，但**要卖家工作台会话**（第十一批调研结论）
+平台接口：`mtop.alibaba.idle.seller.pc.item.stats.query` v`1.0`，`data={itemId}`，响应体在
+`resp.data.data`，只有三个字段：`exposureNum`（曝光次数）、`showNum`（浏览次数）、
+`wantNum`（想要人数）—— 对应本项目的 `exposure`/`visits`/`wants`（见 `xianyu/client.py`
+的 `ITEM_STATS_FIELDS`）。用户参考的竞品那 7 列里，曝光人数/浏览人数/下单人数/支付人数/
+支付订单数**平台没有**，也**没有任何时间窗口参数**（近 1/7/30 天取不到）。
+真机证据（只读 9 次、无风控）：同一个 Cookie 打 `mtop.idle.web.user.page.head` 是
+`SUCCESS::调用成功`，打上面这条是 `FAIL_SYS_SESSION_EXPIRED::Session过期`（换 spm、补
+`Origin`/`Referer: https://seller.goofish.com` 都一样）；假接口对照回
+`FAIL_SYS_API_NOT_FOUNDED` ⇒ 网关先查注册表再查会话，**API 名是真的**。原因是卖家工作台走
+`passport.goofish.com` 的 `appEntrance=seller_web` 入口并要求商家身份
+（`mtop.alibaba.idle.seller.platform.user.business.identity.get`），与本项目现在的
+`www.goofish.com` 会话不是一份。
+⇒ 所以「商品数据」页现在**只能显示本地口径**（会话数/消息数/订单/买家/支付，来自本地库）+
+如实标「平台未提供」；要真拿到平台数据，需要另做一条卖家工作台登录入口（新功能，且会多一次
+扫码 —— 与本项目「不能老登录」的诉求冲突，需用户点头后再做）。
+`client.item_stats()` 拿不到数据时**抛 `ItemStatsUnavailable`（带原因）**，不再静默
+`return None`（第十二批修，独立审查 D1）：早先的「吞掉」让四种完全不同的失败在接口层
+长得一模一样（都是「平台返回的商品数据无法识别: 」+ 空原因），用户无法区分「账号掉线」
+「只是缺卖家会话」「接口下线」「响应没指标」。
+- `ItemStatsUnavailable` **故意不继承** `SessionExpiredError`：`services/common.py`
+  会把 `SessionExpiredError` 判成登录态过期并 `mark_need_relogin()`，把一个好账号
+  标成「需重新扫码」。同时 `common._is_session_expired()` 按 **MRO 类名**优先放行
+  `ItemStatsUnavailable`，因为它的消息里会带平台原文（可能含 `Session过期` 字样），
+  文案兜底会误判。
+- 三种原因各自成句：缺 itemId「缺少 itemId：商品数据接口只能按商品调用」；
+  会话拿不到「需要卖家工作台会话：这个接口族不接受网页版 Cookie（账号本身没掉线）」；
+  其它协议错「接口不可用: <平台原文>」；响应认不出「平台响应里没有可识别的商品数据指标
+  （data=...）」。
+- `?source=platform` 失败时 502 的 `message` 必须带真实原因（`平台商品数据接口调用失败:
+  <原因>`），冒号后不许是空的；`?source=auto` 一律降级成 `source:"local"` + 对应 warning。
+- 服务层别名表认平台原名 `exposureNum`/`showNum`/`wantNum`（`item_stats.METRIC_ALIASES`），
+  认不出的「像指标」字段（含 exposure/visit/want/曝光/浏览/想要 等词根）要留一条
+  `WARN_PLATFORM_PARTIAL` warning，不许静默丢掉；`item_id`/`title`/`code` 这类结构性
+  字段不报（每次都响的 warning 等于没有 warning）。
+
 -- AI 供应商与角色
 providers(id INTEGER PK, name TEXT, base_url TEXT, api_key TEXT, default_model TEXT,
           enabled INTEGER DEFAULT 1, is_default INTEGER DEFAULT 0, created_at, updated_at)
@@ -183,6 +219,25 @@ GET    /api/items/{account_id}/{item_id}       -> 单条商品（MCP 的 items_g
       -- 单条商品**必须**带账号上下文。曾经存在过一条扁平的 `GET /api/items/{item_id}`，
       --   它与账号列表路径形状完全相同、被 FastAPI 按声明顺序吃掉，已删除：同一个
       --   单段路径不可能既是「账号列表」又是「商品详情」，只能保留一个。
+DELETE /api/items/{account_id}/{item_id}       -> {deleted:true,account_id,item_id}
+      -- **只删本地记录**：平台侧没有「删除商品」接口，闲鱼上架着的商品不受影响，下次
+      --   「同步商品」若平台仍返回它就会被写回（前端文案必须这么告诉用户）。会话/消息/
+      --   订单**都不删** —— 它们是聊天与交易历史。严格配对 `(account_id,item_id)`，
+      --   跨账号或不存在一律 404 `not_found`；成功写 operation_logs action='delete_item'
+      --   并发 `items.updated`（payload.action='delete'）。
+GET    /api/items/{account_id}/stats?item_id=&source=auto|local|platform
+      -> {success:true,data:{items:[{item_id,title,images,price,status,
+             exposure,visits,visitors,wants,orders,buyers,paid_orders,
+             conversations,messages,last_message_at}],
+             total,account_id,updated_at,source,warnings,metrics}}
+      -- 「商品数据」页的接口。**拿不到的数一律 `null`，前端显示 `-`；禁止 0 或假数据**
+      --   （0 只有在平台真的回 0 时才出现，`item_stats.py::_count_or_none()` 就是这条的守卫）。
+      -- `source`：`local`=纯本地统计（不碰协议层、不校验 Cookie）；`auto`（默认）=能拿平台
+      --   就拿、失败降级为 local 并在 `warnings` 里说清原因；`platform`=必须拿到，否则 502。
+      -- `warnings` 是给用户看的诚实说明（例如「平台未提供商品数据接口，仅显示本地统计」）。
+      -- `metrics.platform` 目前是 `exposure/visits/visitors/wants`，其中平台真名与来源见 §2。
+      -- 路由**必须挂在 `/api/items/{account_id}/{item_id}` 之前**（`main.py` 的
+      --   `ROUTE_MODULES` 里 `item_stats` 排在 `items` 前），否则被动态段吞成「商品不存在」。
 POST   /api/items/{account_id}/sync            -> 从闲鱼拉取在售商品入库
 POST   /api/items/{account_id}/publish         {title,price,description,images,category_id,...}
 POST   /api/items/{account_id}/{item_id}/edit  {price?,title?,description?,stock?,images?}
@@ -205,6 +260,24 @@ GET    /api/uploads/local/{name}               -> 本地留档原图（给前端
       --   （防路径穿越）；缺失 404 `{success:false,code:'not_found'}`。
 POST   /api/items/{account_id}/{item_id}/delist | /relist
 POST   /api/items/{account_id}/batch-edit      {item_ids:[...],patch:{price_delta|price_set|title_tpl|...}}
+      -- patch 里的库存有三种写法，语义**不能混**：
+      --   `stock`       绝对目标值（前端已经算好）；`stock_set` 设为固定值（等价，允许在库存未知时用）；
+      --   `stock_delta` 相对增减（正=增、负=减）—— **库存未知（`stock < 0`）时拒绝**，回
+      --   `code='unknown_stock'` + 原文「该商品库存未知（平台列表没有返回库存），不能用
+      --   「增加/减少」；请改用「设为固定值」，或先同步商品把库存取回来」。理由：未知当 0
+      --   会把「加 5 件」静默写成 5 件，那是改坏用户的真实库存。批量里被拒的商品进 `failed`，
+      --   其余照常处理（恒等式 `total == ok + local_only + noop + len(failed)`）。
+      --   负值一律钳到 0（`max(0, ...)`），不写负数库存 —— 这条只管**补丁字段**
+      --   `stock_set`/`stock_delta`/`price_set`/`price_delta`。直接写字段（`{"stock": -5}`、
+      --   `{"price": -1}`）是另一条路：回 400 `invalid_fields`「库存不能为负」，**不钳**
+      --   （字段是绝对值，用户明确给了个负数就是输错了，静默改成 0 会改坏真实库存）。
+      --   补丁数字字段的入参校验（第十二批修，独立审查 D4）：`null`/字符串非数字/列表/
+      --   布尔/NaN/Inf 一律 400 `invalid_fields` + 「字段 <key> 需要数字，收到: <值>」；
+      --   `stock_set`/`stock_delta` 还要求整数（`2.5` 静默截成 `2` 也是编数字）。
+      --   这条**不是**洁癖：前端「增减」输入框为空时 `Math.max(0, NaN)` 得 `NaN`，
+      --   `JSON.stringify(NaN)` 就是 `null` —— 真会发出来。旧行为是 `int(float(None))`
+      --   抛 TypeError → 单条 500、批量整单 500（连哪条出错都不说）；现在批量里逐条进
+      --   `failed`（`code='invalid_fields'`），其余照常处理。
 POST   /api/items/{account_id}/batch-publish   {items:[...]}
 GET    /api/items/{account_id}/operation-logs?limit=
 POST   /api/items/publish ; POST /api/items/batch ; POST /api/items/downshelf ; POST /api/items/reshelf
@@ -421,3 +494,25 @@ master_chat                       -- 把我的话转给主管 AI
 3. 测试：`backend/tests/` 全绿（unittest，`PYTHONPATH=.`，每个文件独立进程）。
 4. 风控不退化：搬过来的指纹/风控/会话测试全过（这些是最容易写坏的部分）。
 5. 打包：`scripts/build_exe.ps1` 产出单个 exe，双击能起窗口。
+
+## 8. 前端设计系统（第十一批定，UI 改动一律遵守）
+
+- **图标**：全部来自 `frontend/src/icons.tsx`（内联 SVG，`stroke=currentColor`、`strokeWidth=1.7`、
+  24×24、`size` 默认 18、`aria-hidden`），用法 `import { IconBox } from '../icons'`。
+  **全站不许再出现 emoji 当图标**（登录页的 🐟 已换成 `Logo`）。`icons.tsx` 由 Lead 独占维护。
+- **颜色/间距/圆角/阴影**：只用 CSS 变量。`styles.css` 的 `:root` 原有 20 个变量**名字与语义冻结**
+  （`--bg/--bg-soft/--panel/--panel-2/--border/--border-soft/--text/--text-dim/--text-mute/--accent/
+  --accent-hover/--ok/--warn/--danger/--ask/--answer/--notify/--radius/--radius-sm/--shadow`）；
+  第十一批追加了间距 `--sp-1..6`、字号 `--fs-11/12/13/14/16/20`（**没有 15/17/18/19**：
+  只有这六档，写别的档位要新加变量，不许硬编码 `font-size: 15px`）、`--radius-lg/--radius-pill`、
+  `--shadow-sm/md/lg`、成对语义色（`--ok-soft/--ok-line` 等）、表面 `--surface/--row-hover/
+  --row-selected/--overlay`、`--focus`、`--dur-*/--ease`、`--sidebar-w`。**不许删改既有 class 名**
+  （其它页面在用）；新样式写进各自页面的 CSS 文件（`components.css`、`pages/pages.css`、
+  各页 `xxx.css`）并在页面里 `import`。
+- **主题**：`document.documentElement.dataset.theme` = `dark`（默认）| `light`，持久化在
+  `localStorage['xywb_theme']`；`main.tsx` 在 `createRoot` **之前**调 `initTheme()`（否则浅色用户
+  先闪一下深色）。浅色块**只覆盖变量**、不写选择器；两块都要写 `color-scheme`（否则复选框/
+  下拉弹层/原生滚动条仍按深色渲染）。
+- **实时刷新**：一律 `useAsync(loader, deps, immediate, topics)` 的第 4 参订阅 WS topic，
+  **不许引入轮询**。
+- **不引第三方依赖**：打包要离线可用，图表/拖拽/图标都自己写。

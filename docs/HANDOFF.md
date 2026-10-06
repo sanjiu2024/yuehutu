@@ -22,7 +22,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 26  PASS 26  FAIL 0  CASES 645  SKIPPED 2
+-> TOTAL 27  PASS 27  FAIL 0  CASES 803  SKIPPED 2
 ```
 
 ```text
@@ -34,7 +34,7 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_xianyu_log
 cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
--> BUILD_EXIT=0   frontend/dist/assets/index-x6fHQ3NA.js (231.97 kB)
+-> BUILD_EXIT=0   frontend/dist/assets/index-D3DLNsqw.js (314.68 kB) + index-_I2zWEuE.css (97.10 kB)
 ```
 
 ```text
@@ -601,10 +601,148 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 > 告知用户（回复「我没有商品卖完了的」），据此**没有对平台做任何补救写操作**（不下架、
 > 不改回），该商品的当前在售状态保持原样。
 
+### 第十一批：用户第五次真机实测（UI 重设计 / 批量改数量 / 商品数据页）（75~83）
+
+> 用户原话要点：批量修改里**没有数量**；商品页要**再加一页看商品数据**；发布商品弹窗
+> 「设计不太好、用起来怪怪的」；**整个软件的 UI 为什么用 emoji 表情**，「找点图片之类的
+> 也好啊」；把整个 UI 重新设计一遍 + 细节都优化；最后再来一遍审查。
+
+75. **全站用 emoji 当图标**（用户直接点名）。侧边栏九项、空态、按钮、提示全靠 emoji，
+    在不同系统/字体下大小与基线都不一致，也不专业。修：新增 `frontend/src/icons.tsx`
+    —— 48 个内联 SVG 线性图标（`stroke=currentColor`、`strokeWidth=1.7`、24×24、
+    `size` 默认 18、`aria-hidden`）+ 品牌 `Logo` + `ICONS` 登记表，`App.tsx` 导航/登录页
+    （原 `🐟`）、`components.tsx`（空态/提示/开关/徽标）与九个页面全部改用它。
+    **坑**：esbuild 会把 emoji 兼容别名表里的 `\u{...}` 转义**变成字面 emoji 塞进产物**
+    （删表前 bundle 里 41 个 emoji 字形、删表后 0），所以别名表直接删掉，
+    `resolveIcon` 认不出时回落盒子图标 + `console.warn`，不静默。
+
+76. **批量修改没有「数量」，后端也只有「设为固定值」**（用户报「怎么没有修改数量」）。
+    前端批量弹窗只有价格/标题/描述三块；后端 `PATCH_KEYS` 只有 `stock_set`，没有增减。
+    修：①新增 `stock_delta`（正=增、负=减）；②**未知库存（`stock < 0`）时拒绝 delta**，
+    回 `code='unknown_stock'` + 「该商品库存未知（平台列表没有返回库存），不能用「增加/
+    减少」；请改用「设为固定值」，或先同步商品把库存取回来」—— 未知当 0 会把「加 5 件」
+    静默写成 5 件，那是**改坏用户的真实库存**；`stock_set` 在未知时仍然允许（把未知覆盖成
+    已知是合理操作）；③负数结果一律 `max(0, ...)` 钳到 0；④单条与批量共用同一处解析；
+    ⑤`item_stats()` 的 `inventory_value` 改成 `SUM(CASE WHEN stock >= 0 THEN price*stock
+    ELSE 0 END)`（未知库存不再把总价值算小/算负）。前端 `patchFor()` 三种请求体：
+    固定值 `{stock_set}`、增减且库存已知→前端算绝对值 `{stock}`、增减且库存未知 `{stock_delta}`。
+
+77. **商品页没有「商品数据」**（用户要求加一页）。修：新增
+    `backend/app/services/item_stats.py` + `backend/app/api/item_stats.py` 的
+    `GET /api/items/{account_id}/stats`（本地口径：会话数/消息数/订单/买家/支付 +
+    `warnings` 如实说明），前端商品页加「商品数据」tab（拿不到显示 `-`，0 是真实值照显）。
+    **路由顺序坑**：`main.py` 的 `ROUTE_MODULES` 里 `item_stats` **必须排在 `items` 前**，
+    否则 `GET /api/items/{account_id}/{item_id}` 会把 `/stats` 当 item_id 吃掉
+    （真机探针实测挂错顺序 → 404「商品不存在: probe_acc/stats」）。
+    **不许编数字**：`_count_or_none()` 把 0 变 `None`；平台若只给账号级汇总又认不出属于
+    哪件商品，就全 null + warning（用例 `test_account_level_response_is_not_attributed_to_every_item`）。
+
+78. **商品数据接口：平台有，但我们这份会话打不通**（调研结论，见 `docs/CONTRACTS.md` §2）。
+    卖家工作台接口 `mtop.alibaba.idle.seller.pc.item.stats.query` v1.0 只给三个字段
+    （曝光次数/浏览次数/想要人数），用户参考的竞品那 7 列里另外 5 列平台**根本不提供**，
+    也**没有时间窗口参数**。真机只读 9 次无风控：同一 Cookie 打 `user.page.head` 成功、
+    打 seller 接口 `FAIL_SYS_SESSION_EXPIRED`，假接口对照回 `FAIL_SYS_API_NOT_FOUNDED`
+    ⇒ API 名真实存在，缺的是**卖家工作台会话**（`appEntrance=seller_web` + 商家身份）。
+    所以这一页现在只能显示本地口径并**如实标注**；要拿平台数据需另做一条卖家工作台登录
+    入口（多一次扫码，与「不能老登录」冲突，**等用户点头再做**）。
+    协议层落地：`client.item_stats()` 对 `SessionExpiredError` **本地吞掉返回 None**
+    （否则会把只是缺卖家会话的好账号标成 `need_relogin`），`RiskControlError` 照抛。
+
+79. **前端调用了后端不存在的接口**：商品行内「更多 → 删除」调
+    `DELETE /api/items/{account}/{item_id}`，后端**根本没有这条路由**（`isNotReady` 时
+    只弹个 toast，等于点了没反应）。修：`services/items.py::delete_item()` + API 路由。
+    **只删本地记录**：平台侧没有删除商品接口，闲鱼上架着的商品不受影响，下次同步若平台
+    仍返回它就会被写回 —— 前端文案必须这么告诉用户；会话/消息/订单**都不删**（那是聊天与
+    交易历史）；严格配对 `(account_id,item_id)`，跨账号或不存在一律 404 `not_found`。
+
+80. **`useAsync` 静默重拉不复位 `loading`**（inbound 审计报出）。首屏请求还在飞时来了 WS
+    事件，会把上一跑 cancel（它的 `finally` 直接 return），而静默这一跑又不置 `loading`
+    ⇒ 列表**永久转圈**，真实错误也被盖住。修：`finally` 无条件 `setLoading(false)`。
+
+81. **FastAPI `_IncludedRouter` 路由对象坑**（写测试时踩到）。`create_app().routes` 的顶层
+    元素是 `_IncludedRouter`（`.path is None`），真正的 `APIRoute` 在嵌套 `.routes` 里；
+    只读顶层会得到「一条 API 路由都没有」的假象（顶层 17 条里 12 条空串 + 1 个 `Mount('')`）
+    ⇒ 挂载断言**假失败**。修：递归 `collect(routes, out)`（走 `getattr(r,'routes')` 或
+    `original_router.routes`）。`test_contract_routes.py` 的 `walk()` 本来就是这么写的。
+
+82. **两处「看起来是缺陷其实不是」**（如实记下，免得下次重踩）：①`frontend/src/pages/risk.css`
+    注释里的 `var(--xxx)` 占位符被令牌审计脚本误报「引用了未定义的变量」—— 脚本没剥 CSS
+    注释；②`frontend/src/pages/Items.tsx` 的裸 `<span className="spacer" />` 在
+    `styles.css` 里**没有对应规则**（`.grow` 只存在于 `.notice .grow`），元素等于不存在
+    ⇒ 改 `<span style={{ flex: 1 }} />`。
+
+83. **平台 `wantNum`（想要人数）在服务层被静默丢掉**（proto 交付时留下）。协议层解析出了
+    `wants`，但服务层 `PLATFORM_METRICS` 里没有它 ⇒ 「平台给了、我们假装没看见」。
+    修：加进 `PLATFORM_METRICS` 与 `METRIC_ALIASES`（页面暂不展示，但数据不再丢）。
+    同批还修了 `frontend/src/hooks/useAsync.ts` 与两处空态/骨架屏竞态（见 80/82）。
+
+> **这一批的真机/构建证据链**：`npx tsc --noEmit` EXIT=0；`npm run build` BUILD_EXIT=0
+> （57 modules，`dist/assets/index-_I2zWEuE.css 97.10 kB`、`index-D3DLNsqw.js 314.68 kB`）；
+> 全站 emoji 计数 0（源码与产物都查）；令牌审计「引用未定义」= 0；`styles.css` 原有 20 个
+> 变量名与原值 **CHANGED=0**、既有 class **REMOVED=0**（新样式全部写进各页自己的 CSS 文件）；
+> 后端起在 18097 实测 `/api/health` 200、`/` 200、js/css 200 且含 `html[data-theme=light]`。
+
+### 第十二批：第十一批的独立复审（两个只读审查员）与复审后的修复（84~89）
+
+> 做法：UI 与后端各派一个**干净上下文**的只读审查员，自己写临时脚本真跑（前端 11 条硬项、
+> 后端 10 条硬项），只报告不改文件。前端结论「可以交付」（11/11 通过，8 条低危）；
+> 后端查出 3 个真缺陷 + 4 条文档/测试问题。下面是**复审之后**的修复。
+
+84. **`item_stats` 的四种失败在接口层完全一样**【后端审查 D1，最高优先】。协议层
+    `client.item_stats()` 拿不到数据时 `return None`，服务层的「先带 item_id 再不带头」二次
+    尝试又被这个 `None` 早退成「成功但没有内容」⇒ **风控、会话过期、接口下线、响应没指标**
+    四种情况端到端都是同一句 502 `{"message":"平台返回的商品数据无法识别: "}`（冒号后是空的），
+    而且失败时 mtop 被调了两次。修：①新增 `ItemStatsUnavailable(XianyuError)`（**故意不继承
+    `SessionExpiredError`**，否则好账号会被 `mark_need_relogin()`），四种原因各自成句；
+    ②`common._is_session_expired()` 按 MRO 类名**优先放行**它（消息里会带平台原文，可能含
+    `Session过期` 字样，文案兜底会误判）；③签名能收下 `item_id` 时**只调一次**，不再补探测；
+    ④`CALL_OK` + `None` 也算失败并保留第一次的真实 reason。
+    **这一条的价值不在文案好看**：以前用户看到「无法识别」只能猜，现在能一眼分清
+    「账号要重新扫码」和「这个接口族本来就不给网页版 Cookie」——后者重新扫码也没用。
+85. **`wants`（想要人数）在服务层被静默丢掉**（上一批 83 号声称已修，**是假的**：只往
+    `PLATFORM_METRICS`/`METRIC_ALIASES` 里加了名字，`_merge()` 的返回字典根本没输出它，
+    全文件 grep `wants` 命中 0，测试也没断言）【审查 D2】。修：`_merge` 补 `'wants'`；
+    新增 `test_wants_reaches_the_response` / `test_wants_missing_is_none_not_zero`
+    —— 端到端断言真的出现在响应里，平台没给时是 `None` 而不是 0。
+    教训：**「加进常量表」不等于「端到端可见」**，上一批的结论缺一条端到端断言。
+86. **别名表认不出平台原名 + 认不出时完全静默**【审查 D3】。`METRIC_ALIASES` 缺
+    `exposureNum`/`showNum`（协议层改名前的原名），且 `showCount` 挂在 `exposure` 下而
+    协议层把它映射到 `visits` ⇒ 同一个词根落在两个指标上。修：别名表补齐并把 `showCount`
+    移到 `visits`；新增 `_suspect_metric_keys()` + `WARN_PLATFORM_PARTIAL`：响应里有
+    「像指标但没认出」的字段时留一句 warning（含字段名），`item_id`/`title`/`code` 这类
+    结构性字段**不报**（每次都响的 warning 等于没有 warning）。
+87. **补丁数字字段非法 → 500**【审查 D4】。`{"stock_set":"abc"}` / `{"stock_delta":null}` /
+    `{"stock_delta":[]}` 一路透传到 `int(float(value))` 抛异常：单条 500，**批量整单 500**
+    （连哪条出错都不说）。而且这不是理论问题：前端「增减」输入框为空时
+    `Math.max(0, NaN)` 得 `NaN`，`JSON.stringify(NaN)` **就是 `null`**。修：`normalize_fields`
+    里对 `NUMERIC_PATCH_KEYS` 用 `_patch_number()` 校验（`null`/非数字串/列表/布尔/NaN/Inf
+    一律 400 `invalid_fields` + 「字段 <key> 需要数字，收到: <值>」；`stock_set`/`stock_delta`
+    还要求整数 —— `2.5` 静默截成 `2` 也是编数字），批量里逐条进 `failed` 且恒等式仍成立。
+88. **文档与实现打架的三处**【审查 D5/D6/D7】：①CONTRACTS 写「负值一律钳到 0」，
+    但 `{"stock": -5}` 实际回 400 —— 两条路本来就不同（**补丁字段**钳 0、**直接写字段**
+    报错），现在文档分开写清；②CONTRACTS §8 写「字号 `--fs-11..20`」，实际只有
+    `11/12/13/14/16/20` 六档，已改成精确列表并写明「不许硬编码 `font-size: 15px`」；
+    ③HANDOFF 的用例数 783 是旧值，实际 803。
+89. **审查还抓到「测试的假保证」**：`test_platform_call_passes_item_id_once_without_probing`
+    的 docstring 宣称「不许先带 item_id 再不带探测签名」，但它只覆盖**成功路径**，
+    而失败路径恰好就是被探测掩盖的那条。修：新增
+    `test_no_second_probe_call_when_signature_accepts_item_id`、
+    `test_ok_but_none_is_a_failure_with_reason`、`test_failure_reasons_are_distinguishable`
+    （三种失败必须给出三句不同的话）、`test_strict_platform_failure_message_carries_the_real_reason`
+    （502 的 message 冒号后不许为空）。
+    **教训：docstring 里的承诺必须有对应用例，否则它就是下一批人的错误地图。**
+
+> **第十二批证据链**：`backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_lead_runall`）
+> `TOTAL 27  PASS 27  FAIL 0  CASES 803  SKIPPED 2`（第十一批是 783）；
+> `test_xianyu_items.py` 81 用例、`test_item_stats_api.py` 39 用例、
+> `test_items_api.py` 31 用例、`test_services_items.py` 134 用例，各自单跑全绿。
+> 复审前端一侧：`frontend/src/styles.css` 冻结变量 20/20 未变、class 名删 0 增 0、
+> 未定义 `var()` 0 个、`components.tsx` 13 个导出 props 完全一致、产物 0 emoji。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**26 个测试文件、645 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**27 个测试文件、803 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
