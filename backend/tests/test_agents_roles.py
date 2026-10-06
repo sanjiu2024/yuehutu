@@ -317,6 +317,36 @@ class RoleConfigTest(RolesTestBase):
             data = roles.update_role('cs', provider_id=self.provider_id)
         self.assertEqual(data['provider_id'], self.provider_id)
 
+    def test_provider_id_none_unbinds(self):
+        """`provider_id=None` = 显式解绑（前端「跟随默认」）。
+
+        回归锁：曾经 `v is not None` 把 None 一起过滤掉，解绑接口回 200 但值没变 ——
+        用户在「AI 配置」页点「跟随默认」永远无效。
+        """
+        roles.update_role('item', provider_id=self.provider_id)
+        self.assertEqual(roles.get_role('item')['provider_id'], self.provider_id)
+        after = roles.update_role('item', provider_id=None)
+        self.assertIsNone(after['provider_id'])
+        self.assertIsNone(db.query_one("SELECT provider_id FROM ai_roles WHERE role = 'item'")['provider_id'])
+        # 别的字段不受影响：显式解绑只动 provider_id
+        self.assertTrue(after['enabled'])
+
+    def test_unbind_publishes_providers_changed(self):
+        """解绑也要发事件，否则前端页签不刷新（静默重拉靠 topics）。"""
+        topics = []
+        original = events.publish
+
+        def spy(topic, payload=None):
+            topics.append((topic, payload or {}))
+            return original(topic, payload or {})
+
+        roles.update_role('cs', provider_id=self.provider_id)
+        with mock.patch.object(events, 'publish', spy):
+            roles.update_role('cs', provider_id=None)
+        changed = [p for t, p in topics if t == 'providers.changed']
+        self.assertEqual(len(changed), 1, topics)
+        self.assertIsNone(changed[0]['provider_id'])
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

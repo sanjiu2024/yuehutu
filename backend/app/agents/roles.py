@@ -177,11 +177,19 @@ def list_roles() -> List[Dict[str, Any]]:
 
 
 def update_role(role: str, **fields: Any) -> Dict[str, Any]:
-    """局部更新；未提供的字段保持原值。非法字段忽略。"""
+    """局部更新；未提供的字段保持原值。非法字段忽略。
+
+    `provider_id=None` 是**显式解绑**（前端「跟随默认」），不能和「字段没传」一起被过滤：
+    之前 `v is not None` 把解绑吞掉了 —— `PUT /api/agents/roles/item {"provider_id": ""}`
+    回 200、值却还是旧的，是个点了没反应的假成功。
+    """
     if not is_role(role):
         raise ValueError(f'未知角色: {role}')
     current = get_role(role)
-    patch = {k: v for k, v in fields.items() if k in _ROLE_UPDATE_FIELDS and v is not None}
+    patch = {
+        k: v for k, v in fields.items()
+        if k in _ROLE_UPDATE_FIELDS and (v is not None or k == 'provider_id')
+    }
     merged = {
         'provider_id': patch.get('provider_id', current['provider_id']),
         'model': patch.get('model', current['model']),

@@ -349,6 +349,25 @@ class AgentsPromptsApiTest(unittest.TestCase):
         self.assertIn('API_BASE', text)
         self.assertIn('API_GLOBAL', text)
 
+    def test_put_role_unbind_provider_over_http(self):
+        """前端「跟随默认」走的就是 `provider_id: ""`；这条以前是假成功（回 200 但没变）。"""
+        pid = int(db.execute(
+            "INSERT INTO providers(name, base_url, api_key, default_model) "
+            "VALUES('mock-unbind','http://127.0.0.1:9/v1','','m')"
+        ))
+        resp = self.client.put('/api/agents/roles/item', headers=self.headers,
+                               json={'provider_id': pid})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json()['data']['provider_id'], pid)
+
+        resp = self.client.put('/api/agents/roles/item', headers=self.headers,
+                               json={'provider_id': ''})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertIsNone(resp.json()['data']['provider_id'])
+
+        resp = self.client.get('/api/agents/roles/item', headers=self.headers)
+        self.assertIsNone(resp.json()['data']['provider_id'])
+
     def test_prompt_crud_and_bad_scope(self):
         resp = self.client.post('/api/agents/prompts', headers=self.headers,
                                 json={'scope': 'item', 'item_id': 'X1', 'content': 'ITEM_X1', 'role': 'item'})
