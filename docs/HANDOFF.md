@@ -22,7 +22,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 25  PASS 25  FAIL 0  CASES 546  SKIPPED 1
+-> TOTAL 26  PASS 26  FAIL 0  CASES 638  SKIPPED 2
 ```
 
 ```text
@@ -482,11 +482,86 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 > **诚实边界**：买家用自己账号主动发一条新私信、触发「入站帧 → 落库 → AI 回复 →
 > 发回平台」的实时链路，仍然没有被真人验证过——本批只验证了「连接活着 + 历史能拉回」。
 
+### 第十批：用户第四次真机实测（账户名 / 客户名 / 库存 / 图片）抓到的（65~72）
+
+65. **账号昵称/头像只有扫码那一瞬拉过**（`48aee1f`）。`client.user_profile()` 早就有
+    （`mtop.idle.web.user.page.head`），但只在扫码成功那一刻调用一次；Cookie 导入 /
+    令牌自愈恢复的账号 `accounts.nickname` 恒空，账号页那列就一直是「(未命名)」。
+    修：`store.update_account_profile()` 窄写（空值不清旧值，**不用 `upsert_account`
+    回填** —— 它是 INSERT OR REPLACE，会抹掉 cookie/enabled）+ 新增
+    `services/accounts.py`（`refresh_profile(force)`、30 分钟节流、启动后台补全）+
+    `POST /api/accounts/{id}/refresh-profile`。
+    真机复验（数据目录副本，不碰用户真实库）：`nickname='月狐兔_'`、
+    `avatar_url=https://img.alicdn.com/...`、`refreshed=true`，并落库。
+
+66. **商品列表卡图片全空**（`d60f0fa`）。真商品在 `data.cardList`（`itemTopicList` 是空
+    列表），每卡 `cardData.picInfo` 是 **dict**、`detailParams.imageInfos` 是 **JSON
+    字符串**，旧代码只认 list ⇒ 45 件全无图（用户报「商品只显示了名称图片呢」）。
+    修：dict / list / JSON 字符串三形态统一解析，`major=true` 排首位、`http→https`、
+    按 URL 去重保序。
+
+67. **库存拿 `1` 冒充，而且假 1 永远自愈不了**（`d60f0fa`）。列表卡根本没有库存字段
+    （`detailParams.postInfo` 是「包邮」那类中文文案，不是数量），真库存在
+    `item_detail` 的 `data.itemDO.quantity`（真机 1087247101297=1、1087258469593=66）。
+    旧代码取不到就写 1 ⇒ 用户看到 45 件库存全是 1。修法分两步：①拿不到写 `-1`
+    （未知，前端显示「-」）+ 同步后逐件补详情（0.6s/件、单次上限 60 件、遇风控/登录态
+    过期立即 `break`）；②未知库存**必须覆盖**旧值（原先 `CASE WHEN excluded.stock < 0
+    THEN items.stock ELSE excluded.stock END` 会保留旧代码写死的假 1，而补详情队列只挑
+    `stock < 0`，假 1 连队列都进不去 —— 重新同步多少次都是「全是 1」）。
+    `images`/`description` 仍保持「本次为空不覆盖本地」，只有 `stock` 改成无条件覆盖。
+
+68. **`itemStatus` 语义正好反了，还会被 `or` 链吞掉 `0`**（`d60f0fa`）。真机 45 件里
+    44 件 `itemStatus=0`，唯一的 `1` 恰好是详情 `itemStatusStr="卖掉了"` 的那件
+    ⇒ **0=on_sale、1=sold**。旧代码 `'on_sale' if int(value) == 1 else 'off_shelf'`
+    把这件已卖出的显示成「在售」；更糟的是 `status=0` 会被判成 `off_shelf`→`downshelf`。
+    修：0/1 按真机语义映射、其它数字原样返回（不猜）、`bool` 显式拦截、
+    缺失/空串按 `on_sale`（「没报下架 ≠ 确认在售」）；列表与详情两条路径共用同一套映射
+    （原先列表给 `on_sale`、详情给 `None`，写同一列互相打架）。
+
+69. **把「最后一条消息发送者」的昵称当成买家名**（`c784c80`）。真机会话条目里**没有**
+    买家昵称字段，只有 `lastMessage.message.extension.reminderTitle` —— 它是那条消息
+    发送者的昵称：买家发最后一条时是买家名，我自己发最后一条时就是我自己
+    （用户会话列表 27 条里 17 条显示成「月狐兔_」＝他自己的昵称，报「客户名称显示不对」）。
+    修：只有发送者不是 `my_id` 才认（`sender.uid` 与 `extension.senderUserId` 两条真机
+    路径），否则空串；IM 同步增加修正 pass 回填/纠正库里已有的错误昵称；
+    账号自己的昵称永远进不了 `conversations.peer_nickname`。
+
+70. **编辑商品改图没有任何协议支持**（`d60f0fa`）。`_local_changes_to_edit` 只认 7 个
+    字段，传 `images` 直接抛「协议层不支持修改字段」。修：`images` →
+    平台 `imageInfoDOList`（5 个标量全字符串、首张 `major="true"`、尺寸缺失填 `'0'`
+    占位不硬编码 1254）；服务层写库只留 URL 字符串数组（保序去重）、推平台用完整对象。
+    真机复验（原样回灌同一件商品的图，只改形状不改内容）：真实尺寸 `1254×1254` 提交
+    → 平台接受，回帧与原型帧逐键一致；同一件用占位 `'0'` 提交**也被接受**
+    （前端拿不到尺寸时的兜底路径安全）。
+
+71. **`synced` 假绿：图片只在本地却报「已修改并同步」**（`d60f0fa`，由前端队友审计报出）。
+    `PUSHABLE_EDIT_FIELDS` 不含 `images`，同时改标题+图片时 `payload={title}` 推送成功
+    ⇒ `synced=true`，而图片只落本地。修：`synced = warning is None and not local_only`，
+    新增 `local_only_fields`；`images: []` 语义是「本次不改图」→ 单条 `noop:true`、
+    批量加 `noop` 计数（不计入 `ok`，恒等式 `total == ok + local_only + noop + len(failed)`）。
+
+72. **本地图片上传根本没有 HTTP 接口**（`cc389a9`，新增能力）。协议层
+    `client.upload_image()` 早就写好了但没人暴露，用户想换商品图只能自己找外部图床。
+    新增 `POST /api/uploads/images`（multipart，本地留档原图原字节、只把送协议层那份转
+    RGB JPEG 用完即删）+ `GET /api/uploads/local/{name}`（Bearer 或 `?token=`，
+    防路径穿越）。真机复验：16×16 PNG → HTTP 200 真图床 URL
+    `https://img.alicdn.com/imgextra/i2/O1CN01C9CauifNhGK020sS_!!2217970177348-0-fleamarket.jpg`。
+
+> **这一批的真机证据链**：`user_profile` 真机返回昵称+头像并落库；逐页抓列表
+> 20/20/5 + `nextPage` 真值 ⇒ 45 件（`totalCount` 恒 0，分页不能靠它）；`itemStatus`
+> 分布 44×0 / 1×1 且那件详情写着「卖掉了」；`edit_item` 带 `imageInfoDOList` 真机写入成功
+> （真实尺寸与占位 `'0'` 两种都过）；上传接口拿到真图床直链。
+> **诚实边界**：①买家昵称修复的**真机**复验被风控冷却挡住 —— 副本库里那 17 条「月狐兔_」
+> 还是脏的，只验证到「协议层解析 + 同步修正 pass + 假帧端到端」；等冷却退后用重打包的
+> exe 点一次「同步历史会话」即可确认。②库存 45 件一次补齐的真实耗时（≈27s+）与真实风控
+> 阈值未验证，风控中断路径只有单测。③真鼠标拖拽/排序/粘贴没有真人操作过（tsc + 打包 +
+> 真 HTTP 路由的对象形状已验，最坏是带提示的错误卡片而不是白屏）。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**25 个测试文件、546 个用例全绿、0 失败**（唯一 1 个 skip 是
-  `test_xianyu_login.py` 里本来就有的平台相关跳过）。含真实子进程 MCP 冒烟、
+- 全部后端逻辑：**26 个测试文件、638 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+  里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
 - 真实 HTTP：只读 17 条 + 写路径 11 条，均结构化信封、无 500。

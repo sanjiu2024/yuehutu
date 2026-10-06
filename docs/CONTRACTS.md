@@ -56,6 +56,27 @@ items(id INTEGER PK, account_id TEXT, item_id TEXT UNIQUE, title TEXT, price REA
       original_price REAL, stock INTEGER, status TEXT, category_id TEXT,
       images TEXT, description TEXT, ai_enabled INTEGER DEFAULT 1,
       updated_at, synced_at, UNIQUE(account_id, item_id))
+      -- stock 语义（第九批真机）：商品**列表卡里没有库存字段**，真库存在
+      --   `client.item_detail()` 的 `data.itemDO.quantity`。因此
+      --   `stock = -1` 表示**未知**（前端显示 `-`），`stock >= 0` 才是平台真实库存；
+      --   不许再用 `1` 冒充（曾经 `normalize_list_card` 取不到就写 1，用户看到 45 件库存全是 1）。
+      --   `sync_items` 的库存**永远以本次结果为准**：本次拿不到就写 `-1`，不保留库里旧值
+      --   （旧代码写死的假 1 否则会永久滞留：-1 保留旧值 → 假 1 连补详情队列都进不去）。
+      --   紧接着 `_refresh_unknown_stock` 把 `stock < 0` 的行逐件补真值（0.6s/件、
+      --   单次上限 60 件、遇风控/登录态过期立即 break 并回 `stock_refresh_stopped`）；
+      --   本地手改过的库存被同步重置为 -1 是预期行为（平台才是真相）。
+      --   `images`/`description` 不同：它们仍遵守「本次为空则不覆盖本地」。
+      -- images 是 **JSON 字符串数组**，元素是图片直链、**主图在首位**；
+      --   出站统一规范成 `https://`（真机给的是 `http://img.alicdn.com/...`，
+      --   页面跑在 127.0.0.1 上会被浏览器的混合内容策略拦掉）。
+      --   编辑保存时允许 `{images:[url,...]}`：协议层把它翻成平台的 `imageInfoDOList`
+      --   （list of dict，全部字符串值：`major`/`widthSize`/`heightSize`/`type`/`url`/`extraInfo`，
+      --   第一张 `major="true"`），**空数组报错**（不等于清空商品图）。
+      -- status 语义（第十批真机）：列表卡 `cardData.itemStatus` 是数字，真机 45 件里 44 件是 `0`、
+      --   唯一 `1` 恰好是详情 `itemStatusStr="卖掉了"` 的那件 ⇒ **`0 = on_sale`、`1 = sold`**；
+      --   其它数字原样 `str(value)` 返回（不猜），缺失/空串按 `on_sale`（「没报下架 ≠ 确认在售」）。
+      --   旧代码把 `1` 当 `on_sale` 且用 `or` 链吞掉 falsy 的 `0`，会把每件在售商品判成下架，已修；
+      --   列表与详情两条路径必须用同一套映射，否则同一商品两处状态互相打架。
 
 -- AI 供应商与角色
 providers(id INTEGER PK, name TEXT, base_url TEXT, api_key TEXT, default_model TEXT,
@@ -77,6 +98,12 @@ conversations(id INTEGER PK, account_id TEXT, peer_user_id TEXT, peer_nickname T
               item_id TEXT, mode TEXT DEFAULT 'auto',   -- auto|manual|off
               agent_role TEXT DEFAULT 'item', unread INTEGER DEFAULT 0,
               last_message_at, created_at, UNIQUE(account_id, peer_user_id))
+              -- peer_nickname **只允许买家昵称**；拿不到就存空串（前端兜底显示 `买家 <peer_user_id>`）。
+              --   第九批真机：会话条目里根本没有买家昵称字段，`lastMessage.message.extension.reminderTitle`
+              --   是**那条消息发送者**的昵称 —— 我发最后一条时它就是账号自己的昵称。
+              --   曾经无条件取它当 buyer_name，用户整列看到自己的名字（「客户名称显示不对」）。
+              --   判定发送者用 `lastMessage.message.sender.uid` / `extension.senderUserId` 与 my_id 比对；
+              --   同步到买家来信时要用来信昵称**修正**库里已有的错误昵称。
 messages(id INTEGER PK, conversation_id INTEGER, direction TEXT,  -- in|out
          sender TEXT,                  -- buyer|ai:<role>|human
          content TEXT, msg_type TEXT DEFAULT 'text', item_id TEXT,
@@ -118,6 +145,11 @@ DELETE /api/accounts/{id}         -> {deleted:true,purged:true,counts:{conversat
       --   先摘 IM 会话再删行。清理失败不假装成功：回 `purged:false` + `error`。
       --   `counts` 由 `services/chats.py::purge_account_data(account_id)` 给出（幂等，第二次 0/0）。
 POST   /api/accounts/{id}/relogin -> 触发重新扫码/续期（成功后重新挂 IM）
+POST   /api/accounts/{id}/refresh-profile -> {account_id,nickname,avatar_url}
+      -- 用 `client.user_profile()`（`mtop.idle.web.user.page.head`）刷新账号资料并**窄写**落库。
+      --   第九批真机：user_profile 过去只在扫码成功那一瞬被调用，所以 Cookie 导入/续期恢复的账号
+      --   `accounts.nickname` 恒为空 → 用户看到 `(未命名)`。落库**不能**用 `store.upsert_account`
+      --   （INSERT OR REPLACE 会抹掉 cookie/enabled），必须窄写。协议层不可用回 `xianyu_not_ready`。
 POST   /api/accounts/{id}/captcha -> 打开人工验证浏览器窗口（滑块）
 GET    /api/accounts/{id}/status
 POST   /api/accounts/qr/poll      -- 兼容别名（旧名，等价于 GET /api/accounts/qr/{ticket}）
@@ -139,6 +171,23 @@ GET    /api/items/{account_id}/{item_id}       -> 单条商品（MCP 的 items_g
 POST   /api/items/{account_id}/sync            -> 从闲鱼拉取在售商品入库
 POST   /api/items/{account_id}/publish         {title,price,description,images,category_id,...}
 POST   /api/items/{account_id}/{item_id}/edit  {price?,title?,description?,stock?,images?}
+      -- `images` 是 URL 数组（主图首位），协议层翻成平台 `imageInfoDOList` 提交（见 §2 items 注释）
+POST   /api/uploads/images                     multipart/form-data: file(单张) + account_id(可选)
+      -> {success:true,data:{url,file_id,width,height,name,local_path}}
+      -- 把本地图片传到闲鱼图床，拿到可直接放进商品/消息的直链。限制：jpg/jpeg/png/webp，≤10MB。
+      --   本地留档原图原字节在 `config.DATA_DIR/'uploads'`（名字 `uuid4().hex + 扩展名`），
+      --   `local_path` 是它的绝对路径；只把**送协议层的那一份**转 RGB JPEG 临时文件、用完即删。
+      --   失败信封：400 invalid_fields/bad_request（扩展名/内容/空文件/超 10MB/转码失败）、
+      --   404 not_found（account_id 不存在）、409 verification_required（Cookie 失效，带
+      --   `login_state:"need_relogin"`）、502 protocol_error、503 xianyu_not_ready（无可用账号）。
+      --   无论成败都写 operation_logs action='upload_image'；失败一定删本地文件（不留孤儿）。
+      --   选号：`account_id` 缺省 → 第一个 `enabled=1` 且有 Cookie 的账号；一个都没有时
+      --   **退一步用任意有 Cookie 的账号**（`accounts.enabled` 默认 0，刚扫码还没点启用的账号
+      --   不该连图都传不上；已有回归锁 test_disabled_account_with_cookie_is_still_usable）。
+GET    /api/uploads/local/{name}               -> 本地留档原图（给前端缩略图/预览用）
+      -- 鉴权可走 `Authorization: Bearer` **或 `?token=<jwt>`**（`<img src>` 带不了请求头）。
+      -- `name` 白名单 `^[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$` 且 `resolve()` 后必须仍在目录内
+      --   （防路径穿越）；缺失 404 `{success:false,code:'not_found'}`。
 POST   /api/items/{account_id}/{item_id}/delist | /relist
 POST   /api/items/{account_id}/batch-edit      {item_ids:[...],patch:{price_delta|price_set|title_tpl|...}}
 POST   /api/items/{account_id}/batch-publish   {items:[...]}
@@ -245,8 +294,18 @@ GET    /api/settings ; PUT /api/settings       {key:value,...}
 - `ok`/`synced`：本地改了、平台也推成功了。
 - `warnings`/`local_only`：**本地改了但没推出去**（`code=not_pushed`）—— UI 必须显示成「仅本地生效」，绝不能报成功。
 - `failed`/`skipped`：完全没改（含跨账号 `code=account_mismatch`、商品不存在）。
+- `noop`（新）：本次请求**没有任何实际改动**（目前只有 `{"images": []}` 这一种，语义是「本次不改图」而不是清空商品图）：
+  既不写库也不推平台，单条返回 `{item, synced: true, updated_fields: [], noop: true, warning: null}`；
+  批量汇总里 `noop` 单独计数、**不计入 `ok`**，恒等式 `total == ok + local_only + noop + len(failed)`。
 - 服务层结果**故意不带 `success` 字段**：带了 `success:false` 会被 `services/common.py::respond` 判成失败业务码（503），
   与「200 + 逐条结果」的契约冲突。
+
+**单条编辑（`POST /api/items/{account_id}/{item_id}/edit`）的诚实同步口径**：`synced = warning is None and not local_only`。
+
+- `local_only_fields: string[]`：本次请求里解析到、但**不在 `PUSHABLE_EDIT_FIELDS`**（`price`/`original_price`/`stock`/`title`/`description`/`status`/`free_shipping`/`images`）里的字段（如 `ai_enabled`/`category_id`）。
+  它们只落本地 SQLite、从不推闲鱼；只要非空，`synced=false` 且 `warning` 必须点名字段（文案「以下字段仅本地生效，未推送到闲鱼：…」）。
+  曾经 `images` 不在集合里：用户同时改标题+图片时 `payload={title}` 推送成功 → 报「已修改并同步 1 个」，而图片只在本地 —— 典型的假绿，已修。
+- `items.images` 列恒为 URL 字符串数组（保序去重、https）；请求允许传 `{url,width,height}` 对象（前端刚上传的图带真实尺寸），**写库只留 URL**，推协议层用完整对象（`images_to_image_infos` 把 `width/height` 变成 `widthSize/heightSize`，缺尺寸填 `'0'` 占位）。
 
 错误响应统一：`{"success":false,"message":"...","code":"..."}`，HTTP 用语义状态码（4xx 业务、5xx 内部）。成功统一 `{"success":true,"data":{...}}`。
 **404/405 也必须走这个信封**（挂的是 Starlette 的 `HTTPException`，不是 FastAPI 的子类）。
