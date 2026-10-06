@@ -14,6 +14,11 @@
 显示「已登录」。本文件把这几条锁死：**登录/启用/重登要真挂上、停用/删除要真摘掉、
 Cookie 过期要回写 `need_relogin` 并把事件发出去**。
 
+再一条（task-22）：cookie 导入/续期恢复的账号从来没有昵称/头像 ——
+`client.user_profile()` 全仓只有 `login.py:389` 一个调用点，而那个载荷连
+`avatar_url` 都不带（`login.py:397-403`）。本文件同时锁住资料回填：拿到就落库、
+空值不覆盖旧值、30 分钟节流、平台报错不影响列表/刷新接口、回填不许碰 cookie。
+
 跑法（仓库根目录）：
     cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\\Python310\\python.exe backend\\tests\\test_accounts_im.py"
 
@@ -21,6 +26,7 @@ Cookie 过期要回写 `need_relogin` 并把事件发出去**。
 """
 from __future__ import annotations
 
+import asyncio
 import sys
 import tempfile
 import time
@@ -36,9 +42,10 @@ from fastapi.testclient import TestClient  # noqa: E402
 from backend.app.api import accounts as accounts_api  # noqa: E402
 from backend.app.core import db, events, security  # noqa: E402
 from backend.app.main import create_app  # noqa: E402
+from backend.app.services import accounts as accounts_service  # noqa: E402
 from backend.app.services import common, im_service  # noqa: E402
 from backend.app.xianyu import store  # noqa: E402
-from backend.app.xianyu.client import SessionExpiredError  # noqa: E402
+from backend.app.xianyu.client import RiskControlError, SessionExpiredError  # noqa: E402
 
 EXPIRED_PLATFORM_TEXT = 'FAIL_SYS_SESSION_EXPIRED::Session过期'
 
@@ -78,11 +85,30 @@ class FakeClient:
         self.fail_with = None
         #: 记下真正发出去的 `(cid, text)`，用来锁「发到平台的那个会话 id」
         self.sent = []
+        #: 账号资料（task-22）：`profile_calls` 用来验节流，`profile_error` 用来验「平台报错不影响接口」
+        self.profile_calls = 0
+        self.profile_loop = None
+        self.profile = {'nickname': f'资料-{account_id}',
+                        'avatar_url': f'https://img.example/{account_id}.jpg'}
+        self.profile_error = None
 
     def on_im_session(self, hook):
         if hook not in self.hooks:
             self.hooks.append(hook)
         return hook
+
+    async def user_profile(self, user_id=None):
+        """真协议层是 `async def`（`backend/app/xianyu/client.py:598`）。
+
+        顺手记下**实际运行所在的 event loop**：`common.call_method` 必须把它丢进
+        项目共享循环（`common.shared_loop()`），而不是 `asyncio.run` 一个新 loop ——
+        临时 loop 一关，挂在它上面的长连接任务就被销毁（真机表现是「会话建好即死」）。
+        """
+        self.profile_calls += 1
+        self.profile_loop = asyncio.get_running_loop()
+        if self.profile_error is not None:
+            raise self.profile_error
+        return dict(self.profile)
 
     def ensure_im(self):
         if self.fail_with is not None:
@@ -120,6 +146,9 @@ class AccountsImTest(unittest.TestCase):
         for account_id in im_service.active_accounts():
             im_service.forget(account_id)
         self._wipe()
+        # task-22 的资料节流是模块级缓存：不清掉会让「第二次必须跳过」的用例
+        # 被上一个用例的窗口带偏。空 id = 清空全部。
+        accounts_service.forget_profile_cache('')
 
         self.clients = {}
         self._real_get_client = common.get_client
@@ -162,9 +191,10 @@ class AccountsImTest(unittest.TestCase):
             client = self.clients[account_id] = FakeClient(account_id)
         return client, None
 
-    def _account(self, account_id: str, *, enabled: bool = False, cookie: str = '') -> None:
+    def _account(self, account_id: str, *, enabled: bool = False, cookie: str = '',
+                 nickname: str = '测试号') -> None:
         store.upsert_account(
-            account_id=account_id, nickname='测试号', xianyu_user_id=account_id,
+            account_id=account_id, nickname=nickname, xianyu_user_id=account_id,
             cookie=cookie or f'unb={account_id}; a=1', login_state=store.STATE_ACTIVE,
         )
         store.update_account(account_id, enabled=1 if enabled else 0)
@@ -396,6 +426,118 @@ class AccountsImTest(unittest.TestCase):
         self.assertTrue(self._wait(lambda: calls), f'relogin 后没重新挂 IM：calls={calls}')
         self.assertEqual(calls, ['acc4'])
         self.assertEqual(resp.json()['data']['login_state'], store.STATE_NEED_RELOGIN)
+
+    # ------------------------------------------------- 5. 账号资料回填（task-22）
+
+    def test_refresh_profile_persists_nickname_and_avatar(self):
+        """Cookie 导入的账号也必须能拿到昵称/头像（过去只有扫码登录那一瞬会拉）。
+
+        `user_profile` 必须是 `async def` 且跑在**共享事件循环**上：这是项目硬规则
+        （`common.run_awaitable` / `common.shared_loop()`），不许 `asyncio.run` 新 loop。
+        """
+        self._account('prof_acc', nickname='')
+        fake = FakeClient('prof_acc')
+        self.clients['prof_acc'] = fake
+
+        resp = self.client.post('/api/accounts/prof_acc/refresh-profile', headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertEqual(data['account_id'], 'prof_acc')
+        self.assertEqual(data['nickname'], '资料-prof_acc')
+        self.assertEqual(data['avatar_url'], 'https://img.example/prof_acc.jpg')
+        self.assertTrue(data['refreshed'], data)
+
+        account = store.get_account('prof_acc')
+        self.assertEqual(account['nickname'], '资料-prof_acc', account)
+        self.assertEqual(account['avatar_url'], 'https://img.example/prof_acc.jpg', account)
+        self.assertEqual(fake.profile_calls, 1)
+        self.assertIs(fake.profile_loop, common.shared_loop(),
+                      '账号资料没有跑在共享事件循环上（用 asyncio.run 建了新 loop）')
+
+    def test_refresh_empty_nickname_keeps_old_and_never_touches_cookie(self):
+        """空昵称不许清掉旧昵称；回填必须走窄写，`upsert_account` 会抹掉 cookie/enabled。"""
+        self._account('prof_keep', nickname='月狐兔_', enabled=True)
+        before = store.get_account('prof_keep')
+        self.assertTrue(before['enabled'])
+        fake = FakeClient('prof_keep')
+        fake.profile = {'nickname': '', 'avatar_url': 'https://img.example/keep.jpg'}
+        self.clients['prof_keep'] = fake
+
+        result = accounts_service.refresh_profile('prof_keep', force=True)
+
+        self.assertTrue(result['refreshed'], result)
+        account = store.get_account('prof_keep')
+        self.assertEqual(account['nickname'], '月狐兔_', '空昵称把旧昵称清掉了')
+        self.assertEqual(account['avatar_url'], 'https://img.example/keep.jpg', account)
+        self.assertEqual(store.get_cookie('prof_keep'), 'unb=prof_keep; a=1',
+                         'cookie 被回填动作写丢了（八成用了 upsert_account）')
+        self.assertTrue(account['enabled'], 'enabled 被回填动作写回默认值了')
+        self.assertEqual(account['login_state'], store.STATE_ACTIVE, account)
+
+    def test_refresh_is_throttled_but_force_bypasses_it(self):
+        """节流：同一次进程内不许每次列表刷新都去撞平台接口。"""
+        self._account('prof_throttle', nickname='')
+        fake = FakeClient('prof_throttle')
+        self.clients['prof_throttle'] = fake
+
+        first = accounts_service.refresh_profile('prof_throttle')
+        second = accounts_service.refresh_profile('prof_throttle')
+        self.assertTrue(first['refreshed'], first)
+        self.assertFalse(second['refreshed'], second)
+        self.assertIn('跳过', second.get('message', ''))
+        self.assertEqual(fake.profile_calls, 1, '节流没生效，第二次又打了平台')
+
+        forced = accounts_service.refresh_profile('prof_throttle', force=True)
+        self.assertTrue(forced['refreshed'], forced)
+        self.assertEqual(fake.profile_calls, 2)
+
+    def test_platform_error_never_breaks_list_or_refresh_endpoint(self):
+        """平台抛错（风控/网络/改版）：列表与刷新接口都必须 200，账号照常可用。"""
+        self._account('prof_err', nickname='', enabled=True)
+        fake = FakeClient('prof_err')
+        fake.profile_error = RiskControlError('FAIL_SYS_USER_VALIDATE::哎哟喂,被挤爆啦')
+        self.clients['prof_err'] = fake
+
+        resp = self.client.get('/api/accounts', headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        rows = {row['id']: row for row in resp.json()['data']}
+        self.assertIn('prof_err', rows)
+
+        resp = self.client.post('/api/accounts/prof_err/refresh-profile', headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertFalse(data['refreshed'], data)
+        self.assertIn('FAIL_SYS_USER_VALIDATE', data['message'])
+        self.assertEqual(data['nickname'], '')
+        self.assertEqual(store.get_account('prof_err')['login_state'], store.STATE_ACTIVE,
+                         '拉资料撞风控不该把账号标成需要重登')
+
+    def test_list_fills_missing_nickname_in_background_then_throttles(self):
+        """列表接口对缺昵称账号做后台补位，且**不阻塞响应**、不重复打平台。"""
+        self._account('prof_list', nickname='', enabled=True, cookie='unb=prof_list; a=1')
+        fake = FakeClient('prof_list')
+        self.clients['prof_list'] = fake
+
+        started = time.monotonic()
+        resp = self.client.get('/api/accounts', headers=self.headers)
+        elapsed = time.monotonic() - started
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertLess(elapsed, 1.0, f'列表被资料拉取阻塞了 {elapsed:.2f}s')
+
+        self.assertTrue(
+            self._wait(lambda: store.get_account('prof_list')['nickname'] == '资料-prof_list'),
+            '后台补位没把昵称落库')
+        calls_after_first = fake.profile_calls
+        self.assertGreaterEqual(calls_after_first, 1)
+
+        # 再查一次列表：节流窗口内不许再打一次平台
+        resp = self.client.get('/api/accounts', headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        rows = {row['id']: row for row in resp.json()['data']}
+        self.assertEqual(rows['prof_list']['nickname'], '资料-prof_list')
+        time.sleep(0.3)  # 给可能被错误起出来的线程一点时间
+        self.assertEqual(fake.profile_calls, calls_after_first,
+                         '列表每次刷新都重复拉平台资料（节流没接上）')
 
 
 if __name__ == '__main__':

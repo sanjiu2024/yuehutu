@@ -200,6 +200,33 @@ def update_account(account_id: str, enabled=None, auto_reply=None, remark=None) 
     db.execute(f'UPDATE accounts SET {", ".join(fields)} WHERE id = ?', tuple(params))
 
 
+def update_account_profile(account_id: str, nickname: str = '', avatar_url: str = '') -> None:
+    """回填昵称/头像（窄写：**只碰这两列**）。
+
+    为什么不能用 `upsert_account` 回填：它是 ``INSERT OR REPLACE`` 风格的整体写，
+    回填一次资料就会把 ``cookie``/``enabled``/``auto_reply`` 一起写回默认值 ——
+    用户刚刚导入的 Cookie 会失效、停用的账号会被自动启用。这里只 UPDATE
+    ``nickname``/``avatar_url``/``updated_at``。
+
+    空值不覆盖已有非空值：平台偶发返回空昵称（接口改版、风控降级）时，宁可留着
+    上次拉到的名字，也不要让账号页从「月狐兔_」退化成「(未命名)」。
+    """
+    if not account_id:
+        return
+    fields, params = [], []
+    if str(nickname or '').strip():
+        fields.append('nickname = ?')
+        params.append(str(nickname).strip())
+    if str(avatar_url or '').strip():
+        fields.append('avatar_url = ?')
+        params.append(str(avatar_url).strip())
+    if not fields:
+        return
+    fields.append('updated_at = ?')
+    params.extend([_now(), account_id])
+    db.execute(f'UPDATE accounts SET {", ".join(fields)} WHERE id = ?', tuple(params))
+
+
 # ---------------------------------------------------------------------------
 # 风控状态
 # ---------------------------------------------------------------------------

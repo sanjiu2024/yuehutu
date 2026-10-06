@@ -33,6 +33,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from ..core import events
+from ..services import accounts as accounts_service
 from ..services import im_service, risk_service
 from ..xianyu import login as qr_login
 from ..xianyu import risk as risk_mod
@@ -61,26 +62,35 @@ def _publish(topic: str, payload: Dict[str, Any]) -> None:
 
 
 def _start_im(account_id: str) -> None:
-    """后台挂载 IM 入站，立刻返回。
+    """后台挂载 IM 入站 + 后台回填账号资料，立刻返回。
 
     必须后台做：`im_service.start` 要建 WebSocket（真机会连平台），同步等它会把
     「扫码登录成功」这个 HTTP 响应拖到超时。`im_service.start` 本身幂等且不抛异常，
     这里再兜一层只是防止守护线程里出现没人看的 traceback。
+
+    同一条线程里顺手调一次 `accounts.refresh_profile`：**这里正是「Cookie 导入的
+    账号没有昵称」的补位点** —— 扫码登录路径由 `login._fill_profile` 填昵称且不填
+    头像，启动/启用路径过去谁都不填。`refresh_profile` 有 30 分钟节流且永不抛异常，
+    所以重复触发不会重复请求平台，也不会把启动流程带崩。
     """
     def worker() -> None:
         try:
             result = im_service.start(account_id)
         except Exception as exc:  # noqa: BLE001 - 后台线程里的异常会静默丢失
             logger.warning(f'[{account_id}] IM 入站挂载异常: {exc}')
-            return
-        if isinstance(result, dict) and result.get('attached'):
-            logger.info(
-                f'[{account_id}] IM 入站已挂载 reused={bool(result.get("reused"))} '
-                f'connected={bool(result.get("connected"))}'
-            )
         else:
-            detail = result.get('message') if isinstance(result, dict) else result
-            logger.warning(f'[{account_id}] IM 入站未挂载: {detail}')
+            if isinstance(result, dict) and result.get('attached'):
+                logger.info(
+                    f'[{account_id}] IM 入站已挂载 reused={bool(result.get("reused"))} '
+                    f'connected={bool(result.get("connected"))}'
+                )
+            else:
+                detail = result.get('message') if isinstance(result, dict) else result
+                logger.warning(f'[{account_id}] IM 入站未挂载: {detail}')
+        try:
+            accounts_service.refresh_profile(account_id)
+        except Exception as exc:  # noqa: BLE001 - 拉资料失败绝不能影响挂载/登录
+            logger.warning(f'[{account_id}] 回填账号资料异常: {exc}')
 
     threading.Thread(target=worker, name=f'im-start-{account_id}', daemon=True).start()
 
@@ -179,8 +189,19 @@ def _not_found(account_id: str) -> HTTPException:
 
 @router.get('')
 def list_accounts(user=Depends(current_user)) -> Dict[str, Any]:
-    """账号列表（含登录态、运行态与风控冷却，不含 Cookie 原文）。"""
-    return {'success': True, 'data': [_decorate(a) for a in store.list_accounts()]}
+    """账号列表（含登录态、运行态与风控冷却，不含 Cookie 原文）。
+
+    列表返回前，对**缺昵称且有 Cookie** 的账号起一个后台刷新线程（`refresh_profile`
+    带 30 分钟节流）：Cookie 导入/续期恢复的账号过去在这里只能显示 `(未命名)`，
+    而 `user_profile` 是一次真 mtop 往返，同步等会把列表拖到秒级。拉到资料后
+    `accounts.changed`（reason=`profile_refreshed`）会让前端自己再刷一次列表。
+    """
+    data = [_decorate(a) for a in store.list_accounts()]
+    try:
+        accounts_service.refresh_missing_profiles(data)
+    except Exception as exc:  # noqa: BLE001 - 资料补位失败不许影响列表本身
+        logger.warning(f'账号资料后台刷新调度失败: {exc}')
+    return {'success': True, 'data': data}
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +277,34 @@ async def account_status(account_id: str, user=Depends(current_user)) -> Dict[st
     if account is None:
         raise _not_found(account_id)
     return {'success': True, 'data': _decorate(account)}
+
+
+@router.post('/{account_id}/refresh-profile')
+def refresh_account_profile(account_id: str,
+                            user=Depends(current_user)) -> Dict[str, Any]:
+    """拉一次账号昵称/头像并落库（前端「刷新资料」按钮 / 排障用）。
+
+    `force=True`：用户点按钮是明确意图，要绕过 30 分钟节流；而列表接口的惰性补位
+    走的是节流路径。平台报错时**仍然 200** —— 返回 `refreshed: false` + `message`，
+    让前端提示「刷新失败」而不是把账号页打成错误页（拉资料失败不影响账号可用性）。
+    """
+    if store.get_account(account_id) is None:
+        raise _not_found(account_id)
+
+    result = accounts_service.refresh_profile(account_id, force=True)
+    store.log_operation(
+        account_id, 'refresh_profile', success=bool(result.get('refreshed')),
+        detail=str(result.get('message') or f'nickname={result.get("nickname")!r}'),
+    )
+    data = {
+        'account_id': account_id,
+        'nickname': result.get('nickname') or '',
+        'avatar_url': result.get('avatar_url') or '',
+        'refreshed': bool(result.get('refreshed')),
+    }
+    if result.get('message'):
+        data['message'] = result['message']
+    return {'success': True, 'data': data}
 
 
 @router.patch('/{account_id}')
@@ -393,6 +442,8 @@ def delete_account(account_id: str, user=Depends(current_user)) -> Dict[str, Any
     if not store.delete_account(account_id):
         raise _not_found(account_id)
     risk_mod.registry.reset(account_id)
+    # 资料节流缓存也要忘掉：同一个 id 重新导入时不该继承上一轮的 30 分钟窗口。
+    accounts_service.forget_profile_cache(account_id)
     purged = _purge_account_chats(account_id)
     _publish('accounts.changed', {'account_id': account_id, 'deleted': True})
     return {'success': True, 'data': {'id': account_id, 'deleted': True, **purged}}

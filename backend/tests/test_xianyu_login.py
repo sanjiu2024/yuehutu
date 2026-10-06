@@ -447,6 +447,33 @@ class StoreTest(unittest.TestCase):
             self.assertEqual(account['login_state'], store.STATE_NEED_RELOGIN)
             self.assertEqual(account['relogin_reason'], 'Session过期')
 
+    def test_update_account_profile_is_narrow(self):
+        """资料回填只碰 nickname/avatar_url，空值不覆盖旧值（task-22）。
+
+        过去唯一的回填手段是 ``upsert_account``（整体写）：拿它回填资料会把用户
+        刚导入的 Cookie 抹掉、把用户停用的账号自动启用。这条锁死窄写语义。
+        """
+        with _TempDB():
+            store.upsert_account(account_id='u6', nickname='老昵称', xianyu_user_id='u6',
+                                 cookie='unb=u6; x5sec=ok')
+            store.update_account('u6', enabled=False, auto_reply=False, remark='备注')
+
+            store.update_account_profile('u6', nickname='新昵称',
+                                         avatar_url='https://img.example/u6.jpg')
+            account = store.get_account('u6')
+            self.assertEqual(account['nickname'], '新昵称')
+            self.assertEqual(account['avatar_url'], 'https://img.example/u6.jpg')
+            self.assertEqual(store.get_cookie('u6'), 'unb=u6; x5sec=ok')
+            self.assertFalse(account['enabled'], '回填把 enabled 写回默认值了')
+            self.assertFalse(account['auto_reply'], '回填把 auto_reply 写回默认值了')
+            self.assertEqual(account['remark'], '备注')
+
+            # 平台偶发返回空串（接口改版/降级）时，别把已经拿到的名字清掉。
+            store.update_account_profile('u6', nickname='   ', avatar_url='')
+            account = store.get_account('u6')
+            self.assertEqual(account['nickname'], '新昵称')
+            self.assertEqual(account['avatar_url'], 'https://img.example/u6.jpg')
+
 
 class NoProxyConstructionTest(unittest.TestCase):
     """NO_PROXY 消毒的真实回归测试（旧项目就是死在这里）。"""
@@ -540,6 +567,48 @@ class AccountsApiTest(unittest.TestCase):
             finally:
                 qr_login.manager.transport = None
                 qr_login.manager.sessions.clear()
+
+    def test_refresh_profile_end_to_end_with_mock_platform(self):
+        """Cookie 导入的账号用**真 XianyuClient** 也能把昵称拉下来（task-22）。
+
+        覆盖的是「真协议形状」这条链：mtop 请求 → `parse_user_profile` 解析
+        `module.base.displayName` → 窄写落库 → HTTP 响应。假 dict 测不出这一串，
+        而「Cookie 导入的账号显示 (未命名)」正是这条链断了的结果。
+        """
+        from backend.app.services import common
+        from backend.app.xianyu.client import XianyuClient
+
+        with _TempDB():
+            platform = _FakePlatform()
+            store.upsert_account(account_id='99887766', nickname='', xianyu_user_id='99887766',
+                                 cookie='unb=99887766; cookie2=c2; x5sec=PASS-TOKEN')
+            real_get_client = common.get_client
+            common.get_client = lambda account_id: (
+                XianyuClient(store.get_cookie(account_id), transport=platform.transport()), None)
+            try:
+                with self._client() as client:
+                    token = self._login_token()
+                    if token is None:
+                        self.skipTest('未生成随机密码，跳过需要登录的用例')
+                    headers = {'Authorization': f'Bearer {token}'}
+                    response = client.post('/api/accounts/99887766/refresh-profile',
+                                           headers=headers)
+                    listed = client.get('/api/accounts', headers=headers)
+            finally:
+                common.get_client = real_get_client
+
+            self.assertEqual(response.status_code, 200, response.text)
+            data = response.json()['data']
+            self.assertEqual(data['nickname'], '闲鱼测试号', data)
+            self.assertTrue(data['refreshed'], data)
+            self.assertEqual(data['account_id'], '99887766')
+            self.assertEqual(store.get_account('99887766')['nickname'], '闲鱼测试号')
+            # 列表接口直接带上新昵称（前端不用再单独取一次），且仍然不下发 Cookie 原文
+            rows = {row['id']: row for row in listed.json()['data']}
+            self.assertEqual(rows['99887766']['nickname'], '闲鱼测试号')
+            self.assertNotIn('cookie', rows['99887766'])
+            self.assertEqual(store.get_cookie('99887766'),
+                             'unb=99887766; cookie2=c2; x5sec=PASS-TOKEN')
 
 
 if __name__ == '__main__':
