@@ -1141,13 +1141,15 @@ class ItemStatsTest(ProtocolCase):
         self.assertIn('缺少 itemId', str(ctx.exception))
         self.assertEqual(stub.calls, [])
 
-    def test_session_expired_degrades_without_marking_relogin(self):
+    def test_session_expired_becomes_unavailable_without_marking_relogin(self):
         """**这条是这个接口最重要的行为**：seller.pc.* 族对 web Cookie 天然
         `SESSION_EXPIRED`，此时必须**不累加熔断计数、也不把账号标成需重登** ——
         否则 `services/common.py` 会 `store.mark_need_relogin()`，把好账号标成需重登。
 
-        但「吞掉」不等于「丢掉原因」：异常换成 `ItemStatsUnavailable`（**故意不继承
-        `SessionExpiredError`**），文案要能告诉用户是会话拿不到，而不是空字符串。
+        但「吞掉」不等于「丢掉原因」：**不是**返回 None，而是换成
+        `ItemStatsUnavailable`（**故意不继承 `SessionExpiredError`**），文案要能
+        告诉用户是会话拿不到，而不是空字符串。名字里的 `becomes_unavailable`
+        就是这条断言，别再写成 `degrades_to_none`。
         """
         stub = MtopStub({}, {ITEM_STATS_API: 'FAIL_SYS_SESSION_EXPIRED::Session过期'})
         client = XianyuClient(COOKIE, transport=httpx.MockTransport(stub))
@@ -1186,9 +1188,9 @@ class ItemStatsTest(ProtocolCase):
             run(client.item_stats(self.ITEM_ID))
         self.assertGreater(risk.registry.get('2200123456').status()['consecutive_hits'], 0)
 
-    def test_unknown_api_failure_degrades_to_none(self):
-        """接口改名/下线（`FAIL_SYS_API_NOT_FOUND`）时降级，不把整个商品页打挂；
-        但原因要带出来（和「会话拿不到」区分得开）。"""
+    def test_unknown_api_failure_raises_unavailable_with_reason(self):
+        """接口改名/下线（`FAIL_SYS_API_NOT_FOUND`）时不把整个商品页打挂；
+        但**不是**返回 None —— 原因要带出来（和「会话拿不到」区分得开）。"""
         stub = MtopStub({}, {ITEM_STATS_API: 'FAIL_SYS_API_NOT_FOUND::接口不存在'})
         client = XianyuClient(COOKIE, transport=httpx.MockTransport(stub))
         with self.assertRaises(ItemStatsUnavailable) as ctx:

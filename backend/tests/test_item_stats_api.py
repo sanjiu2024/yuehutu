@@ -684,8 +684,10 @@ class ItemStatsApiTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 502, resp.text)
         message = resp.json()['message']
         self.assertIn('接口 500', message, message)
-        self.assertNotEqual(message.strip().rstrip(':').strip(), '平台返回的商品数据无法识别',
-                            '冒号后不许是空的')
+        # 真断言「冒号后面不是空的」：比旧文案（`平台返回的商品数据无法识别`）
+        # 是恒真的 —— 那个串现实现永不产出，message 退化成
+        # `平台商品数据接口调用失败:` 也能过。取第一个冒号之后的内容来判。
+        self.assertNotEqual(message.split(':', 1)[-1].strip(), '', message)
 
     def test_failure_reasons_are_distinguishable(self):
         """D1 的核心：三种不同的平台失败**不能**给出同一句话。
