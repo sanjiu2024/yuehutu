@@ -14,6 +14,7 @@ httpx，三套客户端各自读环境变量，于是 ``NO_PROXY`` 一坏就有�
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import os
@@ -58,6 +59,10 @@ ITEM_LIST_API = 'mtop.idle.web.xyh.item.list'
 ITEM_LIST_VERSION = '1.0'
 ITEM_LIST_SPM = 'a21ybx.personal.0.0'
 ITEM_LIST_PAGE_SIZE = 20
+# 翻页上限与翻页间隔：真机一个账号几十件商品，多翻几页才拉得全；页与页之间
+# 稍作停顿，避免连续打同一个接口被平台当成脚本刷（风控代价远大于多等这一下）。
+ITEM_LIST_MAX_PAGES = 25
+ITEM_LIST_PAGE_DELAY = 0.3
 
 # 下架是 2.0 族；上架**没有独立接口**，靠 edit 改 itemStatus。
 DOWNSHELF_API = 'mtop.taobao.idle.item.downshelf'
@@ -319,7 +324,7 @@ class XianyuClient:
         return result.get('data') or {}
 
     async def list_items(self, page_number: int = 1, page_size: int = ITEM_LIST_PAGE_SIZE,
-                         max_pages: int = 5) -> Dict[str, Any]:
+                         max_pages: int = ITEM_LIST_MAX_PAGES) -> Dict[str, Any]:
         """拉「我的闲鱼」商品列表（在售/已下架都在 ``itemTopicList`` 里）。
 
         ``spm_cnt`` 必须是列表族 ``a21ybx.personal.0.0``：发布族的默认 spm 打这个
@@ -327,6 +332,10 @@ class XianyuClient:
 
         第一页必须带 ``needGroupInfo=True`` 才会回 ``itemGroupList``（分组），
         后续翻页要带上分组字段。单页失败不抛出 —— 已拿到的商品照常返回。
+
+        **翻页判据看 ``nextPage`` 的布尔/数字两种形态**（见 ``_has_next_page``），
+        不再把布尔 ``true`` 当成页码 1 —— 那正是「永远只显示 20 件」的根因。
+        ``totalCount`` 真机恒为 0，所以对外 ``total`` 用实际拿到的条数兜底。
         """
         page_size = max(1, min(int(page_size or ITEM_LIST_PAGE_SIZE), 100))
         max_pages = max(1, int(max_pages or 1))
@@ -361,8 +370,10 @@ class XianyuClient:
                 raw_groups = data.get('itemGroupList') or data.get('groupList') or []
                 groups = [g for g in raw_groups if isinstance(g, dict)]
             total = int(data.get('totalCount') or total or 0)
-            next_page = int(data.get('nextPage') or 0)
+            has_next = _has_next_page(data.get('nextPage'), number)
+            next_page = number + 1 if has_next else 0
             page_items = _extract_list_cards(data)
+            fresh = 0
             for card in page_items:
                 normalized = normalize_list_card(card)
                 if not normalized:
@@ -372,8 +383,12 @@ class XianyuClient:
                     continue
                 seen.add(key)
                 items.append(normalized)
-            if not page_items or next_page in (0, -1, number):
+                fresh += 1
+            # 没有卡片、没有新商品（平台在重复回同一页）、或平台说没有下一页，就收工。
+            if not page_items or not fresh or not has_next:
                 break
+            if index + 1 < max_pages:
+                await asyncio.sleep(ITEM_LIST_PAGE_DELAY)
 
         return {'items': items, 'total': total or len(items), 'next_page': next_page,
                 'groups': groups, 'page': int(page_number or 1), 'size': page_size}
@@ -874,6 +889,28 @@ def canonical_status(value: Any) -> str:
         return 'on_sale' if int(value) == 1 else 'off_shelf'
     text = str(value)
     return _STATUS_MAP.get(text, _STATUS_MAP.get(text.lower(), text))
+
+
+def _has_next_page(flag: Any, current_number: int) -> bool:
+    """判断平台回帧里的 ``nextPage`` 是否表示「还有下一页」。
+
+    **真机实测（2026-10-06）**：``mtop.idle.web.xyh.item.list`` 回的
+    ``nextPage`` 是**布尔** ``true``（而且 ``totalCount`` 恒为 0）。旧实现写的是
+    ``next_page = int(data.get('nextPage') or 0)``，于是 ``int(True) == 1``；再拿它
+    和当前页码比 ``next_page in (0, -1, number)`` —— 第一页正好 ``number == 1``，
+    直接 break。结果：**一个账号不管有多少件商品，永远只入库 20 件**。
+
+    这个字段两种形态都兼容：布尔当「还有下一页」的开关，数字当下一页页码。
+    """
+    if isinstance(flag, bool):
+        return flag
+    if flag is None or flag == '':
+        return False
+    try:
+        number = int(flag)
+    except (TypeError, ValueError):
+        return False
+    return number > current_number
 
 
 def _extract_list_cards(data: Dict[str, Any]) -> List[Any]:

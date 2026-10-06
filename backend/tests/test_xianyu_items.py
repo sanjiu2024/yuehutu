@@ -350,6 +350,51 @@ class ListItemsCallTest(ProtocolCase):
         result = run(client.list_items())
         self.assertEqual([i['item_id'] for i in result['items']], ['9001'])
 
+    def test_list_items_pages_on_boolean_next_page(self):
+        """真机形状：`nextPage` 是**布尔** `true`、`totalCount` 恒为 0。
+
+        缺陷（2026-10-06 用户报「怎么只显示 20 个商品」）：旧实现
+        `int(True) == 1` 且当前页正是 1，`next_page in (0, -1, number)` 立刻 break
+        —— 一个账号有多少件商品都只入库第一页的 20 件。
+        """
+        calls: List[Dict[str, Any]] = []
+
+        def responder(payload):
+            calls.append(payload)
+            number = int(payload['pageNumber'])
+            if number == 1:
+                return {'itemTopicList': [list_card('9001', 'A', '1')],
+                        'itemGroupList': [{'groupId': 5, 'groupName': '在售', 'defaultGroup': True}],
+                        'totalCount': 0, 'nextPage': True}
+            if number == 2:
+                return {'itemTopicList': [list_card('9002', 'B', '2')],
+                        'totalCount': 0, 'nextPage': True}
+            return {'itemTopicList': [list_card('9003', 'C', '3')],
+                    'totalCount': 0, 'nextPage': False}
+
+        client, _stub = make_client({ITEM_LIST_API: responder})
+        result = run(client.list_items())
+        self.assertEqual([i['item_id'] for i in result['items']], ['9001', '9002', '9003'])
+        # totalCount 是 0，对外 total 用实际拿到的条数兜底
+        self.assertEqual(result['total'], 3)
+        self.assertEqual([int(p['pageNumber']) for p in calls], [1, 2, 3])
+        self.assertEqual(result['next_page'], 0)
+
+    def test_has_next_page_handles_both_shapes(self):
+        """`nextPage` 两种形态都要认：布尔开关 / 数字页码（纯函数，离线可测）。"""
+        from backend.app.xianyu.client import _has_next_page
+        self.assertTrue(_has_next_page(True, 1))
+        self.assertFalse(_has_next_page(False, 1))
+        self.assertFalse(_has_next_page(0, 1))
+        self.assertFalse(_has_next_page(-1, 1))
+        self.assertFalse(_has_next_page(None, 1))
+        self.assertFalse(_has_next_page('', 1))
+        self.assertFalse(_has_next_page(1, 1))   # 页码没往前走 = 没有下一页
+        self.assertFalse(_has_next_page(2, 3))
+        self.assertTrue(_has_next_page(2, 1))
+        self.assertTrue(_has_next_page('3', 2))
+        self.assertFalse(_has_next_page('true', 1))  # 数字以外的字符串不当真
+
 
 class PublishItemCallTest(ProtocolCase):
     """I2：发布是**多步**流程，漏掉注册分类路径会报

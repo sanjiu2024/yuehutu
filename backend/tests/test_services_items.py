@@ -41,7 +41,7 @@ class FakeClient:
         self.account_id = account_id
         self.calls = []
 
-    def list_items(self, page_number: int = 1, page_size: int = 20, max_pages: int = 5):
+    def list_items(self, page_number: int = 1, page_size: int = 20, max_pages: int = 25):
         self.calls.append(('list_items', page_number, page_size, max_pages))
         return {
             'items': [
