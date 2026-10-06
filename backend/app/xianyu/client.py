@@ -19,7 +19,7 @@ import copy
 import json
 import os
 import time
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from loguru import logger
 
@@ -736,33 +736,70 @@ class XianyuClient:
 # ---------------------------------------------------------------------------
 
 def normalize_item(data: Dict[str, Any], item_id: str = '') -> Dict[str, Any]:
-    """把详情接口的响应归一化成业务层好用的形状。"""
+    """把详情接口的响应归一化成业务层好用的形状。
+
+    **库存只能从这里来**：列表卡没有库存字段，真库存在详情
+    ``data.itemDO.quantity``（真机 1087247101297 → 1、1087258469593 → 66，
+    ``edit_item_detail`` 给的是字符串 ``"66"``）。取不到就是 ``None``，不编数。
+    """
     if not isinstance(data, dict):
-        return {'id': item_id}
+        return {'id': item_id, 'stock': None}
     # 不同版本的详情接口外层键名不同，逐个试。
     inner = data.get('itemDO') or data.get('item') or data
     if not isinstance(inner, dict):
         inner = data
-    images: List[str] = []
-    for key in ('imageInfos', 'images', 'imageList'):
-        raw = inner.get(key)
-        if isinstance(raw, list):
-            for entry in raw:
-                url = entry.get('url') if isinstance(entry, dict) else entry
-                if url:
-                    images.append(_https(str(url)))
-            if images:
-                break
+
+    # 详情图片：`picDetailDO` 这一族的**精确形状没抓到真机帧**（无真机访问权限），
+    # 所以按「dict / list / JSON 字符串」三种形态统一处理，并保留对详情节点本身的
+    # 兜底深扫（只认 http(s)/// 开头的 URL），避免再出现「图片全空」。
+    images = _merge_images(
+        inner.get('picDetailDO'),
+        inner.get('picDetail'),
+        inner.get('picInfoDO'),
+        inner.get('imageInfoDOList'),
+        inner.get('imageInfos'),
+        inner.get('images'),
+        inner.get('imageList'),
+        inner.get('picList'),
+        data.get('picDetailDO'),
+    )
+    if not images:
+        images = _merge_images(inner)
+
     price = inner.get('price')
     if isinstance(price, dict):
         price = price.get('price') or price.get('value')
+
+    # 库存：int（详情）与 str（编辑回填 "66"）都要认；认不出就给 None。
+    quantity = inner.get('quantity')
+    if quantity in (None, ''):
+        quantity = inner.get('stock')
+    if quantity in (None, ''):
+        quantity = data.get('quantity')
+    stock: Optional[int] = None
+    if quantity not in (None, ''):
+        try:
+            stock = int(float(quantity))
+        except (TypeError, ValueError):
+            stock = None
+    if stock is not None and stock < 0:
+        stock = None
+
     return {
         'id': str(inner.get('itemId') or item_id),
         'title': inner.get('title') or '',
         'desc': inner.get('desc') or inner.get('description') or '',
         'price': price,
         'images': images,
-        'status': inner.get('itemStatus') or inner.get('status'),
+        # 详情路径过去**原样透传**（`inner.get('itemStatus') or inner.get('status')`），
+        # 于是同一个商品列表同步得到 `'sold'`、详情同步却得到裸 `1`（真实库存那条
+        # 路径是 0 → `or` 吞掉 → `None`），两条路径写进同一列会互相打架。
+        # 统一走 `canonical_status`，并且**按存在性取值**（数字 0 是 falsy，
+        # 不能被 `or` 吞掉）。
+        'status': canonical_status(
+            inner['itemStatus'] if 'itemStatus' in inner else inner.get('status')
+        ),
+        'stock': stock,
         'raw': data,
     }
 
@@ -878,15 +915,34 @@ _STATUS_MAP = {
 
 
 def canonical_status(value: Any) -> str:
-    """平台状态名 → 本地口径（``on_sale`` / ``off_shelf``）。
+    """平台状态名 → 本地口径（``on_sale`` / ``off_shelf`` / ``sold``）。
 
-    认不出来的**原样返回**（例如 ``sold``），不要猜 —— 把「已卖出」硬说成
-    「在售」会让统计页骗人。数字状态（1 = 在售）按旧项目实测映射。
+    认不出来的**原样返回**（例如 ``'已下架'``），不要猜 —— 把「已卖出」硬说成
+    「在售」会让统计页骗人。
+
+    数字映射来自**真机证据（2026-10-06，账号 2217970177348）**：列表帧 45 件里
+    ``itemStatus`` 分布是 **44×0、1×1**，唯一那个 ``1``（``1087247101297``）的
+    ``item_detail`` 回 ``itemDO.itemStatus=1`` + ``itemDO.itemStatusStr="卖掉了"``。
+    ⇒ **0 = 在售、1 = 已卖出（sold）**。
+
+    ⚠️ 本函数此前写的是 ``1 → on_sale``、其余 → ``off_shelf``（注释称「按旧项目
+    实测」），与真机**正好相反**；真机那件已卖出的商品一直被显示成「在售」。
+
+    ``None``/``''`` 仍回 ``'on_sale'``：**这只是「平台没报下架」，不等于确认在售**。
     """
     if value is None or value == '':
         return 'on_sale'
+    if isinstance(value, bool):
+        # bool 是 int 的子类，真机没出现过布尔状态；别让 True/False 掉进数字分支。
+        return str(value)
     if isinstance(value, (int, float)):
-        return 'on_sale' if int(value) == 1 else 'off_shelf'
+        number = int(value)
+        if number == 0:
+            return 'on_sale'
+        if number == 1:
+            return 'sold'
+        # 其它数字（如 2/3）语义未证实 —— 原样返回，不猜。
+        return str(value)
     text = str(value)
     return _STATUS_MAP.get(text, _STATUS_MAP.get(text.lower(), text))
 
@@ -940,6 +996,80 @@ def _first_text(mapping: Dict[str, Any], *keys: str) -> str:
     return ''
 
 
+#: 图片 URL 可能挂在这些键上（真机列表卡：`picInfo.picUrl` /
+#: `detailParams.picUrl` / `detailParams.imageInfos[].url`）。
+IMAGE_URL_KEYS = ('url', 'picUrl', 'imageUrl', 'imgUrl', 'image', 'pic', 'src',
+                  'mainPic', 'mainImage', 'coverImage', 'itemImage')
+_MAJOR_IMAGE_KEYS = ('major', 'isMajor', 'isMajorPic')
+_IMAGE_RECURSE_SKIP = set(IMAGE_URL_KEYS) | set(_MAJOR_IMAGE_KEYS)
+
+
+def _iter_image_entries(raw: Any, depth: int = 0) -> Iterator[Tuple[bool, str]]:
+    """从任意形态的图片字段里挖出 `(是否主图, URL)`。
+
+    真机抓帧证明这个字段有**三种形态**，只认 list 会一张图都拿不到：
+
+    - dict：``cardData.picInfo = {'hasVideo': False, 'picUrl': 'http://...', ...}``
+    - JSON 字符串：``cardData.detailParams.imageInfos`` 是
+      ``'[{"heightSize":1254,"major":true,"type":0,"url":"http://...","videoCover":false}]'``
+    - list：``[{'url': ...}, ...]``（发布/详情接口用这种）
+
+    字符串分支先尝试 ``json.loads`` —— 直接当 URL 用会把整段 JSON 当成图片地址。
+    """
+    if depth > 8:
+        return
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return
+        if text[0] in '[{':
+            try:
+                parsed = json.loads(text)
+            except (TypeError, ValueError):
+                parsed = None
+            if parsed is not None and not isinstance(parsed, str):
+                yield from _iter_image_entries(parsed, depth + 1)
+                return
+        if text.startswith(('http://', 'https://', '//')):
+            yield (False, text)
+        return
+    if isinstance(raw, (list, tuple)):
+        for entry in raw:
+            yield from _iter_image_entries(entry, depth + 1)
+        return
+    if not isinstance(raw, dict):
+        return
+    url = _first_text(raw, *IMAGE_URL_KEYS)
+    if url:
+        major = any(raw.get(key) in (True, 'true', 'True', 1, '1') for key in _MAJOR_IMAGE_KEYS)
+        yield (major, url)
+    for key, value in raw.items():
+        if key in _IMAGE_RECURSE_SKIP:
+            continue
+        if isinstance(value, (dict, list, tuple, str)):
+            yield from _iter_image_entries(value, depth + 1)
+
+
+def _merge_images(*sources: Any) -> List[str]:
+    """把多个来源的图片合并成 https 数组：**主图排首位** + 按 URL 去重。
+
+    去重时保留「出现过 major」的信息：同一张图先在 ``picInfo`` 里以非主图出现、
+    又在 ``imageInfos`` 里带 ``major=true``，也该排到首位。
+    """
+    order: List[str] = []
+    is_major: Dict[str, bool] = {}
+    for source in sources:
+        for major, url in _iter_image_entries(source):
+            normalized = _https(url)
+            if normalized in is_major:
+                if major:
+                    is_major[normalized] = True
+                continue
+            is_major[normalized] = major
+            order.append(normalized)
+    return [url for url in order if is_major[url]] + [url for url in order if not is_major[url]]
+
+
 def normalize_list_card(card: Any) -> Optional[Dict[str, Any]]:
     """把列表里的商品卡归一化成业务层形状；取不到 item_id 就丢弃（返回 None）。
 
@@ -970,43 +1100,64 @@ def normalize_list_card(card: Any) -> Optional[Dict[str, Any]]:
         price_info = inner.get('priceInfo') if isinstance(inner.get('priceInfo'), dict) else {}
         price = price_info.get('price') or price_info.get('value')
     if price in (None, ''):
-        price = inner.get('soldPrice')
+        price = inner.get('soldPrice') or detail.get('soldPrice')
     price_text = str(price) if price not in (None, '') else ''
     try:
         price_value = float(str(price).replace('¥', '').replace(',', '').strip())
     except (TypeError, ValueError):
         price_value = 0.0
 
-    images: List[str] = []
-    for key in ('picInfo', 'images', 'imageInfos', 'imageList'):
-        raw = inner.get(key)
-        if isinstance(raw, list):
-            for entry in raw:
-                url = entry.get('url') if isinstance(entry, dict) else entry
-                if url:
-                    images.append(_https(str(url)))
-            if images:
-                break
-    if not images:
-        single = _first_text(inner, 'itemImage', 'picUrl', 'image')
-        if single:
-            images = [_https(single)]
+    # 真机抓帧（2026-10-06）证明图片分三处挂着，且形态各不相同：
+    #   cardData.picInfo（dict，picUrl 在它里面）
+    #   cardData.detailParams.picUrl（dict 里的字符串）
+    #   cardData.detailParams.imageInfos（**JSON 字符串**，major=true 的是主图）
+    # 旧实现只认 list，所以真机图片全空、商品页只剩文字。
+    images = _merge_images(
+        node.get('picInfo'),
+        detail.get('imageInfos'),
+        detail.get('picUrl'),
+        inner.get('picInfo'),
+        inner.get('imageInfos'),
+        inner.get('images'),
+        inner.get('imageList'),
+        detail.get('images'),
+        detail.get('imageList'),
+        inner.get('itemImage'),
+        inner.get('image'),
+    )
 
+    # 库存：**列表卡里根本没有这个字段**（真机 cardData 的键是
+    # auctionType/categoryId/detailParams/detailUrl/id/itemLabelDataVO/itemStatus/
+    # picInfo/priceInfo/title/trackParams）。拿不到就是「未知」，绝不写 1 冒充 ——
+    # 真库存只有详情接口 `data.itemDO.quantity` 才有。
     quantity = inner.get('quantity')
     if quantity in (None, ''):
         quantity = inner.get('stock')
-    try:
-        stock = int(float(quantity)) if quantity not in (None, '') else 1
-    except (TypeError, ValueError):
-        stock = 1
+    if quantity in (None, ''):
+        quantity = detail.get('quantity') or detail.get('stock')
+    stock: Optional[int] = None
+    if quantity not in (None, ''):
+        try:
+            stock = int(float(quantity))
+        except (TypeError, ValueError):
+            stock = None
+    if stock is not None and stock < 0:
+        stock = None
 
     return {
         'item_id': item_id,
-        'title': _first_text(inner, 'title', 'itemTitle', 'name'),
+        'title': _first_text(inner, 'title', 'itemTitle', 'name') or _first_text(detail, 'title'),
         'price': price_value,
         'price_text': price_text,
         'stock': stock,
-        'status': canonical_status(inner.get('itemStatus') or inner.get('status')),
+        # **按存在性取值，不用 `or` 链**：数字 ``0`` 是 falsy，旧写法
+        # `inner.get('itemStatus') or inner.get('status')` 会把它吞掉，落到
+        # `canonical_status(None) == 'on_sale'`。改 `canonical_status` 之前这只是
+        # 侥幸对（0 和 None 都回 on_sale）；现在 0 必须真的走进数字分支，
+        # 否则 0=在售 这个真机结论根本用不上。
+        'status': canonical_status(
+            inner['itemStatus'] if 'itemStatus' in inner else inner.get('status')
+        ),
         'item_status': inner.get('itemStatus'),
         'category_id': _first_text(inner, 'categoryId', 'catId', 'channelCatId'),
         'images': images,
@@ -1046,6 +1197,111 @@ def build_image_info(url: str, is_major: bool = False, file_id: Optional[str] = 
     if file_id:
         info['fileId'] = file_id
     return info
+
+
+#: 编辑表单 ``imageInfoDOList`` 条目的固定字段值。**真机原样**（2026-10-06 抓帧，
+#: ``edit_item_detail('1087258469593')``）：``type="0"``，尺寸是字符串，第一张
+#: ``major="true"`` 其余 ``"false"``。
+EDIT_IMAGE_TYPE = '0'
+
+#: 尺寸未知时的占位值。**刻意用 '0' 而不是真机看到的 1254**：1254 是那一张图的
+#: 实际尺寸，把它当成默认值等于对每张图撒谎，平台若按错尺寸校验/裁切就会出问题。
+#: 平台是否接受 '0'（自行按原图处理）**尚未真机验证** —— 前端上传接口拿得到
+#: width/height，正常路径会带上真实尺寸，走不到这个默认值。
+UNKNOWN_IMAGE_SIZE = '0'
+
+#: ``extraInfo`` 三个值必须是**字符串** ``'false'``（真机原样；传布尔 False 会被
+#: 平台当参数非法）。
+IMAGE_EXTRA_INFO: Dict[str, str] = {'raw': 'false', 'isT': 'false', 'isH': 'false'}
+
+
+def _image_entry(entry: Any) -> Dict[str, Any]:
+    """把一张图的入参（URL 字符串 / ``{url,width,height}`` 字典）归一成字段。"""
+    if isinstance(entry, dict):
+        url = (entry.get('url') or entry.get('picUrl') or entry.get('imageUrl')
+               or entry.get('fileUrl') or '')
+        return {
+            'url': str(url).strip(),
+            'width': entry.get('width', entry.get('widthSize')),
+            'height': entry.get('height', entry.get('heightSize')),
+        }
+    if isinstance(entry, (tuple, list)) and len(entry) == 2:
+        # (url, (w, h)) 也认，省得调用方为了成对数据去拼字典。
+        url = str(entry[0] or '').strip()
+        size = entry[1]
+        if isinstance(size, (tuple, list)) and len(size) == 2:
+            return {'url': url, 'width': size[0], 'height': size[1]}
+        return {'url': url, 'width': None, 'height': None}
+    return {'url': str(entry or '').strip(), 'width': None, 'height': None}
+
+
+def _size_text(value: Any) -> str:
+    """尺寸 → 字符串。认不出（None/空/非数字）就返回 ``UNKNOWN_IMAGE_SIZE``。"""
+    if value in (None, ''):
+        return UNKNOWN_IMAGE_SIZE
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return UNKNOWN_IMAGE_SIZE
+    if number <= 0:
+        return UNKNOWN_IMAGE_SIZE
+    return str(number)
+
+
+def images_to_image_infos(urls: Any,
+                          sizes: Optional[Sequence[Any]] = None) -> List[Dict[str, Any]]:
+    """业务层 ``images``（URL 数组）→ 平台 ``imageInfoDOList``。
+
+    **纯函数、只认 URL**：这里不发上传请求，本地文件路径必须先经
+    ``upload_image`` 换成闲鱼图床 URL（``edit_item`` 是同步映射，拿不到异步上传
+    的结果）。传本地路径会被明确拒绝，而不是静默交给平台去报一个看不懂的参数错误。
+
+    支持的入参形态：
+    - ``['https://a.png', 'http://b.png']``
+    - ``[{'url': 'https://a.png', 'width': 1254, 'height': 1254}, ...]``
+    - ``sizes=[{'width': 1254, 'height': 1254}, ...]`` 与 ``urls`` 按下标对齐
+
+    尺寸取不到时用 ``UNKNOWN_IMAGE_SIZE``（见其注释：**不硬编码 1254**）。
+    """
+    if isinstance(urls, (str, dict)):
+        urls = [urls]
+    entries = list(urls or [])
+    if not entries:
+        # 空数组**必须报错**：平台收到空 imageInfoDOList 会直接拒，但错误信息
+        # 对用户毫无意义；更重要的是「图片被清空」不可逆。
+        raise XianyuError('修改图片需要至少一张图片：不允许把商品图清空成空列表')
+
+    size_list = list(sizes or [])
+    infos: List[Dict[str, Any]] = []
+    for index, entry in enumerate(entries):
+        parsed = _image_entry(entry)
+        url = parsed['url']
+        if not url:
+            raise XianyuError(f'第 {index + 1} 张图片缺少 URL')
+        if not url.startswith(('http://', 'https://')):
+            raise XianyuError(
+                f'第 {index + 1} 张图片不是 http/https URL: {url[:80]}；'
+                '请先用图片上传接口换成闲鱼图床地址'
+            )
+        width = parsed['width']
+        height = parsed['height']
+        if index < len(size_list):
+            size = size_list[index]
+            if isinstance(size, dict):
+                width = size.get('width', size.get('widthSize', width))
+                height = size.get('height', size.get('heightSize', height))
+            elif isinstance(size, (tuple, list)) and len(size) == 2:
+                width, height = size[0], size[1]
+        infos.append({
+            # 第一张是主图。平台按这个选封面，全 false 会导致商品没有封面图。
+            'major': 'true' if index == 0 else 'false',
+            'widthSize': _size_text(width),
+            'heightSize': _size_text(height),
+            'type': EDIT_IMAGE_TYPE,
+            'url': url,
+            'extraInfo': dict(IMAGE_EXTRA_INFO),
+        })
+    return infos
 
 
 def _literal_label_ext(channel_cate_id: str, channel_cate_name: str,
@@ -1158,9 +1414,14 @@ def _set_path(payload: Dict[str, Any], path: str, value: Any) -> None:
 def build_edit_patch(detail: Dict[str, Any], *, price: Any = None, orig_price: Any = None,
                      quantity: Any = None, title: Optional[str] = None,
                      desc: Optional[str] = None, item_status: Optional[str] = None,
-                     free_shipping: Optional[bool] = None) -> Dict[str, Any]:
+                     free_shipping: Optional[bool] = None,
+                     image_infos: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """在 ``editDetail`` 原表单上打补丁。**只覆盖显式传入的字段**，
-    其余一律沿用原表单 —— 这是不丢类目属性/地址/议价设置的唯一做法。"""
+    其余一律沿用原表单 —— 这是不丢类目属性/地址/议价设置的唯一做法。
+
+    ``image_infos`` 直接**整体替换** ``imageInfoDOList``（图片是有序列表，
+    逐张合并没有意义），值必须已经由 ``images_to_image_infos`` 转成平台形状。
+    """
     payload: Dict[str, Any] = copy.deepcopy(detail)
     if price is not None:
         _set_path(payload, 'itemPriceDTO.priceInCent', to_cent(price))
@@ -1176,6 +1437,8 @@ def build_edit_patch(detail: Dict[str, Any], *, price: Any = None, orig_price: A
         payload['itemStatus'] = item_status
     if free_shipping is not None:
         _set_path(payload, 'itemPostFeeDTO.canFreeShipping', bool(free_shipping))
+    if image_infos is not None:
+        payload['imageInfoDOList'] = [dict(info) for info in image_infos]
     return payload
 
 
@@ -1191,6 +1454,7 @@ def build_edit_submit(detail: Dict[str, Any], changes: Dict[str, Any]) -> Dict[s
 #: 业务层字段名 → 编辑接口可改的字段。**改价没有独立接口**，走 edit。
 EDITABLE_FIELDS = {
     'price', 'original_price', 'stock', 'title', 'description', 'status', 'free_shipping',
+    'images',
 }
 
 
@@ -1199,6 +1463,9 @@ def _local_changes_to_edit(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     不认识的字段**抛错**而不是静默丢掉：静默丢会让用户看到「已同步」而字段
     根本没变（这正是本仓库反复踩的「假通」）。
+
+    ``images`` 例外地映射成 ``image_infos``（平台字段名 ``imageInfoDOList``），
+    因为它的值要先经过 ``images_to_image_infos`` 的形状转换，不能原样透传。
     """
     changes: Dict[str, Any] = {}
     unknown: List[str] = []
@@ -1220,6 +1487,10 @@ def _local_changes_to_edit(payload: Dict[str, Any]) -> Dict[str, Any]:
             )
         elif key == 'free_shipping':
             changes['free_shipping'] = bool(value)
+        elif key == 'images':
+            # 转成平台形状放在这里，而不是留到 build_edit_patch：
+            # 校验要在**取详情之前**发生，参数不合法时不该白跑一次接口调用。
+            changes['image_infos'] = images_to_image_infos(value)
         else:
             unknown.append(str(key))
     if unknown:

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import sys
 import tempfile
 import types
@@ -24,6 +25,11 @@ from backend.app.services import common, items  # noqa: E402
 # 真协议层类的引用在**假模块注入之前**绑定，之后 FakeClient 随便替换 sys.modules
 # 都不影响这里 —— 签名对拍必须以真类为基准。
 from backend.app.xianyu.client import XianyuClient as RealXianyuClient  # noqa: E402
+from backend.app.xianyu.client import RiskControlError as RealRiskControlError  # noqa: E402
+from backend.app.xianyu.client import SessionExpiredError as RealSessionExpiredError  # noqa: E402
+# 真协议层的图片入参转换（公开函数）：用来验证服务层交出去的形状**真能被它接受**，
+# 而不是只对着假客户端自说自话。
+from backend.app.xianyu.client import images_to_image_infos  # noqa: E402
 
 
 class FakeClient:
@@ -40,9 +46,15 @@ class FakeClient:
     def __init__(self, account_id: str):
         self.account_id = account_id
         self.calls = []
+        #: item_id -> 详情响应（`get_item` 用）；值为异常实例时当作调用抛错
+        self.details = {}
+        #: 用例可覆盖列表响应（例如模拟「列表不带库存」的真机情况）
+        self.list_result = None
 
     def list_items(self, page_number: int = 1, page_size: int = 20, max_pages: int = 25):
         self.calls.append(('list_items', page_number, page_size, max_pages))
+        if self.list_result is not None:
+            return self.list_result
         return {
             'items': [
                 {'item_id': 'A1', 'title': 'iPhone 13', 'price': 2500, 'stock': 1, 'status': 'on_sale'},
@@ -50,6 +62,15 @@ class FakeClient:
             ],
             'total': 2,
         }
+
+    def get_item(self, item_id: str):
+        self.calls.append(('get_item', item_id))
+        detail = self.details.get(item_id)
+        if isinstance(detail, BaseException):
+            raise detail
+        if detail is None:
+            return {'id': item_id, 'stock': None}
+        return detail
 
     def edit_item(self, item_id: str, payload: dict):
         self.calls.append(('edit_item', item_id, payload))
@@ -76,6 +97,9 @@ def install_fake_protocol(client: FakeClient) -> types.ModuleType:
     module = types.ModuleType('backend.app.xianyu.client')
     module.get_client = lambda account_id: client  # type: ignore[attr-defined]
     module.XianyuClient = FakeClient  # type: ignore[attr-defined]
+    # 让 `items._is_risk_or_expired` 的 isinstance 分支走真类（假模块里没有这个异常时
+    # 风控熔断那条路根本测不到）。
+    module.RiskControlError = RealRiskControlError  # type: ignore[attr-defined]
     sys.modules['backend.app.xianyu.client'] = module
     return module
 
@@ -137,6 +161,12 @@ class ItemsServiceTest(unittest.TestCase):
         remove_fake_protocol()
         unblock_protocol()
         self.client = FakeClient('acc1')
+        # 补库存的限速在用例里归零，否则每个用例白白等 0.6s×N
+        self._orig_interval = items.STOCK_REFRESH_INTERVAL
+        items.STOCK_REFRESH_INTERVAL = 0
+
+    def tearDown(self):
+        items.STOCK_REFRESH_INTERVAL = self._orig_interval
 
     def seed(self, item_id='I1', title='测试商品', price=100.0, stock=1, status='on_sale', account='acc1'):
         db.execute(
@@ -228,6 +258,144 @@ class ItemsServiceTest(unittest.TestCase):
         self.assertTrue(result['synced'])
         self.assertEqual(len(self.client.calls), 1)
         self.assertEqual(self.client.calls[0][0], 'edit_item')
+
+    # ------------------------------------------------- 改图：白名单 / 空值 / 假绿（task-26）
+
+    def _db_images(self, item_id: str = 'I1'):
+        row = db.query_one('SELECT images FROM items WHERE item_id = ?', (item_id,))
+        return json.loads(row['images']) if row and row['images'] else []
+
+    def test_update_images_strings_push_list_and_store_urls(self):
+        """只传 images（URL 字符串）：推协议层的必须是**列表**，库里是 URL 字符串数组。
+
+        服务层交 JSON 字符串给协议层的话，``images_to_image_infos`` 会把它当成
+        「一张图」，报 `第 1 张图片不是 http/https URL`。
+        """
+        install_fake_protocol(self.client)
+        self.seed('I1')
+        result = items.update_item('I1', {'images': ['https://img.alicdn.com/a.png']})
+        self.assertNotIn('success', result)
+        self.assertTrue(result['synced'])
+        self.assertNotIn('warning', result)
+        self.assertEqual(self.client.calls,
+                         [('edit_item', 'I1', {'images': ['https://img.alicdn.com/a.png']})])
+        self.assertEqual(self._db_images(), ['https://img.alicdn.com/a.png'])
+        self.assertEqual(result['item']['images'], ['https://img.alicdn.com/a.png'])
+
+        # 真协议层能直接吃下服务层交出去的形状
+        sent = self.client.calls[0][2]['images']
+        self.assertIsInstance(sent, list)
+        infos = images_to_image_infos(sent)
+        self.assertEqual(infos[0]['url'], 'https://img.alicdn.com/a.png')
+        self.assertEqual(infos[0]['major'], 'true')
+
+    def test_update_images_objects_keep_size_for_protocol_but_store_urls(self):
+        """新上传的图是 ``{url,width,height}``：尺寸要活着到协议层，库里只留 URL。"""
+        install_fake_protocol(self.client)
+        self.seed('I1')
+        entry = {'url': 'https://img.alicdn.com/a.png', 'width': 1254, 'height': 1254}
+        result = items.update_item('I1', {'images': [entry]})
+        self.assertTrue(result['synced'])
+        sent = self.client.calls[0][2]['images']
+        self.assertEqual(sent, [entry])  # 推协议层：完整条目（含尺寸）
+        infos = images_to_image_infos(sent)
+        self.assertEqual((infos[0]['widthSize'], infos[0]['heightSize']), ('1254', '1254'))
+        # 库里必须是字符串数组：对象进库前端 parseImages 渲染不出缩略图
+        self.assertEqual(self._db_images(), ['https://img.alicdn.com/a.png'])
+        self.assertEqual(result['item']['images'], ['https://img.alicdn.com/a.png'])
+
+        # 混排（新对象 + 历史 URL）且 URL 重复 -> 顺序保留、去重
+        result = items.update_item('I1', {'images': [
+            entry, 'https://img.alicdn.com/b.png', 'https://img.alicdn.com/a.png',
+        ]})
+        self.assertEqual(self._db_images(),
+                         ['https://img.alicdn.com/a.png', 'https://img.alicdn.com/b.png'])
+        self.assertEqual(result['item']['images'],
+                         ['https://img.alicdn.com/a.png', 'https://img.alicdn.com/b.png'])
+
+    def test_update_empty_images_is_noop_not_error(self):
+        """``images: []`` = 本次不改图：不报错、不推、不算 local_only、不写库。"""
+        install_fake_protocol(self.client)
+        self.seed('I1')
+        db.execute("UPDATE items SET images = ? WHERE item_id = 'I1'",
+                   (json.dumps(['https://img.alicdn.com/keep.png']),))
+
+        result = items.update_item('I1', {'images': []})
+        self.assertNotIn('success', result)          # 不是错误信封
+        self.assertTrue(result['noop'])
+        self.assertEqual(result['updated_fields'], [])
+        self.assertNotIn('warning', result)
+        self.assertFalse(result.get('local_only_fields'))
+        self.assertEqual(self.client.calls, [])      # 协议层一次都没打
+        self.assertEqual(self._db_images(), ['https://img.alicdn.com/keep.png'])
+        logs = db.query("SELECT * FROM operation_logs WHERE action = 'update_item'")
+        self.assertEqual(len(logs), 1)
+
+    def test_update_images_without_protocol_is_local_only(self):
+        """协议层没就绪：本地照存 URL（本地优先），但 synced 必须是 False。"""
+        self.seed('I1')
+        result = items.update_item('I1', {'images': ['https://img.alicdn.com/a.png']})
+        self.assertFalse(result['synced'])
+        self.assertIn('协议层', result['warning'])
+        self.assertEqual(self._db_images(), ['https://img.alicdn.com/a.png'])
+
+    def test_update_mixed_local_only_field_is_not_synced(self):
+        """标题 + ai_enabled 混合：只推了标题，`synced` 必须是 False。
+
+        旧实现 ``synced = warning is None`` -> True，用户看到「已修改并同步」，
+        而 ``ai_enabled`` 只落在本地（假绿）。
+        """
+        install_fake_protocol(self.client)
+        self.seed('I1', title='旧标题')
+        result = items.update_item('I1', {'title': '新标题', 'ai_enabled': False})
+        self.assertFalse(result['synced'])
+        self.assertIn('ai_enabled', result['warning'])
+        self.assertIn('仅本地生效', result['warning'])
+        self.assertEqual(result['local_only_fields'], ['ai_enabled'])
+        self.assertEqual(self.client.calls, [('edit_item', 'I1', {'title': '新标题'})])
+        self.assertEqual(result['item']['title'], '新标题')
+        self.assertFalse(result['item']['ai_enabled'])   # 本地确实改了
+
+    def test_batch_update_images_pushes_every_item(self):
+        install_fake_protocol(self.client)
+        self.seed('I1')
+        self.seed('I2')
+        result = items.batch_update(['I1', 'I2'], {'images': ['https://img.alicdn.com/a.png']})
+        self.assertEqual(result['total'], 2)
+        self.assertEqual(result['ok'], 2)
+        self.assertEqual(result['local_only'], 0)
+        self.assertEqual(result['noop'], 0)
+        self.assertEqual(result['warnings'], [])
+        self.assertEqual([c[0] for c in self.client.calls], ['edit_item', 'edit_item'])
+        self.assertEqual(self.client.calls[0][2]['images'], ['https://img.alicdn.com/a.png'])
+        self.assertEqual(self._db_images('I2'), ['https://img.alicdn.com/a.png'])
+
+    def test_batch_update_mixed_local_only_is_not_ok(self):
+        """批量路径同样不许假绿：标题能推、ai_enabled 不能 -> ok=0、local_only=2。"""
+        install_fake_protocol(self.client)
+        self.seed('I1')
+        self.seed('I2')
+        result = items.batch_update(['I1', 'I2'], {'title': '新标题', 'ai_enabled': False})
+        self.assertEqual(result['ok'], 0)
+        self.assertEqual(result['local_only'], 2)
+        self.assertEqual(result['noop'], 0)
+        self.assertEqual(len(result['warnings']), 2)
+        self.assertIn('仅本地生效', result['warnings'][0]['message'])
+        self.assertEqual([c[0] for c in self.client.calls], ['edit_item', 'edit_item'])
+
+    def test_batch_update_empty_images_is_noop_not_ok(self):
+        """批量里 ``images: []`` 一行都没改 -> ok=0、noop=1（不能算成功）。"""
+        install_fake_protocol(self.client)
+        self.seed('I1')
+        result = items.batch_update(['I1'], {'images': []})
+        self.assertEqual(result['total'], 1)
+        self.assertEqual(result['ok'], 0)
+        self.assertEqual(result['noop'], 1)
+        self.assertEqual(result['local_only'], 0)
+        self.assertEqual(result['warnings'], [])
+        self.assertEqual(result['failed'], [])
+        self.assertEqual(result['updated'], [])
+        self.assertEqual(self.client.calls, [])
 
     # ------------------------------------------------------------------ 批量
 
@@ -351,6 +519,119 @@ class ItemsServiceTest(unittest.TestCase):
         logs = db.query("SELECT * FROM operation_logs WHERE action = 'sync_items'")
         self.assertEqual(len(logs), 2)
         self.assertEqual(logs[0]['success'], 1)
+
+    # ------------------------------------------------- 库存：不拿 1 冒充（真机列表卡没库存字段）
+
+    def _real_frame_list(self, *item_ids: str) -> dict:
+        """真机列表卡的归一化结果：**没有库存字段**（stock=None），图片也在。"""
+        return {'items': [
+            {'item_id': item_id, 'title': f'商品{item_id}', 'price': 49.9,
+             'stock': None, 'status': 'on_sale',
+             'images': ['https://img.alicdn.com/a.png']}
+            for item_id in item_ids
+        ]}
+
+    def test_sync_unknown_stock_overwrites_stale_fake_one(self):
+        """**自愈**：旧代码硬编码写进库的假 1 必须被同步清成 -1，不能永久保留。
+
+        否则用户库里那 45 件假 1 永远自愈不了：重新同步多少次 excluded 都是 -1 ->
+        继续保留假 1；而 `_refresh_unknown_stock` 只挑 `stock < 0` 的行，假 1 连补详情
+        队列都进不去。
+        """
+        self.seed('A1', stock=1)  # 旧代码留下的假库存
+        db.execute("UPDATE items SET images = ?, description = ? WHERE item_id = 'A1'",
+                   (json.dumps(['https://img.alicdn.com/kept.png']), '本地描述'))
+        install_fake_protocol(self.client)
+        # 真机列表：没有库存字段、没有图片、没有描述
+        self.client.list_result = {'items': [
+            {'item_id': 'A1', 'title': '商品A1', 'price': 49.9, 'stock': None, 'status': 'on_sale'},
+            {'item_id': 'A2', 'title': '商品A2', 'price': 49.9, 'stock': None, 'status': 'on_sale'},
+        ]}
+
+        result = items.sync_items('acc1')
+        self.assertEqual(result['count'], 2)
+        rows = {r['item_id']: dict(r) for r in db.query('SELECT * FROM items')}
+        self.assertEqual(rows['A1']['stock'], -1)  # 假 1 被清掉（不再是 1，也不是 7 那种旧值）
+        self.assertEqual(rows['A2']['stock'], -1)  # 新入库：未知就是 -1，不编数
+        # 「列表为空不覆盖本地」的规则不变：图片/描述仍是库里的
+        self.assertEqual(json.loads(rows['A1']['images']), ['https://img.alicdn.com/kept.png'])
+        self.assertEqual(rows['A1']['description'], '本地描述')
+
+    def test_sync_self_heals_stale_one_to_real_stock_in_one_pass(self):
+        """一次同步内完成自愈：假 1 -> -1 -> 补详情写成平台真值 66。"""
+        self.seed('A1', stock=1)  # 假库存
+        install_fake_protocol(self.client)
+        self.client.list_result = {'items': [
+            {'item_id': 'A1', 'title': '商品A1', 'price': 49.9, 'stock': None, 'status': 'on_sale'},
+        ]}
+        self.client.details['A1'] = {'id': 'A1', 'stock': 66}
+
+        result = items.sync_items('acc1')
+        self.assertEqual(result['stock_refreshed'], 1)
+        row = dict(db.query_one("SELECT * FROM items WHERE item_id = 'A1'"))
+        self.assertEqual(row['stock'], 66)
+        self.assertIn(('get_item', 'A1'), self.client.calls)
+
+    def test_sync_refreshes_a_45_item_account_in_one_pass(self):
+        """上限必须覆盖真实账号规模：45 件全未知时一次同步全部补齐（limit=40 就不够）。"""
+        self.assertEqual(items.STOCK_REFRESH_LIMIT, 60)
+        item_ids = [f'S{i:02d}' for i in range(45)]
+        for item_id in item_ids:
+            self.seed(item_id, stock=-1)
+        install_fake_protocol(self.client)
+        self.client.list_result = self._real_frame_list(*item_ids)
+        for item_id in item_ids:
+            self.client.details[item_id] = {'id': item_id, 'stock': 66}
+
+        result = items.sync_items('acc1')
+        self.assertEqual(result['count'], 45)
+        self.assertEqual(result['stock_refreshed'], 45)
+        self.assertNotIn('stock_refresh_stopped', result)
+        unknown = db.query('SELECT item_id FROM items WHERE stock < 0')
+        self.assertEqual(unknown, [])
+        self.assertEqual(db.query_one('SELECT COUNT(*) AS n FROM items')['n'], 45)
+
+    def test_sync_refreshes_real_stock_from_detail(self):
+        """真库存在详情里（`data.itemDO.quantity`）-> 逐件补回来落库。"""
+        install_fake_protocol(self.client)
+        self.client.list_result = self._real_frame_list('A1')
+        self.client.details['A1'] = {'id': 'A1', 'stock': 66,
+                                     'images': ['https://img.alicdn.com/d.png'],
+                                     'desc': '详情描述'}
+        result = items.sync_items('acc1')
+        self.assertEqual(result['stock_refreshed'], 1)
+        self.assertNotIn('stock_refresh_stopped', result)
+        row = dict(db.query_one("SELECT * FROM items WHERE item_id = 'A1'"))
+        self.assertEqual(row['stock'], 66)
+        self.assertEqual(json.loads(row['images']), ['https://img.alicdn.com/d.png'])
+        self.assertEqual(row['description'], '详情描述')
+        self.assertIn(('get_item', 'A1'), self.client.calls)
+
+    def test_sync_stops_refresh_on_risk_control(self):
+        """碰到风控**立刻停手**：后面的商品一件都不打，已有数据保持不动。"""
+        install_fake_protocol(self.client)
+        self.client.list_result = self._real_frame_list('A1', 'A2')
+        self.client.details['A1'] = RealRiskControlError('FAIL_SYS_USER_VALIDATE::哎哟喂,被挤爆啦')
+
+        result = items.sync_items('acc1')
+        self.assertEqual(result['stock_refresh_stopped'], 'risk')
+        self.assertEqual(result['stock_refreshed'], 0)
+        self.assertEqual([c for c in self.client.calls if c[0] == 'get_item'],
+                         [('get_item', 'A1')])  # A2 一次都没打
+        rows = {r['item_id']: dict(r) for r in db.query('SELECT * FROM items')}
+        self.assertEqual(rows['A1']['stock'], -1)
+        self.assertEqual(rows['A2']['stock'], -1)
+
+    def test_sync_stops_refresh_on_session_expired(self):
+        """登录态过期同样立刻停手（不是风控，但继续打也没意义）。"""
+        install_fake_protocol(self.client)
+        self.client.list_result = self._real_frame_list('A1', 'A2')
+        self.client.details['A1'] = RealSessionExpiredError('登录态已过期，需要重新登录')
+
+        result = items.sync_items('acc1')
+        self.assertEqual(result['stock_refresh_stopped'], 'session')
+        self.assertEqual([c for c in self.client.calls if c[0] == 'get_item'],
+                         [('get_item', 'A1')])
 
     def test_protocol_not_ready(self):
         """协议层模块缺失（ImportError）-> code 统一 xianyu_not_ready，绝不抛异常。"""

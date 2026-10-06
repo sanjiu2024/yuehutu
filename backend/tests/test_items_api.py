@@ -46,6 +46,12 @@ class FakeClient:
         self.account_id = account_id
         self.calls: List[tuple] = []
         self.items: List[Dict[str, Any]] = []
+        #: item_id -> 详情响应（`get_item` 用，补真库存走这条路）
+        self.details: Dict[str, Dict[str, Any]] = {}
+
+    async def get_item(self, item_id: str) -> Dict[str, Any]:
+        self.calls.append(('get_item', item_id))
+        return self.details.get(item_id) or {'id': item_id, 'stock': None}
 
     async def list_items(self, page_number: int = 1, page_size: int = 20,
                          max_pages: int = 5) -> Dict[str, Any]:
@@ -85,8 +91,8 @@ def remove_fake_protocol() -> None:
 
 
 def fake_item(item_id: str, title: str = '测试商品', price: float = 100.0,
-              status: str = 'on_sale') -> Dict[str, Any]:
-    return {'item_id': item_id, 'title': title, 'price': price, 'stock': 1,
+              status: str = 'on_sale', stock: Any = 1) -> Dict[str, Any]:
+    return {'item_id': item_id, 'title': title, 'price': price, 'stock': stock,
             'status': status}
 
 
@@ -206,6 +212,55 @@ class ItemsApiTest(unittest.TestCase):
         self.assertNotIn('warning', data)
         self.assertEqual(fake.calls, [('edit_item', 'A1', {'price': 9.9})])
 
+    # -- task-26：编辑改图 / 假绿（REST 层口径） ---------------------------
+
+    def test_single_edit_images_reaches_protocol_as_list(self):
+        """改图走 REST：服务层交出去的 `images` 必须是列表，库里是 URL 字符串数组。"""
+        seed('A1', account=ACC)
+        fake = FakeClient(ACC)
+        install_fake_protocol(fake)
+        resp = self.client.post(f'/api/items/{ACC}/A1/edit',
+                                json={'images': ['https://img.alicdn.com/a.png']},
+                                headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertTrue(data['synced'], resp.text)
+        self.assertNotIn('warning', data)
+        self.assertEqual(fake.calls,
+                         [('edit_item', 'A1', {'images': ['https://img.alicdn.com/a.png']})])
+        self.assertEqual(data['item']['images'], ['https://img.alicdn.com/a.png'])
+
+    def test_single_edit_mixed_local_only_reports_not_synced(self):
+        """改标题 + ai_enabled：只有标题推得出去 -> synced 必须 False（修假绿）。"""
+        seed('A1', account=ACC)
+        fake = FakeClient(ACC)
+        install_fake_protocol(fake)
+        resp = self.client.post(f'/api/items/{ACC}/A1/edit',
+                                json={'title': '新标题', 'ai_enabled': False},
+                                headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertFalse(data['synced'], resp.text)
+        self.assertIn('仅本地生效', data['warning'])
+        self.assertIn('ai_enabled', data['warning'])
+        self.assertEqual(data['local_only_fields'], ['ai_enabled'])
+        self.assertEqual(fake.calls, [('edit_item', 'A1', {'title': '新标题'})])
+        self.assertEqual(data['item']['title'], '新标题')
+
+    def test_single_edit_empty_images_is_noop(self):
+        """`images: []` = 不改图：200、noop、不推协议层、不报错。"""
+        seed('A1', account=ACC)
+        fake = FakeClient(ACC)
+        install_fake_protocol(fake)
+        resp = self.client.post(f'/api/items/{ACC}/A1/edit',
+                                json={'images': []}, headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertTrue(data['noop'], resp.text)
+        self.assertEqual(data['updated_fields'], [])
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(data['item']['images'], [])
+
     def test_single_edit_unknown_field_is_400(self):
         seed('A1', account=ACC)
         resp = self.client.post(f'/api/items/{ACC}/A1/edit',
@@ -234,6 +289,33 @@ class ItemsApiTest(unittest.TestCase):
         self.assertEqual(payloads[-1]['account_id'], ACC)
         self.assertEqual(sorted(payloads[-1]['item_ids']), ['S1', 'S2'])
         self.assertEqual(payloads[-1]['action'], 'sync')
+
+    def test_sync_route_heals_stale_fake_stock(self):
+        """REST 层自愈：库里旧代码写死的假 1 被同步清掉，并当次补成平台真值。
+
+        用户的抱怨正是「库存显示不对」：那 45 件假 1 只靠重新同步是永远好不了的。
+        """
+        seed('H1', account=ACC)  # seed 写的就是旧代码那种假 1
+        seed('H2', account=ACC)
+        fake = FakeClient(ACC)
+        fake.items = [fake_item('H1', stock=None), fake_item('H2', stock=None)]
+        fake.details['H1'] = {'id': 'H1', 'stock': 66}  # H2 没有详情 -> 补不到
+        install_fake_protocol(fake)
+
+        resp = self.client.post(f'/api/items/{ACC}/sync', headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertEqual(data['count'], 2)
+        self.assertEqual(data['stock_refreshed'], 1)
+
+        rows = {r['item_id']: dict(r) for r in
+                db.query('SELECT * FROM items WHERE account_id = ?', (ACC,))}
+        self.assertEqual(rows['H1']['stock'], 66)  # 假 1 -> -1 -> 真值 66（一次同步内）
+        self.assertEqual(rows['H2']['stock'], -1)  # 补不到就是 -1，不编数
+        # 前端拉列表时拿到的也是 -1 / 66，不再是「全是 1」
+        listed = self.client.get(f'/api/items/{ACC}', headers=self.headers).json()['data']['items']
+        listed_stock = {i['item_id']: i['stock'] for i in listed}
+        self.assertEqual(listed_stock, {'H1': 66, 'H2': -1})
 
     def test_sync_route_not_ready_emits_nothing(self):
         """协议层没就绪：返回结构化 code，且**不许**发「已同步」事件。"""

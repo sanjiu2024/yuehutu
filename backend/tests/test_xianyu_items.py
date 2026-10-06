@@ -12,6 +12,7 @@ payload 零构造 —— 所以每条断言都直接对着一份真机响应形�
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import sys
 import unittest
@@ -47,12 +48,51 @@ from backend.app.xianyu.client import (  # noqa: E402
     build_label_ext,
     build_publish_payload,
     canonical_status,
+    images_to_image_infos,
+    normalize_item,
     normalize_list_card,
     to_cent,
 )
 
 #: 带 unb 的假 Cookie（没有 unb 时 XianyuClient 直接 ValueError）
 COOKIE = 'unb=2200123456; _m_h5_tk=abcdef123456_1712345678901; cookie2=xyz'
+
+#: 真机抓帧（2026-10-06，`C:\Users\Administrator\.dsh-tmp\item_card.json`）里的原图 URL。
+#: 注意是 **http**：前端跑在 127.0.0.1，http 图片会被浏览器按混合内容拦掉。
+REAL_IMAGE = ('http://img.alicdn.com/bao/uploaded/i4/O1CN01Pap3jiOC8yK2XrKe_'
+              '!!2217970177348-2-fleamarket.png')
+REAL_IMAGE_HTTPS = REAL_IMAGE.replace('http://', 'https://')
+
+#: 真机列表卡的**原样**形状：`itemStatus` 是数字、图片挂三处、
+#: `detailParams.imageInfos` 是 JSON 字符串、**没有库存字段**。
+REAL_CARD: Dict[str, Any] = {
+    'cardType': 1003,
+    'cardData': {
+        'auctionType': 'b',
+        'categoryId': '50023975',
+        'detailUrl': '//www.goofish.com/item?id=1087258469593',
+        'id': '1087258469593',
+        'itemLabelDataVO': {},
+        'itemStatus': 0,
+        'picInfo': {'hasVideo': False, 'height': 1254, 'picUrl': REAL_IMAGE, 'width': 1254},
+        'priceInfo': {'preText': '¥', 'price': '49.90'},
+        'title': 'iPhone 13 128G',
+        'trackParams': {},
+        'detailParams': {
+            'itemId': '1087258469593',
+            'picUrl': REAL_IMAGE,
+            'picWidth': 1254,
+            'picHeight': 1254,
+            'postInfo': '包邮',
+            'soldPrice': '49.90',
+            'title': 'iPhone 13 128G',
+            'imageInfos': json.dumps([{
+                'heightSize': 1254, 'major': True, 'type': 0, 'url': REAL_IMAGE,
+                'videoCover': False, 'widthSize': 1254,
+            }]),
+        },
+    },
+}
 
 
 class MtopStub:
@@ -264,10 +304,82 @@ class ListParseTest(ProtocolCase):
         self.assertEqual(canonical_status('onsale'), 'on_sale')
         self.assertEqual(canonical_status('downshelf'), 'off_shelf')
         self.assertEqual(canonical_status(None), 'on_sale')
-        self.assertEqual(canonical_status(1), 'on_sale')
-        self.assertEqual(canonical_status(0), 'off_shelf')
+        # 真机（2026-10-06，账号 2217970177348）：45 件里 itemStatus 44×0、1×1，
+        # 那个 1 的详情回 itemStatusStr="卖掉了" ⇒ 0=在售、1=已卖出。
+        self.assertEqual(canonical_status(0), 'on_sale')
+        self.assertEqual(canonical_status(1), 'sold')
+        # 其它数字语义未证实 → 原样返回，绝不硬猜成「在售」
+        self.assertEqual(canonical_status(2), '2')
+        self.assertEqual(canonical_status(3), '3')
         # 认不出来就原样返回，绝不硬猜成「在售」
         self.assertEqual(canonical_status('sold'), 'sold')
+        self.assertEqual(canonical_status('已下架'), '已下架')
+
+    def test_canonical_status_bool_is_not_treated_as_number(self):
+        """`bool` 是 `int` 的子类，真机没出现过布尔状态。
+
+        不拦的话 `int(True)==1` 会被套上「已卖出」的语义 —— 一个布尔状态被说成
+        「卖掉了」比说「不认识」更糟。原样 `str()` 返回，不猜。
+        """
+        self.assertEqual(canonical_status(True), 'True')
+        self.assertEqual(canonical_status(False), 'False')
+
+    def test_canonical_status_digit_strings_are_names_not_numbers(self):
+        """字符串 `'0'`/`'1'` 走 `_STATUS_MAP` 查不到 → 原样返回。
+
+        真机这两个字段都是**数字**类型，所以字符串分支不该被顺手改写成数字语义；
+        真出现了 `'1'` 说明是另一个字段（比如以字符串形态回的状态名），
+        硬套数字映射就是猜。
+        """
+        self.assertEqual(canonical_status('0'), '0')
+        self.assertEqual(canonical_status('1'), '1')
+
+    def test_normalize_card_numeric_status_not_swallowed(self):
+        """`itemStatus=0` 不能被 `or` 吞成 `None`（真机 44/45 都是 0）。"""
+        zero = normalize_list_card(list_card('9001', '在售的手机', '100', status=0))
+        self.assertEqual(zero['status'], 'on_sale')
+        self.assertEqual(zero['item_status'], 0)
+
+        sold = normalize_list_card(list_card('9002', '卖掉的手机', '100', status=1))
+        self.assertEqual(sold['status'], 'sold')
+        self.assertEqual(sold['item_status'], 1)
+
+    def test_normalize_item_numeric_status_matches_card(self):
+        """详情路径与列表路径对同一件商品必须给出**同一个** status 口径。"""
+        self.assertEqual(
+            normalize_item({'itemDO': {'itemId': '9001', 'itemStatus': 0}})['status'],
+            'on_sale',
+        )
+        self.assertEqual(
+            normalize_item({'itemDO': {'itemId': '9002', 'itemStatus': 1}})['status'],
+            'sold',
+        )
+        # 详情没报 itemStatus 时才退回 status 键
+        self.assertEqual(
+            normalize_item({'itemDO': {'itemId': '9003', 'status': 'downshelf'}})['status'],
+            'off_shelf',
+        )
+
+    def test_real_frame_sold_card(self):
+        """真机抓帧形状：`itemStatus=1` 的那件（1087247101297）是卖掉了。
+
+        真机卡把 `itemStatus` 放在 **`cardData` 顶层**（不是 `itemInfo` 里），
+        `normalize_list_card` 的 `inner` 兜底到 `node` 才能取到 —— 顺便钉住这条。
+        """
+        sold = json.loads(json.dumps(REAL_CARD))
+        sold['cardData']['id'] = '1087247101297'
+        sold['cardData']['detailParams']['itemId'] = '1087247101297'
+        sold['cardData']['itemStatus'] = 1
+        sold_item = normalize_list_card(sold)
+        self.assertEqual(sold_item['item_id'], '1087247101297')
+        self.assertEqual(sold_item['status'], 'sold')
+        self.assertEqual(sold_item['item_status'], 1)
+
+        on_sale = json.loads(json.dumps(REAL_CARD))
+        on_sale['cardData']['itemStatus'] = 0
+        item = normalize_list_card(on_sale)
+        self.assertEqual(item['status'], 'on_sale')
+        self.assertEqual(item['item_status'], 0)
 
     def test_extract_cards_prefers_item_topic_list(self):
         self.assertEqual(_extract_list_cards({'itemTopicList': [1, 2]}), [1, 2])
@@ -281,8 +393,81 @@ class ListParseTest(ProtocolCase):
         self.assertEqual(item['title'], 'iPhone 13')
         self.assertEqual(item['price'], 2500.0)
         self.assertEqual(item['status'], 'on_sale')
-        self.assertEqual(item['stock'], 1)
+        # 列表卡**没有库存字段**：真机 cardData 的键里没有 quantity/stock，
+        # 拿不到就得给 None（服务层落库写 -1），绝不能写 1 冒充有货。
+        self.assertIsNone(item['stock'])
         self.assertEqual(item['images'], ['//img.alicdn.com/a.jpg'])
+
+    def test_normalize_real_frame_card_images(self):
+        """真机抓帧形状（`C:\\Users\\Administrator\\.dsh-tmp\\item_card.json`）。
+
+        三个来源都指着同一张图：`picInfo.picUrl`（dict）、
+        `detailParams.picUrl`（dict 里的字符串）、`detailParams.imageInfos`
+        （**JSON 字符串**）。旧实现只认 list → 真机一张图都拿不到。
+        """
+        item = normalize_list_card(REAL_CARD)
+        self.assertEqual(item['item_id'], '1087258469593')
+        self.assertEqual(item['title'], 'iPhone 13 128G')
+        self.assertEqual(item['price'], 49.9)
+        # 三个来源同一张图 -> 去重成 1 张；http -> https（前端在 127.0.0.1，
+        # 混合内容会被浏览器拦掉，img.alicdn.com 支持 https）。
+        self.assertEqual(item['images'], [REAL_IMAGE_HTTPS])
+        self.assertIsNone(item['stock'])
+
+    def test_normalize_real_frame_major_image_first(self):
+        """imageInfos 里 `major: true` 的那张是主图，必须排第一位。"""
+        card = json.loads(json.dumps(REAL_CARD))
+        card['cardData']['detailParams']['imageInfos'] = json.dumps([
+            {'major': False, 'url': 'http://img.alicdn.com/second.png'},
+            {'major': True, 'url': 'http://img.alicdn.com/main.png'},
+        ])
+        card['cardData']['detailParams'].pop('picUrl')
+        card['cardData']['picInfo'] = {'picUrl': 'http://img.alicdn.com/second.png'}
+        item = normalize_list_card(card)
+        self.assertEqual(item['images'],
+                         ['https://img.alicdn.com/main.png', 'https://img.alicdn.com/second.png'])
+
+    def test_normalize_card_image_infos_as_list_of_dicts(self):
+        """同一字段也可能是真 list（其它版本），一样要认。"""
+        card = json.loads(json.dumps(REAL_CARD))
+        card['cardData']['picInfo'] = {}
+        card['cardData']['detailParams'].pop('picUrl')
+        card['cardData']['detailParams']['imageInfos'] = [
+            {'url': 'http://img.alicdn.com/a.png'},
+            {'url': 'http://img.alicdn.com/b.png'},
+        ]
+        item = normalize_list_card(card)
+        self.assertEqual(item['images'],
+                         ['https://img.alicdn.com/a.png', 'https://img.alicdn.com/b.png'])
+
+    def test_extract_list_cards_uses_card_list_when_topic_list_empty(self):
+        """真机 `itemTopicList` 是**空 list**，真商品在 `cardList` 里。"""
+        self.assertEqual(_extract_list_cards({'itemTopicList': [], 'cardList': [1, 2]}), [1, 2])
+        self.assertEqual(_extract_list_cards({'itemTopicList': [], 'cardList': []}), [])
+
+    def test_normalize_item_stock_is_real_quantity(self):
+        """真库存只在这里：详情 `data.itemDO.quantity`（真机 1087258469593 -> 66）。"""
+        item = normalize_item({'itemDO': {'itemId': '9001', 'quantity': 66}}, '9001')
+        self.assertEqual(item['stock'], 66)
+        # `editDetail` 回填给的是**字符串** "66"，一样要认
+        self.assertEqual(normalize_item({'itemDO': {'quantity': '1'}})['stock'], 1)
+        # 没有 quantity 就是未知，不能编数
+        self.assertIsNone(normalize_item({'itemDO': {'title': 'x'}})['stock'])
+        self.assertIsNone(normalize_item({'itemDO': {'quantity': 'abc'}})['stock'])
+        self.assertIsNone(normalize_item({'itemDO': {'quantity': -3}})['stock'])
+
+    def test_normalize_item_images_from_pic_detail(self):
+        """详情图片结构没有真机帧（`picDetailDO` 形状未确认），三种形态都要认。"""
+        raw_json = json.dumps([{'major': True, 'url': REAL_IMAGE}])
+        item = normalize_item({'itemDO': {'itemId': '1', 'picDetailDO': raw_json}})
+        self.assertEqual(item['images'], [REAL_IMAGE_HTTPS])
+        item = normalize_item({'itemDO': {'itemId': '1',
+                                          'picDetailDO': {'picUrl': 'http://img.alicdn.com/p.png'}}})
+        self.assertEqual(item['images'], ['https://img.alicdn.com/p.png'])
+        item = normalize_item({'itemDO': {'itemId': '1',
+                                          'imageList': [{'url': 'http://img.alicdn.com/q.png'}]}})
+        self.assertEqual(item['images'], ['https://img.alicdn.com/q.png'])
+        self.assertEqual(normalize_item({'itemDO': {'itemId': '1'}})['images'], [])
 
     def test_normalize_down_shelf_card(self):
         item = normalize_list_card(list_card('9002', '旧手机', '100', status='downshelf'))
@@ -598,6 +783,200 @@ class MtopStubSelfTest(ProtocolCase):
         client, _stub = make_client({})
         with self.assertRaises(XianyuError):
             run(client.mtop('mtop.not.exist.api', {}))
+
+
+class EditStatusMappingTest(ProtocolCase):
+    """编辑 `status` 的安全后果（task-27 第 4 条自查，**不改实现**，只钉住行为）。
+
+    `_local_changes_to_edit` 是 `=='on_sale' ? ON_SALE : OFF_SHELF` 的二值判断，
+    所以**任何非「在售」的入参都落 `downshelf`（下架）** —— 这是保守方向：
+    失败模式是「多下架一件」，不是「把已卖出/已下架改成在售」。
+    """
+
+    ON_SALE = 'onsale'
+    OFF_SHELF = 'downshelf'
+
+    def test_numeric_zero_is_on_sale(self):
+        """`itemStatus=0` 是真机 44/45 件的常态（在售）。"""
+        self.assertEqual(_local_changes_to_edit({'status': 0})['item_status'], self.ON_SALE)
+
+    def test_sold_never_becomes_on_sale(self):
+        """**最关键的一条**：数字 1（真机 itemStatusStr="卖掉了"）不能改成在售。"""
+        self.assertEqual(_local_changes_to_edit({'status': 1})['item_status'], self.OFF_SHELF)
+
+    def test_sold_name_never_becomes_on_sale(self):
+        self.assertEqual(_local_changes_to_edit({'status': 'sold'})['item_status'], self.OFF_SHELF)
+        self.assertEqual(_local_changes_to_edit({'status': '卖掉了'})['item_status'], self.OFF_SHELF)
+
+    def test_unknown_number_never_becomes_on_sale(self):
+        """语义未证实的数字同样落 downsheld（宁可下架，不可误上架）。"""
+        self.assertEqual(_local_changes_to_edit({'status': 2})['item_status'], self.OFF_SHELF)
+
+    def test_explicit_names_still_map(self):
+        self.assertEqual(_local_changes_to_edit({'status': 'on_sale'})['item_status'], self.ON_SALE)
+        self.assertEqual(
+            _local_changes_to_edit({'status': 'off_shelf'})['item_status'], self.OFF_SHELF
+        )
+
+
+class EditImagesTest(ProtocolCase):
+    """I5：编辑商品改图片（``images`` → ``imageInfoDOList``）。
+
+    真机原样字段来自只读抓帧（``edit_item_detail('1087258469593')``）：条目是
+    **list of dict、全部字符串值**、第一张 ``major="true"``。这里逐字段钉死，
+    因为形状错一个平台就回一个看不懂的参数错误，排查成本极高。
+    """
+
+    DETAIL = {
+        'itemId': '9001',
+        'itemStatus': 'onsale',
+        'quantity': '66',
+        'itemPriceDTO': {'priceInCent': '100000', 'origPriceInCent': '120000'},
+        'itemTextDTO': {'title': '旧标题', 'desc': '旧描述'},
+        'itemCatDTO': {'catId': '50014945'},
+        'itemAddrDTO': {'city': '杭州'},
+        'itemPostFeeDTO': {'canFreeShipping': True},
+        'imageInfoDOList': [{'major': 'true', 'url': 'http://old.example.com/old.png'}],
+    }
+
+    def test_local_changes_accepts_images(self):
+        """① 不再抛「协议层不支持修改字段」。"""
+        changes = _local_changes_to_edit({'images': [REAL_IMAGE, REAL_IMAGE_HTTPS]})
+        self.assertIn('image_infos', changes)
+        self.assertEqual(len(changes['image_infos']), 2)
+
+    def test_image_info_matches_real_frame(self):
+        """② 字段名/类型与真机一致，第一张 major='true'。"""
+        infos = images_to_image_infos([REAL_IMAGE])
+        self.assertEqual(len(infos), 1)
+        info = infos[0]
+        self.assertEqual(set(info), {'major', 'widthSize', 'heightSize', 'type',
+                                     'url', 'extraInfo'})
+        # **全部字符串**：真机就是这么给的，传数字/布尔会被当参数非法。
+        for key in ('major', 'widthSize', 'heightSize', 'type', 'url'):
+            self.assertIsInstance(info[key], str, f'{key} 必须是字符串')
+        self.assertEqual(info['major'], 'true')
+        self.assertEqual(info['type'], '0')
+        self.assertEqual(info['url'], REAL_IMAGE)
+        self.assertEqual(info['extraInfo'], {'raw': 'false', 'isT': 'false', 'isH': 'false'})
+        for value in info['extraInfo'].values():
+            self.assertIsInstance(value, str)
+
+    def test_only_first_image_is_major(self):
+        infos = images_to_image_infos([REAL_IMAGE, REAL_IMAGE_HTTPS, REAL_IMAGE])
+        self.assertEqual([i['major'] for i in infos], ['true', 'false', 'false'])
+
+    def test_accepts_http_and_https(self):
+        infos = images_to_image_infos([REAL_IMAGE_HTTPS, REAL_IMAGE])
+        self.assertEqual([i['url'] for i in infos], [REAL_IMAGE_HTTPS, REAL_IMAGE])
+
+    def test_sizes_from_dict_and_sizes_arg(self):
+        infos = images_to_image_infos(
+            [{'url': REAL_IMAGE, 'width': 1254, 'height': 1254}, REAL_IMAGE_HTTPS],
+            sizes=[None, {'width': '800', 'height': 600}],
+        )
+        self.assertEqual(infos[0]['widthSize'], '1254')
+        self.assertEqual(infos[0]['heightSize'], '1254')
+        self.assertEqual(infos[1]['widthSize'], '800')
+        self.assertEqual(infos[1]['heightSize'], '600')
+
+    def test_missing_size_is_placeholder_not_invented(self):
+        """尺寸未知时用占位 '0'，**不许硬编码真机那张图的 1254**。"""
+        infos = images_to_image_infos([REAL_IMAGE])
+        self.assertEqual(infos[0]['widthSize'], '0')
+        self.assertEqual(infos[0]['heightSize'], '0')
+
+    def test_empty_images_raises(self):
+        """③ 空数组报可读错误（不许把商品图清成空）。"""
+        with self.assertRaises(XianyuError) as ctx:
+            images_to_image_infos([])
+        self.assertIn('至少一张', str(ctx.exception))
+
+        with self.assertRaises(XianyuError):
+            _local_changes_to_edit({'images': []})
+        with self.assertRaises(XianyuError):
+            _local_changes_to_edit({'images': None})
+
+    def test_non_url_rejected(self):
+        """本地路径不能静默塞给平台：必须先上传换成图床 URL。"""
+        with self.assertRaises(XianyuError) as ctx:
+            images_to_image_infos(['C:\\tmp\\local.png'])
+        self.assertIn('http', str(ctx.exception))
+
+    def test_blank_entry_rejected(self):
+        with self.assertRaises(XianyuError):
+            images_to_image_infos([''])
+        with self.assertRaises(XianyuError):
+            images_to_image_infos([{'url': ''}])
+
+    def test_patch_replaces_image_list_only(self):
+        """打补丁整体替换图片，**其它字段一个都不动**。"""
+        patched = build_edit_patch(self.DETAIL, image_infos=images_to_image_infos([REAL_IMAGE]))
+        self.assertEqual(len(patched['imageInfoDOList']), 1)
+        self.assertEqual(patched['imageInfoDOList'][0]['url'], REAL_IMAGE)
+        self.assertEqual(patched['itemCatDTO']['catId'], '50014945')
+        self.assertEqual(patched['itemAddrDTO']['city'], '杭州')
+        self.assertEqual(patched['itemTextDTO']['title'], '旧标题')
+
+    def test_patch_does_not_mutate_detail(self):
+        original = copy.deepcopy(self.DETAIL)
+        build_edit_patch(self.DETAIL, image_infos=images_to_image_infos([REAL_IMAGE]))
+        self.assertEqual(self.DETAIL, original)
+
+    def test_existing_branches_unchanged(self):
+        """④ price/stock/title 分支行为不变（回归钉子）。"""
+        changes = _local_changes_to_edit({'price': 1, 'stock': 3, 'title': 't'})
+        self.assertEqual(changes['price'], 1)
+        self.assertEqual(changes['quantity'], 3)
+        self.assertEqual(changes['title'], 't')
+        self.assertNotIn('image_infos', changes)
+
+        with self.assertRaises(XianyuError) as ctx:
+            _local_changes_to_edit({'不存在的字段': 1})
+        self.assertIn('不支持修改字段', str(ctx.exception))
+
+    def test_edit_item_submits_image_info_list(self):
+        """端到端：``edit_item(id, {'images': [...]})`` 真的把图打进提交体。"""
+        client, stub = make_client({
+            EDIT_DETAIL_API: copy.deepcopy(self.DETAIL),
+            EDIT_API: {'itemId': '9001', 'success': True},
+        })
+        result = run(client.edit_item('9001', {'images': [REAL_IMAGE_HTTPS, REAL_IMAGE]}))
+
+        self.assertEqual(result['itemId'], '9001')
+        self.assertEqual(stub.apis(), [EDIT_DETAIL_API, EDIT_API])
+        body = stub.calls[1]['payload']
+        self.assertEqual(len(body['imageInfoDOList']), 2)
+        self.assertEqual([i['major'] for i in body['imageInfoDOList']], ['true', 'false'])
+        self.assertEqual(body['imageInfoDOList'][0]['url'], REAL_IMAGE_HTTPS)
+        # 没传的字段仍在（不丢类目/地址）
+        self.assertEqual(body['itemCatDTO']['catId'], '50014945')
+        self.assertEqual(body['itemAddrDTO']['city'], '杭州')
+        self.assertEqual(body['quantity'], '66')
+        # 编辑族必填还在
+        self.assertEqual(body['bizcode'], 'pcMainPublish')
+        self.assertEqual(body['itemId'], '9001')
+        self.assertEqual(body['sourceId'], '9001')
+
+    def test_edit_item_images_plus_price_together(self):
+        client, stub = make_client({
+            EDIT_DETAIL_API: copy.deepcopy(self.DETAIL),
+            EDIT_API: {'itemId': '9001'},
+        })
+        run(client.edit_item('9001', {'price': 3000, 'images': [REAL_IMAGE]}))
+
+        body = stub.calls[1]['payload']
+        self.assertEqual(body['itemPriceDTO']['priceInCent'], '300000')
+        self.assertEqual(body['imageInfoDOList'][0]['url'], REAL_IMAGE)
+
+    def test_edit_item_bad_images_never_calls_platform(self):
+        """参数不合法时**一次接口都不该打**（校验发生在取详情之前）。"""
+        client, stub = make_client({EDIT_DETAIL_API: copy.deepcopy(self.DETAIL), EDIT_API: {}})
+        with self.assertRaises(XianyuError):
+            run(client.edit_item('9001', {'images': []}))
+        with self.assertRaises(XianyuError):
+            run(client.edit_item('9001', {'images': ['not-a-url']}))
+        self.assertEqual(stub.calls, [])
 
 
 if __name__ == '__main__':

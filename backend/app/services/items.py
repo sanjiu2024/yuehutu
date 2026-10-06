@@ -5,9 +5,13 @@
   时本地依然生效，只是返回 `synced: false` + warning —— 卖家在 UI 上的操作不该白做。
 - **批量逐条**：`batch_update` / `downshelf` / `reshelf` 一条失败不影响其它条，且**每条**都写
   operation_logs。返回
-  `{"total": n, "ok": n, "synced": n, "local_only": n, "warnings": [...], "failed": [...], "skipped": [...]}`：
+  `{"total": n, "ok": n, "synced": n, "local_only": n, "noop": n, "warnings": [...], "failed": [...], "skipped": [...]}`：
   - `ok` / `synced` **只统计完全成功**（本地已落库 **且** 已推送到协议层）；
-  - `warnings` / `local_only` 是「本地改了但没推到平台」（协议层未就绪或调用失败），**不算 ok**；
+  - `warnings` / `local_only` 是「本地改了但没推到平台」（协议层未就绪、调用失败，或字段
+    平台根本不支持），**不算 ok**。单条路径同样口径：`synced = 没有 warning **且** 没有
+    `local_only` 字段 —— 只推了一半却说「已同步」就是假绿；
+  - `noop` 是「本次没有实际改动」（例如只传了 `images: []` 表示不改图），既没改本地也没推
+    平台，**不算 ok 也不算 local_only**；
   - `failed` / `skipped` 是「完全没改」（不存在、字段非法、跨账号）。
   协议层没就绪时 `ok` 必须是 0 —— 否则用户看到「已批量修改 N 个」而实际一条都没推出去。
 - 需要协议层才能成立的操作（同步、发布）在协议层缺失时返回
@@ -17,7 +21,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+import time
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from loguru import logger
 
@@ -258,10 +263,16 @@ def _apply_patch(item: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
 
 
 #: 协议层商品编辑**真正能改**的字段（``XianyuClient.edit_item`` 的业务字段名）。
-#: 交集之外的字段（``ai_enabled`` / ``images`` / ``category_id``）本地照改，
-#: 但必须如实报 warning —— 说「已同步」而平台根本没这个字段就是假通。
+#: 交集之外的字段（``ai_enabled`` / ``category_id``）本地照改，但必须如实报
+#: ``local_only`` —— 说「已同步」而平台根本没这个字段就是假通。
+#: ``images`` 自 task-25 起协议层已支持（``images`` → ``imageInfoDOList``），
+#: 所以它在白名单里；它曾因为漏在这一行而被服务层静默过滤掉，端到端改不了图。
 PUSHABLE_EDIT_FIELDS = {'price', 'original_price', 'stock', 'title', 'description',
-                        'status', 'free_shipping'}
+                        'status', 'free_shipping', 'images'}
+
+#: 图片条目里 URL 的候选键。前端上传接口返回 ``{url,width,height}``，历史图是纯
+#: URL 字符串（混合数组），协议层 ``_image_entry`` 两种都认。
+IMAGE_URL_KEYS = ('url', 'picUrl', 'imageUrl', 'fileUrl')
 
 #: 商品写操作成功后统一发的事件。前端各页订阅同一个 topic 做静默重拉，
 #: 所以 payload 里必须带够定位信息（哪个账号、哪些商品、干了什么）。
@@ -281,16 +292,102 @@ def _publish_updated(account_id: Any, item_ids: Sequence[Any], action: str) -> N
         logger.exception('发布 items.updated 事件失败（不影响本次操作结果）')
 
 
-def _push_update(client: Any, account_id: str, item_id: str, resolved: Dict[str, Any]) -> Optional[str]:
-    """尽力把改动推给协议层；返回警告文本或 None（协议层未就绪也算警告，不算失败）。
+def _image_entries(value: Any) -> List[Any]:
+    """``resolved['images']`` → 图片条目列表（URL 字符串 或 ``{url,width,height}``）。
+
+    ``normalize_fields`` 把 ``images`` 归到 ``JSON_FIELDS``，列表会被 ``json.dumps``
+    成字符串，所以这里必须能解回列表；纯 URL 字符串当单张图。
+    **返回空列表表示「本次不改图」**（见 ``_split_edit_fields``）。
+    """
+    if value is None or value == '':
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text[0] in '[{':
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                return [text]
+            return list(parsed) if isinstance(parsed, list) else [parsed]
+        return [text]
+    if isinstance(value, (list, tuple)):
+        return [item for item in value if item not in (None, '')]
+    return [value]
+
+
+def _image_url(entry: Any) -> str:
+    """一张图条目 → URL 字符串（对象条目按 ``IMAGE_URL_KEYS`` 找）。"""
+    if isinstance(entry, dict):
+        for key in IMAGE_URL_KEYS:
+            url = entry.get(key)
+            if url:
+                return str(url).strip()
+        return ''
+    if isinstance(entry, (list, tuple)) and entry:
+        return str(entry[0] or '').strip()
+    return str(entry or '').strip()
+
+
+def _images_for_db(value: Any) -> Optional[str]:
+    """写库口径：``items.images`` **只存 URL 字符串数组**（保序、去重）→ JSON 字符串。
+
+    ``{url,width,height}`` 对象进库会让前端 ``parseImages`` 渲染不出缩略图（它只认
+    字符串），所以尺寸在写库这一路丢掉 —— 尺寸唯一的用途是推协议层。
+    空（或全是空 URL）→ ``None``：调用方据此**不写库**，绝不把已有图抹成空数组。
+    """
+    urls: List[str] = []
+    for entry in _image_entries(value):
+        url = _image_url(entry)
+        if url and url not in urls:
+            urls.append(url)
+    if not urls:
+        return None
+    return json.dumps(urls, ensure_ascii=False)
+
+
+def _local_only_note(local_only: Sequence[str]) -> str:
+    """可读的「仅本地生效」说明（前端会把这句整条展示给用户）。"""
+    return f'以下字段仅本地生效，未推送到闲鱼：{", ".join(sorted(local_only))}'
+
+
+def _split_edit_fields(resolved: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
+    """``resolved`` → ``(推给协议层的 payload, 仅本地生效的字段名列表)``。
+
+    推协议层用**完整条目**（含 ``width``/``height``，协议层拿它填
+    ``imageInfoDOList`` 的真实尺寸），写库走 ``_images_for_db`` 的纯 URL ——
+    两处口径分别算，**不共用一份**。
+    ``images: []`` / ``images: ''`` 是「本次不改图」：既不推、也不算 ``local_only``、
+    更不写库（协议层对空数组会抛 ``XianyuError``，服务层先把它剔除）。
+    """
+    payload: Dict[str, Any] = {}
+    local_only: List[str] = []
+    for key, value in resolved.items():
+        if key not in PUSHABLE_EDIT_FIELDS:
+            local_only.append(key)
+            continue
+        if key == 'images':
+            entries = _image_entries(value)
+            if not entries:
+                continue
+            payload[key] = entries
+            continue
+        payload[key] = value
+    return payload, local_only
+
+
+def _push_update(client: Any, account_id: str, item_id: str, payload: Dict[str, Any]) -> Optional[str]:
+    """尽力把 ``payload`` 推给协议层；返回警告文本或 None（协议层未就绪也算警告，不算失败）。
 
     真签名是 ``XianyuClient.edit_item(item_id, payload)``（**两个参数**，没有
     ``account_id``）；多传一个 account_id 会在 Python 层就 ``TypeError``，
     表现为 502 ``protocol_error``，跟平台无关。
+
+    ``payload`` 为空 = 本次没有任何可推的字段（例如 ``images: []``），返回 None。
     """
-    payload = {k: v for k, v in resolved.items() if k in PUSHABLE_EDIT_FIELDS}
     if not payload:
-        return '这些字段闲鱼平台不支持修改，改动仅本地生效'
+        return None
     status, value = common.call_method(client, ('edit_item',), item_id, payload)
     if status == common.CALL_OK:
         return None
@@ -313,30 +410,59 @@ def update_item(item_id: Any, fields: Dict[str, Any], account_id: Optional[str] 
     if not resolved:
         return common.fail('没有可修改的字段', 'invalid_fields')
 
-    sets = ', '.join(f'{column} = ?' for column in resolved)
+    payload, local_only = _split_edit_fields(resolved)
+
+    # 写库与推协议层**两套取值**：库里 images 只存 URL 字符串（前端 parseImages
+    # 只认字符串），推协议层带完整条目（含 width/height）。空图片两边都跳过。
+    db_values: Dict[str, Any] = {}
+    for key, value in resolved.items():
+        if key == 'images':
+            stored = _images_for_db(value)
+            if stored is None:
+                continue
+            db_values[key] = stored
+        else:
+            db_values[key] = value
+
+    if not db_values and not local_only:
+        # 只有 `images: []` 这类「不改图」输入：不动库、不推平台、也不算改动。
+        # 不报 invalid_fields —— 前端整表单提交时这是完全合法的请求。
+        common.log_operation(item['account_id'], 'update_item', item['item_id'], True,
+                             {'fields': {}, 'noop': True})
+        return {'item': item, 'synced': True, 'updated_fields': [], 'noop': True}
+
+    sets = ', '.join(f'{column} = ?' for column in db_values)
     db.execute(
         f'UPDATE items SET {sets}, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-        list(resolved.values()) + [item['id']],
+        list(db_values.values()) + [item['id']],
     )
 
     warning = None
     client, _err = common.get_client(item['account_id'])
     if client is not None:
-        warning = _push_update(client, item['account_id'], item['item_id'], resolved)
-    else:
+        warning = _push_update(client, item['account_id'], item['item_id'], payload)
+    elif payload:
         warning = '协议层尚未就绪，改动仅本地生效'
+    if local_only:
+        # 「假绿」修复：以前只看 warning，改标题+改 ai_enabled 会报 synced=True，
+        # 用户看到「已修改并同步」而一半只落本地。
+        note = _local_only_note(local_only)
+        warning = f'{warning}；{note}' if warning else note
 
     # 回读必须按 `(account_id, item_id)` 配对：同一个 item_id 可能存在于多个账号，
     # 用 get_item(item_id) 单键查会把**别的账号**的商品塞进返回值里。
     updated = get_item_by_account(item['account_id'], item['item_id'])
     common.log_operation(
         item['account_id'], 'update_item', item['item_id'], True,
-        {'fields': resolved, 'warning': warning},
+        {'fields': db_values, 'warning': warning, 'local_only': local_only},
     )
     _publish_updated(item['account_id'], [item['item_id']], 'edit')
-    result: Dict[str, Any] = {'item': updated, 'synced': warning is None, 'updated_fields': list(resolved)}
+    result: Dict[str, Any] = {'item': updated, 'synced': warning is None and not local_only,
+                              'updated_fields': list(db_values)}
     if warning:
         result['warning'] = warning
+    if local_only:
+        result['local_only_fields'] = local_only
     return result
 
 
@@ -346,12 +472,18 @@ def _batch_summary(
     warnings: List[Dict[str, Any]],
     failed: List[Dict[str, Any]],
     extra: Optional[Dict[str, Any]] = None,
+    noop: int = 0,
 ) -> Dict[str, Any]:
     """批量结果的统一形状。
 
     - `ok` / `synced` = 完全成功（本地已改 **且** 已推送到协议层）；
-    - `warnings` / `local_only` = 本地改了但没推出去；
+    - `warnings` / `local_only` = 本地改了但没推出去（协议层未就绪、调用失败，或字段
+      平台根本不支持）；
+    - `noop` = 本次没有实际改动（例如只传 `images: []` 表示不改图），**不算 ok、也不算
+      local_only**；
     - `failed` = 完全没改的逐条明细，`skipped` = 同一批的 id 索引（一眼看出一条都没动）。
+
+    恒等式：`total == ok + local_only + noop + len(failed)`。
     """
     summary: Dict[str, Any] = {
         'total': total,
@@ -359,6 +491,7 @@ def _batch_summary(
         'synced': synced_ok,
         'local_only': len(warnings),
         'warnings': warnings,
+        'noop': int(noop),
         'failed': failed,
         'skipped': [str(f.get('id') or '') for f in failed],
     }
@@ -388,6 +521,7 @@ def batch_update(
         )
 
     synced_ok = 0
+    noop = 0
     warnings: List[Dict[str, Any]] = []
     failed: List[Dict[str, Any]] = []
     updated_items: List[Dict[str, Any]] = []
@@ -411,6 +545,11 @@ def batch_update(
             if result.get('code') == 'not_found':
                 common.log_operation(str(account_id or ''), 'batch_update', item_id, False, result.get('message', ''))
             continue
+        if result.get('noop'):
+            # 本次没有实际改动（例如 `images: []`）：不算 ok、不算 local_only，
+            # 也不进 `updated` 列表 —— 它确实没被改。
+            noop += 1
+            continue
         updated_items.append(result['item'])
         if result.get('synced'):
             synced_ok += 1
@@ -421,12 +560,14 @@ def batch_update(
     summary = _batch_summary(
         len(ids), synced_ok, warnings, failed,
         {'updated': [i['item_id'] for i in updated_items], 'fields': patch},
+        noop=noop,
     )
     if updated_items:
         _publish_updated(account_id or updated_items[0].get('account_id'),
                          [i['item_id'] for i in updated_items], 'batch_edit')
     common.publish('items.batch_done', {'total': len(ids), 'ok': synced_ok,
-                                        'local_only': len(warnings), 'failed': len(failed)})
+                                        'local_only': len(warnings), 'noop': noop,
+                                        'failed': len(failed)})
     return summary
 
 
@@ -495,6 +636,102 @@ def reshelf(item_ids: Sequence[Any], account_id: Optional[str] = None) -> Dict[s
     return _set_status(item_ids, 'on_sale', 'reshelf', account_id)
 
 
+#: 逐件补详情（拿真库存）的限速与上限。真机 0.6s × 60 件 ≈ 36s 是最坏情况，
+#: 实际只有「库存未知」的那几条会走这条路。真机风控对连续请求很敏感，宁可慢也不并发。
+#: 上限 60：真实账号 45 件全未知时，**一次同步就要全部补齐**，否则用户得连点两次。
+STOCK_REFRESH_INTERVAL = 0.6
+STOCK_REFRESH_LIMIT = 60
+
+
+def _coerce_stock(value: Any) -> Optional[int]:
+    """库存字段 -> int；认不出 / 负数 -> None（= 未知，落库写 -1，**不写 1**）。"""
+    if value in (None, ''):
+        return None
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def _is_risk_or_expired(value: Any) -> bool:
+    """这个异常是不是「被风控」或者「登录态过期」——命中就立刻停手，别空转重试。"""
+    if value is None:
+        return False
+    if common._is_session_expired(value):
+        return True
+    module = common.protocol_module('risk')
+    checker = getattr(module, 'is_risk_control_error', None) if module is not None else None
+    if callable(checker):
+        try:
+            if checker(value):
+                return True
+        except Exception:  # noqa: BLE001 - 判定器本身出错不该把同步带崩
+            pass
+    client_module = common.protocol_module('client')
+    risk_cls = getattr(client_module, 'RiskControlError', None) if client_module is not None else None
+    return isinstance(risk_cls, type) and isinstance(value, risk_cls)
+
+
+def _refresh_unknown_stock(account_id: str, client: Any, interval: Optional[float] = None,
+                           limit: Optional[int] = None) -> Dict[str, Any]:
+    """给「库存未知」（stock < 0）的商品逐件补详情，写回真实库存 / 图片 / 描述。
+
+    列表接口根本不返回库存，真库存只有详情 `data.itemDO.quantity` 才有，所以要逐件取。
+    节流：件与件之间 sleep `STOCK_REFRESH_INTERVAL`（真机连续请求很容易触发风控），
+    单次最多 `STOCK_REFRESH_LIMIT` 件。**一碰到风控或登录态过期立刻停手并保留已有
+    数据** —— 被拦了还继续打，只会把账号打黑。
+    返回 `{'refreshed': n, 'stopped': 'risk'|'session'|'call_error'|None}`。
+    """
+    if interval is None:
+        interval = STOCK_REFRESH_INTERVAL
+    if limit is None:
+        limit = STOCK_REFRESH_LIMIT
+    rows = db.query(
+        'SELECT item_id FROM items WHERE account_id = ? AND stock < 0 ORDER BY item_id LIMIT ?',
+        (account_id, int(limit)),
+    )
+    refreshed = 0
+    stopped: Optional[str] = None
+    for index, row in enumerate(rows):
+        item_id = str(row['item_id'])
+        if index:
+            time.sleep(interval)
+        # 复用 `common.call_method`（内部走 run_awaitable / 共享事件循环），
+        # **不**另起 asyncio.run 新 loop。
+        status, value = common.call_method(client, ('get_item', 'item_detail'), item_id)
+        if status != common.CALL_OK:
+            if status == common.CALL_ERROR and _is_risk_or_expired(value):
+                stopped = 'session' if common._is_session_expired(value) else 'risk'
+                logger.warning('补库存被风控/登录态打断 account={} item={} err={}',
+                               account_id, item_id, value)
+            else:
+                stopped = 'call_error'
+            break
+        detail = value if isinstance(value, dict) else {}
+        stock = _coerce_stock(detail.get('stock'))
+        images = detail.get('images')
+        if isinstance(images, list):
+            images_json = json.dumps(images, ensure_ascii=False)
+        else:
+            images_json = ''
+        description = str(detail.get('desc') or detail.get('description') or '')
+        with db.tx():
+            db.execute(
+                'UPDATE items SET stock = CASE WHEN ? < 0 THEN stock ELSE ? END, '
+                "images = CASE WHEN ? IN ('[]', '') THEN images ELSE ? END, "
+                "description = CASE WHEN ? = '' THEN description ELSE ? END, "
+                'synced_at = CURRENT_TIMESTAMP WHERE account_id = ? AND item_id = ?',
+                (-1 if stock is None else stock, -1 if stock is None else stock,
+                 images_json, images_json, description, description, account_id, item_id),
+            )
+        if stock is not None:
+            refreshed += 1
+    if stopped:
+        common.add_risk_event(account_id, 'stock_refresh_stopped', str(stopped))
+    return {'refreshed': refreshed, 'stopped': stopped}
+
+
 def sync_items(account_id: str) -> Any:
     """从闲鱼拉在售商品入库（upsert）。协议层未就绪 -> xianyu_not_ready。"""
     if not account_id:
@@ -525,33 +762,65 @@ def sync_items(account_id: str) -> Any:
         item_id = common.extract_id(raw, 'item_id', 'id')
         if not item_id:
             continue
+        stock = _coerce_stock(raw.get('stock'))
+        if stock is None:
+            stock = _coerce_stock(raw.get('quantity'))
+        images_raw = raw.get('images')
+        if isinstance(images_raw, str):
+            images_json = images_raw
+        else:
+            images_json = json.dumps(images_raw or [], ensure_ascii=False)
+        # 未知库存写 -1（**不是 1**）：列表卡根本没有库存字段，拿 1 冒充会让
+        # 「已售罄」的商品显示有货。前端把 -1 显示成 `-`。
         db.execute(
             'INSERT INTO items(account_id, item_id, title, price, original_price, stock, status, '
             'category_id, images, description, synced_at, updated_at) '
             'VALUES(?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) '
             'ON CONFLICT(account_id, item_id) DO UPDATE SET '
             'title = excluded.title, price = excluded.price, original_price = excluded.original_price, '
-            'stock = excluded.stock, status = excluded.status, category_id = excluded.category_id, '
-            'images = excluded.images, description = excluded.description, synced_at = CURRENT_TIMESTAMP',
+            # 库存**总是**以本次结果为准（列表给不出就写 -1）。曾经这里是
+            # 「-1 时保留库里旧值」，结果用户库里那批旧代码硬编码的假 1 永远自愈不了：
+            # 重新同步多少次 excluded 都是 -1 -> 继续保留假 1，而补详情队列只挑
+            # stock < 0 的行，假 1 连队列都进不去。**平台才是库存真相**：本地手改过的
+            # 库存被同步重置为 -1 是预期行为，紧接着 _refresh_unknown_stock 会把平台
+            # 真值（如 66）补回来，而不是留着一个假数字。
+            'stock = excluded.stock, '
+            'status = excluded.status, category_id = excluded.category_id, '
+            # 图片/描述同理：列表没有就别抹掉详情补回来的。
+            "images = CASE WHEN excluded.images IN ('[]', '', 'null') THEN items.images "
+            'ELSE excluded.images END, '
+            "description = CASE WHEN excluded.description = '' THEN items.description "
+            'ELSE excluded.description END, '
+            'synced_at = CURRENT_TIMESTAMP',
             (
                 account_id, item_id,
                 str(raw.get('title') or raw.get('item_title') or ''),
                 float(raw.get('price') or raw.get('soldPrice') or 0) if str(raw.get('price') or raw.get('soldPrice') or 0).replace('.', '', 1).isdigit() else 0.0,
                 float(raw.get('original_price') or 0) if str(raw.get('original_price') or 0).replace('.', '', 1).isdigit() else 0.0,
-                int(float(raw.get('stock') or raw.get('quantity') or 1)),
+                -1 if stock is None else stock,
                 str(raw.get('status') or 'on_sale'),
                 str(raw.get('category_id') or ''),
-                json.dumps(raw.get('images') or [], ensure_ascii=False) if not isinstance(raw.get('images'), str) else raw.get('images'),
+                images_json,
                 str(raw.get('description') or raw.get('desc') or ''),
             ),
         )
         ok += 1
         synced_ids.append(item_id)
 
-    common.log_operation(account_id, 'sync_items', '', True, {'count': ok})
-    common.publish('items.synced', {'account_id': account_id, 'count': ok})
+    refresh = _refresh_unknown_stock(account_id, client)
+    refreshed = refresh['refreshed']
+    common.log_operation(account_id, 'sync_items', '', True,
+                         {'count': ok, 'stock_refreshed': refreshed,
+                          'stock_refresh_stopped': refresh['stopped']})
+    common.publish('items.synced', {'account_id': account_id, 'count': ok,
+                                    'stock_refreshed': refreshed})
     _publish_updated(account_id, synced_ids, 'sync')
-    return {'account_id': account_id, 'count': ok, 'items': list_items(account_id=account_id)['items']}
+    result: Dict[str, Any] = {'account_id': account_id, 'count': ok,
+                              'stock_refreshed': refreshed,
+                              'items': list_items(account_id=account_id)['items']}
+    if refresh['stopped']:
+        result['stock_refresh_stopped'] = refresh['stopped']
+    return result
 
 
 def publish_item(account_id: str, payload: Dict[str, Any]) -> Any:
