@@ -72,6 +72,21 @@ items(id INTEGER PK, account_id TEXT, item_id TEXT UNIQUE, title TEXT, price REA
       --   编辑保存时允许 `{images:[url,...]}`：协议层把它翻成平台的 `imageInfoDOList`
       --   （list of dict，全部字符串值：`major`/`widthSize`/`heightSize`/`type`/`url`/`extraInfo`，
       --   第一张 `major="true"`），**空数组报错**（不等于清空商品图）。
+      -- 图片抽取只认「看起来是图片」的 URL（`client._looks_like_image_url`）：忽略 query/fragment 后
+      --   路径必须以 `.jpg/.jpeg/.png/.webp/.gif/.bmp/.heic/.heif` 结尾，其余一律丢弃、过滤后为空就返回空。
+      --   真机踩过的坑（第十批）：商品详情响应里每个 `imageInfo` 条目旁边会一起回来一条
+      --   「以图搜同款」**网页**链接（`h5.m.goofish.com/wow/moyu/...?extra={"imageInfo":{...}}`，
+      --   `source=itempic`、`reqFromPage=idle_detail`），深扫时被当成图片收进 images —— 45 件里
+      --   42 件被污染（59 条网页 URL）。它不只影响缩略图：用户一保存就会把网页 URL 当
+      --   `imageInfoDOList[].url` 推给平台，会把商品图写坏。`.heic` 必须留在白名单里：
+      --   真机 62 张真图里有 3 张 `.heic`，严格白名单会把这 3 件清成 0 张图。
+      -- 已卖出商品不得被「编辑」重新上架（`services/items.py` 的 `SOLD_WARNING`）：`status == 'sold'`
+      --   时**不推送平台**，改动只落本地，返回 `synced=false`、warning 明说原因、
+      --   `local_only_fields` 里列出被拦下的字段（批量走同一条路径，进 `warnings` 而不是 `ok`）。
+      --   真机踩过的坑：对一件 `itemStatusStr="卖掉了"` 的商品做「原样回灌」编辑，平台接受且回帧
+      --   `publishScene="pcMainPublish"`，随后同步里它变成 `on_sale`（被重新上架）。
+      --   闸门目前只看**本地** `items.status`；本地还没同步过（而平台其实已卖出）时仍会推 ——
+      --   要彻底防住需编辑前多拉一次详情，尚未实现。
       -- status 语义（第十批真机）：列表卡 `cardData.itemStatus` 是数字，真机 45 件里 44 件是 `0`、
       --   唯一 `1` 恰好是详情 `itemStatusStr="卖掉了"` 的那件 ⇒ **`0 = on_sale`、`1 = sold`**；
       --   其它数字原样 `str(value)` 返回（不猜），缺失/空串按 `on_sale`（「没报下架 ≠ 确认在售」）。
@@ -305,7 +320,11 @@ GET    /api/settings ; PUT /api/settings       {key:value,...}
 - `local_only_fields: string[]`：本次请求里解析到、但**不在 `PUSHABLE_EDIT_FIELDS`**（`price`/`original_price`/`stock`/`title`/`description`/`status`/`free_shipping`/`images`）里的字段（如 `ai_enabled`/`category_id`）。
   它们只落本地 SQLite、从不推闲鱼；只要非空，`synced=false` 且 `warning` 必须点名字段（文案「以下字段仅本地生效，未推送到闲鱼：…」）。
   曾经 `images` 不在集合里：用户同时改标题+图片时 `payload={title}` 推送成功 → 报「已修改并同步 1 个」，而图片只在本地 —— 典型的假绿，已修。
-- `items.images` 列恒为 URL 字符串数组（保序去重、https）；请求允许传 `{url,width,height}` 对象（前端刚上传的图带真实尺寸），**写库只留 URL**，推协议层用完整对象（`images_to_image_infos` 把 `width/height` 变成 `widthSize/heightSize`，缺尺寸填 `'0'` 占位）。
+- `items.images` 列恒为 URL 字符串数组（保序去重、https）且**只含图片直链**（非图片 URL 在抽取时就被丢掉）；请求允许传 `{url,width,height}` 对象（前端刚上传的图带真实尺寸），**写库只留 URL**，推协议层用完整对象（`images_to_image_infos` 把 `width/height` 变成 `widthSize/heightSize`，缺尺寸填 `'0'` 占位）。
+- **已卖出商品（`status == 'sold'`）不推送编辑**：改动只落本地，`synced=false`、
+  `warning='该商品已卖出，平台不接受编辑，改动仅本地生效'`、被拦下的字段进 `local_only_fields`；
+  批量同样进 `warnings`（`code='not_pushed'`）而不是 `ok`。理由见 §2 items 注释（真机对已卖出商品
+  提交编辑会让平台把它重新上架）。
 
 错误响应统一：`{"success":false,"message":"...","code":"..."}`，HTTP 用语义状态码（4xx 业务、5xx 内部）。成功统一 `{"success":true,"data":{...}}`。
 **404/405 也必须走这个信封**（挂的是 Starlette 的 `HTTPException`，不是 FastAPI 的子类）。
