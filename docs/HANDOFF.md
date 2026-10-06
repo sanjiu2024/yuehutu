@@ -22,7 +22,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 25  PASS 25  FAIL 0  CASES 534  SKIPPED 1
+-> TOTAL 25  PASS 25  FAIL 0  CASES 546  SKIPPED 1
 ```
 
 ```text
@@ -415,10 +415,77 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 > 仍未修（跨批次累计）：`docs/CONTRACTS.md` §3 的 74 条路径中，
 > `test_contract_routes.py::CONTRACT_ROUTES` 仍是手写副本，尚未自动解析契约文件。
 
+### 第九批：用户第三次真机实测「怎么只显示20个商品」+「消息一个没读取过来」（58~64）
+
+> 这一批全部是**真机抓帧**抓出来的：先拿真账号打接口，把回帧原文打出来再改代码。
+> 打包 exe 与真实账号的复验结果写在每条后面。
+
+58. **商品列表永远只有 20 件**（`674b565`）。
+    真机回帧：`mtop.idle.web.xyh.item.list` 的 `nextPage` 是**布尔** `true`，
+    且 `totalCount` **恒为 0**。旧代码 `next_page = int(data.get('nextPage') or 0)`
+    → `int(True) == 1`，再判断 `next_page in (0, -1, number)`，第一页正好
+    `number == 1` → 立刻 break。**一个账号不管多少件，永远只入库第一页 20 件。**
+    修：`_has_next_page()` 兼容布尔/数字两种形态，循环翻页到「平台说没有下一页 /
+    这一页没有新商品 / 到达 `ITEM_LIST_MAX_PAGES = 25`」，页间停 0.3 秒。
+    复验：`POST /api/items/2217970177348/sync` → `count=45`，
+    `GET /api/items/2217970177348` → `total=45`，`/api/items/stats` → `on_sale=45`。
+
+59. **IM 注册回 `code=200`，我们当成失败**（`a3affb1`）。
+    真机 `{"headers":{"reg-uid":"2217970177348@goofish",...},"code":200,
+    "body":{"unitName":"PNM",...}}` —— 200 就是成功。上一批为 55 加的
+    `if code: raise ImError('IM 注册未成功')` 把 200 判成失败，日志
+    `IM 注册未成功(code=200)`，**IM 一条都挂不上**。改成只有非 2xx 才抛，
+    原因从 `body.reason/developerMessage` 取。
+    复验：启动日志出现 `账号 2217970177348 的 IM 入站已挂载`。
+
+60. **`userConvs` 条目是三层嵌套，我们只认一层 → 32 条会话全解析成 `None`**（同 `a3affb1`）。
+    真机形状：外层 `{'singleChatUserConversation': {...}, 'type': 2}`；
+    `cid` / `pairFirst` / `pairSecond` / `extension` 只在**最内层**
+    `singleChatConversation`，而 `modifyTime` / `redPoint` / `lastMessage` 在**中间层**。
+    只认一层时 `parse_conversation()` 返回 None，界面永远是「没有会话」。
+    修：`pick()` / `pick_number()` 内层优先、外层兜底；群聊（只有
+    `groupChatUserConversation`）直接返回 None，不硬造空会话。
+
+61. **消息列表的真机键名是 `body['userMessageModels']`**（同 `a3affb1`）。
+    旧代码只认 `data`/`messages`/`list`。真机回帧：
+    `{"code":200,"body":{"nextCursor":...,"hasMore":false,
+    "userMessageModels":[{"readStatus":2,"message":{"messageId":"4340883858291.PNM",...}}]}}`。
+    顺带证实 `start_timestamp` 必须是 `LATEST_TIMESTAMP`（`9007199254740991`），
+    传 0 平台直接回空。
+
+62. **IM 连接随事件循环一起销毁：每次调用都 `asyncio.run()` 一个临时 loop**（同 `a3affb1`）。
+    IM 是「一个 WebSocket + 一个读循环任务」，生命周期长过多半个进程；临时 loop
+    一关，连接就没了。真机现象是「会话能拉回来 32 条，但每条会话拉消息都报
+    `协议层调用失败: no close frame received or sent`」。
+    修：`services/common.py` 新增进程级 `shared_loop()`（daemon 线程
+    `xywb-asyncio` 里 `run_forever`），`run_awaitable()` 用
+    `run_coroutine_threadsafe` 投进去；已经站在共享循环里的调用退回临时线程跑，
+    避免自己等自己死锁。
+    复验：`POST /api/chats/sync` → `scanned=32, messages=337`，会话页 27 个会话。
+
+63. **共享循环线程的数据库连接陈旧**（`91e7e26`）。
+    `db.get_conn()` 按线程缓存连接，而 `reset_connection()` 只重置当前线程：
+    长期活着的 `xywb-asyncio` 线程仍握着**上一个数据目录**的连接，编排层于是
+    永远读旧库（测试里表现为「会话 1 不存在」、`ai_reply` 为 None）。
+    修：连接与它对应的 `DB_PATH` 一起存线程本地，路径变了就 close 重连。
+    这是 `test_chats_inbound.py` 三例回归的根因，修完全量基线回到全绿。
+
+64. **平台例行帧打成 WARNING，把真线索淹掉**（同 `a3affb1`）。
+    真机上每 30 秒一条心跳回帧（`type=` 空、`body=null`）、每分钟一次
+    `/s/sync` + `/s/vulcan`（`bizType 370` 是商品草稿推送，与私信无关），
+    全是 WARNING。修：`NON_MESSAGE_FRAME_TYPES = ('/s/sync', '/s/vulcan', '')`
+    按 DEBUG 记，陌生帧（可能是买家消息）仍按 WARNING 留痕。
+
+> **这一批的真机证据链**：`45` 件商品、`32` 个平台会话 / `337` 条历史消息入库、
+> 会话页 27 个会话、IM 入站已挂载。全部来自打包后的 exe 打真实平台，
+> 不是探针自说自话。
+> **诚实边界**：买家用自己账号主动发一条新私信、触发「入站帧 → 落库 → AI 回复 →
+> 发回平台」的实时链路，仍然没有被真人验证过——本批只验证了「连接活着 + 历史能拉回」。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**25 个测试文件、534 个用例全绿、0 失败**（唯一 1 个 skip 是
+- 全部后端逻辑：**25 个测试文件、546 个用例全绿、0 失败**（唯一 1 个 skip 是
   `test_xianyu_login.py` 里本来就有的平台相关跳过）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
