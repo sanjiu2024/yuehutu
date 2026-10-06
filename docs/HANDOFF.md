@@ -780,12 +780,14 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
   路由未被静态挂载吃掉）；`POST /api/auth/desktop` 200（桌面免密登录可用）。
   第八批重新打包后复验：产物 **9557793 字节**、`GET /` 里是 `index-x6fHQ3NA.js`、
   `POST /api/chats/sync` 401（= 已注册，不是 404）。
-  **第十二批（本轮 UI 重做后）重新打包的最新值**：产物 **9604905 字节**
-  （`2026-10-07 05:54:49`）、`GET /` 里是 `index-BfXGSc4s.js` + `index-CVX7lQDr.css`，
-  与 `frontend/dist/assets` 逐文件一致（`scripts/build_exe.ps1` 自己打印
-  「打包内前端: …（与快照逐文件一致）」）；`--port 18400` 上 `/api/health` 200
-  `frozen:true`、`MainWindowTitle=闲鱼 AI 工作台`。上面那行第八批的数字是**历史记录**，
-  别再当成当前产物。
+  **第十二批（本轮 UI 重做 + 审查修复之后）重新打包的最新值**：产物
+  **9604897 字节**（`2026-10-07 06:18:36`）、`GET /` 里是 `index-AwCzqtxS.js`
+  （332724 字节）+ `index-DAvta1sn.css`（97294 字节），与 `frontend/dist/assets`
+  逐文件一致（SHA256 前缀 `EEB6B25024B1` / `BEFEF71FDF7D` 两边相同；`scripts/build_exe.ps1`
+  自己也会打印「打包内前端: …（与快照逐文件一致）」）；`--port 18400` 上
+  `/api/health` 200 `frozen:true`、`MainWindowTitle=闲鱼 AI 工作台`。
+  上面第八批那行、以及本轮更早那次（9604905 字节 / `index-BfXGSc4s.js`，
+  那是 P1/P7/P8 修之前的包）都是**历史记录**，别再当成当前产物。
 - **扫码登录真的通了**（唯一一处真打闲鱼平台的路径，且不涉及任何账号凭据）：
   - 源码直调：`_get_login_params` 拿到完整 `loginFormData`（`_csrf_token`/`umidToken`/
     `hsiz`/`bizParams=taobaoBizLoginFrom=web` 等），`_generate_qr` 拿到
