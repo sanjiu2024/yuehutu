@@ -38,6 +38,7 @@ ROUTE_MODULES: List[str] = [
     'accounts',
     'items',
     'chats',
+    'uploads',
     'agents',
     'providers',
     'orders',
