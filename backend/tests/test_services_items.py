@@ -989,6 +989,34 @@ class StockPatchTest(ItemsServiceTest):
         result = items.update_item('I1', {'stock_set': 5}, account_id='acc1')
         self.assertEqual(result['warning'], '协议层修改失败，改动仅本地生效: FAIL_SYS_SOMETHING_NEW::没见过的错误')
 
+    def test_same_prefix_but_new_error_code_is_not_translated(self):
+        """**同前缀的新错误码不许套用旧解释**（独立审查 D4）。
+
+        `_platform_error_hint` 原来用 `if code in text` 做子串匹配，于是平台将来
+        出现 `..._CAN_NOT_PUBLISH_V2` 就会命中「单件库存」那条解释 —— 用户会拿着
+        一个**错的理由**去想办法。错误码必须按 `::` 切开后精确相等才算认得。
+        """
+        self.seed('I1', stock=1)
+
+        class Rejecting(FakeClient):
+            def edit_item(self, item_id: str, payload: dict):
+                self.calls.append(('edit_item', item_id, payload))
+                raise RealXianyuError(
+                    'FAIL_BIZ_ITEM_ERROR_MULTI_INVENTORY_ITEM_CAN_NOT_PUBLISH_V2::换了个新规矩'
+                )
+
+        install_fake_protocol(Rejecting('acc1'))
+        result = items.update_item('I1', {'stock_set': 5}, account_id='acc1')
+        self.assertNotIn('单件库存', result['warning'])
+        self.assertIn('CAN_NOT_PUBLISH_V2', result['warning'])
+        # 文案里出现同一个词根也不算命中：匹配的是错误码，不是人话
+        self.assertEqual(items._platform_error_hint(
+            'FAIL_SYS_X::这件商品在闲鱼上是按「单件库存」发布的'), '')
+        # 真码（带前缀/带 `::`）仍然认得
+        self.assertTrue(items._platform_error_hint(
+            'MTOP 调用失败 [mtop.idle.pc.idleitem.edit]: '
+            'FAIL_BIZ_ITEM_ERROR_MULTI_INVENTORY_ITEM_CAN_NOT_PUBLISH::亲，您不能发布多库存宝贝哦'))
+
     def test_batch_stock_set_applies_to_every_item(self):
         self.seed('A1', stock=1)
         self.seed('A2', stock=-1)

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -596,10 +597,17 @@ def _platform_error_hint(value: Any) -> str:
     """把平台对商品编辑的已知拒绝原因翻译成用户能看懂的一句话（认不出就返回空串）。
 
     **只收录真机/日志里真实出现过的错误码**：没见过的原样透传，不编解释。
+
+    匹配的是**错误码这个词本身**，不做子串包含 —— 平台的错误码在日志/异常文案里
+    前面还挂着 `MTOP 调用失败 [api]: ` 这类前缀（分隔符是 `: ` 不是 `::`），所以
+    不能只按 `::` 切；但用 `code in text` 又会让将来出现的**同前缀新码**
+    （`..._CAN_NOT_PUBLISH_V2`）命中旧解释，等于给用户讲了一个错的理由。
+    这里用「词边界」判定：码的前后都不能紧邻 `[A-Za-z0-9_]`。
     """
     text = str(value)
     for code, hint in PLATFORM_EDIT_HINTS:
-        if code in text:
+        pattern = r'(?<![A-Za-z0-9_])' + re.escape(code) + r'(?![A-Za-z0-9_])'
+        if re.search(pattern, text):
             return hint
     return ''
 
