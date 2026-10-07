@@ -86,6 +86,14 @@ WARN_PLATFORM_PARTIAL = ('平台响应里有没认出的字段（{keys}），这
 WARN_NO_ORDERS = ('本地还没有订单数据（orders 表里没有该账号的记录）：订单 / 买家 / 支付指标'
                   '暂不可用，这几列显示 -。当前版本还没有订单页，先不用管它们。')
 WARN_UNLINKED_ORDERS = '本地有 {count} 笔订单没有关联商品（orders.item_id 为空），未计入任何商品的统计'
+#: 平台这个接口**只能按商品逐个查**（真机实测：没有账号级的批量入口）。一个 45 件商品的
+#: 账号如果每次都全量查，就是一次 45 连击 mtop —— 真机补库存那次就是这么触发风控的
+#: （`stock_refresh_stopped="risk"`）。所以这里硬性限流，并把「只查了前几件」如实告诉用户，
+#: 而不是偷偷少查或者把账号打到熔断。
+PLATFORM_ITEM_LIMIT = 10
+WARN_PLATFORM_CAPPED = ('平台这个接口只能按商品逐个查，一次查太多会触发平台风控：'
+                        '本次只查了前 {done} 件（这个账号共 {total} 件），其余先用本地统计。'
+                        '想查具体某件商品，用搜索框把列表缩小到它再刷新。')
 
 #: 平台字段名里带这些词根、却又不在别名表里的，值得专门提一句（见 `_suspect_metric_keys`）。
 #: 只挑指标词根，不把 `itemId`/`title`/`code` 这些结构性字段也报出来 —— 那种 warning
@@ -589,8 +597,12 @@ def account_stats(account_id: str = '', item_id: str = '', source: str = '') -> 
         client, client_failure = common.get_client(account)
         if client is None:
             return client_failure or common.not_ready()
+        # 限流：见 `PLATFORM_ITEM_LIMIT` 的注释。`?item_id=` 查单件时天然只查一件。
+        platform_rows = rows[:PLATFORM_ITEM_LIMIT]
+        if len(rows) > len(platform_rows):
+            warnings.append(WARN_PLATFORM_CAPPED.format(done=len(platform_rows), total=len(rows)))
         found, failure, reason = _platform_metrics(
-            client, [str(r['item_id']) for r in rows], mode == 'platform', warnings)
+            client, [str(r['item_id']) for r in platform_rows], mode == 'platform', warnings)
         if failure is not None:
             return failure
         if found is None:

@@ -656,6 +656,43 @@ class ItemStatsApiTest(unittest.TestCase):
         self.assertEqual([c[1] for c in fake.calls], [ITEM_A],
                          f'只该按商品调一次，实际 {fake.calls}')
 
+    def test_platform_lookup_is_capped_per_request(self):
+        """平台这个接口**只能按商品逐个查**：一个 45 件商品的账号全量查 = 45 连击 mtop。
+
+        真机补库存那次就是这么触发风控的（`stock_refresh_stopped="risk"`），所以这里
+        硬性限流到 `PLATFORM_ITEM_LIMIT`，并把「只查了前几件」如实写进 `warnings` ——
+        既不偷偷少查，也不把账号打到熔断。
+        """
+        seed_account()
+        for index in range(12):
+            seed_item(f'cap{index:02d}')
+        fake = StatsClient(ACC, payload={'exposure': 5})
+        install_fake_protocol(fake)
+
+        data = self.data_of(query='?source=platform')
+        self.assertEqual(data['source'], 'platform')
+        self.assertEqual(len(fake.calls), item_stats_service.PLATFORM_ITEM_LIMIT, fake.calls)
+        self.assertTrue(
+            any(f"只查了前 {item_stats_service.PLATFORM_ITEM_LIMIT} 件" in w
+                for w in data['warnings']), data['warnings'])
+        # 12 件商品都还在表里：没查的那 2 件只是没有平台数字，不是被丢掉
+        self.assertEqual(data['total'], 12)
+        with_numbers = [i for i in data['items'] if i['exposure'] is not None]
+        self.assertEqual(len(with_numbers), item_stats_service.PLATFORM_ITEM_LIMIT,
+                         [i['item_id'] for i in with_numbers])
+
+    def test_single_item_query_is_not_capped(self):
+        """`?item_id=` 只查一件，不受限流影响（限流只为挡住「全量连击」）。"""
+        seed_account()
+        for index in range(12):
+            seed_item(f'cap{index:02d}')
+        fake = StatsClient(ACC, payload={'exposure': 5})
+        install_fake_protocol(fake)
+
+        data = self.data_of(query='?source=platform&item_id=cap03')
+        self.assertEqual([c[1] for c in fake.calls], ['cap03'], fake.calls)
+        self.assertFalse(any('只查了前' in w for w in data['warnings']), data['warnings'])
+
     def test_ok_but_none_is_a_failure_with_reason(self):
         """D1：`CALL_OK` + `None`（协议层认不出内容）也是失败，且要留下原因。
 
