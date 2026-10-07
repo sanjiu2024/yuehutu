@@ -399,7 +399,7 @@ export const IconQr = (p: IconProps) => (
   </Svg>
 )
 
-/** 品牌标记：极简鱼形 + 渐变，替代 🐟。 */
+/** 品牌标记：极简鱼形 + 渐变，替代原来的鱼形 emoji（全站零 emoji）。 */
 export function Logo({ size = 28 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true" focusable="false">

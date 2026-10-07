@@ -2090,11 +2090,16 @@ function EditItemModal({ item, onClose, onSaved }: { item: Item; onClose: () => 
             onClick={save}
             disabled={busy || changes.length === 0}
             title={
-              changes.length === 0
-                ? '先改点东西（留空的字段不会被改）'
+              // 顺序必须与上面 footer 的文案一致：先说「为什么现在不能按/按了会怎样」，
+              // 再说「没改动」。反过来的话，一个没改动的已卖出商品按钮写着
+              // 「保存到本地」、hover 却提示「先改点东西」，用户会以为两个地方打架。
+              uploadingCount > 0
+                ? '图片还在上传，传完才能保存'
                 : sold
                   ? '闲鱼不接受编辑，只会更新本地记录'
-                  : '保存并同步到闲鱼'
+                  : changes.length === 0
+                    ? '先改点东西（留空的字段不会被改）'
+                    : '保存并同步到闲鱼'
             }
           >
             {saving ? '保存中…' : uploadingCount > 0 ? '等待上传…' : sold ? '保存到本地' : '保存'}
