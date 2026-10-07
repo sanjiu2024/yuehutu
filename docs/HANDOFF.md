@@ -22,7 +22,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 27  PASS 27  FAIL 0  CASES 821  SKIPPED 2
+-> TOTAL 30  PASS 30  FAIL 0  CASES 925  SKIPPED 2
 ```
 
 ```text
@@ -34,7 +34,7 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_xianyu_log
 cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
--> BUILD_EXIT=0   frontend/dist/assets/index-D3DLNsqw.js (314.68 kB) + index-_I2zWEuE.css (97.10 kB)
+-> BUILD_EXIT=0   frontend/dist/assets/index-BtOoYIBj.js (331.97 kB) + index-RKsxVLgj.css (103.56 kB)
 ```
 
 ```text
@@ -869,10 +869,65 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 > 两个独立审查员的结论与全部证据（含他们真跑出来的数字）见会话记录；他们**没有**改过仓库
 > 任何文件（`git status` 在他们跑完后仍与审查前一致）。
 
+104. **商品数据接口「点一下打一次平台」是设计错误**【用户第七轮原话：「我觉得商品数据应该让他
+     自己慢慢拉取，而不是说我点过来的时候他再拉取」】。这个接口族**只能按商品逐个查**
+     （`item_stats.PLATFORM_ITEM_LIMIT = 10` 只是把一次点击的上限压到 10 次 mtop），
+     用户每进一次「商品数据」页就是 10 次 mtop —— 真机上直接把账号打到风控
+     （`RGV587_ERROR::SM::哎哟喂,被挤爆啦`）。修：新增 `services/stats_worker.py` +
+     `main.py::_stats_pull_loop`，**后台慢慢拉**（默认每 300s 拉 5 件、间隔 3s、启动后先等 60s，
+     四个值都能用 `XYWB_STATS_*` 环境变量覆盖），拉到的写 `item_stats_cache`；
+     前端「商品数据」页默认走新的 `?source=cache`（**一个平台请求都不发**），
+     只读缓存 + `GET /api/items/{account_id}/stats/progress` 显示「后台已缓存 N / M 件」。
+     想看此刻的值仍然可以显式点「平台」。**缓存行的诚实口径**：拿不到的指标存 NULL（不许存 0）、
+     失败行存 `source='error'` + `error` 原文且**不会盖掉上一轮的成功数据**。
+     真浏览器探针（`C:\Users\Administrator\.dsh-tmp\stats_cache_probe.py`，临时库 + 真 Edge）：
+     打开页面抓到的 stats 请求**恰好两条** —— `?source=cache` 与 `/stats/progress`，
+     `platform`/`auto` **0 次**；再显式点「平台」时**真的**发出 `?source=platform`（反向验证）。
+105. **「主管 AI」的对话以前根本没存**【用户第七轮：「ai 的会话记录呢」】。页面自己写着
+     「对话只保存在本页，刷新即丢失」，而 `agent_runs` 里的调用记录界面上又看不到。
+     修：`agents/history.py` + `agent_chat_messages` 表 + `GET|DELETE /api/agents/chat/messages`，
+     前端进页面先读历史（`before_id` 向上翻页）、显示模型/耗时/token，**失败那一轮也显示**
+     （`status='error'` + `error` 原文 + 「重发这条」），「清空对话」改成真的 `DELETE`。
+     真浏览器探针（`C:\Users\Administrator\.dsh-tmp\master_history_probe.py`）：预置 4 行历史
+     → 页面渲染 4 个气泡、失败行显示 `LLMError: 上游返回 500（provider_id=1）；这一轮没有改动
+     任何商品`、meta 显示 `deepseek-chat · 1.2s · 321 tokens`；点「清空对话」→ 抓到
+     `DELETE /api/agents/chat/messages` 且**库里剩余 0 行**。
+106. **入站放开未知 contentType 后，「系统/卡片帧」会触发 AI 自动回复**（协议层交付时提出的
+     待决策项）。对商品卡开口等于自言自语，还白烧一次大模型。修：`services/chats.py` 新增
+     `SYSTEM_MSG_TYPES = ('system','card')`，命中就回 `code='system_message'`
+     「这条不是买家说的话（系统/卡片消息），AI 不自动回复」——**只拦自动回复、不拦落库**
+     （落库正是「不再显示 (空消息)」的前提）。回归用例断言假 runtime 一被调用就失败。
+107. **语音时长有两套换算，差 1000 倍**（协议层 `_voice_summary` 当秒、服务层
+     `AUDIO_MS_THRESHOLD=300` 当毫秒；值落 301~600 时一个说 4.2 秒、一个说 0.4 秒）。
+     修：只留一份实现 `xianyu/im.py::audio_seconds()`，服务层**委托**它（取不到才用本地兜底），
+     并有测试锁住「两边算出来必须一样」。
+108. **打包版点「手动验证」必然失败**（真机 `operation_logs` id=165~171 连续 7 条
+     `[WinError 2] 系统找不到指定的文件`）。根因：playwright 的 driver 是 `node.exe` +
+     `package/cli.js`，属**数据文件**，`desktop.spec` 只收了 `hiddenimports`（模块），
+     漏了 `datas`。修：`collect_data_files('playwright'/'patchright')`，并给
+     `captcha.py` 加 `_driver_problem()` 前置检查 —— 缺驱动时**直接给一句人话**
+     （「内置浏览器驱动不完整…这是打包时漏收数据文件导致的」），不再抛到
+     `async with` 入口外面。代价：driver 约 100 MB，产物从 ~9.6 MB 涨到 ~110 MB
+     （浏览器内核仍在 `%LOCALAPPDATA%\ms-playwright`，不重复打包）。
+109. **平台错误码的人话解释集中到一个模块**（`services/platform_errors.py`）。发布路径过去把
+     `协议层调用失败: FAIL_BIZ_IDLE_UNKNOWN_THROWABLE::发布失败，请稍后重试吧~` 原样甩给用户，
+     用户唯一能做的就是**反复点**（越点越重风控）。现在按**词边界**匹配真机见过的码，
+     在 `message` 后追加一句可行动的中文（例：售价 99999999/库存 19999999 → 「先把售价、库存
+     改回正常范围，隔几分钟再试一次」），并补 `platform_code`/`platform_hint`（风控再加
+     `risk: true`）。**没见过的码原样透传、不编解释**；**绝不改 `code`**（它决定 HTTP 状态码）。
+
+> **第十五批证据链**：`backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_r7_final`）
+> `TOTAL 30  PASS 30  FAIL 0  CASES 925  SKIPPED 2`（第十四批 821；本轮新增
+> `test_stats_worker.py` / `test_agent_history.py` / `test_platform_errors.py` 三个文件
+> 与 chats/im 的 3 条回归用例）。前端 `npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0
+> （59 modules，`index-BtOoYIBj.js` 331.97 kB / `index-RKsxVLgj.css` 103.56 kB）。
+> 两个真浏览器只读探针（临时数据目录 + 真 Edge，不碰真平台/真 LLM）：
+> 商品数据缓存优先 **OK**、主管 AI 历史 **OK**（命令与输出见 104/105 两条）。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**27 个测试文件、821 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**30 个测试文件、925 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -958,6 +1013,14 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
   但真平台的第一帧长什么样、`_read_loop → dispatch → 落库 → AI 回复 → 发回` 的整条
   链路**没有真实买家**验过；闭环本身只在假协议客户端上验过（`ensure_im` /
   `send_message` 两个口子打桩）。
+- **WS 入站解析目前只有自造帧在验证**（第七批查清，比之前写得更准确）：真机 `app.log`
+  4693 行里 `syncPushPackage` 745 次、`_warn_unparsed_frame` 4297 次、`contentType`
+  **出现 0 次**；库里 `messages` 806 行的 `external_id` **806/806 以 `.PNM` 结尾**
+  —— 也就是说**真机上还没有任何一条消息是从 WS 入站路径落库的**，全部来自
+  `listUserMessages` 同步路径。所以「图片/语音/卡片帧」的解析规则是在自造帧上验证的，
+  真机第一帧到了可能要按实际字段再调一次。
+- **语音时长与 WebView2 播放未真机验证**：`audio_seconds()` 的毫秒/秒阈值（300）是启发式，
+  真实平台给的单位还没见过；语音在 WebView2 里能否出声也没试过。
 - **真机 IM 注册与历史回填没复验完**（第八批）：`/reg` 401
   `device id or appkey is not equal` 的根因（55）与历史会话不回填（56）都已在本地回归锁住，
   但复验时 mtop 取 IM token 撞上平台风控 `RGV587_ERROR`，冷却没过。**需要真人过一次滑块
@@ -974,11 +1037,17 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 
 ## 五、下一步（按优先级）
 
-1. 用户在「AI 配置」页填一个真实 API Key 并设为默认 → 主管 AI 与商品 AI 才能真回话。
-2. 真机实测「写」的一半：在已登录的真账号上发布一件商品 / 改一次价 / 上架下架各一次
-   （读的一半——拉取 20 件在售商品、IM 入站挂载——已在真机验证）。
-3. 重启 DSH 宿主让 MCP 插件 `xianyu` 生效，再用主管 AI 直接操作工作台。
-4. 风控冷却过后，真机点一次「同步历史会话」（会话页工具栏）：应看到
+1. **先重新扫码一次**：真机账号 `2217970177348` 的 Cookie 在 `2026-10-07 04:47:16`
+   被平台判过期（`FAIL_SYS_SESSION_EXPIRED::Session过期`，日志与
+   `account_credentials.relogin_reason` 两边对得上），之后所有需要登录态的接口都会
+   如实回「需要重新扫码登录」。这不是程序误判 —— 重新扫一次就恢复。
+2. 用户在「AI 配置」页填一个真实 API Key 并设为默认 → 主管 AI 与商品 AI 才能真回话。
+3. 真机实测「写」的一半：在已登录的真账号上发布一件商品 / 改一次价 / 上架下架各一次
+   （读的一半——拉商品、IM 入站挂载——已在真机验证）。发布失败时注意看新加的人话解释
+   （`platform_errors.py`）。
+4. 重启 DSH 宿主让 MCP 插件 `xianyu` 生效，再用主管 AI 直接操作工作台。
+5. 风控冷却过后，真机点一次「同步历史会话」（会话页工具栏）：应看到
    `success=true` 且 `conversations_new > 0`，会话页出现真实买家会话 —— 这是第八批
    唯一还没在真机上闭环的实证。
-5. 桌面 exe 在干净机器上冒烟（缺 WebView2 时要给出可读提示）。
+6. 桌面 exe 在干净机器上冒烟（缺 WebView2 时要给出可读提示）；注意产物现在含
+   playwright driver，约 110 MB。

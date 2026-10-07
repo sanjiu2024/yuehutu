@@ -173,6 +173,18 @@ agent_messages(id INTEGER PK, conversation_id INTEGER, from_agent TEXT, to_agent
 agent_runs(id INTEGER PK, conversation_id INTEGER, role TEXT, provider_id INTEGER,
            model TEXT, prompt_tokens INTEGER, completion_tokens INTEGER,
            latency_ms INTEGER, status TEXT, error TEXT, created_at)
+agent_chat_messages(id INTEGER PK, thread TEXT DEFAULT 'master', account_id TEXT, role TEXT,
+                    content TEXT, tool_calls TEXT, provider_id INTEGER, model TEXT,
+                    latency_ms INTEGER, tokens INTEGER, status TEXT DEFAULT 'ok',
+                    error TEXT, created_at)
+                    -- 「主管 AI」的对话记录（第七批）。以前只活在浏览器内存里，刷新即丢。
+                    -- 失败也落库（status='error' + error 原文）：用户要能看见「为什么失败」。
+item_stats_cache(account_id TEXT, item_id TEXT, exposure REAL, visits REAL, visitors REAL,
+                 wants REAL, orders REAL, buyers REAL, paid_orders REAL,
+                 source TEXT DEFAULT 'platform', error TEXT DEFAULT '', fetched_at TIMESTAMP,
+                 PRIMARY KEY(account_id, item_id))
+                 -- 商品数据接口只能按商品逐个查、一次多了必触发风控 → 后台慢慢拉，页面读这里。
+                 -- 拿不到的指标存 NULL（不许存 0）；失败行 source='error' + error 原文。
 
 -- 订单/发货/风控/审计
 orders(id INTEGER PK, account_id TEXT, order_id TEXT UNIQUE, item_id TEXT, buyer_id TEXT,
@@ -247,15 +259,29 @@ DELETE /api/items/{account_id}/{item_id}       -> {deleted:true,account_id,item_
       --   订单**都不删** —— 它们是聊天与交易历史。严格配对 `(account_id,item_id)`，
       --   跨账号或不存在一律 404 `not_found`；成功写 operation_logs action='delete_item'
       --   并发 `items.updated`（payload.action='delete'）。
-GET    /api/items/{account_id}/stats?item_id=&source=auto|local|platform
+GET    /api/items/{account_id}/stats?item_id=&source=cache|auto|local|platform
       -> {success:true,data:{items:[{item_id,title,images,price,status,
              exposure,visits,visitors,wants,orders,buyers,paid_orders,
              conversations,messages,last_message_at}],
              total,account_id,updated_at,source,warnings,metrics}}
       -- 「商品数据」页的接口。**拿不到的数一律 `null`，前端显示 `-`；禁止 0 或假数据**
       --   （0 只有在平台真的回 0 时才出现，`item_stats.py::_count_or_none()` 就是这条的守卫）。
-      -- `source`：`local`=纯本地统计（不碰协议层、不校验 Cookie）；`auto`（默认）=能拿平台
-      --   就拿、失败降级为 local 并在 `warnings` 里说清原因；`platform`=必须拿到，否则 502。
+      -- `source`：`cache`（前端默认）=只读本机 `item_stats_cache`，**一个平台请求都不发**；
+      --   `local`=纯本地统计（不碰协议层、不校验 Cookie）；`auto`=能拿平台就拿、失败降级为
+      --   local 并在 `warnings` 里说清原因；`platform`=必须拿到，否则 502。
+      --   为什么要 `cache`（用户原话「我觉得商品数据应该让他自己慢慢拉取，而不是说我点过来
+      --   的时候他再拉取」）：这个接口族**只能按商品逐个查**、一次多了必触发风控，所以改成
+      --   **后台慢慢拉、页面只读缓存**（`services/stats_worker.py` + `main.py::_stats_pull_loop`，
+      --   默认每 `XYWB_STATS_INTERVAL`=300s 拉 `XYWB_STATS_LIMIT`=5 件、间隔 `XYWB_STATS_PAUSE`=3s，
+      --   启动后先等 `XYWB_STATS_FIRST_DELAY`=60s）。`platform` 仍然保留给「我现在就要看」。
+GET    /api/items/{account_id}/stats/progress
+      -> {success:true,data:{account_id,total,cached,failed,last_at}}
+      -- 后台补到哪了。**绝不碰平台**（只数在售件数与缓存行数），所以页面可以随标签页放心刷新。
+      --   `total` 只数在售商品、`cached` 只数 `source <> 'error'` 的行、`failed` 是拉取失败的行数
+      --   （失败行下一轮自动重试）；`last_at` 没有就是 `null`。
+      -- 缓存行的口径：拿不到的指标存 **NULL**（不许存 0）；失败行存 `source='error'` + `error`
+      --   原文，这样「为什么这一件没有数」在库里查得到。写缓存 `INSERT OR REPLACE` 且刷新
+      --   `fetched_at`，失败行**不会**盖掉上一轮的成功数据（见 `test_stats_worker.py`）。
       -- `warnings` 是给用户看的诚实说明（例如「平台未提供商品数据接口，仅显示本地统计」）。
       -- `metrics.platform` 目前是 `exposure/visits/visitors/wants`，其中平台真名与来源见 §2。
       -- **信封必须剥**（第十三批，用户截图暴露的真 bug）：平台真机回的是
@@ -327,6 +353,12 @@ POST   /api/items/sync ; GET /api/items/stats ; GET /api/items/operation-logs
 
 GET    /api/chats/conversations?account_id=&mode=&limit=   （= GET /api/chats，两者等价）
 GET    /api/chats/{conversation_id}/messages?limit=&before_id=
+      -- 每条消息除正文外带媒体与 AI 溯源字段：`images[]`（图片直链，保序）、`msg_type`
+      --   （`text`/`image`/`voice`/`card`/`system`）、`audio_url`、`audio_duration`，
+      --   以及 `ai_role`/`ai_model`/`ai_elapsed_ms`（这条回复是哪个角色、哪个模型、花了多久）。
+      -- **语音时长只有一个换算实现**：`xianyu/im.py::audio_seconds()`（>300 当毫秒、≤0/非数字
+      --   给 None），`services/chats.py::audio_seconds()` 委托它。两边各写一份会差 1000 倍
+      --   （值落 301~600 时）。低于 1 秒或高于 600 秒只显示 `[语音]`，不编时长。
 POST   /api/chats/{conversation_id}/send       {content}        -- 人工回复
 POST   /api/chats/{conversation_id}/mode       {mode}
 PUT    /api/chats/{conversation_id}/ai         {enabled}        -- 人工接管开关
@@ -347,11 +379,19 @@ POST   /api/chats/sync                         {account_id,limit?,message_limit?
 POST   /api/chats/incoming                     {account_id,content,buyer_id,item_id?,conversation_id?,msg_id?,...}
       -> {message,ai_reply,ai_result,ai_send,mode,duplicate}
       -- 买家来信的统一入口；给了 msg_id 即幂等。
+      -- 媒体帧（第七批）：`content` 只在**没有任何媒体**时必填；图片/语音走 meta 白名单
+      --   `image_url`/`image`/`audio_url`/`audio_duration`（`api/chats.py::_incoming_meta`）。
+      --   纯图片帧过去会被入站闸门（要求 `content` 非空）整条丢掉，现在照常落库，
+      --   正文落占位符 `[图片]`/`[语音]`（`services/chats.py::_media_placeholder`）。
       -- ai_result.code 说明「为什么这条来信没有产生 AI 回复」。**case 很重要**：它是
       --   入站路径上唯一能看见闸门原因的地方（`ai_send` 只在 AI 真跑过时才非空）。
-      --   保证给出的只有下面两个**闸门** code：
+      --   保证给出的只有下面三个**闸门** code：
       --   'mode_not_auto'          该会话处于人工接管/关闭，AI 一律不生成
       --   'account_auto_reply_off' 账号级 enabled=0 或 auto_reply=0，AI 一律不生成
+      --   'system_message'         这条是系统/卡片帧（`msg_type ∈ {system,card}`），不是买家说的话
+      --   第三个是第七批加的：协议层放开未知 contentType 后，`[卡片消息]`/`[系统消息]`
+      --   会从「跳过」变成「触发 AI」—— 对商品卡开口等于自言自语，还白烧一次大模型。
+      --   **只拦自动回复，不拦落库**（落库正是「不再显示 (空消息)」的前提）。
       --   其余失败（没有可用 provider、LLM 报错、返回格式无法识别）一律
       --   `success=False` + `message`（人类可读原文）；只有抛异常那条路径额外带
       --   `code='ai_error'`，正常失败**没有** code，前端不能假定一定有。
@@ -389,7 +429,21 @@ GET    /api/agents/roles/{role}/prompt-preview -> 该角色实际生效的系统
 GET    /api/agents/prompts ; POST /api/agents/prompts ; PUT/DELETE /api/agents/prompts/{id}
 POST   /api/agents/master/chat                 {message,conversation_id?} -> {reply,tool_calls[]}
 POST   /api/agents/reply                       -- 对某条消息立即触发一次 AI 回复（UI 的「让 AI 回」）
-GET    /api/agents/runs?limit= ; GET /api/agents/messages?conversation_id=
+GET    /api/agents/runs?limit=&offset=&role= ; GET /api/agents/messages?conversation_id=&limit=&offset=
+GET    /api/agents/chat/messages?thread=master&limit=50&before_id=
+      -> {success:true,data:{items:[{id,thread,account_id,role,content,tool_calls,provider_id,
+             model,latency_ms,tokens,status,error,created_at}],total,has_more}}
+      -- 主管 AI 的**对话记录**（表 `agent_chat_messages`，`backend/app/agents/history.py`）。
+      --   按 id 升序返回最新一页；`before_id` 往上翻更早，`total` 是该 thread 总数。
+      --   用户问「ai 的会话记录呢」问的就是它：以前这段对话只活在浏览器内存里，
+      --   页面自己都写着「对话只保存在本页，刷新即丢失」。
+      --   **失败也要落库**（`status='error'` + `error` 原文），否则用户看不到
+      --   「它其实已经改了什么 / 为什么失败」。`tool_calls` 恒为 JSON **数组**
+      --   （合法但非数组的 JSON 会被告警并按 `[]` 存，避免写读不对称）。
+DELETE /api/agents/chat/messages?thread=master   -> {thread,deleted}
+      -- 清空该 thread（真删本机记录）。删除行数走 `db.tx()` 读游标 `rowcount`，
+      --   **不许**用 `db.execute()` 的返回值（它是 `lastrowid or rowcount`，DELETE 不重置
+      --   lastrowid，会拿到上一次 INSERT 的 id 这种假数字）。
 
 GET    /api/providers ; POST /api/providers ; PUT/DELETE /api/providers/{id}
 POST   /api/providers/{id}/test                -> {ok,latency_ms,model,error?}
@@ -406,7 +460,7 @@ POST   /api/risk/clear ; POST /api/risk/{account_id}/clear
 GET    /api/settings ; PUT /api/settings       {key:value,...}
 ```
 
-> 这份清单必须与 `scripts/list_routes.py` 的实测输出对得上（2026-10-06 实测 **74 条路径**）。
+> 这份清单必须与 `scripts/list_routes.py` 的实测输出对得上（2026-10-08 实测 **82 条路径**）。
 > `backend/tests/test_contract_routes.py` 是**契约闸门**：这里写的路径必须在后端真实注册且方法一致；
 > 前端源码里出现的每个 `/api/...` 调用也必须在后端找得到。加路由**必须**同步这里和那个测试。
 
@@ -439,14 +493,19 @@ GET    /api/settings ; PUT /api/settings       {key:value,...}
   `warning='该商品已卖出，平台不接受编辑，改动仅本地生效'`、被拦下的字段进 `local_only_fields`；
   批量同样进 `warnings`（`code='not_pushed'`）而不是 `ok`。理由见 §2 items 注释（真机对已卖出商品
   提交编辑会让平台把它重新上架）。
-- **平台拒绝编辑时的 `warning` 必须带上人话解释**：`services/items.py::PLATFORM_EDIT_HINTS` 把
-  **真机/日志里真实出现过**的错误码翻译成一句中文（目前只有
-  `FAIL_BIZ_ITEM_ERROR_MULTI_INVENTORY_ITEM_CAN_NOT_PUBLISH` —— 单件库存商品不让改成多件，
-  真机商品 `2221063792739/1087852912806`），拼在原文后面。**没见过的错误码原样透传、不编解释**
-  （有测试锁住）。平台拒绝不影响本地落库：改动照样写进 SQLite，`synced=false` 如实上报。
-  匹配按**词边界**（前后不紧邻 `[A-Za-z0-9_]`），不是子串包含：平台的错误码在异常文案里
-  前面还挂着 `MTOP 调用失败 [api]: ` 这类前缀，但将来出现的**同前缀新码**
-  （`..._CAN_NOT_PUBLISH_V2`）绝不许套用旧解释 —— 那等于给用户讲了一个错的理由。
+- **平台错误码的「人话解释」集中在一个模块**：`services/platform_errors.py`（第七批）。编辑路径
+  （`items.py::_platform_error_hint`）与**发布路径**（`publish_item` 里 `platform_errors.decorate(problem, value)`）
+  都走它。三条口径：①**只收录真机/日志里真实出现过的码**，没见过的原样透传、`explain()` 返回空串
+  （讲错原因比不讲更糟）；②按**词边界**匹配，不是子串包含（`..._CAN_NOT_PUBLISH_V2` 不许命中
+  `..._CAN_NOT_PUBLISH`）；③只做解释，**不改业务判定** —— `decorate()` 绝不改 `code`（`code` 决定
+  HTTP 状态码，见 `common.FAIL_STATUS`），只在 `message` 后追加一句中文、补
+  `platform_code`/`platform_hint`，命中风控再加 `risk: true`。
+  目前收录：`FAIL_BIZ_IDLE_UNKNOWN_THROWABLE`（真机发布失败的裸文案，会告诉你「售价/库存填得离谱」
+  并让你先改回去、隔几分钟再试）、`FAIL_BIZ_JSON_ERROR`、`FAIL_SYS_USER_VALIDATE`、`RGV587_ERROR`、
+  `FAIL_SYS_SESSION_EXPIRED`、`FAIL_SYS_TOKEN_EXOIRED`（**平台自己的拼写就是 EXOIRED**）、
+  `FAIL_SYS_API_NOT_FOUND`、`FAIL_BIZ_ITEM_ERROR_MULTI_INVENTORY_ITEM_CAN_NOT_PUBLISH`。
+  平台拒绝不影响本地落库：改动照样写进 SQLite，`synced=false` 如实上报。
+
 
 错误响应统一：`{"success":false,"message":"...","code":"..."}`，HTTP 用语义状态码（4xx 业务、5xx 内部）。成功统一 `{"success":true,"data":{...}}`。
 **404/405 也必须走这个信封**（挂的是 Starlette 的 `HTTPException`，不是 FastAPI 的子类）。
