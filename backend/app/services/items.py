@@ -22,14 +22,13 @@ from __future__ import annotations
 
 import json
 import math
-import re
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from loguru import logger
 
 from ..core import db
-from . import common
+from . import common, platform_errors
 
 # 中文/别名 -> items 表列名（用户口径「价格/标题/描述/库存」都要认）
 FIELD_ALIASES: Dict[str, str] = {
@@ -602,14 +601,17 @@ def _platform_error_hint(value: Any) -> str:
     前面还挂着 `MTOP 调用失败 [api]: ` 这类前缀（分隔符是 `: ` 不是 `::`），所以
     不能只按 `::` 切；但用 `code in text` 又会让将来出现的**同前缀新码**
     （`..._CAN_NOT_PUBLISH_V2`）命中旧解释，等于给用户讲了一个错的理由。
-    这里用「词边界」判定：码的前后都不能紧邻 `[A-Za-z0-9_]`。
+    词边界判定由 `platform_errors.match_code` 统一实现（发布那条路用的是同一份）。
     """
     text = str(value)
     for code, hint in PLATFORM_EDIT_HINTS:
-        pattern = r'(?<![A-Za-z0-9_])' + re.escape(code) + r'(?![A-Za-z0-9_])'
-        if re.search(pattern, text):
+        if platform_errors.match_code(text, code):
             return hint
-    return ''
+    # 编辑路径上「风控 / 登录态过期 / 接口下线」这类通用原因交给共用表，
+    # 免得用户在编辑弹窗里只看到一句裸错误码。共用表的文案不带括号，
+    # 而调用方是直接把它拼在平台原文后面的（`{value}{hint}`），所以这里补一对括号。
+    hint = platform_errors.explain(text)
+    return f'（{hint}）' if hint else ''
 
 
 def _push_update(client: Any, account_id: str, item_id: str, payload: Dict[str, Any]) -> Optional[str]:
@@ -1096,6 +1098,9 @@ def publish_item(account_id: str, payload: Dict[str, Any]) -> Any:
     status, value = common.call_method(client, ('publish_item',), payload)
     problem = common.call_failed(status, value)
     if problem is not None:
+        # 平台对发布的拒绝理由（`FAIL_BIZ_IDLE_UNKNOWN_THROWABLE::发布失败，请稍后重试吧~`
+        # 这种）对用户没有任何可行动信息 —— 翻成人话再返回，原样透传没见过的码。
+        problem = platform_errors.decorate(problem, value)
         common.log_operation(account_id, 'publish_item', '', False, problem.get('message', ''))
         return problem
 
