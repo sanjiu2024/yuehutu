@@ -2011,10 +2011,19 @@ function EditItemModal({ item, onClose, onSaved }: { item: Item; onClose: () => 
     }
     setSaving(true)
     try {
-      const patch: Record<string, unknown> = { title, description }
-      if (price.trim() !== '') patch.price = Number(price)
-      if (originalPrice.trim() !== '') patch.original_price = Number(originalPrice)
-      if (stock.trim() !== '') patch.stock = Number(stock)
+      // **只发真的变了的字段**，口径与上面的 `changes` 完全一致。
+      // 以前是无条件带 `title`/`description`、只要输入框非空就带 `price`/`original_price`/
+      // `stock`：用户只改了个标题，返回的 `local_only_fields` 也会把 description/price/stock
+      // 列出来（正是用户看到的那句「以下字段仅本地生效：description, price, stock, title」），
+      // 而且 `original_price` 会被静默写成 0。
+      const patch: Record<string, unknown> = {}
+      if (title !== (item.title || '')) patch.title = title
+      if (description !== (item.description || '')) patch.description = description
+      if (price.trim() !== '' && Number(price) !== Number(item.price)) patch.price = Number(price)
+      if (originalPrice.trim() !== '' && Number(originalPrice) !== Number(item.original_price)) {
+        patch.original_price = Number(originalPrice)
+      }
+      if (stock.trim() !== '' && Number(stock) !== Number(item.stock)) patch.stock = Number(stock)
       // 契约：`images` 数组里，**刚上传的图带真实尺寸**（`{url,width,height}`）、
       // **历史图是裸 URL 字符串**（库里只有地址），第一张是主图（后端转成平台
       // imageInfoDOList，混合数组后端认）。只有用户真的动过图片才带上这个字段
