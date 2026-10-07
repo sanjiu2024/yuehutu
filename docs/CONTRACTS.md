@@ -213,8 +213,21 @@ POST   /api/accounts/{id}/toggle  -- 兼容别名（旧名，等价于 PATCH 的
 且**保留平台原文**。前端据此弹「重新扫码」，而不是当成偶发网络错误让人一直重试。
 `xianyu_not_ready` 与它不同：那是「协议层此刻不可用」，用户不必重登。
 
-GET    /api/items?account_id=&status=&keyword=&page=&size=
-GET    /api/items/{account_id}                 -> 该账号的商品列表（带 status/keyword/page/size）
+GET    /api/items?account_id=&status=&keyword=&page=&size=&sort=&order=
+GET    /api/items/{account_id}                 -> 该账号的商品列表（带 status/keyword/page/size/sort/order）
+      -- `status` 三个分区（第十三批）：`onsale` = 平台在售**且库存不是 0**（库存未知算在售）；
+      --   `offline` = 非在售状态**或库存 = 0** —— 售罄与已卖出都进这个分区（用户要求
+      --   「售罄的商品应该在下架分区里，那样好编辑」）；`sold` = 平台已卖出。
+      --   其它值仍按 `status = ?` 精确匹配（旧行为不变）。
+      --   历史 bug：前端发 `onsale`/`offline`、库里存 `on_sale`/`sold`，这两个筛选永远 `total=0`。
+      -- `sort` ∈ `updated|price|stock|title|status|item_id`（白名单在 `services/items.py::SORT_COLUMNS`，
+      --   前端只发字段名、不拼 SQL；非法值回落到 `updated`），`order` ∈ `asc|desc`。
+      --   库存排序时**未知（NULL / <0）永远沉底**（升序降序都一样），否则点「库存」先看到一堆 `-`。
+      -- 响应 `data` 里额外带 `counts:{all,onsale,offline,sold}`：**不受当前 status 筛选影响**
+      --   （`_status_counts` 用 `SUM(CASE WHEN)`；它的参数顺序必须是 `onsale+offline+sold+list(params)`，
+      --   因为 CASE WHEN 在 SELECT 里排在 WHERE 之前 —— 写反会永远回全 0，已有回归锁）。
+      --   前端据此把下拉框写成「在售（N）/ 已下架 · 含售罄 / 已卖出（N）」。列表中
+      --   「在售 + 库存 0」的行标 `售罄` 徽章（它落在已下架分区里，再标「在售」会像筛选坏了）。
 GET    /api/items/{account_id}/{item_id}       -> 单条商品（MCP 的 items_get 直连这条，别再全表拉）
       -- 单条商品**必须**带账号上下文。曾经存在过一条扁平的 `GET /api/items/{item_id}`，
       --   它与账号列表路径形状完全相同、被 FastAPI 按声明顺序吃掉，已删除：同一个
@@ -236,12 +249,24 @@ GET    /api/items/{account_id}/stats?item_id=&source=auto|local|platform
       --   就拿、失败降级为 local 并在 `warnings` 里说清原因；`platform`=必须拿到，否则 502。
       -- `warnings` 是给用户看的诚实说明（例如「平台未提供商品数据接口，仅显示本地统计」）。
       -- `metrics.platform` 目前是 `exposure/visits/visitors/wants`，其中平台真名与来源见 §2。
+      -- **信封必须剥**（第十三批，用户截图暴露的真 bug）：平台真机回的是
+      --   `{'code':'success','data':{'exposureNum':367,'showNum':24,'wantNum':1},'msg':'成功'}`，
+      --   协议层 `parse_item_stats` 以前只看顶层，认不出指标就判「没有可识别的商品数据指标」并降级本地。
+      --   现在 `_stats_payloads()` 返回 `[data, data['data']]` 两个候选、逐个尝试，裸指标 dict 与
+      --   两层信封都认；真认不出时错误里带上信封的 `code`/`msg`，不再只说「无法识别: 」。
       -- 路由**必须挂在 `/api/items/{account_id}/{item_id}` 之前**（`main.py` 的
       --   `ROUTE_MODULES` 里 `item_stats` 排在 `items` 前），否则被动态段吞成「商品不存在」。
 POST   /api/items/{account_id}/sync            -> 从闲鱼拉取在售商品入库
 POST   /api/items/{account_id}/publish         {title,price,description,images,category_id,...}
-POST   /api/items/{account_id}/{item_id}/edit  {price?,title?,description?,stock?,images?}
+POST   /api/items/{account_id}/{item_id}/edit  {price?,original_price?,title?,description?,stock?,images?,ai_enabled?}
       -- `images` 是 URL 数组（主图首位），协议层翻成平台 `imageInfoDOList` 提交（见 §2 items 注释）
+      -- `original_price`（划线价）在 `PUSHABLE_EDIT_FIELDS` 里，会推到平台。
+      -- `ai_enabled` **平台没有这个字段**（服务层按 `local_only` 处理），但它真会落库 ——
+      --   前端编辑弹窗以前这个开关从来没进过 patch，拨一下、保存、回来还是原样（「改了不成功」）。
+      --   现在只有真的拨动过才带上，免得白报一条「仅本地生效」。
+      -- 已卖出（`status='sold'`）的商品：平台不接受编辑，服务层 `SOLD_WARNING` 闸门让
+      --   `synced=false` + `warning`，**本地照改**。前端编辑弹窗对这类商品要提前讲清
+      --   「本地会变、闲鱼上的不会变，这不是保存失败」，并把按钮写成「保存到本地」。
 POST   /api/uploads/images                     multipart/form-data: file(单张) + account_id(可选)
       -> {success:true,data:{url,file_id,width,height,name,local_path}}
       -- 把本地图片传到闲鱼图床，拿到可直接放进商品/消息的直链。限制：jpg/jpeg/png/webp，≤10MB。
