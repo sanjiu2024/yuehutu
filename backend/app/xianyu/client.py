@@ -678,9 +678,19 @@ class XianyuClient:
             raise ItemStatsUnavailable(f'接口不可用: {exc}') from exc
         parsed = parse_item_stats(result.get('data'))
         if parsed is None:
-            # 拿到了响应但认不出指标：也要说清是「这一次响应没指标」，不是「平台没有这个接口」
+            # 拿到了响应但认不出指标：也要说清是「这一次响应没指标」，不是「平台没有这个接口」。
+            # 信封里的 `code`/`msg` 一起带上 —— 平台说「成功」却没给指标，和平台报错，
+            # 是两种完全不同的排查方向。
+            payload = result.get('data')
+            detail = ''
+            if isinstance(payload, dict):
+                code = str(payload.get('code') or payload.get('ret') or '').strip()
+                message = str(payload.get('msg') or payload.get('message') or '').strip()
+                if code or message:
+                    detail = f'（code={code or "-"}, msg={message or "-"}）'
             raise ItemStatsUnavailable(
-                f'平台响应里没有可识别的商品数据指标（data={str(result.get("data"))[:200]}）'
+                f'平台响应里没有可识别的商品数据指标{detail}'
+                f'（data={str(payload)[:200]}）'
             )
         return parsed
 
@@ -999,14 +1009,39 @@ def _metric_value(value: Any) -> Any:
         return text
 
 
+def _stats_payloads(data: Any) -> List[Any]:
+    """剥掉外层信封，返回「可能装着指标」的候选 dict 列表。
+
+    **真机证据（2026-10-08，账号 2217970177348，用户截图里的那句话）**：
+    ``mtop`` 回的 ``data`` 是**两层**的 —— 外层信封 + 内层指标::
+
+        {'code': 'success', 'data': {'exposureNum': 367, 'showNum': 24, 'wantNum': 1}, 'msg': '成功'}
+
+    ``parse_item_stats`` 原来直接拿外层当指标读，于是真机上永远「没有可识别的
+    商品数据指标」，明明有 367 次曝光也被整条丢掉、降级成本地统计。
+    所以这里同时接受两种形状：**裸指标 dict**（旧调用方/单测直接传内层）与
+    **带信封的 dict**（真机）。取到第一份能解析出指标的为准。
+    """
+    if not isinstance(data, dict):
+        return []
+    candidates: List[Any] = [data]
+    inner = data.get('data')
+    if isinstance(inner, dict):
+        candidates.append(inner)
+    return candidates
+
+
 def parse_item_stats(data: Any) -> Optional[Dict[str, Any]]:
     """解析 ``mtop.alibaba.idle.seller.pc.item.stats.query`` 的 ``data``。
 
-    响应形状（卖家工作台组件的读法，取的是 ``resp.data.data``）::
+    响应形状（卖家工作台组件的读法，指标在 ``resp.data.data``）::
 
-        data.exposureNum   曝光（次）
-        data.showNum       浏览（次）
-        data.wantNum       想要（人）
+        {'code': 'success',
+         'data': {'exposureNum': 367, 'showNum': 24, 'wantNum': 1},
+         'msg': '成功'}
+
+    也接受**裸指标 dict**（直接给内层 ``data``）：两种形状都真机出现过，
+    解析不出来就返回 ``None``，不猜。
 
     **这个接口没有的**：曝光人数 / 浏览人数 / 下单人数 / 支付人数 / 支付订单数，
     也没有任何时间窗口参数（近 1 天 / 7 天 / 30 天都取不到）—— 它只给三个累计值。
@@ -1014,23 +1049,22 @@ def parse_item_stats(data: Any) -> Optional[Dict[str, Any]]:
 
     识别不出任何指标（``data`` 是空 dict 或形状不对）时返回 ``None``。
     """
-    if not isinstance(data, dict):
-        return None
-    stats: Dict[str, Any] = {}
-    raw: Dict[str, Any] = {}
-    for platform_key, alias in ITEM_STATS_FIELDS:
-        if platform_key not in data:
-            continue
-        value = _metric_value(data.get(platform_key))
-        if value is None:
-            continue
-        stats[alias] = value
-        raw[platform_key] = data.get(platform_key)
-    if not stats:
-        return None
-    # 留一份原始键值便于对着真机响应核对（服务层按别名取值，多余的键不影响）。
-    stats['raw'] = raw
-    return stats
+    for candidate in _stats_payloads(data):
+        stats: Dict[str, Any] = {}
+        raw: Dict[str, Any] = {}
+        for platform_key, alias in ITEM_STATS_FIELDS:
+            if platform_key not in candidate:
+                continue
+            value = _metric_value(candidate.get(platform_key))
+            if value is None:
+                continue
+            stats[alias] = value
+            raw[platform_key] = candidate.get(platform_key)
+        if stats:
+            # 留一份原始键值便于对着真机响应核对（服务层按别名取值，多余的键不影响）。
+            stats['raw'] = raw
+            return stats
+    return None
 
 
 def _https(url: str) -> str:

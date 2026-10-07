@@ -1134,6 +1134,40 @@ class ItemStatsTest(ProtocolCase):
         self.assertIsNone(parse_item_stats({'somethingElse': 1}))
         self.assertIsNone(parse_item_stats({'exposureNum': ''}))
 
+    def test_envelope_shape_is_unwrapped(self):
+        """真机回归：平台回的 `data` 是**两层**的（外层信封 + 内层指标）。
+
+        **2026-10-08 用户截图里的原话**就是「平台商品数据接口调用失败（协议层调用失败:
+        平台响应里没有可识别的商品数据指标（data={'code': 'success', 'data':
+        {'exposureNum': 367, 'showNum': 24, 'wantNum': 1}, 'msg': '成功'}）），已降级为本地统计」
+        —— 明明有 367 次曝光，却被整条丢掉。这条用例锁住「两层都要能解析」。
+        """
+        envelope = {'code': 'success',
+                    'data': {'exposureNum': 367, 'showNum': 24, 'wantNum': 1},
+                    'msg': '成功'}
+        parsed = parse_item_stats(envelope)
+        assert parsed is not None
+        self.assertEqual(parsed['exposure'], 367)
+        self.assertEqual(parsed['visits'], 24)
+        self.assertEqual(parsed['wants'], 1)
+        self.assertEqual(parsed['raw'], {'exposureNum': 367, 'showNum': 24, 'wantNum': 1})
+        # 裸指标 dict（旧调用方 / 单测直接传内层）行为不变
+        self.assertEqual(parse_item_stats(envelope['data'])['exposure'], 367)
+        # 信封里没指标时仍旧是 None，不是空 dict
+        self.assertIsNone(parse_item_stats({'code': 'success', 'data': {}, 'msg': '成功'}))
+
+    def test_envelope_on_the_wire_reaches_the_caller(self):
+        """端到端：`mtop` 回两层信封时 `client.item_stats()` 要返回真数值。"""
+        envelope = {'code': 'success',
+                    'data': {'exposureNum': 41, 'showNum': 7, 'wantNum': 2},
+                    'msg': '成功'}
+        client, stub = make_client({ITEM_STATS_API: envelope})
+        parsed = run(client.item_stats('ITEM-A'))
+        self.assertEqual(parsed['exposure'], 41)
+        self.assertEqual(parsed['visits'], 7)
+        self.assertEqual(parsed['wants'], 2)
+        self.assertEqual(len(stub.calls), 1)
+
     def test_missing_item_id_never_calls_platform(self):
         client, stub = make_client({ITEM_STATS_API: {'exposureNum': 1}})
         with self.assertRaises(ItemStatsUnavailable) as ctx:

@@ -80,7 +80,11 @@ WARN_PLATFORM_FAILED = '平台商品数据接口调用失败（{reason}），已
 WARN_PLATFORM_UNPARSED = '平台商品数据接口返回的内容里没有可识别的指标，已按本地统计显示'
 WARN_PLATFORM_PARTIAL = ('平台响应里有没认出的字段（{keys}），这些指标已忽略；'
                          '如果它们是曝光/浏览类指标，请把它们加进 item_stats.METRIC_ALIASES')
-WARN_NO_ORDERS = '本地还没有订单数据（orders 表里没有该账号的记录），订单/买家/支付指标暂不可用：请先在「订单」页同步'
+#: **不要写「请先在『订单』页同步」** —— 侧栏九个页面里没有订单页（订单服务在
+#: `services/orders.py`，只有接口没有界面），用户按提示去找只会以为软件坏了。
+#: 只说「还没有订单数据」以及为什么这几列是 `-`，不指路到不存在的地方。
+WARN_NO_ORDERS = ('本地还没有订单数据（orders 表里没有该账号的记录）：订单 / 买家 / 支付指标'
+                  '暂不可用，这几列显示 -。当前版本还没有订单页，先不用管它们。')
 WARN_UNLINKED_ORDERS = '本地有 {count} 笔订单没有关联商品（orders.item_id 为空），未计入任何商品的统计'
 
 #: 平台字段名里带这些词根、却又不在别名表里的，值得专门提一句（见 `_suspect_metric_keys`）。
