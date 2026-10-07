@@ -99,12 +99,25 @@ export interface PageMeta {
   pages?: number
 }
 
+/** 状态分区条数（后端 `list_items` 的 `counts`，范围是「账号 + 关键词」，不含状态本身）。 */
+export interface ItemStatusCounts {
+  /** 当前筛选范围内商品总数 */
+  all: number
+  /** 在售（含库存未知，不含售罄） */
+  onsale: number
+  /** 已下架 / 售罄 / 已卖出（非在售的全集） */
+  offline: number
+  /** 已卖出（offline 的子集） */
+  sold: number
+}
+
 export interface ItemListResult {
   items: Item[]
   total: number
   page: number
   size: number
   pages: number
+  counts?: ItemStatusCounts
 }
 
 export interface ItemStats {

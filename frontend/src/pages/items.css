@@ -1115,3 +1115,175 @@ textarea.it-invalid:focus {
   font-size: var(--fs-11);
   color: var(--text-mute);
 }
+
+/* ---------------------------------------------------------------- 表头排序 */
+
+/* 表头整格可点：padding 交给按钮，点标题旁边的空白也能切换排序。 */
+.it-th-sort {
+  padding: 0;
+}
+
+.it-th-sort.active {
+  color: var(--accent);
+}
+
+.it-sort-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* 数字列表头右对齐（`td.num` 在 styles.css 里已经是右对齐，表头要跟它对齐）。 */
+.it-th-sort.num .it-sort-btn {
+  justify-content: flex-end;
+}
+
+.it-sort-btn:hover {
+  color: var(--text);
+}
+
+.it-sort-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.it-sort-mark {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-mute);
+}
+
+.it-th-sort.active .it-sort-mark {
+  color: var(--accent);
+}
+
+/* 默认箭头朝下 = 降序；升序时翻过来，和 `aria-sort` 说的方向一致。 */
+.it-sort-mark.asc {
+  transform: rotate(180deg);
+}
+
+/* ---------------------------------------------------- 商品数据：汇总卡可点排序 */
+
+.it-sum-card {
+  display: block;
+  width: 100%;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.it-sum-card:hover {
+  border-color: var(--border);
+  background: var(--panel-2);
+}
+
+.it-sum-card.active {
+  border-color: var(--accent);
+}
+
+.it-sum-card .label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.it-sum-card .it-sort-mark {
+  flex: none;
+}
+
+/* ---------------------------------------------------------------- 编辑弹窗 */
+
+.it-edit-foot {
+  margin-right: auto;
+  font-size: var(--fs-12);
+}
+
+.it-edit-sold {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.it-edit-sold > svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.it-edit-sold strong {
+  color: var(--text);
+}
+
+.it-changes {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+}
+
+.it-changes-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.it-changes-head .dim {
+  font-weight: 400;
+}
+
+.it-changes-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.it-changes-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-12);
+  color: var(--text-dim);
+}
+
+.it-change-label {
+  flex: none;
+  width: 76px;
+  color: var(--text-mute);
+}
+
+.it-change-from {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-mute);
+  text-decoration: line-through;
+}
+
+.it-change-to {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ok);
+}
+
+.it-changes-list li > svg {
+  flex: none;
+  color: var(--text-mute);
+}

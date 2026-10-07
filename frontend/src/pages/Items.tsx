@@ -20,6 +20,7 @@ import {
 import { api, errorText, getToken, uploadImage, type ImageInput } from '../api'
 import { AsyncBox, Badge, ConfirmDialog, Field, Modal, Notice, Switch, useToast } from '../components'
 import {
+  IconArrowRight,
   IconBox,
   IconChart,
   IconChevronDown,
@@ -27,12 +28,15 @@ import {
   IconChevronRight,
   IconClose,
   IconCopy,
+  IconEdit,
   IconEye,
   IconImage,
   IconPlus,
   IconRefresh,
   IconSearch,
+  IconSort,
   IconTrash,
+  IconWarn,
 } from '../icons'
 import { useAsync } from '../hooks/useAsync'
 import { bool, formatMoney, formatTime, itemStatusLabel, parseImages, truncate } from '../format'
@@ -271,6 +275,66 @@ function stockText(stock: number | null | undefined): { text: string; unknown: b
 /** 未知库存的通用说明（列表、弹窗、预览都用同一句，避免三处口径不一致）。 */
 const UNKNOWN_STOCK_TIP = '未同步（平台没返回库存），显示 - 而不是 0'
 
+/* ---------------- 表头点击排序 ---------------- */
+
+/** 商品列表可排序的列。**必须与后端白名单同名字段一致**（`services/items.py::SORT_COLUMNS`）。 */
+type ItemSortKey = 'updated' | 'price' | 'stock' | 'title' | 'status'
+type SortOrder = 'asc' | 'desc'
+
+/**
+ * 点表头的方向规则：**同一列再点一下换方向**；换到别的列时给一个更常用的默认方向
+ * （标题从 A→Z、价格/库存/时间从大到小）。用户要的就是「就点一下，可以切换」。
+ */
+function nextSort(current: ItemSortKey, order: SortOrder, key: ItemSortKey): { key: ItemSortKey; order: SortOrder } {
+  if (current === key) return { key, order: order === 'asc' ? 'desc' : 'asc' }
+  return { key, order: key === 'title' ? 'asc' : 'desc' }
+}
+
+/**
+ * 可点击排序的表头。
+ *
+ * 商品列表由**后端**排序（`?sort=&order=`，白名单在 `services/items.py::SORT_COLUMNS`，
+ * 前端只发字段名、不拼 SQL）；商品数据页一次返回全部商品，就在内存里排。
+ * 两条路共用这一个表头组件，免得箭头、`aria-sort`、提示文案各写一套。
+ */
+function SortableTh({
+  label,
+  active,
+  order,
+  onToggle,
+  width,
+  numeric = false,
+  title,
+}: {
+  label: string
+  active: boolean
+  order: SortOrder
+  onToggle: () => void
+  width?: number
+  numeric?: boolean
+  title?: string
+}) {
+  return (
+    <th
+      className={`nowrap it-th-sort${active ? ' active' : ''}${numeric ? ' num' : ''}`}
+      style={width ? { width } : undefined}
+      aria-sort={active ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}
+    >
+      <button
+        type="button"
+        className="it-sort-btn"
+        onClick={onToggle}
+        title={title ?? `按${label}排序（再点一下换个方向）`}
+      >
+        <span>{label}</span>
+        <span className={`it-sort-mark${active ? (order === 'asc' ? ' asc' : ' desc') : ''}`} aria-hidden="true">
+          {active ? <IconChevronDown size={12} /> : <IconSort size={12} />}
+        </span>
+      </button>
+    </th>
+  )
+}
+
 /**
  * `items.images` → 有序 URL 列表。
  *
@@ -302,6 +366,9 @@ export function ItemsPage() {
   const [accountId, setAccountId] = useState('')
   const [status, setStatus] = useState('')
   const [query, setQuery] = useState('')
+  /** 表头排序：默认「更新时间倒序」，点表头切换（同一列再点一下换方向）。 */
+  const [sortKey, setSortKey] = useState<ItemSortKey>('updated')
+  const [sortOrder, setSortOrder] = useState<SortOrder>('desc')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [editing, setEditing] = useState<Item | null>(null)
   const [publishOpen, setPublishOpen] = useState(false)
@@ -331,14 +398,20 @@ export function ItemsPage() {
         status: status || undefined,
         q: query || undefined,
         limit: 500,
+        // 排序在后端做（`?sort=&order=` 走白名单），这样 500 条上限之外也是全局有序，
+        // 不是「先截断再排序」。
+        sort: sortKey,
+        order: sortOrder,
       }),
-    [accountId, status, query],
+    [accountId, status, query, sortKey, sortOrder],
     true,
     // 发布/编辑/上下架/同步成功后后端会发 items.updated，静默重拉列表
     ['items.updated'],
   )
 
   const list = items.data?.items ?? []
+  /** 三个状态分区各有多少件（后端 `counts`，范围是账号 + 关键词，不含状态本身）。 */
+  const counts = items.data?.counts
 
   const selectedItems = useMemo(() => list.filter((item) => selected.has(item.item_id)), [list, selected])
   const selectedAccounts = useMemo(() => new Set(selectedItems.map((item) => item.account_id)), [selectedItems])
@@ -500,11 +573,16 @@ export function ItemsPage() {
             </option>
           ))}
         </select>
-        <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ width: 120 }}>
-          <option value="">全部状态</option>
-          <option value="onsale">在售</option>
-          <option value="offline">已下架</option>
-          <option value="sold">已售出</option>
+        <select
+          value={status}
+          onChange={(e) => setStatus(e.target.value)}
+          style={{ width: 210 }}
+          title="售罄（库存 0）和已卖出的商品都归在「已下架」里：一件卖完的商品挂在「在售」里既卖不出也点不动"
+        >
+          <option value="">全部状态{counts ? `（${counts.all}）` : ''}</option>
+          <option value="onsale">在售{counts ? `（${counts.onsale}）` : ''}</option>
+          <option value="offline">已下架 · 含售罄 / 已卖出{counts ? `（${counts.offline}）` : ''}</option>
+          <option value="sold">已售出{counts ? `（${counts.sold}）` : ''}</option>
         </select>
         <label className="it-search" title="按标题或商品 ID 搜索">
           <IconSearch size={14} />
@@ -589,7 +667,13 @@ export function ItemsPage() {
       <div className="card">
         <h3>
           商品列表
-          <span className="hint">共 {list.length} 条</span>
+          <span className="hint">
+            共 {list.length} 条
+            {counts
+              ? ` · 在售 ${counts.onsale} · 已下架/售罄/已卖出 ${counts.offline} · 已售出 ${counts.sold}`
+              : ''}
+            {' · 点表头排序'}
+          </span>
         </h3>
         <AsyncBox
           loading={items.loading}
@@ -608,22 +692,67 @@ export function ItemsPage() {
                   <th style={{ width: 34 }}>
                     <input type="checkbox" checked={allChecked} onChange={toggleAll} title="全选当前列表" />
                   </th>
-                  <th>商品</th>
-                  <th className="nowrap" style={{ width: 96 }}>
-                    价格
-                  </th>
-                  <th className="nowrap" style={{ width: 68 }}>
-                    库存
-                  </th>
-                  <th className="nowrap" style={{ width: 78 }}>
-                    状态
-                  </th>
+                  <SortableTh
+                    label="商品"
+                    active={sortKey === 'title'}
+                    order={sortOrder}
+                    onToggle={() => {
+                      const next = nextSort(sortKey, sortOrder, 'title')
+                      setSortKey(next.key)
+                      setSortOrder(next.order)
+                    }}
+                    title="按标题排序（再点一下换个方向）"
+                  />
+                  <SortableTh
+                    label="价格"
+                    numeric
+                    width={96}
+                    active={sortKey === 'price'}
+                    order={sortOrder}
+                    onToggle={() => {
+                      const next = nextSort(sortKey, sortOrder, 'price')
+                      setSortKey(next.key)
+                      setSortOrder(next.order)
+                    }}
+                  />
+                  <SortableTh
+                    label="库存"
+                    numeric
+                    width={68}
+                    active={sortKey === 'stock'}
+                    order={sortOrder}
+                    onToggle={() => {
+                      const next = nextSort(sortKey, sortOrder, 'stock')
+                      setSortKey(next.key)
+                      setSortOrder(next.order)
+                    }}
+                    title="按库存排序（库存未知的排在最后）"
+                  />
+                  <SortableTh
+                    label="状态"
+                    width={78}
+                    active={sortKey === 'status'}
+                    order={sortOrder}
+                    onToggle={() => {
+                      const next = nextSort(sortKey, sortOrder, 'status')
+                      setSortKey(next.key)
+                      setSortOrder(next.order)
+                    }}
+                  />
                   <th className="nowrap" style={{ width: 52 }}>
                     AI
                   </th>
-                  <th className="nowrap" style={{ width: 132 }}>
-                    更新时间
-                  </th>
+                  <SortableTh
+                    label="更新时间"
+                    width={132}
+                    active={sortKey === 'updated'}
+                    order={sortOrder}
+                    onToggle={() => {
+                      const next = nextSort(sortKey, sortOrder, 'updated')
+                      setSortKey(next.key)
+                      setSortOrder(next.order)
+                    }}
+                  />
                   <th className="nowrap" style={{ width: 164 }}>
                     操作
                   </th>
@@ -637,6 +766,9 @@ export function ItemsPage() {
                   const stock = stockText(item.stock)
                   const rowKey = `${item.account_id}-${item.item_id}`
                   const onsale = state.text === '在售'
+                  // 售罄 = 平台还在架上但库存已经是 0。它被归在「已下架」分区里，
+                  // 再挂一个「在售」标签会让人以为筛选坏了，所以单独标「售罄」。
+                  const soldOut = onsale && Number(item.stock) === 0
                   return (
                     <tr key={rowKey} className={`it-row${checked ? ' selected' : ''}`}>
                       <td>
@@ -671,7 +803,11 @@ export function ItemsPage() {
                         {stock.text}
                       </td>
                       <td className="nowrap">
-                        <Badge tone={state.tone}>{state.text}</Badge>
+                        {soldOut ? (
+                          <Badge tone="warn">售罄</Badge>
+                        ) : (
+                          <Badge tone={state.tone}>{state.text}</Badge>
+                        )}
                       </td>
                       <td className="nowrap">
                         <Badge tone={bool(item.ai_enabled) ? 'ok' : 'muted'}>{bool(item.ai_enabled) ? '开' : '关'}</Badge>
@@ -737,7 +873,8 @@ export function ItemsPage() {
             </table>
           </div>
           <div className="it-legend">
-            库存 <code>-</code> = 未同步（平台没返回），不是 0 也不是缺货；点标题进编辑，点缩略图看大图。
+            库存 <code>-</code> = 未同步（平台没返回），不是 0 也不是缺货；<strong>售罄（库存 0）和已卖出的商品都在「已下架」分区</strong>里，
+            那样好一起编辑；点标题进编辑，点缩略图看大图。
           </div>
         </AsyncBox>
       </div>
@@ -884,6 +1021,11 @@ function ItemDataView({ accountId }: { accountId: string }) {
   /** 数据来源。后端目前只支持账号维度、**没有时间范围参数**，所以不做「近 N 天」。 */
   const [sourceMode, setSourceMode] = useState<'auto' | 'local' | 'platform'>('auto')
   const [lightbox, setLightbox] = useState<{ urls: string[]; index: number; title: string } | null>(null)
+  /** 表内排序（这一页一次返回该账号全部商品，所以在内存里排，不用再打一次接口）。 */
+  const [dataSort, setDataSort] = useState<{ key: keyof ItemStatsRow; order: SortOrder }>({
+    key: 'exposure',
+    order: 'desc',
+  })
   const stats = useAsync<ItemStatsResult>(
     () => api.get<ItemStatsResult>(`/api/items/${encodeURIComponent(accountId)}/stats`, { source: sourceMode }),
     [accountId, sourceMode],
@@ -919,6 +1061,36 @@ function ItemDataView({ accountId }: { accountId: string }) {
     () => rows.some((row) => STATS_COLUMNS.some((column) => !statValue(row[column.key]).unknown)),
     [rows],
   )
+
+  /** 只给「至少有一个商品拿得到值」的指标发汇总卡：4 张卡里 2 张永远是 `-` 只是噪音。 */
+  const cardColumns = useMemo(
+    () => STATS_COLUMNS.filter((column) => (sums[column.key as string]?.known ?? 0) > 0),
+    [sums],
+  )
+
+  /** 内存排序：**拿不到的数值永远排在最后**（不管升序降序），否则点「曝光」先看到一堆 `-`。 */
+  const sortedRows = useMemo(() => {
+    const factor = dataSort.order === 'asc' ? 1 : -1
+    return [...rows].sort((a, b) => {
+      if (dataSort.key === 'title') {
+        return String(a.title || a.item_id).localeCompare(String(b.title || b.item_id), 'zh-CN') * factor
+      }
+      const left = statValue(a[dataSort.key])
+      const right = statValue(b[dataSort.key])
+      if (left.unknown && right.unknown) return 0
+      if (left.unknown) return 1
+      if (right.unknown) return -1
+      return (Number(a[dataSort.key]) - Number(b[dataSort.key])) * factor
+    })
+  }, [rows, dataSort])
+
+  const toggleDataSort = (key: keyof ItemStatsRow) => {
+    setDataSort((prev) =>
+      prev.key === key
+        ? { key, order: prev.order === 'asc' ? 'desc' : 'asc' }
+        : { key, order: key === 'title' ? 'asc' : 'desc' },
+    )
+  }
 
   if (!accountId) {
     return (
@@ -991,46 +1163,81 @@ function ItemDataView({ accountId }: { accountId: string }) {
           <Notice kind="info">这张表的平台指标现在都是 -：平台数据接口没返回数值（未接通或未登录），所以不用 0 顶替。</Notice>
         )}
 
-        <div className="grid grid-4 it-sums">
-          {STATS_COLUMNS.slice(0, 4).map((column) => {
-            const sum = sums[column.key as string]
-            return (
-              <div className="stat" key={`sum-${column.key as string}`}>
-                <div className="label">{column.label}合计</div>
-                <div
-                  className={`value${sum.unknown ? ' it-unknown' : ''}`}
-                  title={sum.unknown ? STATS_MISSING_TIP : `已汇总 ${sum.known}/${rows.length} 个商品`}
-                >
-                  {sum.text}
-                </div>
-                <div className="it-sum-note">
-                  已汇总 {sum.known}/{rows.length} 个商品
-                </div>
-              </div>
-            )
-          })}
-        </div>
+        {cardColumns.length > 0 && (
+          <>
+            <div className="grid grid-4 it-sums">
+              {cardColumns.map((column) => {
+                const sum = sums[column.key as string]
+                const active = dataSort.key === column.key
+                return (
+                  <button
+                    type="button"
+                    className={`stat it-sum-card${active ? ' active' : ''}`}
+                    key={`sum-${column.key as string}`}
+                    onClick={() => toggleDataSort(column.key)}
+                    title={`${column.label}：点一下按这一列排序（再点一下换方向）`}
+                  >
+                    <div className="label">
+                      {column.label}合计
+                      <span className={`it-sort-mark${active ? (dataSort.order === 'asc' ? ' asc' : ' desc') : ''}`}>
+                        {active ? <IconChevronDown size={12} /> : <IconSort size={12} />}
+                      </span>
+                    </div>
+                    <div className={`value${sum.unknown ? ' it-unknown' : ''}`}>
+                      {sum.text}
+                    </div>
+                    <div className="it-sum-note">
+                      已汇总 {sum.known}/{rows.length} 个商品
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+            <div className="it-legend">
+              只列出<strong>有数据</strong>的指标：平台这个接口只给曝光 / 浏览 / 想要，浏览人数 / 下单人数这类它根本没返回，
+              所以不摆一堆永远是 <code>-</code> 的卡片。点卡片或表头可以排序。
+            </div>
+          </>
+        )}
 
         <div className="table-wrap it-table-wrap">
           <table className="it-table">
             <thead>
               <tr>
-                <th>商品</th>
-                <th className="nowrap num" style={{ width: 92 }}>
-                  价格
-                </th>
+                <SortableTh
+                  label="商品"
+                  active={dataSort.key === 'title'}
+                  order={dataSort.order}
+                  onToggle={() => toggleDataSort('title')}
+                  title="按标题排序（再点一下换个方向）"
+                />
+                <SortableTh
+                  label="价格"
+                  numeric
+                  width={92}
+                  active={dataSort.key === 'price'}
+                  order={dataSort.order}
+                  onToggle={() => toggleDataSort('price')}
+                />
                 <th className="nowrap" style={{ width: 76 }}>
                   状态
                 </th>
                 {STATS_COLUMNS.map((column) => (
-                  <th key={column.key as string} className="nowrap num" style={{ width: 92 }}>
-                    {column.label}
-                  </th>
+                  <SortableTh
+                    key={column.key as string}
+                    label={column.label}
+                    numeric
+                    width={92}
+                    active={dataSort.key === column.key}
+                    order={dataSort.order}
+                    onToggle={() => toggleDataSort(column.key)}
+                    title={`按${column.label}排序（拿不到的排在最后）`}
+                  />
                 ))}
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => {
+              {sortedRows.map((row) => {
                 const state = itemStatusLabel(row.status)
                 const imageList = itemImageUrls(row.images)
                 return (
@@ -1701,6 +1908,10 @@ function EditItemModal({ item, onClose, onSaved }: { item: Item; onClose: () => 
     item.stock !== undefined && item.stock !== null && Number(item.stock) >= 0 ? String(item.stock) : '',
   )
   const [description, setDescription] = useState(item.description || '')
+  /** 划线价（原价）。平台允许改，但它只影响展示，留空 = 不改。 */
+  const [originalPrice, setOriginalPrice] = useState(
+    item.original_price !== undefined && item.original_price !== null ? String(item.original_price) : '',
+  )
   const [images, setImages] = useState<string[]>(() => itemImageUrls(item.images))
   /**
    * 刚上传图片的真实尺寸（URL → {width,height}）。
@@ -1732,6 +1943,46 @@ function EditItemModal({ item, onClose, onSaved }: { item: Item; onClose: () => 
     stock === '' &&
     (item.stock === undefined || item.stock === null || !Number.isFinite(Number(item.stock)) || Number(item.stock) < 0)
 
+  const status = itemStatusLabel(item.status)
+  /**
+   * 已卖出的商品平台**不接受编辑**（服务层 `SOLD_WARNING` 闸门）：保存只写本地。
+   * 这不是保存失败，但用户上一版看到的正是那句「仅本地生效」，所以这里必须提前讲清楚。
+   */
+  const sold = status.text === '已售出'
+  /** 售罄（库存 0、还在架上）：改库存就能重新开卖，值得单独提一句。 */
+  const soldOut = !sold && Number(item.stock) === 0
+
+  /**
+   * 真正的改动清单 —— 同时用于「改动预览」和「一个字都没改就不让保存」。
+   *
+   * 空输入框一律表示「这次不改」（价格 / 原价 / 库存都是这个口径），所以**不能**
+   * 拿空串去比：那会把「没动价格」也算成改动，保存按钮永远是亮的。
+   */
+  const changes = useMemo(() => {
+    const list: { label: string; from: string; to: string }[] = []
+    const text = (value: unknown) => (value === undefined || value === null || value === '' ? '（空）' : String(value))
+    if (title !== (item.title || '')) list.push({ label: '标题', from: text(item.title), to: text(title) })
+    if (price.trim() !== '' && Number(price) !== Number(item.price)) {
+      list.push({ label: '价格', from: text(item.price), to: text(price) })
+    }
+    if (originalPrice.trim() !== '' && Number(originalPrice) !== Number(item.original_price)) {
+      list.push({ label: '原价', from: text(item.original_price), to: text(originalPrice) })
+    }
+    if (stock.trim() !== '' && Number(stock) !== Number(item.stock)) {
+      list.push({ label: '库存', from: stockUnknown ? '未同步' : text(item.stock), to: text(stock) })
+    }
+    if (description !== (item.description || '')) {
+      list.push({ label: '描述', from: text(item.description), to: text(description) })
+    }
+    if (imagesTouched) {
+      list.push({ label: '图片', from: `${itemImageUrls(item.images).length} 张`, to: `${images.length} 张` })
+    }
+    if (aiEnabled !== bool(item.ai_enabled)) {
+      list.push({ label: 'AI 自动回复', from: bool(item.ai_enabled) ? '开' : '关', to: aiEnabled ? '开' : '关' })
+    }
+    return list
+  }, [title, price, originalPrice, stock, description, images, imagesTouched, aiEnabled, item, stockUnknown])
+
   const save = async () => {
     if (uploadingCount > 0) {
       toast.info('还有图片正在上传，等传完再保存')
@@ -1743,16 +1994,25 @@ function EditItemModal({ item, onClose, onSaved }: { item: Item; onClose: () => 
       toast.error('商品至少要留一张图：不能把所有图片都删掉再保存')
       return
     }
+    if (changes.length === 0) {
+      toast.info('没有任何改动，不用保存')
+      return
+    }
     setSaving(true)
     try {
       const patch: Record<string, unknown> = { title, description }
-      if (price !== '') patch.price = Number(price)
-      if (stock !== '') patch.stock = Number(stock)
+      if (price.trim() !== '') patch.price = Number(price)
+      if (originalPrice.trim() !== '') patch.original_price = Number(originalPrice)
+      if (stock.trim() !== '') patch.stock = Number(stock)
       // 契约：`images` 数组里，**刚上传的图带真实尺寸**（`{url,width,height}`）、
       // **历史图是裸 URL 字符串**（库里只有地址），第一张是主图（后端转成平台
       // imageInfoDOList，混合数组后端认）。只有用户真的动过图片才带上这个字段
       // —— 协议层对 `[]`/`None` 直接抛错，没动图就不该有这个键。
       if (imagesTouched) patch.images = imagePayload(images, imageSizes)
+      // `ai_enabled` 平台没有这个字段（服务层按 `local_only` 处理），但它是**真会落库**的。
+      // 以前这个开关从来没进过 patch：拨一下、保存、回来还是原样 —— 用户报的
+      // 「改动不成功」有一半就是它。只有真的拨动过才带上，免得白报一条「仅本地生效」。
+      if (aiEnabled !== bool(item.ai_enabled)) patch.ai_enabled = aiEnabled
       // 单条编辑返回 {item, synced, updated_fields, warning?, local_only_fields?, noop?}
       // （**不是**批量形状）：ok 才算真的改到闲鱼上了；只有 warning 时是「本地已改、
       // 未同步」，不能报「已保存」了事，也绝不能因为形状不对报「共 0 个」。
@@ -1767,8 +2027,18 @@ function EditItemModal({ item, onClose, onSaved }: { item: Item; onClose: () => 
         `/api/items/${encodeURIComponent(item.account_id)}/${encodeURIComponent(item.item_id)}/edit`,
         patch,
       )
-      showBatchNotice(toast, singleEditAsBatch(result), '修改', '商品')
       onSaved()
+      if (result?.noop) {
+        toast.info('没有检测到改动，闲鱼那边不用动')
+      } else if (result?.synced) {
+        toast.success('已保存并同步到闲鱼')
+      } else if (sold) {
+        // 用户最困惑的那条提示：说清楚「为什么弹」和「为什么闲鱼上没变」，
+        // 而不是丢一句「仅本地生效」让人以为保存失败了。
+        toast.info('本地已保存。这个商品在闲鱼上已卖出，平台不接受编辑，所以闲鱼上的信息不会变 —— 不是保存失败。')
+      } else {
+        showBatchNotice(toast, singleEditAsBatch(result), '修改', '商品')
+      }
     } catch (err) {
       toast.error(errorText(err))
     } finally {
@@ -1783,18 +2053,55 @@ function EditItemModal({ item, onClose, onSaved }: { item: Item; onClose: () => 
       wide
       footer={
         <>
-          <span className="dim" style={{ fontSize: 12, marginRight: 'auto' }}>
-            {uploadingCount > 0 ? `${uploadingCount} 张图片正在上传，传完才能保存` : ''}
+          <span className="dim it-edit-foot">
+            {uploadingCount > 0
+              ? `${uploadingCount} 张图片正在上传，传完才能保存`
+              : sold
+                ? '已卖出的商品闲鱼不接受编辑：保存只更新本地记录'
+                : changes.length === 0
+                  ? '还没有任何改动'
+                  : `${changes.length} 处改动会提交到闲鱼`}
           </span>
           <button className="btn ghost" onClick={onClose} disabled={saving}>
             取消
           </button>
-          <button className="btn primary" onClick={save} disabled={busy}>
-            {saving ? '保存中…' : uploadingCount > 0 ? '等待上传…' : '保存'}
+          <button
+            className="btn primary"
+            onClick={save}
+            disabled={busy || changes.length === 0}
+            title={
+              changes.length === 0
+                ? '先改点东西（留空的字段不会被改）'
+                : sold
+                  ? '闲鱼不接受编辑，只会更新本地记录'
+                  : '保存并同步到闲鱼'
+            }
+          >
+            {saving ? '保存中…' : uploadingCount > 0 ? '等待上传…' : sold ? '保存到本地' : '保存'}
           </button>
         </>
       }
     >
+      {sold && (
+        <Notice kind="warn">
+          <div className="it-edit-sold">
+            <IconWarn size={16} />
+            <div>
+              <strong>这个商品在闲鱼上已经卖出（{status.text}），平台不接受对已卖出商品的编辑。</strong>
+              <div>
+                所以保存后：本地记录会更新，<strong>闲鱼上的标题 / 价格 / 库存 / 描述不会变</strong> ——
+                这就是上一次那句「仅本地生效」的意思，不是保存失败。
+              </div>
+              <div className="dim">
+                真要改闲鱼上的信息，只能先在列表里点「上架」把它重新挂上去（平台不一定允许），或者复制一份重新发布。
+              </div>
+            </div>
+          </div>
+        </Notice>
+      )}
+      {soldOut && (
+        <Notice kind="info">这个商品库存已经是 0（售罄）：填上新的库存就会重新变成可购买状态。</Notice>
+      )}
       <div className="split">
         <div className="left">
           <Field label="标题">
@@ -1810,6 +2117,18 @@ function EditItemModal({ item, onClose, onSaved }: { item: Item; onClose: () => 
                   value={price}
                   onChange={(e) => setPrice(e.target.value)}
                   placeholder="例如 99.9"
+                />
+              </Field>
+            </div>
+            <div style={{ flex: 1 }}>
+              <Field label="原价（元）" tip="划线价，留空 = 不改动">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={originalPrice}
+                  onChange={(e) => setOriginalPrice(e.target.value)}
+                  placeholder="可留空"
                 />
               </Field>
             </div>
@@ -1834,7 +2153,7 @@ function EditItemModal({ item, onClose, onSaved }: { item: Item; onClose: () => 
           <Field label="商品 ID" tip="只读">
             <input type="text" value={item.item_id} readOnly className="mono" />
           </Field>
-          <Switch checked={aiEnabled} onChange={setAiEnabled} label="允许该商品的 AI 自动回复（仅本地标记）" />
+          <Switch checked={aiEnabled} onChange={setAiEnabled} label="允许该商品的 AI 自动回复（仅本地标记，不同步到闲鱼）" />
         </div>
         <div className="right">
           <Field label="商品图片" tip="拖拽 / 点击 / 粘贴上传，第一张是主图">
@@ -1850,6 +2169,31 @@ function EditItemModal({ item, onClose, onSaved }: { item: Item; onClose: () => 
             <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={8} />
           </Field>
         </div>
+      </div>
+      <div className="it-changes">
+        <div className="it-changes-head">
+          <IconEdit size={14} />
+          改动预览
+          <span className="dim">{changes.length === 0 ? '还没有任何改动' : `${changes.length} 处`}</span>
+        </div>
+        {changes.length === 0 ? (
+          <div className="dim">价格 / 原价 / 库存留空表示「这次不改」；图片没动就不会重传，所以不会有意外改动。</div>
+        ) : (
+          <ul className="it-changes-list">
+            {changes.map((change) => (
+              <li key={change.label}>
+                <span className="it-change-label">{change.label}</span>
+                <span className="it-change-from" title={change.from}>
+                  {truncate(change.from, 34)}
+                </span>
+                <IconArrowRight size={12} />
+                <span className="it-change-to" title={change.to}>
+                  {truncate(change.to, 34)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </Modal>
   )
