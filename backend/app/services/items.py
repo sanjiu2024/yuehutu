@@ -477,6 +477,18 @@ IMAGE_URL_KEYS = ('url', 'picUrl', 'imageUrl', 'fileUrl')
 #: 已卖出商品被编辑时给用户的说明（见 `update_item` 的保守闸门）。
 SOLD_WARNING = '该商品已卖出，平台不接受编辑，改动仅本地生效'
 
+#: 平台对商品编辑的**已知**拒绝原因 → 用户能看懂的解释。
+#: 真机实例（账号 2221063792739 的商品 1087852912806）：把库存改成 100 时平台回
+#: `FAIL_BIZ_ITEM_ERROR_MULTI_INVENTORY_ITEM_CAN_NOT_PUBLISH::亲，您不能发布多库存宝贝哦`
+#: —— 原样抛给用户等于没解释，他只看到「改动仅本地生效」。
+PLATFORM_EDIT_HINTS: Tuple[Tuple[str, str], ...] = (
+    (
+        'FAIL_BIZ_ITEM_ERROR_MULTI_INVENTORY_ITEM_CAN_NOT_PUBLISH',
+        '（这件商品在闲鱼上是按「单件库存」发布的，平台不允许把它改成多件库存：本地库存已经改好了，'
+        '但闲鱼上不会变。想在闲鱼上卖多件，需要重新发布一件支持多库存的商品。）',
+    ),
+)
+
 #: 商品写操作成功后统一发的事件。前端各页订阅同一个 topic 做静默重拉，
 #: 所以 payload 里必须带够定位信息（哪个账号、哪些商品、干了什么）。
 ITEMS_UPDATED_TOPIC = 'items.updated'
@@ -580,6 +592,18 @@ def _split_edit_fields(resolved: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
     return payload, local_only
 
 
+def _platform_error_hint(value: Any) -> str:
+    """把平台对商品编辑的已知拒绝原因翻译成用户能看懂的一句话（认不出就返回空串）。
+
+    **只收录真机/日志里真实出现过的错误码**：没见过的原样透传，不编解释。
+    """
+    text = str(value)
+    for code, hint in PLATFORM_EDIT_HINTS:
+        if code in text:
+            return hint
+    return ''
+
+
 def _push_update(client: Any, account_id: str, item_id: str, payload: Dict[str, Any]) -> Optional[str]:
     """尽力把 ``payload`` 推给协议层；返回警告文本或 None（协议层未就绪也算警告，不算失败）。
 
@@ -596,7 +620,7 @@ def _push_update(client: Any, account_id: str, item_id: str, payload: Dict[str, 
         return None
     if status == common.CALL_MISSING:
         return '协议层尚未实现商品修改，改动仅本地生效'
-    return f'协议层修改失败，改动仅本地生效: {value}'
+    return f'协议层修改失败，改动仅本地生效: {value}{_platform_error_hint(value)}'
 
 
 def update_item(item_id: Any, fields: Dict[str, Any], account_id: Optional[str] = None) -> Any:

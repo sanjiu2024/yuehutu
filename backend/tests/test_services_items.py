@@ -27,6 +27,7 @@ from backend.app.services import common, items  # noqa: E402
 from backend.app.xianyu.client import XianyuClient as RealXianyuClient  # noqa: E402
 from backend.app.xianyu.client import RiskControlError as RealRiskControlError  # noqa: E402
 from backend.app.xianyu.client import SessionExpiredError as RealSessionExpiredError  # noqa: E402
+from backend.app.xianyu.client import XianyuError as RealXianyuError  # noqa: E402
 # 真协议层的图片入参转换（公开函数）：用来验证服务层交出去的形状**真能被它接受**，
 # 而不是只对着假客户端自说自话。
 from backend.app.xianyu.client import images_to_image_infos  # noqa: E402
@@ -950,6 +951,43 @@ class StockPatchTest(ItemsServiceTest):
         self.assertEqual(result['item']['stock'], 10)
         pushed = [c for c in self.client.calls if c[0] == 'edit_item']
         self.assertEqual(pushed[0][2]['stock'], 10)
+
+    def test_platform_rejection_gets_a_plain_chinese_reason(self):
+        """真机实例：平台拒绝把「单件库存」商品改成多件，用户得看懂为什么。
+
+        账号 2221063792739 的商品 1087852912806 把库存改成 100 时，平台回
+        `FAIL_BIZ_ITEM_ERROR_MULTI_INVENTORY_ITEM_CAN_NOT_PUBLISH::亲，您不能发布多库存宝贝哦`。
+        只报「改动仅本地生效」用户只会以为软件坏了。
+        """
+        self.seed('I1', stock=1)
+
+        class Rejecting(FakeClient):
+            def edit_item(self, item_id: str, payload: dict):
+                self.calls.append(('edit_item', item_id, payload))
+                raise RealXianyuError(
+                    'MTOP 调用失败 [mtop.idle.pc.idleitem.edit]: '
+                    'FAIL_BIZ_ITEM_ERROR_MULTI_INVENTORY_ITEM_CAN_NOT_PUBLISH::亲，您不能发布多库存宝贝哦'
+                )
+
+        install_fake_protocol(Rejecting('acc1'))
+        result = items.update_item('I1', {'stock_set': 100}, account_id='acc1')
+        self.assertFalse(result['synced'])
+        self.assertIn('FAIL_BIZ_ITEM_ERROR_MULTI_INVENTORY_ITEM_CAN_NOT_PUBLISH', result['warning'])
+        self.assertIn('单件库存', result['warning'])
+        self.assertEqual(result['item']['stock'], 100)  # 本地照样改好，不能因为平台拒绝就丢改动
+
+    def test_unknown_platform_error_is_passed_through_unchanged(self):
+        """没见过的错误码**不许编解释**：原文照抄，只加「仅本地生效」的前缀。"""
+        self.seed('I1', stock=1)
+
+        class Rejecting(FakeClient):
+            def edit_item(self, item_id: str, payload: dict):
+                self.calls.append(('edit_item', item_id, payload))
+                raise RealXianyuError('FAIL_SYS_SOMETHING_NEW::没见过的错误')
+
+        install_fake_protocol(Rejecting('acc1'))
+        result = items.update_item('I1', {'stock_set': 5}, account_id='acc1')
+        self.assertEqual(result['warning'], '协议层修改失败，改动仅本地生效: FAIL_SYS_SOMETHING_NEW::没见过的错误')
 
     def test_batch_stock_set_applies_to_every_item(self):
         self.seed('A1', stock=1)
