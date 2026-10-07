@@ -22,7 +22,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 27  PASS 27  FAIL 0  CASES 803  SKIPPED 2
+-> TOTAL 27  PASS 27  FAIL 0  CASES 817  SKIPPED 2
 ```
 
 ```text
@@ -791,13 +791,24 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 97. **商品数据页的汇总卡只发有数据的那几张**：6 个指标里平台只给 3 个，以前固定画 4 张卡
     （2 张永远 `-`）纯属噪音；现在只给「至少一个商品拿得到值」的指标发卡，卡片可点排序，
     并在 legend 里说明「平台这个接口只给曝光 / 浏览 / 想要」。
+98. **平台的拒绝原因要翻译成人话**【顺着用户诉求 ④ 往下查 `operation_logs` 才发现的第二个原因】。
+    日志里真实存在一条：账号 `2221063792739` 的商品 `1087852912806`（小尾猫猫封口贴）把库存
+    改成 100 时，平台回 `FAIL_BIZ_ITEM_ERROR_MULTI_INVENTORY_ITEM_CAN_NOT_PUBLISH::亲，您不能
+    发布多库存宝贝哦` —— 这件商品当初是按「单件库存」发布的，平台不允许它变成多件。
+    以前只报「协议层修改失败，改动仅本地生效: <一长串错误码>」，用户同样只会以为软件坏了。
+    现在 `PLATFORM_EDIT_HINTS` 把**真机见过的**错误码翻译成一句中文解释（没见过的错误码
+    **原样透传、不编解释**，有测试锁住），本地库存照旧改好，不因为平台拒绝就丢改动。
+    用户诉求 ④ 的两个原因至此都能对号入座：①商品在闲鱼上真的已卖出（`operation_logs`
+    里 `3998190171/1087577639387`「专拍」那条，2026-10-08 02:21 本地时间）；②这件商品是
+    单件库存发布，平台不让改多件。
 
-> **第十三批证据链**：`backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_r6`）
-> `TOTAL 27  PASS 27  FAIL 0  CASES 815  SKIPPED 2`（第十二批 803）；
-> `test_services_items.py` 143、`test_xianyu_items.py` 83、`test_items_api.py` 33、
+> **第十三批证据链**：`backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_r6c`）
+> `TOTAL 27  PASS 27  FAIL 0  CASES 817  SKIPPED 2`（第十二批 803）；
+> `test_services_items.py` 145、`test_xianyu_items.py` 83、`test_items_api.py` 33、
 > `test_item_stats_api.py` 39。前端 `npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0
-> （57 modules，`dist/assets/index-164Ojtil.js` 320.51 kB / `index-Cuic_y7D.css` 99.24 kB）。
+> （57 modules，`dist/assets/index-Dmp5pOuD.js` 321.03 kB / `index-Cuic_y7D.css` 99.24 kB）。
 > 真机数据核对（只读脚本，不打平台）：3 账号 95 商品、108 会话、956 消息、订单 0 行。
+> 用户诉求 ④ 的两个原因来自真实 `operation_logs` 行（不是推测）。
 
 ## 四、已验证 / 未验证（诚实边界）
 

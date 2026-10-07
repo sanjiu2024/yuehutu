@@ -424,6 +424,11 @@ GET    /api/settings ; PUT /api/settings       {key:value,...}
   `warning='该商品已卖出，平台不接受编辑，改动仅本地生效'`、被拦下的字段进 `local_only_fields`；
   批量同样进 `warnings`（`code='not_pushed'`）而不是 `ok`。理由见 §2 items 注释（真机对已卖出商品
   提交编辑会让平台把它重新上架）。
+- **平台拒绝编辑时的 `warning` 必须带上人话解释**：`services/items.py::PLATFORM_EDIT_HINTS` 把
+  **真机/日志里真实出现过**的错误码翻译成一句中文（目前只有
+  `FAIL_BIZ_ITEM_ERROR_MULTI_INVENTORY_ITEM_CAN_NOT_PUBLISH` —— 单件库存商品不让改成多件，
+  真机商品 `2221063792739/1087852912806`），拼在原文后面。**没见过的错误码原样透传、不编解释**
+  （有测试锁住）。平台拒绝不影响本地落库：改动照样写进 SQLite，`synced=false` 如实上报。
 
 错误响应统一：`{"success":false,"message":"...","code":"..."}`，HTTP 用语义状态码（4xx 业务、5xx 内部）。成功统一 `{"success":true,"data":{...}}`。
 **404/405 也必须走这个信封**（挂的是 Starlette 的 `HTTPException`，不是 FastAPI 的子类）。
