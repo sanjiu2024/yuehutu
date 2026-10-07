@@ -28,7 +28,7 @@ from loguru import logger
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .core import config, db, events, security
-from .services import im_service, risk_service
+from .services import im_service, risk_service, stats_worker
 
 # 按需注册的路由模块（api/<name>.py 里必须有 router 对象）
 ROUTE_MODULES: List[str] = [
@@ -87,9 +87,11 @@ async def lifespan(app: FastAPI):
     if restored:
         logger.info('已从库里恢复 {} 个账号的风控冷却', restored)
     _start_im_services()
+    stats_task = _start_stats_worker()
     _write_port_file()
     yield
     _remove_port_file()
+    _stop_stats_worker(stats_task)
     logger.info('后端退出')
 
 
@@ -130,6 +132,83 @@ def _start_im_services() -> None:
                 logger.warning('账号 {} 的 IM 入站未挂载: {}', account_id, reason)
 
     threading.Thread(target=worker, name='im-bootstrap', daemon=True).start()
+
+
+# --------------------------------------------------------------------------- 商品数据后台拉取
+
+#: 两轮之间等多久。平台这个接口只能按商品逐个查，一个 45 件商品的账号点一次页面就是
+#: 45 连击 mtop（真机已复现 `stock_refresh_stopped=risk`）—— 所以绝不能由页面触发，
+#: 只能后台一小口一小口地吃。
+STATS_PULL_INTERVAL = float(os.environ.get('XYWB_STATS_INTERVAL', '300'))
+#: 每个账号每轮最多查几件。
+STATS_PULL_LIMIT = int(os.environ.get('XYWB_STATS_LIMIT', '5'))
+#: 每件之间停几秒（连续请求比批量更扎眼）。
+STATS_PULL_PAUSE = float(os.environ.get('XYWB_STATS_PAUSE', '3'))
+#: 启动后先等一会儿再拉：启动瞬间本身就在同步商品/挂 IM，别叠加平台压力。
+STATS_PULL_FIRST_DELAY = float(os.environ.get('XYWB_STATS_FIRST_DELAY', '60'))
+
+
+async def _stats_pull_loop() -> None:
+    """后台慢慢把「商品数据」拉进缓存；页面只读缓存，不等网络。
+
+    **失败绝不能让循环退出**：一次网络抖动就把 worker 弄死的话，用户看到的是
+    「商品数据永远是空的」，而且没有任何日志线索。
+    """
+    await asyncio.sleep(STATS_PULL_FIRST_DELAY)
+    while True:
+        try:
+            result = await stats_worker.pull_once(
+                limit_per_account=STATS_PULL_LIMIT, pause=STATS_PULL_PAUSE
+            )
+            if result.get('pulled') or result.get('failed'):
+                logger.info('商品数据后台拉取: {}', result)
+                # 拉完一轮就广播，让「商品数据」页自己静默重拉 —— 用户不用点刷新，
+                # 也就不需要在前端上定时轮询（全站的实时刷新都走这条事件总线）。
+                _publish_stats_updated(result)
+            elif result.get('paused'):
+                logger.debug('商品数据后台拉取暂停（账号在风控冷却里）')
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 一轮失败不该让 worker 死掉
+            logger.warning('商品数据后台拉取失败（下一轮再试）: {}', exc)
+        await asyncio.sleep(STATS_PULL_INTERVAL)
+
+
+def _publish_stats_updated(result: Dict[str, Any]) -> None:
+    """把「缓存变了」广播给前端（topic `items.stats.updated`）。
+
+    逐个账号发一条：页面是按账号看缓存的，`payload` 里带 `account_id` 才能让
+    「正在看的那个账号」精准重拉；`pulled/failed` 只是给人看的数字。
+    """
+    accounts = result.get('accounts') or {}
+    for account_id, info in accounts.items():
+        if not isinstance(info, dict):
+            continue
+        if not (info.get('pulled') or info.get('failed')):
+            continue
+        try:
+            events.publish('items.stats.updated', {
+                'account_id': str(account_id),
+                'pulled': int(info.get('pulled') or 0),
+                'failed': int(info.get('failed') or 0),
+            })
+        except Exception as exc:  # noqa: BLE001 - 广播失败不该影响拉取
+            logger.debug('商品数据事件广播失败: {}', exc)
+
+
+def _start_stats_worker() -> 'asyncio.Task[None]':
+    """把后台拉取挂进当前事件循环，返回 task 以便退出时取消。"""
+    task = asyncio.create_task(_stats_pull_loop(), name='stats-pull')
+    logger.info(
+        '商品数据后台拉取已启动: 每 {}s 一轮，每账号每轮 {} 件，间隔 {}s',
+        STATS_PULL_INTERVAL, STATS_PULL_LIMIT, STATS_PULL_PAUSE,
+    )
+    return task
+
+
+def _stop_stats_worker(task: 'asyncio.Task[None]') -> None:
+    """退出时取消后台拉取（不 await —— 退出路径不该等一轮网络请求）。"""
+    task.cancel()
 
 
 def _write_port_file() -> None:

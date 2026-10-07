@@ -40,8 +40,17 @@ SOURCE_LOCAL = 'local'
 #: 我们假装没看见」，以后加列时又要回头查一遍。
 PLATFORM_METRICS = ('exposure', 'visits', 'visitors', 'wants')
 
-#: `?source=` 允许的取值：auto=能拿平台就拿、local=完全不碰平台、platform=必须拿到
-SOURCE_MODES = ('auto', 'local', 'platform')
+#: 后台 worker（`services/stats_worker.py`）慢慢拉、页面直接读的那份缓存
+SOURCE_CACHE = 'cache'
+#: 后台 worker 拉失败的缓存行：指标全 NULL，原因写在 `error` 列
+SOURCE_ERROR = 'error'
+#: `?source=` 允许的取值：auto=能拿平台就拿、local=完全不碰平台、platform=必须拿到、
+#: cache=只读后台缓存（**零平台调用**，页面默认走这条）
+SOURCE_MODES = ('auto', 'local', 'platform', 'cache')
+#: 缓存里那几列就是「平台口径」的指标（和 `item_stats_cache` 表的列一一对应）
+CACHE_METRICS = ('exposure', 'visits', 'visitors', 'wants', 'orders', 'buyers', 'paid_orders')
+WARN_CACHE_EMPTY = '后台还没有拉到商品数据（等后台任务跑一轮，或点「刷新数据」），平台指标暂不可用'
+WARN_CACHE_FAILED = '后台拉取有 {count} 件商品失败（{reason}），这些商品的平台指标暂不可用'
 WARN_PLATFORM_MISMATCH = '平台返回的商品数据不属于 {item_id}（响应里标的是 {claimed}），已按本地统计显示'
 
 #: 本地从 `orders` 表算出来的指标
@@ -526,6 +535,35 @@ def _platform_metrics(
 # --------------------------------------------------------------------------- 组装
 
 
+def _cache_snapshot(account_id: str) -> Tuple[Dict[str, Dict[str, Any]], int, str]:
+    """读 `item_stats_cache`：`(每商品的平台口径指标, 失败件数, 第一个失败原因)`。
+
+    **只读本地表，不打平台** —— 「商品数据后台慢慢拉、页面读缓存」就是靠这里。
+    失败行（`source='error'`）的指标一律为空：拉失败 ≠ 平台说是 0。
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    failed = 0
+    reason = ''
+    for row in db.query(
+            'SELECT item_id, exposure, visits, visitors, wants, orders, buyers, paid_orders, '
+            'source, error FROM item_stats_cache WHERE account_id = ?', (account_id,)):
+        item_id = _text(row['item_id']).strip()
+        if not item_id:
+            continue
+        if _text(row['source']) == SOURCE_ERROR:
+            failed += 1
+            reason = reason or _text(row['error'])
+            out[item_id] = {}
+            continue
+        metrics: Dict[str, Any] = {}
+        for key in CACHE_METRICS:
+            number = _number(row[key])
+            if number is not None:
+                metrics[key] = number
+        out[item_id] = metrics
+    return out, failed, reason
+
+
 def _merge(item_id: str, row: Any, chats: Dict[str, Any], orders: Dict[str, Any],
            orders_synced: bool, platform: Dict[str, Any]) -> Dict[str, Any]:
     chat = chats.get(item_id) or {}
@@ -589,7 +627,16 @@ def account_stats(account_id: str = '', item_id: str = '', source: str = '') -> 
     platform: Dict[str, Dict[str, Any]] = {}
     data_source = SOURCE_LOCAL
 
-    if mode != 'local':
+    if mode == SOURCE_CACHE:
+        # 页面默认走这条：只读后台缓存，**一次平台调用都不打**（风控友好）
+        platform, cache_failed, cache_reason = _cache_snapshot(account)
+        data_source = SOURCE_CACHE
+        if cache_failed:
+            warnings.append(WARN_CACHE_FAILED.format(
+                count=cache_failed, reason=cache_reason or '未知原因'))
+        if not platform:
+            warnings.append(WARN_CACHE_EMPTY)
+    elif mode != 'local':
         # 只有真要碰平台时才校验登录态：`source=local` 不调平台，没 Cookie 也该能用
         credential_failure = _credential_failure(account)
         if credential_failure is not None:

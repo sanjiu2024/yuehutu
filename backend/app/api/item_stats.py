@@ -12,7 +12,12 @@
 - `source`（可选，默认 `auto`）：
   - `auto` —— 平台能用就用平台，用不了降级为本地统计（+`warnings`）；
   - `local` —— 完全不碰平台、也不校验登录态，纯本地统计；
-  - `platform` —— 必须拿到平台数据，失败直接 502 `protocol_error`。
+  - `platform` —— 必须拿到平台数据，失败直接 502 `protocol_error`；
+  - `cache` —— **只读后台缓存**（`item_stats_cache`），零平台调用：页面点开就读它，
+    不等网络。缓存由 `services/stats_worker.py` 在后台一轮一轮慢慢填。
+
+另有 `GET /api/items/{account_id}/stats/progress` —— 后台拉取进度（共几件 / 已拉到几件 /
+失败几件 / 最近一次成功时间），给页面显示「后台还在拉，已拉到 12/45」。
 """
 
 from __future__ import annotations
@@ -22,7 +27,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 
-from ..services import common, item_stats
+from ..services import common, item_stats, stats_worker
 from .deps import current_user
 
 router = APIRouter(prefix='/api/items', tags=['item-stats'])
@@ -33,11 +38,21 @@ def _envelope(result: Any):
     return body if status_code == 200 else JSONResponse(status_code=status_code, content=body)
 
 
+@router.get('/{account_id}/stats/progress')
+def account_item_stats_progress(account_id: str, user: Any = Depends(current_user)):
+    """后台商品数据拉取进度。
+
+    与 `/stats` 分开是因为它**绝不碰平台**：只读库里的件数与缓存行数，
+    页面可以放心地随「商品数据」标签页一起刷新。
+    """
+    return _envelope(stats_worker.progress(account_id))
+
+
 @router.get('/{account_id}/stats')
 def account_item_stats(
     account_id: str,
     item_id: str = Query(default='', description='只看这一条商品（可选）'),
-    source: str = Query(default='', description='auto | local | platform'),
+    source: str = Query(default='', description='auto | local | platform | cache'),
     user: Any = Depends(current_user),
 ):
     """某个账号（或其中某条商品）的商品数据。"""

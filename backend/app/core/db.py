@@ -218,6 +218,45 @@ CREATE TABLE IF NOT EXISTS operation_logs (
     detail TEXT DEFAULT '',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 商品数据的后台缓存（第七批）：平台这个接口只能按商品逐个查，页面点一下就是几十连击
+-- mtop、很容易把账号打到风控。所以改成后台慢慢拉，拉到的存这里，页面只读缓存。
+-- 拿不到的指标存 NULL（**不许存 0**）：前端显示「-」，0 和「没拿到」是两件事。
+CREATE TABLE IF NOT EXISTS item_stats_cache (
+    account_id TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    exposure REAL,
+    visits REAL,
+    visitors REAL,
+    wants REAL,
+    orders REAL,
+    buyers REAL,
+    paid_orders REAL,
+    source TEXT NOT NULL DEFAULT 'platform',
+    error TEXT DEFAULT '',
+    fetched_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (account_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_item_stats_cache_account ON item_stats_cache(account_id, fetched_at);
+
+-- 主管 AI 的对话（第七批）：以前只存在浏览器内存里，刷新就没了。落库后可以回看、
+-- 可以查「这次回答用的哪个模型、花了多久、调了哪些工具」。
+CREATE TABLE IF NOT EXISTS agent_chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread TEXT NOT NULL DEFAULT 'master',
+    account_id TEXT DEFAULT '',
+    role TEXT NOT NULL,
+    content TEXT DEFAULT '',
+    tool_calls TEXT DEFAULT '[]',
+    provider_id INTEGER,
+    model TEXT DEFAULT '',
+    latency_ms INTEGER DEFAULT 0,
+    tokens INTEGER DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'ok',
+    error TEXT DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_agent_chat_thread ON agent_chat_messages(thread, id);
 """
 
 
