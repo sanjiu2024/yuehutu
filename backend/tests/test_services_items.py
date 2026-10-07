@@ -198,6 +198,70 @@ class ItemsServiceTest(unittest.TestCase):
         self.assertEqual(len(result['items']), 2)
         self.assertEqual(result['pages'], 2)
 
+    def test_status_buckets_put_sold_out_and_sold_into_offline(self):
+        """售罄（库存 0）与已卖出都归「已下架」分区 —— 用户要的就是「那样好编辑」。
+
+        **真机背景（2026-10-08）**：账号 `3998190171` 有 39 件商品全是 `sold`（其中
+        34 件库存未知、2 件库存 0），而前端下拉框发的是 `onsale`/`offline` —— 原样
+        透传成 `WHERE status = 'onsale'` 时「在售」「已下架」**永远 0 条**。
+        """
+        self.seed('ON', '在售有货', stock=5, status='on_sale')
+        self.seed('UNKNOWN', '库存未知', stock=-1, status='on_sale')
+        self.seed('ZERO', '售罄', stock=0, status='on_sale')
+        self.seed('SOLD', '已卖出', stock=1, status='sold')
+        self.seed('OFF', '平台下架', stock=2, status='off_shelf')
+
+        onsale = [row['item_id'] for row in items.list_items(status='onsale')['items']]
+        # 库存未知算在售：拿不到库存不等于卖完了
+        self.assertEqual(sorted(onsale), ['ON', 'UNKNOWN'])
+        offline = {row['item_id'] for row in items.list_items(status='offline')['items']}
+        self.assertEqual(offline, {'ZERO', 'SOLD', 'OFF'})
+        sold = [row['item_id'] for row in items.list_items(status='sold')['items']]
+        self.assertEqual(sold, ['SOLD'])
+        # 在售 + 已下架 = 全量，不重不漏
+        self.assertEqual(items.list_items(status='onsale')['total']
+                         + items.list_items(status='offline')['total'], 5)
+        # 老写法的精确匹配不能被分区吃掉（`?status=on_sale` 是既有调用）
+        self.assertEqual(items.list_items(status='on_sale')['total'], 3)
+        self.assertEqual(items.list_items(status='off_shelf')['total'], 1)
+
+    def test_counts_ignore_the_status_filter_itself(self):
+        """下拉框里的条数按「账号 + 关键词」算，不跟着当前分区走 —— 否则永远是
+        「在售 N / 其它 0」，用户点之前根本不知道另一边还有多少。"""
+        self.seed('ON', '在售', stock=5, status='on_sale')
+        self.seed('ZERO', '售罄', stock=0, status='on_sale')
+        self.seed('SOLD', '已卖出', stock=1, status='sold')
+        self.seed('OTHER', '别的账号', stock=1, status='on_sale', account='acc2')
+
+        counts = items.list_items(account_id='acc1', status='onsale')['counts']
+        self.assertEqual(counts, {'all': 3, 'onsale': 1, 'offline': 2, 'sold': 1})
+        # 不筛账号时是全库
+        self.assertEqual(items.list_items()['counts']['all'], 4)
+        # 关键词同样进范围
+        self.assertEqual(items.list_items(keyword='售罄')['counts'],
+                         {'all': 1, 'onsale': 0, 'offline': 1, 'sold': 0})
+
+    def test_sort_whitelist_and_unknown_stock_sinks_to_bottom(self):
+        self.seed('A', 'ccc', price=30.0, stock=0)
+        self.seed('B', 'aaa', price=10.0, stock=5)
+        self.seed('C', 'bbb', price=20.0, stock=-1)
+
+        self.assertEqual([row['item_id'] for row in items.list_items(sort='price', order='asc')['items']],
+                         ['B', 'C', 'A'])
+        self.assertEqual([row['item_id'] for row in items.list_items(sort='price', order='desc')['items']],
+                         ['A', 'C', 'B'])
+        self.assertEqual([row['item_id'] for row in items.list_items(sort='title', order='asc')['items']],
+                         ['B', 'C', 'A'])
+        # 库存未知（负数哨兵）不管是升序还是降序都沉底：点「库存」是想看有货没货
+        self.assertEqual([row['item_id'] for row in items.list_items(sort='stock', order='desc')['items']],
+                         ['B', 'A', 'C'])
+        self.assertEqual([row['item_id'] for row in items.list_items(sort='stock', order='asc')['items']],
+                         ['A', 'B', 'C'])
+        # 认不出的列名落回默认排序，**不报错也不拼进 SQL**
+        result = items.list_items(sort='price; DROP TABLE items', order='x')
+        self.assertEqual(result['total'], 3)
+        self.assertEqual(len(result['items']), 3)
+
     def test_get_item_and_missing(self):
         self.seed('I1')
         item = items.get_item('I1')

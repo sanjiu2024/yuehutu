@@ -172,6 +172,47 @@ class ItemsApiTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertEqual([i['item_id'] for i in resp.json()['data']['items']], ['A2'])
 
+    def test_status_buckets_counts_and_sort_over_http(self):
+        """前端下拉框发的 `onsale` / `offline` + 表头点击发的 `sort` / `order`，真跑一遍。
+
+        **真机背景（2026-10-08）**：账号 `2217970177348` 有 45 件 `on_sale` 商品，
+        `?status=onsale` 回的是 `total=0`（原样透传成 `WHERE status = 'onsale'`）；
+        账号 `3998190171` 的 39 件商品全是 `sold`，其中 34 件库存未知、2 件库存 0。
+        用户要的是「售罄的商品应该在下架分区里面」。
+        """
+        seed('ON', account=ACC, price=30.0, status='on_sale', stock=5)
+        seed('UNKNOWN', account=ACC, price=20.0, status='on_sale', stock=-1)
+        seed('ZERO', account=ACC, price=10.0, status='on_sale', stock=0)
+        seed('SOLD', account=ACC, price=40.0, status='sold', stock=1)
+
+        def payload(query: str) -> Dict[str, Any]:
+            resp = self.client.get('/api/items?' + query, headers=self.headers)
+            self.assertEqual(resp.status_code, 200, resp.text)
+            body = resp.json()
+            self.assertTrue(body['success'], resp.text)
+            return body['data']
+
+        onsale = payload('status=onsale')
+        # 库存未知算在售，售罄（库存 0）不算
+        self.assertEqual(sorted(i['item_id'] for i in onsale['items']), ['ON', 'UNKNOWN'])
+        self.assertEqual({i['item_id'] for i in payload('status=offline')['items']}, {'ZERO', 'SOLD'})
+        self.assertEqual([i['item_id'] for i in payload('status=sold')['items']], ['SOLD'])
+        # counts 不跟着当前分区走：选着「在售」也要能看见另外两个分区有多少件
+        self.assertEqual(onsale['counts'], {'all': 4, 'onsale': 2, 'offline': 2, 'sold': 1})
+
+        asc = payload(f'account_id={ACC}&sort=price&order=asc')
+        self.assertEqual([i['item_id'] for i in asc['items']], ['ZERO', 'UNKNOWN', 'ON', 'SOLD'])
+        # 库存未知（-1 哨兵）不管升序降序都沉底
+        self.assertEqual([i['item_id'] for i in payload(f'account_id={ACC}&sort=stock&order=asc')['items']],
+                         ['ZERO', 'SOLD', 'ON', 'UNKNOWN'])
+        self.assertEqual([i['item_id'] for i in payload(f'account_id={ACC}&sort=stock&order=desc')['items']],
+                         ['ON', 'SOLD', 'ZERO', 'UNKNOWN'])
+        # 认不出的列名落回默认排序：不报错、也不把值拼进 SQL
+        bogus = payload('sort=price%3B%20DROP%20TABLE%20items&order=x')
+        self.assertEqual(bogus['total'], 4)
+        self.assertEqual(len(bogus['items']), 4)
+        self.assertTrue(db.query_one('SELECT COUNT(*) AS n FROM items')['n'] == 4)
+
     def test_get_single_item_still_works(self):
         """补了新路由不能把 `/{account_id}/{item_id}` 撞坏。"""
         seed('A1', account=ACC)

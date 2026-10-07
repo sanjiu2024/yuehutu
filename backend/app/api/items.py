@@ -46,14 +46,22 @@ def list_items(
     size: int = Query(default=50, ge=1, le=500),
     limit: Optional[int] = Query(default=None),
     offset: Optional[int] = Query(default=None),
+    sort: Optional[str] = Query(default=None),
+    order: Optional[str] = Query(default=None),
     user=Depends(current_user),
 ):
-    """`q` 是 CONTRACTS 的名字，`keyword` 是服务层的名字；`limit/offset` 折算成 page/size。"""
+    """`q` 是 CONTRACTS 的名字，`keyword` 是服务层的名字；`limit/offset` 折算成 page/size。
+
+    `status` 认 `onsale` / `offline` / `sold` 三个分区（服务层 `_status_clause` 决定口径）；
+    `sort` / `order` 走白名单，认不出的值落回「更新时间倒序」——**不报错**，
+    前端点表头不会因为一个拼错的列名把整页打成错误态。
+    """
     if limit:
         size = max(1, min(int(limit), 500))
         if offset:
             page = int(offset) // size + 1
-    return _envelope(items.list_items(account_id=account_id, keyword=q or keyword, page=page, size=size, status=status))
+    return _envelope(items.list_items(account_id=account_id, keyword=q or keyword, page=page, size=size,
+                                      status=status, sort=sort, order=order))
 
 
 @router.get('/stats')
@@ -166,6 +174,8 @@ def list_items_for_account(
     keyword: Optional[str] = Query(default=None),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=50, ge=1, le=500),
+    sort: Optional[str] = Query(default=None),
+    order: Optional[str] = Query(default=None),
     user=Depends(current_user),
 ):
     """某个账号的商品列表。
@@ -175,7 +185,8 @@ def list_items_for_account(
     看起来像账号没商品，其实路由根本不存在。
     """
     return _envelope(items.list_items(account_id=account_id, keyword=q or keyword,
-                                      page=page, size=size, status=status))
+                                      page=page, size=size, status=status,
+                                      sort=sort, order=order))
 
 
 @router.get('/{account_id}/{item_id}')

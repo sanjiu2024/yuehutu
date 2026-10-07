@@ -69,6 +69,30 @@ NUMERIC_PATCH_KEYS = {'price_delta', 'price_set', 'stock_set', 'stock_delta'}
 #: 其中必须是整数的（库存没有半件）。`2.5` 静默截成 `2` 也是编数字。
 INTEGER_PATCH_KEYS = {'stock_set', 'stock_delta'}
 
+#: 商品列表的状态分区（前端下拉框发的就是这三个词）。
+#:
+#: **为什么不能直接 `WHERE status = ?`**：前端发的是 `onsale` / `offline`，而库里的
+#: 真值是 `on_sale` / `sold`（见 `xianyu/client.py::canonical_status`）—— 原样透传
+#: 时「在售」「已下架」两个筛选**永远返回 0 条**（真机实测：账号 2217970177348
+#: 有 45 件 on_sale 商品，`?status=onsale` 回 `total=0`）。
+STATUS_BUCKETS = ('onsale', 'offline', 'sold')
+
+#: 库里可能出现的历史写法（中文是早期手工/旧同步留下的）。只加不删。
+ON_SALE_STATUSES = ('on_sale', 'onsale', '在售')
+SOLD_STATUSES = ('sold', '已售出', '已卖出')
+
+#: 允许点击表头排序的列白名单 → `(主键列, 次键列)`。**绝不把用户输入拼进 SQL**。
+SORT_COLUMNS = {
+    'updated': ('updated_at', 'id'),
+    'price': ('price', 'id'),
+    'stock': ('stock', 'id'),
+    'title': ('title', 'id'),
+    'status': ('status', 'id'),
+    'item_id': ('item_id', 'id'),
+}
+DEFAULT_SORT = 'updated'
+DEFAULT_ORDER = 'desc'
+
 
 def _patch_number(key: str, value: Any) -> float:
     """补丁数字字段 → `float`；非法一律抛 `ValueError`（消息可直接给用户看）。"""
@@ -134,13 +158,95 @@ def _find_row_for_account(account_id: Any, item_id: Any) -> Optional[Any]:
 # --------------------------------------------------------------------------- 读
 
 
+def _in_clause(column: str, values: Sequence[str]) -> Tuple[str, List[Any]]:
+    """`column IN (?, ?, …)` + 参数。占位符按值个数生成，**值本身只走参数**。"""
+    placeholders = ', '.join('?' for _ in values)
+    return f'COALESCE({column}, \'\') IN ({placeholders})', list(values)
+
+
+def _status_clause(status: str) -> Tuple[str, List[Any]]:
+    """前端的状态分区 → SQL 条件（返回值永远只含 `?` 占位符，可直接拼进 WHERE）。
+
+    - `onsale`：平台口径在售 **且库存不为 0**。库存未知（`NULL` / 负数哨兵）算在售 ——
+      拿不到库存不等于卖完了，把它塞进「已下架」会让用户以为商品被下架了。
+    - `sold`：平台口径已卖出（旧数据里的中文写法一起认）。
+    - `offline`：**非在售的全集** —— 平台判下架的 + 售罄（库存 0）的 + 已卖出的。
+      用户的原话是「售罄的商品应该在下架分区里面，那样好编辑」：一件卖完的商品挂在
+      「在售」里既卖不出也点不动，混在在售里只会让人以为还有货。
+    - 其它值：按历史行为精确匹配 `status`（`?status=on_sale` 这类调用不能被破坏）。
+    """
+    if status == 'onsale':
+        clause, params = _in_clause('status', ON_SALE_STATUSES)
+        return f'({clause} AND (stock IS NULL OR stock <> 0))', params
+    if status == 'sold':
+        return _in_clause('status', SOLD_STATUSES)
+    if status == 'offline':
+        clause, params = _in_clause('status', ON_SALE_STATUSES)
+        return f'(NOT {clause} OR stock = 0)', params
+    return 'status = ?', [status]
+
+
+def _order_clause(sort: Optional[str], order: Optional[str]) -> str:
+    """排序白名单 → ORDER BY。认不出的 `sort` 落回默认（更新时间倒序）。"""
+    key = str(sort or DEFAULT_SORT).strip().lower()
+    if key not in SORT_COLUMNS:
+        key = DEFAULT_SORT
+    ascending = str(order or DEFAULT_ORDER).strip().lower() in ('asc', 'up', '1')
+    direction = 'ASC' if ascending else 'DESC'
+    primary, secondary = SORT_COLUMNS[key]
+    if key == 'stock':
+        # 库存未知（NULL / 负数哨兵）**永远沉底**：点「库存」想看的是有货没货，
+        # 不管升序降序都不该先翻一堆「-」。
+        return f'ORDER BY (stock IS NULL OR stock < 0) ASC, stock {direction}, {secondary} DESC'
+    return f'ORDER BY {primary} {direction}, {secondary} DESC'
+
+
+def _status_counts(clause: str, params: Sequence[Any]) -> Dict[str, int]:
+    """同一筛选范围（账号 + 关键词）里三个分区各多少件。
+
+    下拉框直接显示数字，用户点之前就知道点完还剩几条 —— 「在售 42 / 已下架 53 / 已售出 39」
+    比点进去发现是空的强。这里的 `clause` 只含账号与关键词，不含状态本身。
+    """
+    onsale_sql, onsale_params = _status_clause('onsale')
+    offline_sql, offline_params = _status_clause('offline')
+    sold_sql, sold_params = _status_clause('sold')
+    row = db.query_one(
+        'SELECT COUNT(*) AS all_count,'
+        f' COALESCE(SUM(CASE WHEN {onsale_sql} THEN 1 ELSE 0 END), 0) AS onsale,'
+        f' COALESCE(SUM(CASE WHEN {offline_sql} THEN 1 ELSE 0 END), 0) AS offline,'
+        f' COALESCE(SUM(CASE WHEN {sold_sql} THEN 1 ELSE 0 END), 0) AS sold'
+        f' FROM items{clause}',
+        # ⚠️ 参数顺序必须与 SQL 里 `?` 出现的顺序一致：三个 CASE WHEN 在 SELECT 里，
+        # **排在 WHERE 之前** —— 把 `params` 放前面会让账号名绑到第一个状态占位符上，
+        # 结果永远是「全 0」（这条踩过一次，测试当场抓到）。
+        onsale_params + offline_params + sold_params + list(params),
+    )
+    if row is None:
+        return {'all': 0, 'onsale': 0, 'offline': 0, 'sold': 0}
+    return {
+        # `all` 是 SQL 关键字，别名只能叫 all_count，对外仍旧叫 all。
+        'all': int(row['all_count'] or 0),
+        'onsale': int(row['onsale'] or 0),
+        'offline': int(row['offline'] or 0),
+        'sold': int(row['sold'] or 0),
+    }
+
+
 def list_items(
     account_id: Optional[str] = None,
     keyword: Optional[str] = None,
     page: int = 1,
     size: int = 50,
     status: Optional[str] = None,
+    sort: Optional[str] = None,
+    order: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """商品列表。
+
+    `status` 认三个分区名（`onsale` / `offline` / `sold`，见 `_status_clause`），
+    其它值按精确匹配穿透；`sort` / `order` 走白名单（见 `_order_clause`）。
+    返回 `counts` 给前端下拉框显示各分区条数（同一账号 + 关键词范围，不含状态本身）。
+    """
     page = max(1, int(page or 1))
     size = max(1, min(int(size or 50), 500))
     where: List[str] = []
@@ -148,19 +254,24 @@ def list_items(
     if account_id:
         where.append('account_id = ?')
         params.append(account_id)
-    if status:
-        where.append('status = ?')
-        params.append(status)
     if keyword:
         where.append('(title LIKE ? OR item_id LIKE ? OR description LIKE ?)')
         like = f'%{keyword}%'
         params.extend([like, like, like])
+    # 分区之外的筛选（账号 / 关键词）单独留一份，用来算 counts —— 带上状态本身
+    # 去数就会永远只数出当前分区那几条。
+    scope_clause = (' WHERE ' + ' AND '.join(where)) if where else ''
+    counts = _status_counts(scope_clause, params)
+    if status:
+        clause, status_params = _status_clause(status)
+        where.append(clause)
+        params.extend(status_params)
     clause = (' WHERE ' + ' AND '.join(where)) if where else ''
 
     total_row = db.query_one(f'SELECT COUNT(*) AS n FROM items{clause}', params)
     total = int(total_row['n']) if total_row is not None else 0
     rows = db.query(
-        f'SELECT * FROM items{clause} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?',
+        f'SELECT * FROM items{clause} {_order_clause(sort, order)} LIMIT ? OFFSET ?',
         params + [size, (page - 1) * size],
     )
     return {
@@ -169,6 +280,7 @@ def list_items(
         'page': page,
         'size': size,
         'pages': (total + size - 1) // size,
+        'counts': counts,
     }
 
 
