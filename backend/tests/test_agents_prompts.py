@@ -192,6 +192,18 @@ class AgentsPromptsTest(unittest.TestCase):
         self.assertTrue(prompts.delete_prompt(row['id']))
         self.assertIsNone(prompts.get_prompt(row['id']))
 
+    def test_delete_missing_prompt_returns_false(self):
+        """删一个不存在的 id 必须返回 False（复审 L6）。
+
+        原先实现是 `bool(db.execute('DELETE ...'))`，而 `db.execute()` 返回的是
+        `cur.lastrowid or cur.rowcount` —— DELETE 不会重置 lastrowid，同一个连接上会拿到
+        上一次 INSERT 的 id，于是「删掉 0 行」也返回 True。这里先插一行把 lastrowid 顶起来，
+        再删一个不存在的 id，正是真机上会踩到的顺序。
+        """
+        prompts.upsert_prompt('global', content='还在', role='item')
+        self.assertFalse(prompts.delete_prompt(999999))
+        self.assertFalse(prompts.delete_prompt(0))
+
     def test_seed_defaults_fills_empty_only(self):
         roles.update_role('cs', system_prompt='我自己写的')
         written = prompts.seed_defaults()

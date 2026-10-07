@@ -11,20 +11,26 @@
     DELETE /api/agents/prompts/{prompt_id}
     GET    /api/agents/messages      AI 之间的沟通记录（前端「AI 沟通」页）
     GET    /api/agents/runs          调用用量/耗时
-    POST   /api/agents/master/chat   和主管 AI 对话
+    POST   /api/agents/master/chat   和主管 AI 对话（**两个回合都落库**）
+    GET    /api/agents/chat/messages 主管 AI 对话历史（分页）
+    DELETE /api/agents/chat/messages 清空主管 AI 对话历史
     POST   /api/agents/reply         内部：给一条买家消息生成 AI 回复（不发送）
 """
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 
-from ..agents import llm, prompts as prompts_mod, roles as roles_mod, runtime
+from ..agents import history, llm, prompts as prompts_mod, roles as roles_mod, runtime
 from ..core import db, events
 from .deps import current_user
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/api/agents', tags=['agents'])
 
@@ -38,6 +44,16 @@ def _publish(topic: str, payload: Dict[str, Any]) -> None:
         events.publish(topic, payload)
     except Exception:  # pragma: no cover
         pass
+
+
+def _record(thread: str, role: str, content: str, **fields: Any) -> int:
+    """把一回合落库。**落库失败绝不能让对话接口 500** —— 对话已经发生了，
+    只是没记住；记一条日志就好。返回新行 id，失败返回 0。"""
+    try:
+        return history.append(thread, role, content, **fields)
+    except Exception:
+        log.exception('对话落库失败（thread=%s role=%s），本次对话结果仍正常返回', thread, role)
+        return 0
 
 
 # --------------------------------------------------------------------------
@@ -173,19 +189,71 @@ def delete_prompt(prompt_id: int, user=Depends(current_user)):
 @router.get('/messages')
 def agent_messages(
     limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     conversation_id: Optional[int] = Query(default=None),
     user=Depends(current_user),
 ):
-    return {'success': True, 'data': runtime.recent_agent_messages(limit=limit, conversation_id=conversation_id)}
+    """AI 之间的沟通记录。
+
+    `data` **仍然是裸数组**（前端「AI 沟通」页在用，不能改成对象），分页信息放在同级的
+    `total` / `limit` / `offset` 上。
+    """
+    items = runtime.recent_agent_messages(limit=limit, conversation_id=conversation_id, offset=offset)
+    return {
+        'success': True,
+        'data': items,
+        'total': runtime.count_agent_messages(conversation_id=conversation_id),
+        'limit': int(limit),
+        'offset': int(offset),
+    }
 
 
 @router.get('/runs')
 def agent_runs(
     limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     role: Optional[str] = Query(default=None),
     user=Depends(current_user),
 ):
-    return {'success': True, 'data': llm.recent_runs(limit=limit, role=role)}
+    """调用用量/耗时。分页信息与 `/messages` 同形（`data` 保持裸数组）。"""
+    items = llm.recent_runs(limit=limit, role=role, offset=offset)
+    return {
+        'success': True,
+        'data': items,
+        'total': llm.count_runs(role=role),
+        'limit': int(limit),
+        'offset': int(offset),
+    }
+
+
+# --------------------------------------------------------------------------
+# 主管 AI 的对话历史（落库后可以回看）
+# --------------------------------------------------------------------------
+
+@router.get('/chat/messages')
+def chat_messages(
+    thread: str = Query(default=history.DEFAULT_THREAD),
+    limit: int = Query(default=50, ge=1, le=500),
+    before_id: Optional[int] = Query(default=None),
+    user=Depends(current_user),
+):
+    """主管 AI 对话历史，按 id 升序返回一页（最新的在最后，便于直接追加渲染）。
+
+    `before_id` 用于向上翻更早的历史；`data.total` 是该 thread 总数，
+    `data.has_more` 表示这一页之前还有没有更早的行。
+    """
+    return {'success': True, 'data': history.list_messages(thread=thread, limit=limit, before_id=before_id)}
+
+
+@router.delete('/chat/messages')
+def clear_chat_messages(
+    thread: str = Query(default=history.DEFAULT_THREAD),
+    user=Depends(current_user),
+):
+    """清空某个 thread 的对话历史，返回删除行数。"""
+    deleted = history.clear(thread=thread)
+    _publish('agent.chat.cleared', {'thread': thread, 'deleted': deleted})
+    return {'success': True, 'data': {'thread': thread, 'deleted': deleted}}
 
 
 # --------------------------------------------------------------------------
@@ -197,6 +265,8 @@ async def master_chat(payload: Dict[str, Any] = Body(...), user=Depends(current_
     message = str(payload.get('message') or '').strip()
     if not message:
         raise HTTPException(status_code=400, detail='message 不能为空')
+    thread = str(payload.get('thread') or history.DEFAULT_THREAD)
+    account_id = str(payload.get('account_id') or '')
     conversation_id = payload.get('conversation_id')
     context: Dict[str, Any] = {}
     if conversation_id:
@@ -204,17 +274,55 @@ async def master_chat(payload: Dict[str, Any] = Body(...), user=Depends(current_
     if isinstance(payload.get('history'), list):
         context['history'] = payload['history']
 
-    result = await runtime.run_master(message, context or None)
+    _record(thread, 'user', message, account_id=account_id)
+
+    started = time.perf_counter()
+    try:
+        result = await runtime.run_master(message, context or None)
+    except Exception as exc:  # noqa: BLE001
+        # **抛异常也要留痕**（复审 M3）：`run_master` 里读提示词、查温度、读历史都在
+        # 它自己的 try 之外，DB 故障时用户只看到一个 500，AI 会话记录里连「这次失败过」
+        # 都没有 —— 事后完全无法判断他到底问过什么、为什么没回。
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        error = f'{type(exc).__name__}: {exc}'
+        _record(thread, 'assistant', '', account_id=account_id,
+                latency_ms=latency_ms, status='error', error=error)
+        log.exception('主管 AI 回合异常')
+        raise HTTPException(status_code=502, detail=error)
+    latency_ms = int((time.perf_counter() - started) * 1000)
+
     if not result.get('ok'):
-        raise HTTPException(status_code=502, detail=str(result.get('error') or '主管 AI 调用失败'))
+        # 失败也要落库：runtime 在工具已经执行过之后才失败时会把 tool_calls 带回来，
+        # 用户因此能看到「它其实已经改了什么 / 为什么失败」。
+        error = str(result.get('error') or '主管 AI 调用失败')
+        _record(thread, 'assistant', '', account_id=account_id,
+                tool_calls=result.get('tool_calls'), provider_id=result.get('provider_id'),
+                model=str(result.get('model') or ''), latency_ms=latency_ms,
+                status='error', error=error)
+        raise HTTPException(status_code=502, detail=error)
+
+    usage = result.get('usage') or {}
+    tokens = int(usage.get('prompt_tokens') or 0) + int(usage.get('completion_tokens') or 0)
+    reply = str(result.get('reply', '') or '')
+    tool_calls = result.get('tool_calls') or []
+    _record(thread, 'assistant', reply, account_id=account_id, tool_calls=tool_calls,
+            provider_id=result.get('provider_id'), model=str(result.get('model') or ''),
+            latency_ms=latency_ms, tokens=tokens, status='ok')
+
     return {
         'success': True,
         'data': {
-            'reply': result.get('reply', ''),
-            'tool_calls': result.get('tool_calls', []),
+            'reply': reply,
+            'tool_calls': tool_calls,
             'role': 'master',
             'model': result.get('model', ''),
             'provider_id': result.get('provider_id'),
+            # 新增（前端可选用）：让页面能把刚这一回合就地插进历史列表，不必重拉
+            'thread': thread,
+            'latency_ms': latency_ms,
+            'tokens': tokens,
+            'usage': usage,
+            'truncated': bool(result.get('truncated')),
         },
     }
 

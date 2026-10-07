@@ -73,15 +73,17 @@ def record_agent_message(
     return message_id
 
 
-def recent_agent_messages(limit: int = 100, conversation_id: Optional[int] = None) -> List[Dict[str, Any]]:
+def recent_agent_messages(limit: int = 100, conversation_id: Optional[int] = None,
+                          offset: int = 0) -> List[Dict[str, Any]]:
     """AI 之间沟通的记录（新的在前），前端「AI 沟通」页用。"""
     sql = 'SELECT * FROM agent_messages'
     params: List[Any] = []
     if conversation_id is not None:
         sql += ' WHERE conversation_id = ?'
         params.append(int(conversation_id))
-    sql += ' ORDER BY id DESC LIMIT ?'
+    sql += ' ORDER BY id DESC LIMIT ? OFFSET ?'
     params.append(int(limit))
+    params.append(max(0, int(offset or 0)))
     rows = list(db.query(sql, params))
     out: List[Dict[str, Any]] = []
     for row in rows:
@@ -89,6 +91,17 @@ def recent_agent_messages(limit: int = 100, conversation_id: Optional[int] = Non
         item['payload'] = _loads(item.get('payload'), {})
         out.append(item)
     return out
+
+
+def count_agent_messages(conversation_id: Optional[int] = None) -> int:
+    """`agent_messages` 的总行数（配合 `recent_agent_messages` 的分页）。"""
+    sql = 'SELECT COUNT(*) AS n FROM agent_messages'
+    params: List[Any] = []
+    if conversation_id is not None:
+        sql += ' WHERE conversation_id = ?'
+        params.append(int(conversation_id))
+    row = db.query_one(sql, params)
+    return int(row['n']) if row is not None else 0
 
 
 def _conversation(conversation_id: int):
@@ -397,6 +410,7 @@ async def run_master(user_text: str, context: Optional[Dict[str, Any]] = None) -
 
     executed: List[Dict[str, Any]] = []
     last_text = ''
+    last_result: Dict[str, Any] = {}
     for _round in range(tools_mod.MAX_TOOL_ROUNDS):
         try:
             result = await llm.chat(
@@ -407,7 +421,12 @@ async def run_master(user_text: str, context: Optional[Dict[str, Any]] = None) -
                 conversation_id=int(conversation_id) if conversation_id else None,
             )
         except llm.LLMError as exc:
-            return {'ok': False, 'error': str(exc), 'role': 'master', 'tool_calls': executed}
+            # 失败行也要能落 provider_id：`LLMError` 自己带着它（llm.py 的 `__init__` 有
+            # `provider_id`，`raise LLMError(..., provider_id=provider['id'])` 填过）。以前这里
+            # 丢掉，落库就只能填 NULL，用户看不出是哪个提供者挂的。
+            return {'ok': False, 'error': str(exc), 'role': 'master', 'tool_calls': executed,
+                    'provider_id': getattr(exc, 'provider_id', None), 'model': ''}
+        last_result = result
 
         last_text = result.get('text', '') or last_text
         calls = [_parse_tool_call(c) for c in (result.get('tool_calls') or [])]
@@ -435,11 +454,18 @@ async def run_master(user_text: str, context: Optional[Dict[str, Any]] = None) -
             })
         events.publish('agent.master.tools', {'count': len(calls), 'names': [c['name'] for c in calls]})
 
+    # 工具轮数用尽：这条分支同样是**成功**（模型答了话，只是没机会再调工具），
+    # 所以 provider_id/model/usage 要和上面那条成功分支一样带上 —— 少了它们，
+    # 落库那一行就只能填 NULL/''/0，用户看到「AI 会话记录」里这次调用没有模型，
+    # 而这明明是一次真实的模型调用（复审 M1）。
     return {
         'ok': True,
         'reply': last_text or '（工具调用轮数已达上限，先停一下）',
         'tool_calls': executed,
         'role': 'master',
+        'provider_id': (last_result or {}).get('provider_id'),
+        'model': (last_result or {}).get('model', ''),
+        'usage': (last_result or {}).get('usage', {}),
         'truncated': True,
     }
 
@@ -589,8 +615,11 @@ async def cross_ask(
     return text
 
 
-def recent_runs(limit: int = 100, role: Optional[str] = None) -> List[Dict[str, Any]]:
-    return llm.recent_runs(limit=limit, role=role)
+def recent_runs(limit: int = 100, role: Optional[str] = None,
+                offset: int = 0) -> List[Dict[str, Any]]:
+    """转发到 `llm.recent_runs`（**必须转发 `offset`**：漏掉它时签名看着一样，
+    调用方传了也静默从 0 开始，翻页永远翻不动 —— 复审 L5）。"""
+    return llm.recent_runs(limit=limit, role=role, offset=offset)
 
 
 def elapsed_ms(started: float) -> int:
@@ -601,6 +630,7 @@ __all__ = [
     'CROSS_TIMEOUT',
     'MAX_CROSS_DEPTH',
     'cross_ask',
+    'count_agent_messages',
     'match_items',
     'recent_agent_messages',
     'recent_runs',

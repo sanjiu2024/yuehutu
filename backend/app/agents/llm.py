@@ -309,15 +309,27 @@ async def chat_text(
     return result['text']
 
 
-def recent_runs(limit: int = 100, role: Optional[str] = None) -> List[Dict[str, Any]]:
+def recent_runs(limit: int = 100, role: Optional[str] = None, offset: int = 0) -> List[Dict[str, Any]]:
     sql = 'SELECT * FROM agent_runs'
     params: List[Any] = []
     if role:
         sql += ' WHERE role = ?'
         params.append(role)
-    sql += ' ORDER BY id DESC LIMIT ?'
+    sql += ' ORDER BY id DESC LIMIT ? OFFSET ?'
     params.append(int(limit))
+    params.append(max(0, int(offset or 0)))
     return [dict(r) for r in db.query(sql, params)]
+
+
+def count_runs(role: Optional[str] = None) -> int:
+    """`agent_runs` 的总行数（配合 `recent_runs` 的分页）。"""
+    sql = 'SELECT COUNT(*) AS n FROM agent_runs'
+    params: List[Any] = []
+    if role:
+        sql += ' WHERE role = ?'
+        params.append(role)
+    row = db.query_one(sql, params)
+    return int(row['n']) if row is not None else 0
 
 
 def role_defaults(role: str) -> Dict[str, Any]:
@@ -331,6 +343,7 @@ __all__ = [
     'LLMError',
     'chat',
     'chat_text',
+    'count_runs',
     'recent_runs',
     'resolve_provider',
 ]

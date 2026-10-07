@@ -564,6 +564,46 @@ class MasterChatTest(unittest.TestCase):
         self.assertFalse(result['ok'])
         self.assertIn('401', result['error'])
 
+    def test_run_master_llm_failure_keeps_provider_id(self):
+        """失败行也要能说出「是哪个提供者挂的」（复审 M2）。"""
+        async def boom(messages, **kwargs):
+            raise llm.LLMError('HTTP 401: bad key', provider_id=7)
+
+        with mock.patch.object(llm, 'chat', boom):
+            result = asyncio.run(runtime.run_master('在吗'))
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['provider_id'], 7)
+
+    def test_run_master_truncated_keeps_provider_and_model(self):
+        """工具轮数用尽那条分支同样是**成功**，不许丢 provider_id/model/usage（复审 M1）。"""
+        async def always_calls_tool(messages, *, role=None, tools=None, **kwargs):
+            return {'text': '', 'tool_calls': [{'id': 'c1', 'function': {
+                'name': 'items_list', 'arguments': '{}'}}],
+                'usage': {'prompt_tokens': 5, 'completion_tokens': 1},
+                'model': 'mock-model', 'provider_id': 3, 'raw': {}}
+
+        with mock.patch.object(llm, 'chat', always_calls_tool):
+            result = asyncio.run(runtime.run_master('一直调工具'))
+
+        self.assertTrue(result['ok'], result)
+        self.assertTrue(result['truncated'])
+        self.assertEqual(result['provider_id'], 3)
+        self.assertEqual(result['model'], 'mock-model')
+        self.assertEqual(result['usage']['prompt_tokens'], 5)
+        self.assertEqual(len(result['tool_calls']), tools.MAX_TOOL_ROUNDS)
+
+    def test_recent_runs_forwards_offset(self):
+        """包装函数漏转发 `offset` 时，翻页永远翻不动（复审 L5）。"""
+        seen = {}
+
+        def fake_recent_runs(limit=100, role=None, offset=0):
+            seen.update(limit=limit, role=role, offset=offset)
+            return []
+
+        with mock.patch.object(llm, 'recent_runs', fake_recent_runs):
+            runtime.recent_runs(limit=20, role='master', offset=40)
+        self.assertEqual(seen, {'limit': 20, 'role': 'master', 'offset': 40})
+
     def test_master_chat_tool_delegates_to_run_master(self):
         with mock.patch.object(llm, 'chat', _fake_chat({'master': '我在'})):
             result = asyncio.run(tools.call_tool('master_chat', {'message': '在吗'}))

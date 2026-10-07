@@ -226,7 +226,15 @@ def upsert_prompt(scope: str, owner_id: Optional[str] = None, content: str = '',
 
 
 def delete_prompt(prompt_id: int) -> bool:
-    return bool(db.execute('DELETE FROM ai_prompts WHERE id = ?', (int(prompt_id),)))
+    """删掉一条提示词；返回**是否真的删掉了行**。
+
+    这里**不能**用 `db.execute()` 的返回值：它是 `cur.lastrowid or cur.rowcount`，而 DELETE
+    不会重置 lastrowid —— 同一个连接上会拿到上一次 INSERT 的 id，于是「删一个不存在的 id」
+    也会返回 True（复审 L6，同一个坑在 `agents/history.clear()` 已复现过一次）。
+    """
+    with db.tx() as conn:
+        cur = conn.execute('DELETE FROM ai_prompts WHERE id = ?', (int(prompt_id),))
+        return int(cur.rowcount) > 0
 
 
 def seed_defaults() -> int:
