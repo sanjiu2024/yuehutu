@@ -989,6 +989,10 @@ ITEM_STATS_FIELDS = (
     ('wantNum', 'wants'),          # 想要人数
 )
 
+#: 剥信封的最大层数。真机见过两层（外层信封 + 内层指标），留到 4 层足够：
+#: 再深就不是信封而是业务数据了，继续剥会把 `data` 里的正常字段也当成信封。
+_STATS_ENVELOPE_DEPTH = 4
+
 
 def _metric_value(value: Any) -> Any:
     """平台计数 → ``int``；不是干净数字就**原样保留字符串**；空值返回 ``None``。
@@ -1021,12 +1025,19 @@ def _stats_payloads(data: Any) -> List[Any]:
     商品数据指标」，明明有 367 次曝光也被整条丢掉、降级成本地统计。
     所以这里同时接受两种形状：**裸指标 dict**（旧调用方/单测直接传内层）与
     **带信封的 dict**（真机）。取到第一份能解析出指标的为准。
+
+    信封**可能是多层**的（``data.data.data…``），所以这里按 ``data`` 键往里走，
+    最多剥 ``_STATS_ENVELOPE_DEPTH`` 层 —— 只剥一层的话，平台哪天再包一层就会
+    重现「明明有 367 次曝光却报没有可识别的指标」。
     """
     if not isinstance(data, dict):
         return []
     candidates: List[Any] = [data]
-    inner = data.get('data')
-    if isinstance(inner, dict):
+    inner: Any = data
+    for _ in range(_STATS_ENVELOPE_DEPTH):
+        inner = inner.get('data') if isinstance(inner, dict) else None
+        if not isinstance(inner, dict):
+            break
         candidates.append(inner)
     return candidates
 

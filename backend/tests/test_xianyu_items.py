@@ -28,6 +28,7 @@ import httpx  # noqa: E402
 
 from backend.app.xianyu import mtop  # noqa: E402
 from backend.app.xianyu import risk  # noqa: E402
+from backend.app.xianyu import client as client_mod  # noqa: E402
 from backend.app.xianyu.client import (  # noqa: E402
     CATEGORY_RECOMMEND_API,
     CARDS_API,
@@ -1167,6 +1168,24 @@ class ItemStatsTest(ProtocolCase):
         self.assertEqual(parsed['visits'], 7)
         self.assertEqual(parsed['wants'], 2)
         self.assertEqual(len(stub.calls), 1)
+
+    def test_deeper_envelope_is_also_unwrapped(self):
+        """信封**不止两层**时也要认得（独立审查 D2）。
+
+        只剥一层的话，平台哪天再包一层就会原样重现「明明有 367 次曝光却报没有可
+        识别的指标」—— 那次事故的成本是整条降级成本地统计 + 用户看到一句错的
+        原因。剥的层数有上限（`_STATS_ENVELOPE_DEPTH`），到顶就停，不无限往下钻。
+        """
+        inner = {'exposureNum': 367, 'showNum': 24, 'wantNum': 1}
+        three = {'code': 'success', 'data': {'code': 'success', 'data': inner}, 'msg': '成功'}
+        parsed = parse_item_stats(three)
+        assert parsed is not None
+        self.assertEqual((parsed['exposure'], parsed['visits'], parsed['wants']), (367, 24, 1))
+        # 剥到上限之外就不再往下找：够深的一层里指标认不出来就该是 None，不猜
+        deep = inner
+        for _ in range(client_mod._STATS_ENVELOPE_DEPTH + 2):
+            deep = {'code': 'success', 'data': deep}
+        self.assertIsNone(parse_item_stats(deep))
 
     def test_missing_item_id_never_calls_platform(self):
         client, stub = make_client({ITEM_STATS_API: {'exposureNum': 1}})
