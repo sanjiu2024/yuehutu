@@ -365,6 +365,7 @@ export function ItemsPage() {
   const [tab, setTab] = useState<'list' | 'data'>('list')
   const [accountId, setAccountId] = useState('')
   const [status, setStatus] = useState('')
+  const [queryInput, setQueryInput] = useState('')
   const [query, setQuery] = useState('')
   /** 表头排序：默认「更新时间倒序」，点表头切换（同一列再点一下换方向）。 */
   const [sortKey, setSortKey] = useState<ItemSortKey>('updated')
@@ -382,6 +383,13 @@ export function ItemsPage() {
   const [confirmAction, setConfirmAction] = useState<{ title: string; message: ReactNode; run: () => Promise<void> } | null>(null)
 
   const accountList = accounts.data ?? []
+
+  // 输入框每敲一个字都发一次请求，列表就会在「加载中…」和内容之间来回闪；等 250ms 再查。
+  // `queryInput` 只管显示，`query` 才是进请求的那个值。
+  useEffect(() => {
+    const timer = window.setTimeout(() => setQuery(queryInput), 250)
+    return () => window.clearTimeout(timer)
+  }, [queryInput])
 
   // 菜单开着时，点页面任何其他地方（含另一个菜单按钮）就收起：避免多个菜单叠在一起。
   useEffect(() => {
@@ -412,6 +420,8 @@ export function ItemsPage() {
   const list = items.data?.items ?? []
   /** 三个状态分区各有多少件（后端 `counts`，范围是账号 + 关键词，不含状态本身）。 */
   const counts = items.data?.counts
+  /** 真总条数（可能大于本次返回的 `limit`，那时页面只显示了一部分）。 */
+  const total = items.data?.total ?? list.length
 
   const selectedItems = useMemo(() => list.filter((item) => selected.has(item.item_id)), [list, selected])
   const selectedAccounts = useMemo(() => new Set(selectedItems.map((item) => item.account_id)), [selectedItems])
@@ -589,8 +599,8 @@ export function ItemsPage() {
           <input
             type="search"
             placeholder="搜索标题 / 商品 ID"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            value={queryInput}
+            onChange={(e) => setQueryInput(e.target.value)}
             style={{ width: 190 }}
           />
         </label>
@@ -668,7 +678,8 @@ export function ItemsPage() {
         <h3>
           商品列表
           <span className="hint">
-            共 {list.length} 条
+            共 {total} 条
+            {list.length < total ? ` · 只显示了前 ${list.length} 条（用搜索或状态筛选缩小范围）` : ''}
             {counts
               ? ` · 在售 ${counts.onsale} · 已下架/售罄/已卖出 ${counts.offline} · 已售出 ${counts.sold}`
               : ''}
@@ -1125,7 +1136,7 @@ function ItemDataView({ accountId }: { accountId: string }) {
           ))}
         </div>
         <span className="it-legend">
-          平台接口目前只返回累计口径：近 1 天 / 7 天 / 30 天筛选需要后端先加时间范围参数，所以这里没做。
+          平台这个接口只给「累计」数据，不支持按近 1 天 / 7 天 / 30 天筛，所以这里没有时间范围选择。
         </span>
         <span className="it-spacer" />
         <button className="btn sm" onClick={stats.reload} disabled={stats.loading}>
@@ -2236,6 +2247,8 @@ function BatchEditModal({
     (item) =>
       item.stock === undefined || item.stock === null || !Number.isFinite(Number(item.stock)) || Number(item.stock) < 0,
   )
+  /** 已卖出的选中商品：平台不接受对已卖出商品的编辑，只会改本地（结果里逐条写「仅本地生效」）。 */
+  const soldItems = items.filter((item) => itemStatusLabel(item.status).text === '已售出')
 
   const preview = (item: Item): string => {
     const parts: string[] = []
@@ -2430,6 +2443,13 @@ function BatchEditModal({
       <Notice kind="info">
         批量接口一次只作用于一个账号（<span className="mono">{accountId}</span>）。未勾选的字段不会被修改。
       </Notice>
+
+      {soldItems.length > 0 && (
+        <Notice kind="warn">
+          选中的商品里有 {soldItems.length} 个<b>已经卖出</b>：平台不接受对已卖出商品的编辑，
+          这些商品只会改本地记录（闲鱼上的信息不会变），结果里会逐条写成「仅本地生效」。这不是失败。
+        </Notice>
+      )}
 
       <div className="card">
         <h3>
