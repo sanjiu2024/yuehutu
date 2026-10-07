@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from loguru import logger
@@ -170,6 +172,29 @@ async def _open_context(playwright, cookie_id: str, headless: bool):
         return await playwright.chromium.launch_persistent_context(**kwargs)
 
 
+def _driver_problem() -> str:
+    """playwright 自带 driver（node.exe + package/cli.js）是否就位；缺了返回给用户看的原因。
+
+    **为什么要在启动前自己查**：driver 缺文件时 `async_playwright()` 抛的是
+    `FileNotFoundError [WinError 2] 系统找不到指定的文件`，这句话对用户毫无意义，
+    而且发生在 `async with` 的入口 —— 连本函数里那圈 `try/except` 都够不着。
+    PyInstaller 只收 Python 模块、不收数据文件（`collect_data_files`）时就是这个症状。
+    """
+    try:
+        import playwright
+    except ImportError:  # pragma: no cover - 调用方已经先查过 import
+        return '未安装 playwright，无法进行人工验证'
+    base = Path(getattr(playwright, '__file__', '') or '.').parent / 'driver'
+    node = base / ('node.exe' if sys.platform == 'win32' else 'node')
+    cli = base / 'package' / 'cli.js'
+    if not node.exists() or not cli.exists():
+        return (
+            '内置浏览器驱动不完整（缺少 playwright driver），无法弹出滑块验证。'
+            '这是打包时漏收数据文件导致的：请用源码方式运行，或重新打包后再试。'
+        )
+    return ''
+
+
 async def manual_verify(cookie_id: str, cookie_str: Optional[str] = None,
                         timeout: float = DEFAULT_TIMEOUT,
                         headless: bool = False,
@@ -196,6 +221,14 @@ async def manual_verify(cookie_id: str, cookie_str: Optional[str] = None,
     except ImportError:
         return {'ok': False, 'cookie': cookie_str,
                 'message': '未安装 playwright，无法进行人工验证'}
+
+    missing = _driver_problem()
+    if missing:
+        # 打包版最容易踩这个：只 `collect_submodules('playwright')` 而不收 driver
+        # 数据文件时，Python 层 import 完全正常，一启动就 `[WinError 2]`，
+        # 用户看到的只是「点了没反应」（真机 operation_logs 连续 7 条 manual_verify 失败）。
+        logger.error('人工验证不可用: %s', missing)
+        return {'ok': False, 'cookie': cookie_str, 'message': missing}
 
     cleaned = cookie_utils.drop_challenge_markers(cookie_str)
     target = verification_url(cleaned, fallback_url)
