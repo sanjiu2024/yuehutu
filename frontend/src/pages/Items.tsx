@@ -17,16 +17,14 @@ import {
   type ReactNode,
   type SetStateAction,
 } from 'react'
-import { api, errorText, getToken, uploadImage, type ImageInput } from '../api'
+import { ApiError, api, errorText, getToken, uploadImage, type ImageInput } from '../api'
 import { AsyncBox, Badge, ConfirmDialog, Field, Modal, Notice, Switch, useToast } from '../components'
+import { ImageViewer } from '../ImageViewer'
 import {
   IconArrowRight,
   IconBox,
   IconChart,
   IconChevronDown,
-  IconChevronLeft,
-  IconChevronRight,
-  IconClose,
   IconCopy,
   IconEdit,
   IconEye,
@@ -163,101 +161,6 @@ function ItemThumb({ urls, alt, onOpen }: { urls: string[]; alt: string; onOpen:
       )}
       {urls.length > 1 && <span className="it-thumb-count">{urls.length}</span>}
     </button>
-  )
-}
-
-/**
- * 大图查看：点击缩略图后看主图，多图可左右翻（键盘 ←/→ 翻页、Esc 关闭）。
- *
- * 这里不复用 components.tsx 的 `Modal`：那个是表单弹窗（固定 620/900px 宽、标题栏+底栏），
- * 看图要的是接近全屏的画布和翻页控件。本任务的写范围允许新增 `items.css`，
- * 所以用自带的 `.it-lightbox*` 一套，不去改共享组件。
- */
-function ImageLightbox({
-  urls,
-  start = 0,
-  title,
-  onClose,
-}: {
-  urls: string[]
-  start?: number
-  title: string
-  onClose: () => void
-}) {
-  const [index, setIndex] = useState(Math.min(Math.max(start, 0), Math.max(urls.length - 1, 0)))
-  const [failed, setFailed] = useState(false)
-
-  const go = useCallback(
-    (step: number) => {
-      if (urls.length < 2) return
-      setFailed(false)
-      setIndex((prev) => (prev + step + urls.length) % urls.length)
-    },
-    [urls.length],
-  )
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-      else if (event.key === 'ArrowLeft') go(-1)
-      else if (event.key === 'ArrowRight') go(1)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [go, onClose])
-
-  const current = urls[index] || ''
-
-  return (
-    <div className="it-lightbox-mask" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div className="it-lightbox" role="dialog" aria-modal="true" aria-label="查看商品大图">
-        <div className="it-lightbox-head">
-          <span className="it-lightbox-title ellipsis" title={title}>
-            {title}
-          </span>
-          <span className="it-lightbox-count">
-            {index + 1} / {urls.length}
-          </span>
-          <button className="btn sm ghost" onClick={onClose} title="关闭（Esc）">
-            <IconClose size={15} />
-          </button>
-        </div>
-        <div className="it-lightbox-body">
-          {current && !failed ? (
-            <img src={current} alt={`${title} 第 ${index + 1} 张`} onError={() => setFailed(true)} />
-          ) : (
-            <div className="it-lightbox-err">{failed ? '这张图打不开了（地址失效或图床不回源）' : '没有图片可看'}</div>
-          )}
-          {urls.length > 1 && (
-            <>
-              <button className="btn it-lightbox-nav prev" onClick={() => go(-1)} title="上一张（←）">
-                <IconChevronLeft size={18} />
-              </button>
-              <button className="btn it-lightbox-nav next" onClick={() => go(1)} title="下一张（→）">
-                <IconChevronRight size={18} />
-              </button>
-            </>
-          )}
-        </div>
-        {urls.length > 1 && (
-          <div className="it-lightbox-foot">
-            {urls.map((url, i) => (
-              <button
-                key={`${i}-${url}`}
-                className={`it-lightbox-thumb${i === index ? ' active' : ''}`}
-                onClick={() => {
-                  setFailed(false)
-                  setIndex(i)
-                }}
-                title={`第 ${i + 1} 张${i === 0 ? '（主图）' : ''}`}
-              >
-                <img src={url} alt={`第 ${i + 1} 张`} loading="lazy" />
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
   )
 }
 
@@ -826,7 +729,11 @@ export function ItemsPage() {
                       <td className="nowrap it-time">{formatTime(item.updated_at)}</td>
                       <td className="nowrap">
                         <div className="it-acts">
-                          <button className="btn sm" onClick={() => setEditing(item)}>
+                          <button
+                            className="btn sm"
+                            title={`编辑：${item.title || item.item_id}`}
+                            onClick={() => setEditing(item)}
+                          >
                             编辑
                           </button>
                           <button className="btn sm ghost" onClick={() => setShelf(item, onsale ? 'delist' : 'relist')}>
@@ -928,10 +835,11 @@ export function ItemsPage() {
       {logsOpen && <OperationLogsModal accountId={accountId} onClose={() => setLogsOpen(false)} />}
 
       {lightbox && (
-        <ImageLightbox
+        <ImageViewer
           urls={lightbox.urls}
           start={lightbox.index}
           title={lightbox.title}
+          note={lightbox.urls.length > 1 ? `共 ${lightbox.urls.length} 张 · 第 1 张是主图` : '该商品只有这一张图'}
           onClose={() => setLightbox(null)}
         />
       )}
@@ -988,15 +896,34 @@ interface ItemStatsResult {
 }
 
 /**
- * 数据来源：与后端 `GET /api/items/{account_id}/stats?source=` 一一对应
- * （`auto` = 平台能用就用、用不了降级本地；`local` = 完全不碰平台；`platform` = 必须拿到平台数据）。
+ * 数据来源：与后端 `GET /api/items/{account_id}/stats?source=` 一一对应。
+ *
+ * **默认是 `cache`（本机缓存）**，因为平台的商品数据接口只能按商品逐个查：45 件商品
+ * 的账号点一次页面就是 45 连击 mtop，真机已经这样把账号打进过风控冷却。所以打开页面
+ * 一律先读本机缓存（一个平台请求都不发），由后台 worker 每 5 分钟自己补几件；
+ * 真要看平台最新值，用户显式点「平台」。
+ *
  * 后端**没有**时间范围参数，所以这里不做「近 N 天」筛选，免得点了没反应像假数据。
  */
-const STATS_SOURCES: Array<{ value: 'auto' | 'local' | 'platform'; label: string; tip: string }> = [
-  { value: 'auto', label: '自动', tip: '平台数据能用就用，用不了降级为本地统计并列出原因' },
-  { value: 'local', label: '仅本地', tip: '完全不请求闲鱼平台，只看本地库（未登录也能用）' },
-  { value: 'platform', label: '平台', tip: '必须拿到平台数据，拿不到会直接报错' },
+const STATS_SOURCES: Array<{ value: 'cache' | 'auto' | 'local' | 'platform'; label: string; tip: string }> = [
+  { value: 'cache', label: '本机缓存', tip: '只读本机已缓存的数据，一个平台请求都不发；后台每 5 分钟自己补几件' },
+  { value: 'auto', label: '自动', tip: '平台数据能用就用，用不了降级为本地统计并列出原因（会打平台，限量 10 件）' },
+  { value: 'local', label: '仅本地', tip: '完全不请求闲鱼平台，只看本地库（未登录也能用）；本地没有订单表数据时订单类指标是 -' },
+  { value: 'platform', label: '平台', tip: '必须拿到平台数据，拿不到会直接报错；平台这个接口只能按商品逐个查，一次最多 10 件，频繁点会触发风控' },
 ]
+
+/** `GET /api/items/{account_id}/stats/progress`：后台把缓存补到哪一步了。 */
+interface StatsProgress {
+  account_id: string
+  /** 在售商品总数（分母）。 */
+  total: number
+  /** 已经有成功缓存行的商品数。 */
+  cached: number
+  /** 拉取失败的商品数（下一轮会自动重试）。 */
+  failed: number
+  /** 最近一次成功写入的时间（UTC），一次都没成功过就是 null。 */
+  last_at?: string | null
+}
 
 /** 平台指标列：`key` 必须与后端返回字段名一致；写错了只会一直显示 -，不会崩。 */
 const STATS_COLUMNS: Array<{ key: keyof ItemStatsRow; label: string }> = [
@@ -1029,8 +956,8 @@ function statValue(value: unknown): { text: string; unknown: boolean } {
  * （`AsyncBox` 的 notReady 分支），拿不到的数值一律 `-` 并标出原因，`source === 'local'` 时明说「平台数据未接通」。
  */
 function ItemDataView({ accountId }: { accountId: string }) {
-  /** 数据来源。后端目前只支持账号维度、**没有时间范围参数**，所以不做「近 N 天」。 */
-  const [sourceMode, setSourceMode] = useState<'auto' | 'local' | 'platform'>('auto')
+  /** 数据来源。默认读本机缓存 —— 打开页面绝不打平台（见 `STATS_SOURCES` 的说明）。 */
+  const [sourceMode, setSourceMode] = useState<'cache' | 'auto' | 'local' | 'platform'>('cache')
   const [lightbox, setLightbox] = useState<{ urls: string[]; index: number; title: string } | null>(null)
   /** 表内排序（这一页一次返回该账号全部商品，所以在内存里排，不用再打一次接口）。 */
   const [dataSort, setDataSort] = useState<{ key: keyof ItemStatsRow; order: SortOrder }>({
@@ -1041,7 +968,15 @@ function ItemDataView({ accountId }: { accountId: string }) {
     () => api.get<ItemStatsResult>(`/api/items/${encodeURIComponent(accountId)}/stats`, { source: sourceMode }),
     [accountId, sourceMode],
     Boolean(accountId),
-    ['items.updated'],
+    // 后台 worker 每补完一批就广播一次，页面自己静默重拉（全站都不许轮询）
+    ['items.updated', 'items.stats.updated'],
+  )
+  /** 缓存进度。这个端点不碰平台，可以随页面和事件放心重拉。 */
+  const progress = useAsync<StatsProgress>(
+    () => api.get<StatsProgress>(`/api/items/${encodeURIComponent(accountId)}/stats/progress`),
+    [accountId],
+    Boolean(accountId),
+    ['items.updated', 'items.stats.updated'],
   )
 
   const rows = stats.data?.items ?? []
@@ -1139,7 +1074,14 @@ function ItemDataView({ accountId }: { accountId: string }) {
           平台这个接口只给「累计」数据，不支持按近 1 天 / 7 天 / 30 天筛，所以这里没有时间范围选择。
         </span>
         <span className="it-spacer" />
-        <button className="btn sm" onClick={stats.reload} disabled={stats.loading}>
+        <button
+          className="btn sm"
+          onClick={() => {
+            stats.reload()
+            progress.reload()
+          }}
+          disabled={stats.loading}
+        >
           <span className="it-ico">
             <IconRefresh size={13} />
           </span>
@@ -1147,10 +1089,34 @@ function ItemDataView({ accountId }: { accountId: string }) {
         </button>
       </div>
 
+      <div className="it-cache-line">
+        {progress.data ? (
+          progress.data.total === 0 ? (
+            <span>这个账号没有在售商品，暂时没有可缓存的数据。</span>
+          ) : (
+            <span>
+              后台已缓存 <strong>{progress.data.cached}</strong> / {progress.data.total} 件
+              {progress.data.last_at ? ` · 最近更新 ${formatTime(progress.data.last_at)}` : ' · 还没开始'}
+              {progress.data.failed > 0 ? (
+                <span className="it-cache-failed" title="拉取失败的会在下一轮自动重试"> · 失败 {progress.data.failed} 件</span>
+              ) : null}
+            </span>
+          )
+        ) : (
+          <span>正在读缓存进度…</span>
+        )}
+      </div>
+
       {(source === 'local' || warnings.length > 0) && (
         <div className="it-notes">
           {source === 'local' && (
             <Notice kind="warn">平台数据接口未接通，仅显示本地数据：曝光 / 浏览 / 下单这些平台指标拿不到，一律显示 -。</Notice>
+          )}
+          {source === 'cache' && rows.length > 0 && (
+            <Notice kind="info">
+              这些数字来自本机缓存（打开页面不会打平台）。后台每 5 分钟自己补几件，补完这里会自动更新；
+              想看平台此刻的值，点上面的「平台」显式拉一次。
+            </Notice>
           )}
           {warnings.map((text, index) => (
             <Notice key={`${index}-${text}`} kind="warn">
@@ -1167,11 +1133,19 @@ function ItemDataView({ accountId }: { accountId: string }) {
         empty={rows.length === 0}
         emptyIcon="box"
         emptyTitle="还没有商品数据"
-        emptyDesc="先在「商品列表」里点「同步商品」把闲鱼商品拉下来，再回来看数据。"
+        emptyDesc={
+          sourceMode === 'cache'
+            ? '本机还没有缓存：后台每 5 分钟自己补几件，过一会儿再刷新；也可以把来源切到「平台」立刻拉一次（限量 10 件）。'
+            : '先在「商品列表」里点「同步商品」把闲鱼商品拉下来，再回来看数据。'
+        }
         onRetry={stats.reload}
       >
         {!anyMetric && (
-          <Notice kind="info">这张表的平台指标现在都是 -：平台数据接口没返回数值（未接通或未登录），所以不用 0 顶替。</Notice>
+          <Notice kind="info">
+            {sourceMode === 'cache'
+              ? '本机缓存里还没有这些指标：后台每 5 分钟补几件，补完这里自动更新，不用 0 顶替。'
+              : '这张表的平台指标现在都是 -：平台数据接口没返回数值（未接通或未登录），所以不用 0 顶替。'}
+          </Notice>
         )}
 
         {cardColumns.length > 0 && (
@@ -1296,10 +1270,11 @@ function ItemDataView({ accountId }: { accountId: string }) {
       </AsyncBox>
 
       {lightbox && (
-        <ImageLightbox
+        <ImageViewer
           urls={lightbox.urls}
           start={lightbox.index}
           title={lightbox.title}
+          note={lightbox.urls.length > 1 ? `共 ${lightbox.urls.length} 张 · 第 1 张是主图` : '该商品只有这一张图'}
           onClose={() => setLightbox(null)}
         />
       )}
@@ -2274,7 +2249,7 @@ function BatchEditModal({
         parts.push(`价格 ${formatMoney(base)} → ${formatMoney(Math.max(0, next))}`)
       }
     }
-    if (stockOn && stockValue !== '') {
+    if (stockOn && stockValue.trim() !== '') {
       const size = Math.abs(Math.round(Number(stockValue)))
       if (Number.isFinite(size)) {
         if (stockMode === 'set') parts.push(`库存 → ${size}`)
@@ -2337,7 +2312,10 @@ function BatchEditModal({
         }
       }
     }
-    if (stockOn && stockValue !== '') {
+    // `.trim()` 与价格分支同理，不能省：`Number(' ')` 是 0，
+    // 库存框里只敲一个空格会静默把库存设成 0。`hasSelection()` 只在别的字段
+    // 也有效时才放行，所以这里必须自己守一道。
+    if (stockOn && stockValue.trim() !== '') {
       const size = Math.abs(Math.round(Number(stockValue)))
       // 同上：`1e999` 得 `Infinity`，`JSON.stringify` 会把它变成 `null`
       if (Number.isFinite(size)) {
@@ -2445,10 +2423,18 @@ function BatchEditModal({
       wide
       footer={
         <>
+          <span className="dim" style={{ fontSize: 12, marginRight: 'auto' }}>
+            {hasSelection() ? '未勾选的字段不会被修改' : '先勾一个要改的字段，按钮才能点'}
+          </span>
           <button className="btn ghost" onClick={onClose} disabled={saving}>
             取消
           </button>
-          <button className="btn primary" onClick={submit} disabled={saving}>
+          <button
+            className="btn primary"
+            onClick={submit}
+            disabled={saving || !hasSelection()}
+            title={hasSelection() ? undefined : '先勾一个要改的字段'}
+          >
             {saving ? '提交中…' : `应用到 ${items.length} 个商品`}
           </button>
         </>
@@ -2547,11 +2533,11 @@ function BatchEditModal({
           </span>
         </div>
         {stockOn && stockMode !== 'set' && unknownStockItems.length > 0 && (
-          <div className="it-note">
-            选中的商品里有 {unknownStockItems.length} 个库存未知（列表显示 -）：后端拿不到当前库存，
-            <b>不能用「增加/减少」</b>（算出来的是编的数字），这些商品会被逐条拒掉并写明原因。
-            想改它们请把上面切成「设为固定值」，或先点「同步商品」把库存取回来。
-          </div>
+          <Notice kind="warn">
+            选中的商品里有 {unknownStockItems.length} 个<b>库存未知</b>（平台列表没返回库存，列表里显示 -）：
+            「增加/减少」会被拒绝，因为算出来的是编的数字。请改用「设为固定值」，
+            或先点「同步商品」把库存取回来再试。
+          </Notice>
         )}
       </div>
 
@@ -2596,6 +2582,11 @@ function BatchEditModal({
 
 /* ---------------- 发布商品 ---------------- */
 
+/** 发布校验上限：与平台实际会拒的量级对齐（超了平台只回一句 `发布失败`，用户看不出哪错了）。 */
+const TITLE_MAX = 60
+const PRICE_MAX = 999999
+const STOCK_MAX = 99999
+
 function PublishItemModal({
   accountId,
   onClose,
@@ -2619,24 +2610,72 @@ function PublishItemModal({
   const [saving, setSaving] = useState(false)
   /** 点过「发布」之后才显示必填项红字：一打开弹窗就一片红很劝退。 */
   const [touched, setTouched] = useState(false)
+  /** 发布失败的原因：原样保留后端 message；`risk` 为真时用 warn 而不是 error。 */
+  const [failure, setFailure] = useState<{ message: string; risk: boolean } | null>(null)
 
   const rememberSize = useCallback((url: string, size: { width: number; height: number }) => {
     setImageSizes((prev) => ({ ...prev, [url]: size }))
   }, [])
 
+  /**
+   * 发布前的字段级校验：每个字段一条具体原因（空对象 = 可以发）。
+   *
+   * 为什么必须前置：这些数字平台不接受时**只会回一句
+   * `FAIL_BIZ_IDLE_UNKNOWN_THROWABLE::发布失败`**，用户根本看不出是标题太长、
+   * 价格填成 99999999 还是库存不是整数。宁可按钮点不动 + 红字说清哪不对。
+   */
+  const errors = useMemo(() => {
+    const found: Record<string, string> = {}
+
+    const trimmedTitle = title.trim()
+    if (!trimmedTitle) found.title = '标题必须填：买家就是靠它搜到你的商品'
+    else if (title.length > TITLE_MAX) {
+      found.title = `标题最多 ${TITLE_MAX} 个字，现在 ${title.length} 个，请再删掉 ${title.length - TITLE_MAX} 个字`
+    }
+
+    // 价格：留空 = 让闲鱼自己定；填了就必须是正数且不超过平台上限。
+    const checkPrice = (raw: string, label: string, key: string) => {
+      const text = raw.trim()
+      if (text === '') return
+      const value = Number(text)
+      if (!Number.isFinite(value)) found[key] = `${label}要填数字`
+      else if (value <= 0) found[key] = `${label}必须大于 0（填 0 平台会拒）`
+      else if (value > PRICE_MAX) found[key] = `${label}不能超过 ${PRICE_MAX}，填更大的数平台会直接拒`
+    }
+    checkPrice(price, '售价', 'price')
+    checkPrice(originalPrice, '原价', 'originalPrice')
+
+    const stockText = stock.trim()
+    if (stockText !== '') {
+      const value = Number(stockText)
+      if (!Number.isFinite(value)) found.stock = '库存要填数字'
+      else if (!Number.isInteger(value)) found.stock = '库存必须是整数（不能有小数）'
+      else if (value < 0 || value > STOCK_MAX) found.stock = `库存要在 0 ~ ${STOCK_MAX} 之间`
+    }
+
+    const categoryText = categoryId.trim()
+    if (categoryText !== '' && !/^\d+$/.test(categoryText)) {
+      found.categoryId = '分类 ID 只能是数字：不确定就留空，交给平台默认分类'
+    }
+
+    // 后端会把 `images` 翻成平台的 `imageInfoDOList`，空数组会被拒 —— 发布必须有图。
+    if (images.length === 0) found.images = '至少要上传一张商品图片，否则平台会拒绝发布'
+    return found
+  }, [title, price, originalPrice, stock, categoryId, images.length])
+
+  const canPublish = Object.keys(errors).length === 0 && uploadingCount === 0 && !saving
+
   const submit = async () => {
     setTouched(true)
-    if (!title.trim()) {
-      toast.info('请填写商品标题')
+    setFailure(null)
+    // 按钮已按 `errors` 禁用，这里再挡一道：回车提交、脚本触发都走同一条路。
+    const firstError = Object.values(errors)[0]
+    if (firstError) {
+      toast.info(firstError)
       return
     }
     if (uploadingCount > 0) {
       toast.info('还有图片正在上传，等传完再发布')
-      return
-    }
-    // 后端会把 `images` 翻成平台的 `imageInfoDOList`，空数组会被拒 —— 发布必须有图。
-    if (images.length === 0) {
-      toast.info('请先至少上传一张商品图片')
       return
     }
     setSaving(true)
@@ -2644,24 +2683,26 @@ function PublishItemModal({
       const payload: Record<string, unknown> = {
         title: title.trim(),
         description,
-        category_id: categoryId || undefined,
+        category_id: categoryId.trim() || undefined,
         // 契约：第一张是主图；新传的图带真实尺寸 {url,width,height}，没有尺寸的用裸 URL。
         images: imagePayload(images, imageSizes),
       }
-      if (price !== '') payload.price = Number(price)
-      if (originalPrice !== '') payload.original_price = Number(originalPrice)
-      if (stock !== '') payload.stock = Number(stock)
+      if (price.trim() !== '') payload.price = Number(price)
+      if (originalPrice.trim() !== '') payload.original_price = Number(originalPrice)
+      if (stock.trim() !== '') payload.stock = Number(stock)
       await api.post(`/api/items/${encodeURIComponent(accountId)}/publish`, payload)
       toast.success('发布请求已提交')
       onDone()
     } catch (err) {
-      toast.error(errorText(err))
+      // 后端的 message 已经是人话（`services/platform_errors.py`），**整条原样显示、不截断**，
+      // 而且留在弹窗里：toast 几秒就没了，用户要照着这句话决定下一步。
+      const message = errorText(err)
+      const risk = (err instanceof ApiError && err.code === 'risk_blocked') || message.includes('风控')
+      setFailure({ message, risk })
     } finally {
       setSaving(false)
     }
   }
-
-  const canPublish = Boolean(title.trim()) && images.length > 0 && uploadingCount === 0 && !saving
 
   return (
     <Modal
@@ -2675,7 +2716,9 @@ function PublishItemModal({
               ? `${uploadingCount} 张图片正在上传，传完才能发布`
               : canPublish
                 ? `将上传 ${images.length} 张图，第一张是主图`
-                : '标题和至少一张图片是必填的'}
+                : touched
+                  ? Object.values(errors)[0]
+                  : '标题和至少一张图片是必填的'}
           </span>
           <button className="btn ghost" onClick={onClose} disabled={saving}>
             取消
@@ -2683,8 +2726,8 @@ function PublishItemModal({
           <button
             className="btn primary"
             onClick={submit}
-            disabled={saving || uploadingCount > 0}
-            title={canPublish ? '发布到闲鱼' : '先填标题并上传至少一张图片'}
+            disabled={!canPublish}
+            title={canPublish ? '发布到闲鱼' : Object.values(errors)[0] || '先填标题并上传至少一张图片'}
           >
             {saving ? '发布中…' : uploadingCount > 0 ? '等待上传…' : '发布到闲鱼'}
           </button>
@@ -2694,6 +2737,13 @@ function PublishItemModal({
       <Notice kind="info">
         将发布到账号 <span className="mono">{accountId}</span>。闲鱼对发布频率敏感，建议一次只发一个。
       </Notice>
+
+      {failure && (
+        <Notice kind={failure.risk ? 'warn' : 'error'} onClose={() => setFailure(null)}>
+          {failure.message}
+          {failure.risk ? ' —— 这是平台风控，等冷却结束再试，别连着点。' : ''}
+        </Notice>
+      )}
 
       {/* 买家视角预览：填的时候就能看到「主图 + 标题 + 价格」长什么样，别等发出去才发现写错。 */}
       <div className="it-hero">
@@ -2729,11 +2779,13 @@ function PublishItemModal({
               maxLength={80}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="例如：全新未拆封 蓝牙耳机 白色"
-              className={touched && !title.trim() ? 'it-invalid' : ''}
+              className={touched && errors.title ? 'it-invalid' : ''}
             />
-            <div className={`it-count${title.length > 60 ? ' it-count-over' : ''}`}>{title.length} / 60</div>
+            <div className={`it-count${title.length > TITLE_MAX ? ' it-count-over' : ''}`}>
+              {title.length} / {TITLE_MAX}
+            </div>
           </Field>
-          {touched && !title.trim() && <div className="it-err">标题必须填：买家就是靠它搜到你的商品</div>}
+          {touched && errors.title && <div className="it-err">{errors.title}</div>}
           <div className="row" style={{ gap: 12 }}>
             <div style={{ flex: 1 }}>
               <Field label="售价（元）" tip="留空 = 让闲鱼自己定">
@@ -2744,7 +2796,9 @@ function PublishItemModal({
                   value={price}
                   onChange={(e) => setPrice(e.target.value)}
                   placeholder="0.00"
+                  className={touched && errors.price ? 'it-invalid' : ''}
                 />
+                {touched && errors.price && <div className="it-err">{errors.price}</div>}
               </Field>
             </div>
             <div style={{ flex: 1 }}>
@@ -2756,12 +2810,22 @@ function PublishItemModal({
                   value={originalPrice}
                   onChange={(e) => setOriginalPrice(e.target.value)}
                   placeholder="0.00"
+                  className={touched && errors.originalPrice ? 'it-invalid' : ''}
                 />
+                {touched && errors.originalPrice && <div className="it-err">{errors.originalPrice}</div>}
               </Field>
             </div>
             <div style={{ flex: 1 }}>
-              <Field label="库存（件）" tip="默认 1">
-                <input type="number" min="0" step="1" value={stock} onChange={(e) => setStock(e.target.value)} />
+              <Field label="库存（件）" tip="默认 1；填 0 ~ 99999 的整数">
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={stock}
+                  onChange={(e) => setStock(e.target.value)}
+                  className={touched && errors.stock ? 'it-invalid' : ''}
+                />
+                {touched && errors.stock && <div className="it-err">{errors.stock}</div>}
               </Field>
             </div>
           </div>
@@ -2771,7 +2835,9 @@ function PublishItemModal({
               value={categoryId}
               onChange={(e) => setCategoryId(e.target.value)}
               placeholder="可留空"
+              className={touched && errors.categoryId ? 'it-invalid' : ''}
             />
+            {touched && errors.categoryId && <div className="it-err">{errors.categoryId}</div>}
           </Field>
         </div>
         <div className="right">
@@ -2788,7 +2854,7 @@ function PublishItemModal({
               onUploaded={rememberSize}
             />
           </Field>
-          {touched && images.length === 0 && <div className="it-err">至少要上传一张商品图片，否则平台会拒绝发布</div>}
+          {touched && errors.images && <div className="it-err">{errors.images}</div>}
           <Field label="描述" tip="成色、规格、发货方式写清楚，能明显少些砍价和退货">
             <textarea
               value={description}

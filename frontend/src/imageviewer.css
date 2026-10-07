@@ -1,0 +1,239 @@
+/* 通用看图器（ImageViewer.tsx）。前缀 iv-，颜色只用 styles.css 的冻结令牌。
+   放在 styles.css 的 .modal-mask(100) 之上、.toast-host(200) 之下。 */
+
+.iv-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(4, 8, 18, 0.78);
+  backdrop-filter: blur(2px);
+}
+
+.iv {
+  display: flex;
+  flex-direction: column;
+  width: min(1180px, 100%);
+  height: min(860px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.iv-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.iv-head-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.iv-title {
+  font-size: var(--fs-14);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.iv-note {
+  font-size: var(--fs-12);
+  color: var(--text-dim);
+}
+
+.iv-count {
+  font-size: var(--fs-12);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.iv-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.iv-icon-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.iv-icon-btn:focus-visible,
+.iv-text-btn:focus-visible,
+.iv-nav:focus-visible,
+.iv-thumb:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.iv-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: rgba(4, 8, 18, 0.55);
+  cursor: zoom-in;
+}
+
+.iv-stage.zoomed {
+  cursor: grab;
+}
+
+.iv-stage.zoomed.dragging {
+  cursor: grabbing;
+}
+
+.iv-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  transition: transform 0.08s linear;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.iv-stage.dragging .iv-img {
+  transition: none;
+}
+
+.iv-err {
+  color: var(--text-dim);
+  font-size: var(--fs-13);
+  padding: 24px;
+  text-align: center;
+}
+
+.iv-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  background: rgba(22, 32, 58, 0.88);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.iv-nav:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.iv-nav.prev {
+  left: 10px;
+}
+
+.iv-nav.next {
+  right: 10px;
+}
+
+.iv-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.iv-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.iv-percent {
+  min-width: 46px;
+  text-align: center;
+  font-size: var(--fs-12);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.iv-text-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-12);
+  cursor: pointer;
+}
+
+.iv-text-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.iv-thumbs {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  overflow-x: auto;
+  border-top: 1px solid var(--border-soft);
+}
+
+.iv-thumb {
+  flex: 0 0 auto;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.iv-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.iv-thumb.active,
+.iv-thumb:hover {
+  border-color: var(--accent);
+}
+
+.iv-hint {
+  padding: 0 12px 10px;
+  font-size: var(--fs-12);
+  color: var(--text-mute);
+}

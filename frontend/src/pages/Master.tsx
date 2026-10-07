@@ -3,7 +3,11 @@
  *
  * 样式全部来自同目录 `master.css`（前缀 `ms-`）：`styles.css` 正在被重写，
  * 这里只依赖 `.btn`/`.row`/`.col`/`.grow`/`.dim`/`.mono`/`.ellipsis` 这几个稳定公共 class。
- * 对话记录只活在本页 state 里（后端没有会话持久化），刷新即丢。
+ *
+ * 对话**已经落库**（`agent_chat_messages`，见 `backend/app/agents/history.py`）：
+ * 进页面先读 `GET /api/agents/chat/messages`，所以刷新不再丢；「清空对话」是真的
+ * `DELETE`（只删本机记录）。之前这里写着「对话只保存在本页，刷新即丢失」——
+ * 用户问「ai 的会话记录呢」问的就是这个缺口。
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -21,6 +25,48 @@ interface ChatEntry {
   at: string
   /** 这条用户消息没发出去（后端报错）——必须让用户看见，不能假装已送达。 */
   failed?: boolean
+  /** 后端记下的失败原因（历史里 `status='error'` 的行）。 */
+  error?: string
+  /** 这次调用用的模型 / 耗时 / token（历史行里有，实时回复里没有）。 */
+  model?: string
+  latencyMs?: number
+  tokens?: number
+}
+
+/** `GET /api/agents/chat/messages` 里一行的形状（`agent_chat_messages` 表）。 */
+interface HistoryRow {
+  id: number
+  role: string
+  content: string
+  tool_calls?: unknown[]
+  model?: string
+  latency_ms?: number
+  tokens?: number
+  status?: string
+  error?: string
+  created_at?: string
+}
+
+interface HistoryPage {
+  items: HistoryRow[]
+  total: number
+  has_more: boolean
+}
+
+/** 历史行 → 气泡。失败行（`status='error'`）也要显示，否则用户看不到「为什么失败」。 */
+function toEntry(row: HistoryRow): ChatEntry {
+  return {
+    id: Number(row.id) || 0,
+    role: row.role === 'assistant' ? 'assistant' : 'user',
+    content: row.content || '',
+    toolCalls: row.tool_calls,
+    at: row.created_at || '',
+    failed: row.status === 'error',
+    error: row.error || '',
+    model: row.model || '',
+    latencyMs: Number(row.latency_ms) || 0,
+    tokens: Number(row.tokens) || 0,
+  }
 }
 
 /** 后端 `{name, args, result}` 的形状（runtime.py:429）；同时容忍 OpenAI 原始结构。 */
@@ -203,8 +249,70 @@ export function MasterPage() {
   const [failedText, setFailedText] = useState('')
   const [askClear, setAskClear] = useState(false)
   const [atBottom, setAtBottom] = useState(true)
+  /** 历史：`total` 是库里总条数，`hasMore` 表示上面还有更早的 */
+  const [history, setHistory] = useState({ loading: true, error: '', total: 0, hasMore: false })
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [clearing, setClearing] = useState(false)
   const streamRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+
+  const loadHistory = async () => {
+    try {
+      const page = await api.get<HistoryPage>('/api/agents/chat/messages', { limit: 50 })
+      const items = Array.isArray(page?.items) ? page.items : []
+      // 历史行的 id 是库里的主键，本地新消息用 `++seq`：把 seq 顶到历史最大 id 之上，
+      // 否则 React key 会和历史行撞车（两条消息共用一个 key）。
+      seq = Math.max(seq, ...items.map((row) => Number(row.id) || 0))
+      setEntries(items.map(toEntry))
+      setHistory({ loading: false, error: '', total: Number(page?.total) || 0, hasMore: Boolean(page?.has_more) })
+    } catch (err) {
+      // 读不到历史不该挡住聊天：只提示一句，输入框照常可用
+      setHistory({ loading: false, error: errorText(err), total: 0, hasMore: false })
+    }
+  }
+
+  const loadEarlier = async () => {
+    const first = entries[0]
+    if (!first || loadingMore) return
+    setLoadingMore(true)
+    const node = streamRef.current
+    const keepHeight = node ? node.scrollHeight : 0
+    try {
+      const page = await api.get<HistoryPage>('/api/agents/chat/messages', { limit: 50, before_id: first.id })
+      const older = (Array.isArray(page?.items) ? page.items : []).map(toEntry)
+      setEntries((prev) => [...older, ...prev])
+      setHistory((prev) => ({ ...prev, hasMore: Boolean(page?.has_more), total: Number(page?.total) || prev.total }))
+      // 插到顶部会把内容顶下去：把滚动位置补回来，用户视线不跳
+      if (node) {
+        requestAnimationFrame(() => {
+          node.scrollTop = node.scrollHeight - keepHeight
+        })
+      }
+    } catch (err) {
+      setHistory((prev) => ({ ...prev, error: errorText(err) }))
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
+  useEffect(() => {
+    void loadHistory()
+  }, [])
+
+  const clearHistory = async () => {
+    setClearing(true)
+    try {
+      await api.del('/api/agents/chat/messages')
+      setEntries([])
+      setFailedText('')
+      setHistory({ loading: false, error: '', total: 0, hasMore: false })
+      setAskClear(false)
+    } catch (err) {
+      setHistory((prev) => ({ ...prev, error: errorText(err) }))
+    } finally {
+      setClearing(false)
+    }
+  }
 
   const scrollToBottom = (smooth: boolean) => {
     const node = streamRef.current
@@ -286,7 +394,11 @@ export function MasterPage() {
           </div>
         </div>
         <div className="ms-head-actions">
-          <button className="btn sm" onClick={() => setAskClear(true)} disabled={entries.length === 0}>
+          <button
+            className="btn sm"
+            onClick={() => setAskClear(true)}
+            disabled={entries.length === 0 && history.total === 0}
+          >
             <IconTrash size={14} />
             清空对话
           </button>
@@ -299,11 +411,28 @@ export function MasterPage() {
             <IconMaster size={15} />
             对话
           </div>
-          <span className="ms-chat-tip">对话只保存在本页，刷新即丢失</span>
+          <span className="ms-chat-tip">
+            {history.loading
+              ? '正在读取本机记录…'
+              : `本机已存 ${history.total} 条记录 · 刷新不丢`}
+          </span>
         </div>
 
         <div className="ms-stream-wrap">
           <div className="ms-stream ms-scroll" ref={streamRef} onScroll={onStreamScroll}>
+            {history.error && (
+              <Notice kind="error" onClose={() => setHistory((prev) => ({ ...prev, error: '' }))}>
+                {history.error}
+              </Notice>
+            )}
+            {history.hasMore && (
+              <div className="ms-more">
+                <button className="btn sm" onClick={() => void loadEarlier()} disabled={loadingMore}>
+                  <IconChevronDown size={14} className="ms-more-arrow" />
+                  {loadingMore ? '正在读取…' : '载入更早的记录'}
+                </button>
+              </div>
+            )}
             {entries.length === 0 && (
               <div className="ms-empty">
                 <span className="ms-empty-icon">
@@ -335,6 +464,7 @@ export function MasterPage() {
                     <div className="ms-text">{entry.content}</div>
                   )}
                   {entry.toolCalls && entry.toolCalls.length > 0 && <ToolCallList calls={entry.toolCalls} />}
+                  {entry.failed && entry.error && <div className="ms-err-text mono">{entry.error}</div>}
                   {entry.failed && (
                     <div className="ms-retry">
                       <button className="btn sm" onClick={() => void send(entry.content, entry.id)} disabled={sending}>
@@ -346,6 +476,9 @@ export function MasterPage() {
                 {/* 时间戳放在气泡下方（规范要求），淡色 12px */}
                 <div className="ms-meta">
                   {entry.role === 'user' ? '我' : roleName('master')} · {formatTime(entry.at)}
+                  {entry.model ? ` · ${entry.model}` : ''}
+                  {(entry.latencyMs ?? 0) > 0 ? ` · ${((entry.latencyMs ?? 0) / 1000).toFixed(1)}s` : ''}
+                  {(entry.tokens ?? 0) > 0 ? ` · ${entry.tokens} tokens` : ''}
                   {entry.failed && <span className="ms-failed-tag">未送达</span>}
                 </div>
               </div>
@@ -407,13 +540,10 @@ export function MasterPage() {
       {askClear && (
         <ConfirmDialog
           title="清空对话"
-          message="只清空本页显示的消息，后端没有保存过这段对话。已发出的请求无法撤回。"
-          confirmText="清空"
-          onConfirm={() => {
-            setEntries([])
-            setFailedText('')
-            setAskClear(false)
-          }}
+          message="会删掉本机存的主管 AI 对话记录（包含调用过的工具与失败原因），删掉就找不回来了。已发出的请求无法撤回。"
+          confirmText={clearing ? '清空中…' : '清空'}
+          busy={clearing}
+          onConfirm={() => void clearHistory()}
           onCancel={() => setAskClear(false)}
         />
       )}

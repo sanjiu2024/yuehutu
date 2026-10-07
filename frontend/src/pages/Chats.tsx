@@ -6,6 +6,13 @@
  *  - 「同步历史会话」= `POST /api/chats/sync`（IM 只收「正在发生」的推送，不点这个按钮界面会是空的）；
  *  - 实时刷新一律走 WebSocket topic 订阅（`useAsync(..., topics)` + `xywb:refresh-messages`），**不轮询**；
  *  - 发送框 `Ctrl/Cmd+Enter` 发送，发送中禁用。
+ *
+ * task-44 起：
+ *  - 图片消息出缩略图（点开用全站唯一一份 `ImageViewer`）、语音消息出播放器（原生 `<audio>`，
+ *    控件自绘，不引依赖），AI 回复带角色/模型/耗时徽章；
+ *  - 界面上**不再出现「(空消息)」**：正文为空时按消息类型给出诚实说明（见 `messageText`）；
+ *  - 发图 / 发语音 / 打电话 本地做不到，只给「打开闲鱼官方页面」一个入口，
+ *    拿不到真实商品 id 就**禁用**（不编地址，见 `officialItemUrl`）。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
@@ -14,6 +21,8 @@ import { AsyncBox, Badge, Switch, useToast } from '../components'
 import {
   IconBox,
   IconChat,
+  IconExternal,
+  IconImage,
   IconInfo,
   IconRefresh,
   IconSend,
@@ -22,8 +31,9 @@ import {
   IconWarn,
   IconXCircle,
 } from '../icons'
+import { ImageViewer } from '../ImageViewer'
 import { useAsync } from '../hooks/useAsync'
-import { formatClock, formatTime, modeLabel, senderLabel, truncate } from '../format'
+import { formatClock, formatDuration, formatTime, modeLabel, roleName, senderLabel, truncate } from '../format'
 import { subscribeTopics } from '../ws'
 import type {
   Account,
@@ -91,6 +101,164 @@ function collectSuggestions(result: ClassifyResult | null | undefined): string[]
   const single = result.reply || result.text
   if (typeof single === 'string' && single.trim()) out.push(single)
   return out
+}
+
+/* ---------------- 媒体消息（task-44） ---------------- */
+
+/** 后端落库时给纯媒体消息的占位正文（`services/chats.py::_media_placeholder`）。 */
+const MEDIA_PLACEHOLDERS = new Set(['[图片]', '[语音]'])
+
+/** 消息里的图片地址（后端 task-44 起在 `messages` 响应里透出 `images`）。 */
+function messageImages(message: Message): string[] {
+  const raw = Array.isArray(message.images) ? message.images : []
+  const out: string[] = []
+  for (const url of raw) {
+    const value = typeof url === 'string' ? url.trim() : ''
+    if (value && !out.includes(value)) out.push(value)
+  }
+  return out
+}
+
+/**
+ * 消息正文。
+ *
+ * 库里还有 task-44 之前的**空正文**历史消息，界面上不许再出现「(空消息)」这种糊弄字样：
+ * 按消息类型给出诚实说明，图片/语音本身有载体时干脆不显示文字气泡。
+ */
+function messageText(message: Message): string {
+  const content = (message.content || '').trim()
+  const hasImages = messageImages(message).length > 0
+  const hasAudio = Boolean((message.audio_url || '').trim())
+  if (hasImages && (!content || MEDIA_PLACEHOLDERS.has(content))) return ''
+  // 协议层给语音帧的正文是「[语音] N″」摘要（task-43），有播放器就不用再重复一行文字
+  if (hasAudio && (!content || content.startsWith('[语音]'))) return ''
+  if (content) return content
+  const type = (message.msg_type || '').trim()
+  if (type === 'image') return '（图片消息，但没拿到图片地址）'
+  if (type === 'voice' || type === 'audio') return '（语音消息，但没拿到语音地址）'
+  if (type && type !== 'text') return `（平台 ${type} 消息，没有正文）`
+  return '（这条消息没有正文）'
+}
+
+/** AI 回复的徽章文案：角色 + 模型 + 真实耗时（后端 task-44 起透出 `ai_*`）。 */
+function aiBadgeText(message: Message): string {
+  const parts: string[] = [message.ai_role ? roleName(message.ai_role) : 'AI 回复']
+  const model = (message.ai_model || '').trim()
+  if (model) parts.push(model)
+  const ms = Number(message.ai_elapsed_ms)
+  if (Number.isFinite(ms) && ms > 0) {
+    parts.push(ms >= 1000 ? `${(ms / 1000).toFixed(1)} 秒` : `${Math.round(ms)} 毫秒`)
+  }
+  return parts.join(' · ')
+}
+
+/**
+ * 「打开闲鱼官方页面」的地址。
+ *
+ * 打电话 / 发图 / 发语音 本地做不到（要上传到闲鱼图床、走平台语音通道），
+ * 所以只提供「去官方页面自己操作」这一个入口 —— 不假装能发。
+ *
+ * 地址只用**平台真实下发的商品 id** 拼平台自己的商品页
+ * （`//www.goofish.com/item?id=<itemId>`，形状见 `backend/tests/test_xianyu_items.py:100`
+ * 里平台真实下发的 `detailUrl`；`backend/app/xianyu/client.py:1345` 也把 `detailUrl`
+ * 列为平台原始字段）。**拿不到商品 id 就返回空串 → 按钮禁用**，不编地址、不猜聊天页地址。
+ */
+function officialItemUrl(itemId?: string): string {
+  const id = (itemId || '').trim()
+  if (!id) return ''
+  return `https://www.goofish.com/item?id=${encodeURIComponent(id)}`
+}
+
+/**
+ * 图片缩略图。
+ *
+ * 闲鱼图床可能拦热链 / 图已过期，这时**不留破图**：给一块说明 + 一键用系统浏览器打开原图
+ * （WebView2 里 `window.open` 走系统默认浏览器，同 `ImageViewer.tsx:157-162`）。
+ */
+function Thumb({ url, onOpen }: { url: string; onOpen: () => void }) {
+  const [failed, setFailed] = useState(false)
+
+  if (failed) {
+    return (
+      <button
+        type="button"
+        className="ch-thumb failed"
+        onClick={() => window.open(url, '_blank', 'noopener,noreferrer')}
+        title="缩略图没加载出来，点一下用系统浏览器打开原图"
+      >
+        <span className="ch-thumb-fallback">
+          <IconImage size={18} />
+          <span>缩略图没加载出来</span>
+          <span className="ch-thumb-fallback-tip">点开用浏览器看原图</span>
+        </span>
+      </button>
+    )
+  }
+
+  return (
+    <button type="button" className="ch-thumb" onClick={onOpen} title="点开大图（可滚轮缩放）">
+      <img src={url} alt="会话图片" loading="lazy" onError={() => setFailed(true)} />
+    </button>
+  )
+}
+
+/** 语音时长文案：`formatDuration` 是取整到秒的，不足 1 秒会显示「0 秒」，这里说清楚。 */
+function durationLabel(duration?: number | null): string {
+  if (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0) return ''
+  if (duration < 1) return ' · 不到 1 秒'
+  return ` · ${formatDuration(duration)}`
+}
+
+/** 语音消息播放器：原生 `<audio>` + 自绘控件（CSS 三角形/竖条，不用 emoji）。 */
+function AudioMessage({ url, duration }: { url: string; duration?: number | null }) {
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const [playing, setPlaying] = useState(false)
+  const [failed, setFailed] = useState(false)
+
+  const toggle = () => {
+    const node = audioRef.current
+    if (!node) return
+    setFailed(false)
+    if (node.paused) {
+      const started = node.play()
+      // 地址失效 / 平台拦热链时 `play()` 会 reject —— 不许静默：给出可重试的失败态
+      if (started && typeof started.catch === 'function') {
+        started.catch(() => {
+          setPlaying(false)
+          setFailed(true)
+        })
+      }
+    } else {
+      node.pause()
+    }
+  }
+
+  return (
+    <span className={`ch-audio${failed ? ' failed' : ''}`}>
+      <button
+        type="button"
+        className={`ch-audio-btn${playing ? ' playing' : ''}`}
+        onClick={toggle}
+        aria-label={playing ? '暂停语音' : '播放语音'}
+        title={failed ? '播放失败，点一下重试' : playing ? '暂停' : '播放'}
+      />
+      <span className="ch-audio-label">
+        {failed ? '语音播放失败，点播放键重试' : `语音消息${durationLabel(duration)}`}
+      </span>
+      <audio
+        ref={audioRef}
+        src={url}
+        preload="none"
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => setPlaying(false)}
+        onError={() => {
+          setPlaying(false)
+          setFailed(true)
+        }}
+      />
+    </span>
+  )
 }
 
 /* ---------------- 展示小工具 ---------------- */
@@ -449,6 +617,8 @@ function ChatWindow({
   const [modeBusy, setModeBusy] = useState(false)
   const streamRef = useRef<HTMLDivElement>(null)
   const [tick, setTick] = useState(0)
+  /** 点开的图片（全站唯一一份看图器：滚轮缩放 / 换图 / 看原图）。 */
+  const [viewer, setViewer] = useState<{ urls: string[]; start: number; note: string } | null>(null)
 
   const messages = useAsync<MessageListResult>(
     () => api.get<MessageListResult>(`/api/chats/${conversation.id}/messages`, { limit: 200 }),
@@ -457,12 +627,30 @@ function ChatWindow({
 
   const list = messages.data?.messages ?? []
   const name = peerName(conversation)
+  /** 用户是不是停在底部（往上翻历史时别把他拽回来）。 */
+  const stickRef = useRef(true)
+
+  const scrollToBottom = useCallback(() => {
+    const node = streamRef.current
+    if (node) node.scrollTop = node.scrollHeight
+  }, [])
 
   // 滚到底部
   useEffect(() => {
+    scrollToBottom()
+  }, [list.length, scrollToBottom])
+
+  // 图片是异步加载的：加载完会把消息流撑高，最新一条被顶出视野。
+  // 用捕获阶段监听（img 的 load 不冒泡），且只在用户本来就在底部时跟着走。
+  useEffect(() => {
     const node = streamRef.current
-    if (node) node.scrollTop = node.scrollHeight
-  }, [list.length])
+    if (!node) return
+    const onLoad = () => {
+      if (stickRef.current) scrollToBottom()
+    }
+    node.addEventListener('load', onLoad, true)
+    return () => node.removeEventListener('load', onLoad, true)
+  }, [conversation.id, scrollToBottom])
 
   // WS 推送时刷新本会话消息
   useEffect(() => {
@@ -542,6 +730,13 @@ function ChatWindow({
   }
 
   const mode = modeLabel(conversation.mode)
+  // 发图/发语音/打电话 只能在闲鱼官方页面做；没有真实商品 id 就禁用（不编地址）。
+  const officialUrl = officialItemUrl(conversation.item_id)
+  const openOfficial = () => {
+    if (!officialUrl) return
+    // WebView2 里 window.open 会走系统默认浏览器（同 ImageViewer.tsx:161 的做法）
+    window.open(officialUrl, '_blank', 'noopener,noreferrer')
+  }
 
   return (
     <>
@@ -591,10 +786,29 @@ function ChatWindow({
           <button className="btn sm ghost" onClick={refresh}>
             <IconRefresh size={14} /> 刷新
           </button>
+          <button
+            className="btn sm ghost"
+            onClick={openOfficial}
+            disabled={!officialUrl}
+            title={
+              officialUrl
+                ? '在闲鱼官方页面里自己发图 / 发语音 / 打电话（打开的是该商品的官方页面）'
+                : '这个会话没有商品 id，拿不到官方页面地址（不猜地址）'
+            }
+          >
+            <IconExternal size={14} /> 打开闲鱼官方页面
+          </button>
         </div>
       </div>
 
-      <div className="ch-stream" ref={streamRef}>
+      <div
+        className="ch-stream"
+        ref={streamRef}
+        onScroll={() => {
+          const node = streamRef.current
+          if (node) stickRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80
+        }}
+      >
         {messages.notReady && (
           <div className="ch-empty">
             <span className="ch-empty-icon">
@@ -631,8 +845,15 @@ function ChatWindow({
         {list.map((message, index) => {
           const isOut = message.direction === 'out'
           const isHuman = message.sender === 'human'
-          const isAi = Boolean(message.sender && message.sender.startsWith('ai:'))
+          // `ai:<role>` 是主判据；后端 task-44 起还会用 `meta.ai_role` 兜底老数据
+          const isAi = Boolean(
+            (message.sender && message.sender.startsWith('ai:')) || (message.ai_role || '').trim(),
+          )
           const failed = message.sent_ok === false
+          const images = messageImages(message)
+          const audioUrl = (message.audio_url || '').trim()
+          const text = messageText(message)
+          const aiBadge = isAi ? aiBadgeText(message) : ''
           const key = dayKey(message.created_at)
           const showDay = key !== dayKey(list[index - 1]?.created_at)
           return (
@@ -642,12 +863,36 @@ function ChatWindow({
                 className={`ch-msg ${isOut ? 'out' : 'in'}${isHuman ? ' human' : ''}${failed ? ' failed' : ''}`}
               >
                 <div className="ch-msg-meta">
+                  {images.length > 0 && <IconImage size={12} />}
                   <span className={`ch-sender-tag${isHuman ? ' human' : isAi ? ' ai' : ''}`}>
                     {senderLabel(message.sender)}
                   </span>
                   <span>{formatTime(message.created_at)}</span>
                 </div>
-                <div className="ch-msg-bubble">{message.content || '(空消息)'}</div>
+                {images.length > 0 && (
+                  <div className={`ch-msg-media${images.length > 1 ? ' multi' : ''}`}>
+                    {images.map((url, imageIndex) => (
+                      <Thumb
+                        key={`${message.id}-img-${imageIndex}`}
+                        url={url}
+                        onOpen={() =>
+                          setViewer({
+                            urls: images,
+                            start: imageIndex,
+                            note: isOut ? '我发出的图片' : '买家发来的图片',
+                          })
+                        }
+                      />
+                    ))}
+                  </div>
+                )}
+                {audioUrl && <AudioMessage url={audioUrl} duration={message.audio_duration} />}
+                {text && <div className="ch-msg-bubble">{text}</div>}
+                {aiBadge && (
+                  <div className="ch-ai-badge" title={`本次回复：${aiBadge}`}>
+                    <IconSparkle size={12} /> {aiBadge}
+                  </div>
+                )}
                 {failed && (
                   <div className="ch-msg-failed">
                     <IconWarn size={13} /> 发送失败：没有真正发给买家
@@ -701,10 +946,21 @@ function ChatWindow({
             <IconSparkle size={15} /> {drafting ? '生成中…' : 'AI 帮我拟一条'}
           </button>
           <span className="ch-compose-tip">
-            <span className="ch-kbd">Ctrl</span> + <span className="ch-kbd">Enter</span> 发送
+            <span className="ch-kbd">Ctrl</span> + <span className="ch-kbd">Enter</span> 发送 · 发图 / 发语音 / 打电话
+            请用上方「打开闲鱼官方页面」
           </span>
         </div>
       </div>
+
+      {viewer && (
+        <ImageViewer
+          urls={viewer.urls}
+          start={viewer.start}
+          title={name || '查看图片'}
+          note={viewer.note}
+          onClose={() => setViewer(null)}
+        />
+      )}
     </>
   )
 }

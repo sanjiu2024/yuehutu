@@ -195,136 +195,6 @@
   background: rgba(0, 0, 0, 0.62);
 }
 
-/* ---------------------------------------------------------------- 大图查看 */
-
-.it-lightbox-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 150;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  background: rgba(4, 8, 16, 0.82);
-  animation: it-fade-in 0.14s ease-out;
-}
-
-.it-lightbox {
-  width: min(880px, 100%);
-  max-height: 90vh;
-  display: flex;
-  flex-direction: column;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  overflow: hidden;
-}
-
-.it-lightbox-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border-soft);
-}
-
-.it-lightbox-title {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 13px;
-  color: var(--text-dim);
-}
-
-.it-lightbox-count {
-  font-size: 12px;
-  color: var(--text-mute);
-  font-variant-numeric: tabular-nums;
-}
-
-.it-lightbox-body {
-  position: relative;
-  flex: 1 1 auto;
-  min-height: 240px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #0b1220;
-  padding: 10px;
-}
-
-.it-lightbox-body img {
-  max-width: 100%;
-  max-height: 62vh;
-  object-fit: contain;
-  border-radius: 6px;
-}
-
-.it-lightbox-err {
-  color: var(--text-mute);
-  font-size: 13px;
-  padding: 40px 0;
-}
-
-.it-lightbox-nav {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  justify-content: center;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.55);
-  border-color: rgba(255, 255, 255, 0.18);
-  color: #fff;
-}
-
-.it-lightbox-nav:hover:not(:disabled) {
-  background: rgba(0, 0, 0, 0.75);
-}
-
-.it-lightbox-nav.prev {
-  left: 10px;
-}
-
-.it-lightbox-nav.next {
-  right: 10px;
-}
-
-.it-lightbox-foot {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  padding: 10px 14px;
-  border-top: 1px solid var(--border-soft);
-}
-
-.it-lightbox-thumb {
-  width: 44px;
-  height: 44px;
-  padding: 0;
-  border-radius: 6px;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  background: none;
-  cursor: pointer;
-  opacity: 0.62;
-}
-
-.it-lightbox-thumb img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-.it-lightbox-thumb.active,
-.it-lightbox-thumb:hover {
-  opacity: 1;
-  border-color: var(--accent);
-}
-
 @keyframes it-fade-in {
   from {
     opacity: 0;
@@ -1294,4 +1164,27 @@ textarea.it-invalid:focus {
 .it-changes-list li > svg {
   flex: none;
   color: var(--text-mute);
+}
+
+/* ---- 商品数据：缓存进度行 ---- */
+/* 平台的商品数据接口只能按商品逐个查，所以页面默认读本机缓存、由后台慢慢补。
+   这一行就是告诉用户「补到哪了」—— 否则满屏的 - 会被当成页面坏了。 */
+.it-cache-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 10px;
+  font-size: var(--fs-12);
+  color: var(--text-dim);
+}
+
+.it-cache-line strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.it-cache-failed {
+  color: var(--warn);
+  cursor: help;
 }

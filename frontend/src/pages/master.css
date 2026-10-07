@@ -183,6 +183,30 @@
   margin-top: 8px;
 }
 
+/* 历史里失败的那一轮：把后端记下的原始原因显示出来（不美化、不截断） */
+.ms-err-text {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  color: var(--danger);
+  font-size: var(--fs-12);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 「载入更早的记录」：历史是按页读的，上面还有更早的就给一个入口 */
+.ms-more {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 10px;
+}
+
+.ms-more-arrow {
+  transform: rotate(180deg);
+}
+
 /* 「思考中」三点动画：styles.css 的 .spinner 不稳定，这里自带一份 */
 .ms-thinking {
   display: inline-flex;

@@ -137,6 +137,19 @@ export const IconPlus = (p: IconProps) => (
   </Svg>
 )
 
+export const IconMinus = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M5 12h14" />
+  </Svg>
+)
+
+/** 适应窗口：四角向外的箭头。 */
+export const IconMaximize = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M9 4H4v5M15 4h5v5M15 20h5v-5M9 20H4v-5" />
+  </Svg>
+)
+
 export const IconEdit = (p: IconProps) => (
   <Svg {...p}>
     <path d="M16.6 3.9a2.1 2.1 0 0 1 3 3L8.3 18.2 4 19.6l1.4-4.3L16.6 3.9Z" />
@@ -433,6 +446,8 @@ export const ICONS = {
   shield: IconShield,
   refresh: IconRefresh,
   plus: IconPlus,
+  minus: IconMinus,
+  maximize: IconMaximize,
   edit: IconEdit,
   trash: IconTrash,
   upload: IconUpload,

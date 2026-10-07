@@ -209,11 +209,24 @@ export interface Message {
   /** buyer | human | ai:<role> */
   sender?: string
   content?: string
+  /** text | image | voice / audio | card | system（后端由 meta 派生） */
   msg_type?: string
   item_id?: string
   meta?: string
   sent_ok?: boolean | null
   created_at?: string
+  /** 图片地址列表（后端 task-44 起从 `meta` 透出；可能多张） */
+  images?: string[]
+  /** 语音地址（只有语音消息有值） */
+  audio_url?: string
+  /** 语音时长，**秒**（后端把毫秒统一换算成秒；拿不到是 null） */
+  audio_duration?: number | null
+  /** AI 回复的角色，取自 `sender` 的 `ai:<role>` 后缀 */
+  ai_role?: string
+  /** AI 回复实际用的模型 */
+  ai_model?: string
+  /** AI 回复真实耗时（毫秒） */
+  ai_elapsed_ms?: number | null
 }
 
 export interface MessageListResult {
