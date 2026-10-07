@@ -34,7 +34,25 @@ def _envelope(result: Any):
 
 
 #: 来信 body 里允许直接落进 `messages.meta` 的键（白名单，别把任意 body 灌进 meta）。
-INCOMING_META_KEYS = ('image_url', 'image', 'cid', 'msg_type', 'source')
+INCOMING_META_KEYS = ('image_url', 'image', 'cid', 'msg_type', 'source', 'audio_url')
+
+#: 值是**列表**的媒体键（不能像上面那样 `str(value)`，否则变成 "['a', 'b']"）。
+INCOMING_META_LIST_KEYS = ('images',)
+
+#: 值是**数字**的媒体键（语音时长，毫秒/秒都收，服务层统一换算成秒）。
+INCOMING_META_NUM_KEYS = ('audio_duration',)
+
+
+def _media_urls(payload: Dict[str, Any]) -> list:
+    """来信 body 里的图片地址列表（`images` 数组或单张 `image_url`/`image`）。"""
+    raw = payload.get('images')
+    values = raw if isinstance(raw, (list, tuple)) else ([raw] if raw else [])
+    urls = [str(url).strip() for url in values if str(url or '').strip()]
+    for key in ('image_url', 'image'):
+        url = str(payload.get(key) or '').strip()
+        if url and url not in urls:
+            urls.append(url)
+    return urls
 
 
 def _incoming_meta(payload: Dict[str, Any], image_url: str = '') -> Dict[str, Any]:
@@ -43,7 +61,8 @@ def _incoming_meta(payload: Dict[str, Any], image_url: str = '') -> Dict[str, An
     **图片地址必须透传**（任务 A2）：`agents.roles.role_for_conversation()` 只在
     `meta.image_url`（或 `meta.image`）非空时才把角色选成 `vision`，
     `agents.runtime._messages_for()` 也只在 `meta` 里有图片地址时才把图片塞进模型消息。
-    以前这里只写 `{'source': ...}`，整条图片链路没有生产者，`vision` 永不触发。
+    图片列表（`images`）与语音（`audio_url`/`audio_duration`）同样落进 meta ——
+    前端会话页的缩略图与播放器就靠 `messages` 响应里的这几个字段（task-44）。
     """
     meta: Dict[str, Any] = {'source': str(payload.get('source') or 'api')}
     for key in INCOMING_META_KEYS:
@@ -51,6 +70,18 @@ def _incoming_meta(payload: Dict[str, Any], image_url: str = '') -> Dict[str, An
         if value in (None, ''):
             continue
         meta[key] = str(value)
+    for key in INCOMING_META_LIST_KEYS:
+        raw = payload.get(key)
+        # 字符串要当**一个**地址，不能按字符拆（`for url in 'http://…'` 会得到 ['h','t','t','p'…]）
+        values = raw if isinstance(raw, (list, tuple)) else ([raw] if raw else [])
+        urls = [str(url).strip() for url in values if str(url or '').strip()]
+        if urls:
+            meta[key] = urls
+    for key in INCOMING_META_NUM_KEYS:
+        value = payload.get(key)
+        if value in (None, ''):
+            continue
+        meta[key] = value
     if image_url:
         meta['image_url'] = image_url
     return meta
@@ -114,6 +145,9 @@ def incoming(payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
       - `image_url` / `image` 选填，买家发的图片地址。**必须透传到 `messages.meta`**：
         `agents.roles` 靠它才会把角色选成 `vision`，`agents.runtime` 靠它把图片塞进模型消息；
         不透传的话整条图片链路没有生产者（任务 A2）。
+      - `images`      选填，图片地址数组（多图消息；服务层同时把它写进 `meta.images` 并透出）
+      - `audio_url` / `audio_duration` 选填，语音地址与时长（毫秒或秒都收，统一换算成秒）
+      - `msg_type`    选填，平台给的消息类型（image/audio/system/card…），落 `meta.msg_type`
       - `cid`         选填，平台 IM 会话 id；没有它时 AI 回复只能留库、发不出去（`missing_cid`）
 
     成功：`{"success": true, "data": {"message": {...}, "ai_reply": {...}|null,
@@ -128,11 +162,17 @@ def incoming(payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
     item_id = str(payload.get('item_id') or '').strip()
     direction = str(payload.get('direction') or 'in').strip().lower()
     image_url = str(payload.get('image_url') or payload.get('image') or '').strip()
+    images = _media_urls(payload)
+    audio_url = str(payload.get('audio_url') or '').strip()
+    # 买家只发一张图/一条语音时 `content` 是空的：不能因此 400，服务层会落
+    # `[图片]` / `[语音]` 占位（前端才不会显示「(空消息)」）。
+    has_media = bool(images or audio_url)
 
     missing = [
         name for name, value in (
             ('account_id', account_id),
-            ('content', content),
+            # 买家只发一张图/一条语音时 content 为空：不算缺字段，服务层会落占位文案。
+            ('content', content or ('[媒体]' if has_media else '')),
             ('buyer_id', buyer_id if conversation_id in (None, '', 0) else 'x'),
         ) if not value
     ]

@@ -706,6 +706,59 @@ class InboundGateTest(_ChatsTestBase):
         self.assertEqual(result['ai_result']['code'], 'mode_not_auto')
         self.assertIn('manual', result['ai_result']['message'])
 
+    # ------------------------------------------------- 系统/卡片帧不许触发 AI（task-43 的副作用）
+
+    def test_system_and_card_frames_are_stored_but_do_not_trigger_ai(self):
+        """协议层现在不再把认不出的帧丢掉，会给 `[系统消息]`/`[卡片消息]` 摘要。
+
+        代价是这些帧第一次能进 `handle_incoming` —— 如果不在这里拦住，AI 就会对着
+        一张商品卡开口说话，还白烧一次大模型调用。**落库必须照旧**（这正是
+        「界面不再显示 (空消息)」的前提），拦的只是自动回复。
+        """
+        self.make_account('acc1', enabled=1, auto_reply=1)
+        conv = self.make_conversation()
+        module = types.ModuleType(RUNTIME_MODULE)
+
+        async def reply_for_message(conversation_id, message_id):
+            raise AssertionError('系统/卡片消息不该调 AI')
+
+        module.reply_for_message = reply_for_message  # type: ignore[attr-defined]
+        sys.modules[RUNTIME_MODULE] = module
+        try:
+            system = chats.handle_incoming(conv['id'], '[系统消息]', meta={'msg_type': 'system'})
+            card = chats.handle_incoming(conv['id'], '[卡片消息]', meta={'msg_type': 'card'})
+        finally:
+            clear_module(RUNTIME_MODULE)
+
+        for result in (system, card):
+            self.assertIsNone(result['ai_reply'])
+            self.assertIsNone(result['ai_send'])
+            self.assertEqual(result['ai_result']['code'], 'system_message')
+            self.assertIn('系统/卡片', result['ai_result']['message'])
+        rows = db.query('SELECT msg_type FROM messages ORDER BY id')
+        self.assertEqual([row['msg_type'] for row in rows], ['system', 'card'])
+
+    def test_normal_text_frame_still_triggers_ai(self):
+        """反向验证：拦住系统/卡片帧之后，买家正常文字消息必须照样走 AI。"""
+        self.make_account('acc1', enabled=1, auto_reply=1)
+        conv = self.make_conversation()
+        module = types.ModuleType(RUNTIME_MODULE)
+        calls = []
+
+        async def reply_for_message(conversation_id, message_id):
+            calls.append(conversation_id)
+            return {'ok': True, 'reply': '在的', 'role': 'item'}
+
+        module.reply_for_message = reply_for_message  # type: ignore[attr-defined]
+        sys.modules[RUNTIME_MODULE] = module
+        try:
+            result = chats.handle_incoming(conv['id'], '这个还有货吗')
+        finally:
+            clear_module(RUNTIME_MODULE)
+
+        self.assertEqual(calls, [conv['id']])
+        self.assertIsNotNone(result['ai_reply'])
+
 
 class ImBackfillTest(_ChatsTestBase):
     """把平台上的**历史**会话拉回本地（`chats.sync_im_conversations`）。
@@ -972,6 +1025,189 @@ class PeerNicknameOwnershipTest(_ChatsTestBase):
         chats.ensure_conversation('acc1', 'buyer-1', peer_nickname='小明')
         chats.dispatch_im_message('acc1', self._frame(self.BUYER_NICK))
         self.assertEqual(self._nick(), '小明')
+
+
+class MessageMediaTest(_ChatsTestBase):
+    """task-44：图片/语音消息真的到前端（落 `messages.meta`，响应里透出）。
+
+    契约：图片/语音**不加列**（SCHEMA 冻结），全部走 `meta`；`messages` 响应新增
+    `images` / `msg_type` / `audio_url` / `audio_duration` / `ai_*` 字段，原有字段一个不动。
+    """
+
+    def _last_message(self, conversation_id):
+        return chats.get_messages(conversation_id)['messages'][-1]
+
+    def test_image_message_surfaces_images_and_no_empty_content(self):
+        """①图片消息：透出 images；②空内容不落空串（否则界面显示「(空消息)」）。"""
+        conv = self.make_conversation()
+        chats.append_message(conv['id'], 'buyer', '', meta={
+            'source': 'im',
+            'images': ['https://img.test/a.jpg', 'https://img.test/b.jpg'],
+        })
+
+        msg = self._last_message(conv['id'])
+        self.assertEqual(msg['images'], ['https://img.test/a.jpg', 'https://img.test/b.jpg'])
+        self.assertEqual(msg['msg_type'], 'image')
+        self.assertEqual(msg['content'], '[图片]')
+
+    def test_voice_message_surfaces_audio_url_and_duration_in_seconds(self):
+        """语音消息：透出 audio_url 与 audio_duration（真机给毫秒 -> 统一成秒）。"""
+        conv = self.make_conversation()
+        chats.append_message(conv['id'], 'buyer', '', meta={
+            'source': 'im', 'audio_url': 'https://img.test/v.mp3', 'audio_duration': 3000,
+        })
+
+        msg = self._last_message(conv['id'])
+        self.assertEqual(msg['audio_url'], 'https://img.test/v.mp3')
+        self.assertEqual(msg['audio_duration'], 3.0)
+        # 命名跟协议层 / `messages.msg_type` 列一致用 `voice`（不是 `audio`）
+        self.assertEqual(msg['msg_type'], 'voice')
+        self.assertEqual(msg['content'], '[语音]')
+
+    def test_audio_unit_is_decided_in_exactly_one_place(self):
+        """时长单位只允许有一份实现（协议层 `im.audio_seconds`），两层必须给同一个数。
+
+        回归的是原始缺陷：协议层把 400 当**秒**（摘要写「[语音] 400″」）、服务层把 400
+        当**毫秒**（播放器显示 0.4 秒）—— 同一条语音，界面自己打自己。
+        """
+        from backend.app.xianyu import im as im_module
+
+        self.assertEqual(im_module.audio_seconds(400), 0.4)
+        self.assertEqual(chats.audio_seconds(400), 0.4)
+        self.assertEqual(im_module.audio_seconds(4200), 4.2)
+        self.assertEqual(chats.audio_seconds(4200), 4.2)
+        # 摘要里的秒数与交给前端的 audio_duration 都出自同一个换算
+        self.assertEqual(chats.audio_seconds(3000), 3.0)
+        self.assertEqual(im_module._voice_summary(3000), '[语音] 3″')
+        self.assertEqual(im_module._voice_summary(4200), '[语音] 4.2″')
+        # 不足 1 秒的语音只写「[语音]」：`VOICE_SECONDS_RANGE` 下限之外不给数字，
+        # 免得把 400 毫秒的短语音显示成「0.4″」这种没人这么说的写法。
+        self.assertEqual(im_module._voice_summary(400), '[语音]')
+        # 取不到 / 非正数：只写「[语音]」，绝不编一个数字
+        for bad in (None, 0, -3, 'abc'):
+            self.assertIsNone(im_module.audio_seconds(bad))
+            self.assertEqual(im_module._voice_summary(bad), '[语音]')
+
+    def test_voice_frame_with_cover_image_stays_voice(self):
+        """语音帧里带一张 jpg 封面时不许被判成图片消息（语音优先于图片）。"""
+        conv = self.make_conversation()
+        chats.append_message(conv['id'], 'buyer', '', meta={
+            'source': 'im',
+            'audio_url': 'https://img.test/v.mp3',
+            'audio_duration': 4200,
+            'images': ['https://img.test/cover.jpg'],
+            'msg_type': 'voice',
+        })
+
+        msg = self._last_message(conv['id'])
+        self.assertEqual(msg['msg_type'], 'voice')
+        self.assertEqual(msg['audio_duration'], 4.2)
+
+    def test_conversation_summary_of_old_media_message_is_not_empty(self):
+        """老数据（空正文 + meta 里有图片地址）：会话列表摘要不能再写「（暂无消息）」。"""
+        conv = self.make_conversation()
+        chats.append_message(conv['id'], 'buyer', '', meta={'image_url': 'https://img.test/old.jpg'})
+
+        listed = chats.list_conversations()['conversations'][0]
+        self.assertEqual(listed['last_message']['content'], '[图片]')
+        self.assertEqual(listed['last_message']['images'], ['https://img.test/old.jpg'])
+
+    def test_text_message_fields_unchanged(self):
+        """回归：文本消息的既有字段与语义一个都没变（只多了新字段）。"""
+        conv = self.make_conversation()
+        chats.append_message(conv['id'], 'buyer', '在吗')
+
+        msg = self._last_message(conv['id'])
+        self.assertEqual(msg['content'], '在吗')
+        self.assertEqual(msg['direction'], 'in')
+        self.assertEqual(msg['sender'], 'buyer')
+        self.assertEqual(msg['msg_type'], 'text')
+        self.assertEqual(msg['images'], [])
+        self.assertEqual(msg['audio_url'], '')
+        self.assertIsNone(msg['audio_duration'])
+        self.assertEqual(msg['ai_role'], '')
+        self.assertEqual(msg['ai_model'], '')
+        self.assertIsNone(msg['ai_elapsed_ms'])
+        self.assertEqual(json.loads(msg['meta'] or '{}'), {})
+
+    def test_single_image_url_form_still_surfaces_images(self):
+        """协议层还没给 `images` 列表时，单张 `image_url` 也要能当图片消息用。"""
+        conv = self.make_conversation()
+        chats.append_message(conv['id'], 'buyer', '', meta={'image_url': 'https://img.test/one.jpg'})
+
+        msg = self._last_message(conv['id'])
+        self.assertEqual(msg['images'], ['https://img.test/one.jpg'])
+        self.assertEqual(msg['msg_type'], 'image')
+
+    def test_image_only_frame_is_not_rejected(self):
+        """只有图片、没有文字的 IM 帧以前被当成「字段不全」丢掉 —— 现在必须落库。"""
+        self.make_account('acc1')
+        fake_im = SimpleNamespace(parse_incoming_message=lambda payload: {
+            'msg_id': 'm-img-1', 'cid': 'cid-1', 'buyer_id': 'buyer-img',
+            'seller_id': 'me', 'content': '', 'item_id': 'i1',
+            'images': ['https://img.test/from-frame.jpg'], 'msg_type': 'image',
+        })
+
+        with mock.patch.object(chats.common, 'protocol_module', return_value=fake_im):
+            result = chats.dispatch_im_message('acc1', {'body': {'anything': True}})
+
+        self.assertIsNotNone(result, '图片消息不该被丢掉')
+        msg = result['message']
+        self.assertEqual(msg['images'], ['https://img.test/from-frame.jpg'])
+        self.assertEqual(msg['msg_type'], 'image')
+        self.assertEqual(msg['content'], '[图片]')
+        # 单张地址同时落进 `image_url`：`agents.roles` 靠它才会选 vision 角色
+        self.assertEqual(json.loads(msg['meta'] or '{}')['image_url'], 'https://img.test/from-frame.jpg')
+
+    def test_ai_reply_message_carries_model_and_elapsed(self):
+        """AI 回复的气泡徽章：`ai_role`/`ai_model`/`ai_elapsed_ms` 从 meta 透出。"""
+        self.make_account('acc1')
+        install_client(self.client)
+        conv = self.make_conversation()
+        module = types.ModuleType(RUNTIME_MODULE)
+
+        async def reply_for_message(conversation_id, message_id):
+            return {'ok': True, 'reply': '亲，有货的', 'role': 'item', 'model': 'qwen-test'}
+
+        module.reply_for_message = reply_for_message  # type: ignore[attr-defined]
+        sys.modules[RUNTIME_MODULE] = module
+        try:
+            result = chats.handle_incoming(conv['id'], '在吗')
+        finally:
+            clear_module(RUNTIME_MODULE)
+
+        reply = result['ai_reply']
+        self.assertIsNotNone(reply)
+        self.assertEqual(reply['ai_role'], 'item')
+        self.assertEqual(reply['ai_model'], 'qwen-test')
+        self.assertIsInstance(reply['ai_elapsed_ms'], int)
+        self.assertGreaterEqual(reply['ai_elapsed_ms'], 0)
+
+    def test_api_incoming_meta_keeps_media_shapes(self):
+        """`POST /api/chats/incoming` 的 meta 组装：列表还是列表、数字还是数字。
+
+        `images` 被 `str()` 会变成 `"['a', 'b']"`、`audio_duration` 被 `str()` 会变成
+        `"3000"` —— 那样前端缩略图与秒数就全废了，所以钉住类型。
+        """
+        from backend.app.api import chats as chats_api
+
+        meta = chats_api._incoming_meta({
+            'images': ['https://img.test/a.jpg', 'https://img.test/b.jpg'],
+            'audio_url': 'https://audio.test/a.m4a',
+            'audio_duration': 3000,
+            'msg_type': 'image',
+        }, image_url='https://img.test/a.jpg')
+
+        self.assertEqual(meta['images'], ['https://img.test/a.jpg', 'https://img.test/b.jpg'])
+        self.assertEqual(meta['audio_url'], 'https://audio.test/a.m4a')
+        self.assertEqual(meta['audio_duration'], 3000)
+        self.assertEqual(meta['msg_type'], 'image')
+        self.assertEqual(meta['image_url'], 'https://img.test/a.jpg')
+        self.assertEqual(chats_api._media_urls({'image': 'https://img.test/c.jpg'}),
+                         ['https://img.test/c.jpg'])
+        # `images` 传**字符串**时要当成一个地址，不许按字符拆成 ['h','t','t','p'…]
+        self.assertEqual(chats_api._incoming_meta({'images': 'https://img.test/one.jpg'})['images'],
+                         ['https://img.test/one.jpg'])
 
 
 class UnparsedFrameLogTest(unittest.TestCase):

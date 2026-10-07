@@ -65,6 +65,131 @@ def _first_str(source: Dict[str, Any], *keys: str) -> str:
     return ''
 
 
+#: 图片条目里可能放 URL 的键（聊天图片实测用 ``url``；商品 ``imageInfos`` 用
+#: ``major``/``origin``/``thumb``）。按优先级取第一个非空值。
+IMAGE_URL_KEYS = ('url', 'picUrl', 'major', 'origin', 'thumb')
+
+#: 语音地址/时长的可能键名。**真机没抓到过语音帧**（库里 806 条历史消息 0 条语音），
+#: 这几个键是从 ``contentType == 3`` 这条线索推的，所以「有就取」，不认键名之外的东西。
+AUDIO_URL_KEYS = ('url', 'audioUrl', 'audio_url', 'voiceUrl', 'playUrl', 'src')
+AUDIO_DURATION_KEYS = ('duration', 'audioDuration', 'voiceDuration', 'length')
+
+#: 「像秒数」的时长区间：只在里面才把时长显示出来（见 `_voice_summary`）。
+VOICE_SECONDS_RANGE = (1, 600)
+
+
+def _image_urls(image: Any) -> List[str]:
+    """从 ``image`` 里取出所有图片 URL（保序去重）。
+
+    ``pics`` 里每一项**可能是 str 也可能是 dict**：旧项目真实发图帧里是
+    ``{'url','width','height','type'}``（``XianyuAutoAsync.py:11471-11487``），
+    而有的版本直接给裸 URL 字符串 —— 两种都得认，认错一种就是「图片消息变空消息」。
+    """
+    if isinstance(image, str):
+        return [image.strip()] if image.strip() else []
+    if not isinstance(image, dict):
+        return []
+    pics = image.get('pics')
+    pics = pics if isinstance(pics, (list, tuple)) else []
+    urls: List[str] = []
+    for pic in pics:
+        if isinstance(pic, dict):
+            url = _first_str(pic, *IMAGE_URL_KEYS)
+        else:
+            url = pic if isinstance(pic, str) else ''
+        url = str(url or '').strip()
+        if url and url not in urls:
+            urls.append(url)
+    if not urls:
+        # 没有 ``pics`` 或里面全是空值：兜底 ``image`` 自己就是地址
+        url = _first_str(image, *IMAGE_URL_KEYS).strip()
+        if url:
+            urls.append(url)
+    return urls
+
+
+def _interpret_audio(decoded: Dict[str, Any]) -> Tuple[str, Optional[int]]:
+    """从语音帧里取 ``(audio_url, audio_duration)``，取不到给 ``('', None)``。
+
+    **不做单位换算**：时长到底是秒还是毫秒没有真机证据，猜错就是给用户看假数据，
+    所以原样回一个 int（或 None），显示口径交给 `_voice_summary`。
+    """
+    source: Any = None
+    for key in ('audio', 'voice', 'audioInfo', 'voiceInfo'):
+        value = decoded.get(key)
+        if isinstance(value, (dict, str)) and value:
+            source = value
+            break
+    if isinstance(source, str):
+        return source.strip(), None
+    if source is None:
+        source = decoded  # 有的帧把地址/时长直接摊在 content 顶层
+    if not isinstance(source, dict):
+        return '', None
+
+    url = _first_str(source, *AUDIO_URL_KEYS).strip()
+    duration: Optional[int] = None
+    for key in AUDIO_DURATION_KEYS:
+        value = source.get(key)
+        if value is None or isinstance(value, bool) or value == '':
+            continue
+        if isinstance(value, (int, float)):
+            duration = int(value)
+            break
+        text = str(value).strip()
+        if text.isdigit():
+            duration = int(text)
+            break
+    return url, duration
+
+
+#: 语音时长的单位**没有真机证据**，只能按大小猜：大于这个数当毫秒，否则当秒。
+#: 没人会发 300 秒以上的语音，所以这个阈值不会误伤。
+#:
+#: **这是全站唯一一处判定。** 服务层 `backend/app/services/chats.py::audio_seconds`
+#: 刻意改成调用本文件里的同一个函数：以前两层各写一套（协议层当秒、服务层当毫秒），
+#: 一条 400 的语音会同时显示成「[语音] 400″」和「0.4 秒」—— 用户看到的是界面自己打自己。
+AUDIO_MS_THRESHOLD = 300
+
+
+def audio_seconds(value: Any) -> Optional[float]:
+    """语音时长统一成**秒**（保留一位小数）；取不到 / 非正数给 ``None``。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    if number > AUDIO_MS_THRESHOLD:
+        number = number / 1000.0
+    return round(number, 1)
+
+
+def _voice_summary(duration: Optional[int]) -> str:
+    """语音摘要：``[语音]``，时长看得出来是几秒时带上 ``3″``。
+
+    单位未验证（见 `_interpret_audio`），所以只在 ``VOICE_SECONDS_RANGE`` 里显示数字
+    —— 显示错一个数字比不显示更糟。**换算必须走 `audio_seconds()`**，这样摘要里的
+    秒数和服务层交给前端的 `audio_duration` 永远是同一个数。
+    """
+    seconds = audio_seconds(duration)
+    low, high = VOICE_SECONDS_RANGE
+    if seconds is None or not (low <= seconds <= high):
+        return '[语音]'
+    text = f'{seconds:.1f}'.rstrip('0').rstrip('.')
+    return f'[语音] {text}″'
+
+
+def _system_text(content_type: Any) -> str:
+    """认不出的 ``contentType`` 也要给一句可读文案。
+
+    空串在界面上就是「(空消息)」，所以这里**绝不返回空串**。旧项目注释里
+    ``contentType=14`` 是「tip 类型消息」（订单/物流提示，`order_status_handler.py:162`），
+    归到系统消息；其余（卡片、商品卡、小程序…）一律叫卡片消息。
+    """
+    return '[系统消息]' if content_type == 14 else '[卡片消息]'
+
+
 def _sender_uid_of(message: Any) -> str:
     """从一条消息里取**发送者 uid**（``extension.senderUserId`` / ``sender.uid``）。
 
@@ -159,32 +284,48 @@ def _interpret_content(decoded: Dict[str, Any]) -> Tuple[str, List[str], str]:
 
     形状与旧项目实测一致：``contentType`` 1=文本 2=图片 3=语音；有的版本不给
     ``contentType``，只能靠有没有 ``text`` / ``image`` 字段判断。
+
+    ``msg_type`` 取值 ``text`` / ``image`` / ``voice`` / ``card`` / ``system``。
+    **图片和语音没有文本时文本回空串**（不编造正文，展示口径由调用方决定），
+    但 ``msg_type`` 一定给出来 —— 认不出类型时也回一句可读文案（`_system_text`），
+    空串在界面上就是那句「(空消息)」。图片**一张 URL 都抠不出来**时回 ``[图片]``
+    （否则服务层会因为「既没正文也没图」把这条整条丢掉）。
+
+    语音的地址/时长不在这里返回（三元组签名不能动），用 `_interpret_audio`。
     """
     content_type = decoded.get('contentType')
     text_value = decoded.get('text')
+    # 语音先判：显式类型优先于同帧里可能残留的 text/image 字段
+    if content_type == 3 or decoded.get('audio') or decoded.get('voice'):
+        return '', [], 'voice'
+    # 显式 contentType == 2 也要排在文本前面：真机帧里可能同时带一个空的 ``text`` 键，
+    # 先走文本分支就会把图片整条丢掉（HEAD 起就有的坑，task-43 审查发现）。
+    if content_type == 2:
+        return _image_result(decoded)
     if content_type == 1 or text_value is not None:
         if isinstance(text_value, dict):
             return str(text_value.get('text') or ''), [], 'text'
         return str(text_value or ''), [], 'text'
 
-    image = decoded.get('image')
-    if content_type == 2 or isinstance(image, dict):
-        pics = image.get('pics', []) if isinstance(image, dict) else []
-        images = [
-            str(pic.get('url'))
-            for pic in pics
-            if isinstance(pic, dict) and pic.get('url')
-        ]
-        legacy_url = decoded.get('picUrl')
-        if legacy_url and not images:
-            images.append(str(legacy_url))
-        return '', images, 'image'
+    if decoded.get('image') is not None:  # 没给类型，但有 image 字段
+        return _image_result(decoded)
 
-    if content_type == 3 or decoded.get('audio'):
-        return '[语音消息]', [], 'system'
     if decoded.get('title') or decoded.get('template'):
         return str(decoded.get('title') or decoded.get('template')), [], 'card'
-    return '', [], ''
+    # 认不出的类型也给一句可读文案（不是空串），这样这类帧在界面上不会变成「(空消息)」。
+    # ⚠️ 代价是它会被服务层当成一条买家消息：`services/chats.py` 的闸门只看
+    # content/images/audio_url 非空，不按帧类型过滤，auto 模式会话会据此自动回复。
+    # 「哪些 contentType 才允许当消息」需要按真机帧再收口（仓里还没有入站帧原文）。
+    return _system_text(content_type), [], 'system'
+
+
+def _image_result(decoded: Dict[str, Any]) -> Tuple[str, List[str], str]:
+    """图片帧归一化：能抠出 URL 就「正文空 + ``images``」，一张都没有才给 ``[图片]``。"""
+    images = _image_urls(decoded.get('image'))
+    legacy_url = str(decoded.get('picUrl') or '').strip()
+    if legacy_url and legacy_url not in images:
+        images.append(legacy_url)
+    return ('', images, 'image') if images else ('[图片]', [], 'image')
 
 
 def extract_message_summary(model: Dict[str, Any], limit: int = 80) -> str:
@@ -203,6 +344,8 @@ def extract_message_summary(model: Dict[str, Any], limit: int = 80) -> str:
             text, images, msg_type = _interpret_content(decoded)
             if text:
                 return text[:limit]
+            if msg_type == 'voice':
+                return _voice_summary(_interpret_audio(decoded)[1])
             if images or msg_type == 'image':
                 return '[图片]'
     raw = _decode_content(content)
@@ -337,6 +480,12 @@ def parse_message_item(model: Any, my_id: str = '') -> Optional[Dict[str, Any]]:
     除正文/图片外还回发送者信息：``sender_id``、``is_self``、``sender_nick``（只有确认
     发送者不是自己时才有值 = 买家昵称）、``sender_nick_raw``（不分敌我，用于学习账号自己
     的昵称）。
+
+    媒体字段（task-43 补）：``images``（图片 URL 列表，可能多张）、``msg_type``
+    （``text``/``image``/``voice``/``card``/``system``）、``audio_url`` 与
+    ``audio_duration``（只有语音帧有值；时长原样给 int，**单位未验证**）。
+    语音没有正文时 ``content`` 写成 ``[语音] 3″`` 这样的可读摘要，图片仍保持
+    「正文空 + ``images`` 有值」的既有口径（`extract_message_summary` 才是给列表用的）。
     """
     if not isinstance(model, dict):
         return None
@@ -351,12 +500,21 @@ def parse_message_item(model: Any, my_id: str = '') -> Optional[Dict[str, Any]]:
     custom = custom if isinstance(custom, dict) else {}
 
     text, images, msg_type = '', [], ''
+    audio_url, audio_duration = '', None
     decoded = _load_content(custom.get('data'))
     if decoded:
         text, images, msg_type = _interpret_content(decoded)
+        if msg_type == 'voice':
+            # 只对语音帧取地址/时长：卡片/订单帧顶层也有通用 ``url``/``length``，
+            # 不加这个判断会把商品链接当成语音地址（服务层 `_display_msg_type`
+            # 看到 audio_url 非空就判成语音，前端会渲染出播放器）。
+            audio_url, audio_duration = _interpret_audio(decoded)
     if not text and not images:
         summary = custom.get('summary') or custom.get('degrade')
         text = str(summary or '')
+    if not text and msg_type == 'voice':
+        # 语音没有正文，给一句可读摘要；否则服务层会当成「空内容」把这条丢掉
+        text = _voice_summary(audio_duration)
     if not msg_type:
         msg_type = 'image' if images else ('text' if text else 'system')
 
@@ -383,6 +541,8 @@ def parse_message_item(model: Any, my_id: str = '') -> Optional[Dict[str, Any]]:
         'content': text,
         'images': images,
         'msg_type': msg_type,
+        'audio_url': audio_url,
+        'audio_duration': audio_duration,
         'time': int(message.get('createAt') or message.get('time') or 0),
     }
 
@@ -390,14 +550,34 @@ def parse_message_item(model: Any, my_id: str = '') -> Optional[Dict[str, Any]]:
 def parse_incoming_message(payload: Any) -> Optional[Dict[str, Any]]:
     """从一帧 IM 推送里抠出一条买家消息。
 
-    返回 ``{'msg_id','cid','buyer_id','seller_id','content','item_id','sender_nick'}``；
-    **返回 None 表示这一帧不是可处理的买家文本消息**（心跳回帧、纯协议回帧等），
+    返回 ``{'msg_id','cid','buyer_id','seller_id','content','images','msg_type',
+    'image_url','audio_url','audio_duration','item_id','sender_nick'}``；
+    **返回 None 表示这一帧不是可处理的消息**（心跳回帧、纯协议回帧等），
     调用方据此跳过，不要凭空造会话。
 
     `sender_nick` 是这一帧发送者的昵称（可能是我自己发的回显帧）—— 归属由服务层判定，
     协议层不猜。
 
     `msg_id` 是平台侧的幂等键，服务层拿它去重（见 `services.chats.handle_incoming`）。
+
+    媒体字段（task-43 补，与 `parse_message_item` 同一口径）：
+    ``images`` 是图片 URL 列表（可能多张）、``msg_type`` ∈
+    ``text``/``image``/``voice``/``card``/``system``、``image_url`` 是首图
+    （服务层已经在找这个名字，见 `services/chats.dispatch_im_message`）、
+    ``audio_url``/``audio_duration`` 只有语音帧有值（时长**单位未验证**）。
+
+    **文本为空但有图片/语音时照样返回一条消息**（以前这里只取文本，图片/语音帧被当成
+    「不是消息」直接丢）。语音帧的 ``content`` 写成 ``[语音] 3″`` 这样的摘要；图片帧保持
+    「``content`` 空 + ``images`` 有值」的口径，服务层已按
+    ``content or images or audio_url`` 三者之一判「是不是消息」
+    （`services/chats.py` 的 `dispatch_im_message`），所以两种都能落库。
+    纯空白正文（``'   '``）仍然返回 ``None``。
+
+    ⚠️ **真机 WS 帧的形状还没确认**：仓里日志里入站帧全是
+    ``{"syncPushPackage": {"data": [{"bizType": 40, "data": "<base64 二进制>"}]}}``
+    且没解出过一条消息（生产库 806 条消息的 ``external_id`` 全是 ``.PNM``，即
+    `listUserMessages` 同步路径），所以本函数认的 ``body[].content.custom.data``
+    形状目前只有自造帧在验证。
     """
     if not isinstance(payload, dict):
         return None
@@ -412,13 +592,43 @@ def parse_incoming_message(payload: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(item, dict):
         item = payload  # 有些推送把字段直接摊在顶层
 
-    content = _decode_content(item.get('content'))
-    if not content:
-        raw_text = item.get('text')
-        content = raw_text if isinstance(raw_text, str) else ''
-    content = content.strip()
-    if not content:
+    content_raw = item.get('content')
+    custom = content_raw.get('custom') if isinstance(content_raw, dict) else None
+    decoded = _load_content(custom.get('data')) if isinstance(custom, dict) else None
+
+    text, images, msg_type = '', [], ''
+    audio_url, audio_duration = '', None
+    if decoded:
+        text, images, msg_type = _interpret_content(decoded)
+        if msg_type == 'voice':
+            # 只对语音帧取地址/时长：卡片/订单帧顶层也有通用 ``url``/``length``，
+            # 不加这个判断会把商品链接当成语音地址（服务层 `_display_msg_type`
+            # 看到 audio_url 非空就判成语音，前端会渲染出播放器）。
+            audio_url, audio_duration = _interpret_audio(decoded)
+    if not text and not images:
+        # 兜底：``content.text`` / 裸字符串正文（有的推送没有 custom 包一层），
+        # 再兜底 ``custom.summary``（会话列表用的那句摘要）和顶层的 ``text``。
+        plain = _decode_content(content_raw).strip()
+        if not plain and isinstance(custom, dict):
+            plain = str(custom.get('summary') or custom.get('degrade') or '').strip()
+        if not plain:
+            raw_text = item.get('text')
+            plain = raw_text.strip() if isinstance(raw_text, str) else ''
+        if plain:
+            text = plain
+            if not msg_type:
+                msg_type = 'text'
+    if not text and msg_type == 'voice':
+        # 语音没有正文，给一句可读摘要：服务层拿 content 当「是不是消息」的闸门
+        # （`services/chats.dispatch_im_message`），空串会被直接丢掉。
+        text = _voice_summary(audio_duration)
+    # 正文一律 strip 后再判空：纯空白（``'   '``）不算消息 —— HEAD 就是这么做的，
+    # 否则 base64 形状的空文本帧会凭空多出一条 `content='   '` 的消息。
+    text = text.strip()
+    if not text and not images:
         return None
+    if not msg_type:
+        msg_type = 'image' if images else ('text' if text else 'system')
 
     extension = item.get('extension')
     item_id = ''
@@ -441,7 +651,12 @@ def parse_incoming_message(payload: Any) -> Optional[Dict[str, Any]]:
         'seller_id': _strip_goofish(
             _first_str(item, 'receiverId', 'receiver_id', 'to', 'targetId')
         ),
-        'content': content,
+        'content': text,
+        'images': images,
+        'msg_type': msg_type,
+        'image_url': images[0] if images else '',
+        'audio_url': audio_url,
+        'audio_duration': audio_duration,
         'item_id': item_id,
         'sender_nick': _sender_nick_of(item),
     }
@@ -560,7 +775,15 @@ def build_send_frame(cid: str, toid: str, my_id: str, text: str) -> Dict[str, An
     if len(text) > MAX_TEXT_LENGTH:
         raise ValueError(f'消息内容不能超过 {MAX_TEXT_LENGTH} 个字符')
 
-    inner = {'contentType': 1, 'text': {'text': text}}
+    return _send_frame(cid, toid, my_id, {'contentType': 1, 'text': {'text': text}})
+
+
+def _send_frame(cid: str, toid: str, my_id: str, inner: Dict[str, Any]) -> Dict[str, Any]:
+    """``sendByReceiverScope`` 的外层信封 —— 文本帧与图片帧只差 ``inner``。
+
+    三个必须点见 `build_send_frame`；``inner`` 一律 ``base64(json)`` 进
+    ``content.custom.data``。
+    """
     encoded = base64.b64encode(
         json.dumps(inner, ensure_ascii=False).encode('utf-8')
     ).decode('utf-8')
@@ -590,6 +813,28 @@ def build_send_frame(cid: str, toid: str, my_id: str, text: str) -> Dict[str, An
             },
         ],
     }
+
+
+def build_send_image_frame(cid: str, toid: str, my_id: str,
+                           image_url: str) -> Dict[str, Any]:
+    """``/r/MessageSend/sendByReceiverScope`` 发图片帧（``contentType: 2``）。
+
+    ⚠️ **这个形状是按 ``contentType=2`` 的解析反推的，真机未验证** —— 只保证外层信封
+    与 `build_send_frame` 逐字段一致，差别只在 ``inner``：``contentType: 2`` +
+    ``image.pics = [image_url]``。
+
+    旧项目（``XianyuAutoAsync.py:11471-11487``）真实发图帧里 ``pics`` 放的是
+    ``{'url','width','height','type': 0}`` 字典，且要求先上传到闲鱼 CDN 再发；这里按任务书
+    放**裸 URL 字符串**（``_interpret_content`` 两种都认）。真机若被拒，优先怀疑这里缺
+    ``width``/``height``。
+
+    其余三个必须点与文本帧相同：``content.custom.data`` 是 ``base64(json)``；
+    ``actualReceivers`` 要同时带对方和**自己**；``cid``/``toid`` 都带 ``@goofish``。
+    """
+    image_url = str(image_url or '').strip()
+    if not image_url:
+        raise ValueError('图片地址不能为空')
+    return _send_frame(cid, toid, my_id, {'contentType': 2, 'image': {'pics': [image_url]}})
 
 
 def build_list_messages_frame(cid: str, start_timestamp: Optional[int] = None,

@@ -27,6 +27,7 @@ from __future__ import annotations
 import importlib
 import json
 import re
+import time
 from typing import Any, Dict, List, Optional, Sequence
 
 from loguru import logger
@@ -53,6 +54,16 @@ ACCOUNT_OFF_CODE = 'account_auto_reply_off'
 #: 现在判据提到分支外，`POST /api/chats/incoming` 在 manual/off 会话上也会带回这个 code。
 MODE_NOT_AUTO_CODE = 'mode_not_auto'
 
+#: 「不是买家在说话」的消息类型：协议层认不出的帧会给 `[系统消息]` / `[卡片消息]`
+#: 摘要（订单/物流提示、商品卡、小程序…）。这些帧现在**照旧落库**（以前是被静默丢掉，
+#: 界面上就成了「(空消息)」），但绝不能触发 AI 自动回复 —— 对着一张商品卡开口说话
+#: 就是自言自语，还会白烧一次大模型调用。旧项目 `XianyuAutoAsync.py:9918-9953`
+#: 对同类帧也是判系统消息后直接 return。
+SYSTEM_MSG_TYPES = ('system', 'card')
+
+#: 命中 `SYSTEM_MSG_TYPES` 时给调用方的结构化拒发原因（和 `MODE_NOT_AUTO_CODE` 同形）。
+SYSTEM_MESSAGE_CODE = 'system_message'
+
 SENDER_BY_ROLE = {
     'buyer': ('in', 'buyer'),
     'user': ('in', 'buyer'),
@@ -69,10 +80,133 @@ def _row_to_conversation(row: Any) -> Dict[str, Any]:
     return conv
 
 
+#: `messages.meta` 里承载媒体信息的键：图片地址列表 `images`、单张 `image_url`、
+#: 语音 `audio_url`、语音时长 `audio_duration`、消息类型 `msg_type`。
+#: 图片/语音**只走 meta**（SCHEMA 冻结，不加列），落库与透出都从这里读写。
+MEDIA_META_KEYS = ('images', 'image_url', 'image', 'msg_type', 'audio_url', 'audio_duration')
+
+#: 语音时长 > 这个数就当毫秒 —— **只是兜底**，真正生效的是协议层同名常量。
+#: 保留一个本地默认值是为了「协议层整个装不上」时 `_row_to_message` 还能出数。
+AUDIO_MS_THRESHOLD = 300
+
+
+def audio_seconds(value: Any) -> Optional[float]:
+    """语音时长统一成**秒**；取不到返回 None（前端「时长未知就不写数字」）。
+
+    **换算只有一份实现**：协议层 `backend/app/xianyu/im.py::audio_seconds`。这里刻意
+    不自己算 —— 以前两层各写一套阈值（协议层把 400 当 400 秒、这里当 0.4 秒），
+    同一条语音在消息摘要和播放器上会显示成相差 1000 倍的两个数。
+    """
+    module = common.protocol_module('im')
+    convert = getattr(module, 'audio_seconds', None)
+    if callable(convert):
+        return convert(value)
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    if number > AUDIO_MS_THRESHOLD:
+        number = number / 1000.0
+    return round(number, 1)
+
+
+def _parse_meta(raw: Any) -> Dict[str, Any]:
+    """`messages.meta` 是 JSON 文本 -> dict；解析不了返回空 dict（**绝不抛**）。"""
+    if isinstance(raw, dict):
+        return dict(raw)
+    text = str(raw or '').strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}
+
+
+def meta_images(meta: Dict[str, Any]) -> List[str]:
+    """从 meta 里取图片地址列表：`images` 优先，单张 `image_url`/`image` 兜底。
+
+    协议层（task-43）还没落地时 meta 里只有单张 `image_url` —— 两种形状都要认，
+    否则前端拿不到缩略图。
+    """
+    meta = meta or {}
+    raw = meta.get('images')
+    if isinstance(raw, (list, tuple)):
+        candidates: Sequence[Any] = raw
+    elif isinstance(raw, str) and raw.strip():
+        candidates = [raw]
+    else:
+        candidates = []
+    urls: List[str] = []
+    for value in candidates:
+        url = str(value or '').strip()
+        if url and url not in urls:
+            urls.append(url)
+    for key in ('image_url', 'image'):
+        url = str(meta.get(key) or '').strip()
+        if url and url not in urls:
+            urls.append(url)
+    return urls
+
+
+def _media_placeholder(meta: Dict[str, Any]) -> str:
+    """正文为空时给一句可读占位（**绝不落空串**）：有图 `[图片]`、有语音 `[语音]`。"""
+    if meta_images(meta):
+        return '[图片]'
+    if str((meta or {}).get('audio_url') or '').strip():
+        return '[语音]'
+    return ''
+
+
+def _display_msg_type(column: Any, meta: Dict[str, Any], images: Sequence[str], audio_url: str) -> str:
+    """给前端的消息类型：有语音就是 voice、有图就是 image，其余信 meta / 列值，退回 text。
+
+    **语音优先于图片**：真机语音帧里可能带一张 jpg 封面，先判图会把语音消息显示成图片。
+    命名跟协议层（`backend/app/xianyu/im.py`）和 `messages.msg_type` 列一致用 `voice`，
+    历史写进去的 `audio` 也统一归成 `voice`（库里只该有一种写法）。
+    """
+    if audio_url:
+        return 'voice'
+    if images:
+        return 'image'
+    value = str((meta or {}).get('msg_type') or column or '').strip().lower()
+    if value == 'audio':
+        return 'voice'
+    return value or 'text'
+
+
 def _row_to_message(row: Any) -> Dict[str, Any]:
+    """一行 `messages` -> 给 API/前端的消息 dict。
+
+    除原有字段外**新增**（都是加字段，不删不改原有语义）：
+    `images`（图片地址列表）、`msg_type`（image/audio/文本/卡片…）、`audio_url`、
+    `audio_duration`（秒，未知为 null）、`ai_role`/`ai_model`/`ai_elapsed_ms`（AI 来源标记）。
+    """
     msg = dict(row)
     if msg.get('sent_ok') is not None:
         msg['sent_ok'] = bool(msg['sent_ok'])
+    meta = _parse_meta(msg.get('meta'))
+    images = meta_images(meta)
+    audio_url = str(meta.get('audio_url') or '').strip()
+    msg['images'] = images
+    msg['msg_type'] = _display_msg_type(msg.get('msg_type'), meta, images, audio_url)
+    msg['audio_url'] = audio_url
+    msg['audio_duration'] = audio_seconds(meta.get('audio_duration'))
+    sender = str(msg.get('sender') or '')
+    if sender.startswith(AI_ROLE_PREFIX):
+        msg['ai_role'] = sender[len(AI_ROLE_PREFIX):]
+    else:
+        # `ai:<role>` 之外还认 meta（AI 回复落库时两个地方都写，老数据只有 meta 也得认）
+        msg['ai_role'] = str(meta.get('ai_role') or '').strip()
+    msg['ai_model'] = str(meta.get('ai_model') or meta.get('model') or '').strip()
+    elapsed = meta.get('ai_elapsed_ms', meta.get('elapsed_ms'))
+    try:
+        msg['ai_elapsed_ms'] = int(elapsed) if elapsed not in (None, '') else None
+    except (TypeError, ValueError):
+        msg['ai_elapsed_ms'] = None
     return msg
 
 
@@ -317,11 +451,18 @@ def list_conversations(
     for row in rows:
         conv = _row_to_conversation(row)
         last = db.query_one(
-            'SELECT content, created_at, direction, sender FROM messages WHERE conversation_id = ? '
-            'ORDER BY id DESC LIMIT 1',
+            'SELECT * FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 1',
             (conv['id'],),
         )
-        conv['last_message'] = dict(last) if last is not None else None
+        if last is None:
+            conv['last_message'] = None
+        else:
+            # 摘要也走 `_row_to_message`：task-44 之前落库的「空正文 + meta 里有图片地址」
+            # 消息在列表里会显示成「（暂无消息）」，跟气泡里的缩略图自相矛盾。
+            summary = _row_to_message(last)
+            if not str(summary.get('content') or '').strip():
+                summary['content'] = _media_placeholder(_parse_meta(summary.get('meta')))
+            conv['last_message'] = summary
         conversations.append(conv)
     return {'conversations': conversations, 'total': len(conversations)}
 
@@ -389,11 +530,19 @@ def append_message(
     if ai_generated:
         payload_meta.setdefault('ai_generated', True)
 
+    # 只有媒体、没有文字的消息（买家发图/发语音）不能落空串：前端会显示成「(空消息)」。
+    # 落一句 `[图片]` / `[语音]` 占位，会话列表的最后一条摘要也才有东西可显示。
+    content = str(content or '')
+    if not content.strip():
+        content = _media_placeholder(payload_meta) or content
+
     message_id = db.execute(
-        'INSERT INTO messages(conversation_id, direction, sender, content, item_id, meta, sent_ok) '
-        'VALUES(?,?,?,?,?,?,?)',
+        'INSERT INTO messages(conversation_id, direction, sender, content, msg_type, item_id, meta, sent_ok) '
+        'VALUES(?,?,?,?,?,?,?,?)',
         (
-            row['id'], direction, sender, content or '', item_id or row['item_id'] or '',
+            row['id'], direction, sender, content,
+            str(payload_meta.get('msg_type') or 'text').strip().lower() or 'text',
+            item_id or row['item_id'] or '',
             _json.dumps(payload_meta, ensure_ascii=False),
             None if sent_ok is None else (1 if sent_ok else 0),
         ),
@@ -667,10 +816,33 @@ def _ai_reply(conversation: Dict[str, Any], message_id: Any) -> Optional[Dict[st
     handler = getattr(runtime, 'reply_for_message', None)
     if not callable(handler):
         return None
+    started = time.monotonic()
     try:
-        return _normalize_ai_result(common.run_awaitable(handler(int(conversation['id']), int(message_id))))
+        result = _normalize_ai_result(common.run_awaitable(handler(int(conversation['id']), int(message_id))))
     except Exception as exc:  # AI 出错绝不能影响买家消息落库
         return {'success': False, 'reply': '', 'message': f'AI 回复失败: {exc}', 'code': 'ai_error'}
+    # 真实耗时由这里量（编排层只回 model/usage，不回耗时）：前端 AI 徽章显示它。
+    result.setdefault('elapsed_ms', int((time.monotonic() - started) * 1000))
+    return result
+
+
+def _ai_message_meta(reply: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """AI 消息的来源标记（写进 `messages.meta`，前端气泡上的「AI」徽章读它）。
+
+    拿不到就**不写**：宁可徽章只写「AI」，也不要编一个模型名出来。
+    """
+    reply = reply or {}
+    meta: Dict[str, Any] = {'ai_generated': True}
+    model = str(reply.get('model') or reply.get('ai_model') or '').strip()
+    if model:
+        meta['ai_model'] = model
+    elapsed = reply.get('elapsed_ms')
+    if elapsed not in (None, ''):
+        meta['ai_elapsed_ms'] = elapsed
+    role = str(reply.get('role') or '').strip()
+    if role:
+        meta['ai_role'] = role
+    return meta
 
 
 def ai_draft(conversation_id: Any, message_id: Any = None) -> Any:
@@ -766,6 +938,11 @@ def handle_incoming(
         return incoming
 
     mode = str(conversation.get('mode') or 'auto')
+    # 系统/卡片消息落库但不该让 AI 开口（见 `SYSTEM_MSG_TYPES`）。判据放在 `mode` 分支
+    # 之外，和 `MODE_NOT_AUTO_CODE` 同一个理由：`POST /api/chats/incoming` 也要能拿到
+    # 这个 code，而不是只在 IM 入站路径上生效。
+    incoming_type = str(incoming_meta.get('msg_type') or '').strip().lower()
+    system_like = incoming_type in SYSTEM_MSG_TYPES
     # 判据提在 `mode == 'auto'` 分支**外面**（任务 C5）：以前 `mode_not_auto` 只写在
     # `deliver_ai_reply` 里，而它唯一的生产调用方在 auto 分支内 -> 那个 code 生产不可达。
     if mode != 'auto':
@@ -773,6 +950,12 @@ def handle_incoming(
             'success': False,
             'code': MODE_NOT_AUTO_CODE,
             'message': f'会话处于 {mode} 模式，AI 不自动回复',
+        }
+    elif system_like:
+        ai_result = {
+            'success': False,
+            'code': SYSTEM_MESSAGE_CODE,
+            'message': '这条不是买家说的话（系统/卡片消息），AI 不自动回复',
         }
     else:
         ai_result = _account_reply_gate(conversation.get('account_id'))
@@ -790,6 +973,7 @@ def handle_incoming(
                 ai_message = append_message(
                     conversation['id'], f'ai:{_ai_role_of(reply, conversation)}',
                     reply_text, ai_generated=True, sent_ok=False, mark_unread=False,
+                    meta=_ai_message_meta(reply),
                 )
                 common.publish('chats.ai_reply', {
                     'conversation_id': conversation['id'], 'content': reply_text,
@@ -1244,7 +1428,8 @@ def sync_im_conversations(
         for item in items:
             content = str(item.get('content') or '')
             images = [str(url) for url in (item.get('images') or []) if url]
-            if not content and not images:
+            audio_url = str(item.get('audio_url') or '').strip()
+            if not content and not images and not audio_url:
                 continue
             msg_id = str(item.get('msg_id') or '')
             if msg_id and _stored_external_id(conversation['id'], msg_id):
@@ -1254,8 +1439,15 @@ def sync_im_conversations(
             if msg_id:
                 meta[EXTERNAL_ID_KEY] = msg_id
             if images:
-                # 图片地址必须落进 meta（角色判定靠它选 vision，见任务 A2）。
+                # 图片地址必须落进 meta（角色判定靠它选 vision，见任务 A2；前端缩略图靠 images）。
+                meta['images'] = images
                 meta['image_url'] = images[0]
+            if audio_url:
+                meta['audio_url'] = audio_url
+            if item.get('audio_duration') not in (None, ''):
+                meta['audio_duration'] = item.get('audio_duration')
+            if str(item.get('msg_type') or '').strip():
+                meta['msg_type'] = str(item.get('msg_type')).strip()
             is_self = bool(item.get('is_self'))
             # 昵称：只有**买家发来的消息**才作数（`sender_nick` 已由协议层确认发送者不是
             # 自己）。自己发的消息里的昵称反过来用来学习「账号自己的昵称」，这样下一次同步
@@ -1327,8 +1519,14 @@ def dispatch_im_message(account_id: str, payload: Any) -> Optional[Any]:
 
     buyer_id = str(parsed.get('buyer_id') or '')
     content = str(parsed.get('content') or '')
-    if not (account_id and buyer_id and content):
-        _warn_unparsed_frame(im_module, payload, '缺少 account_id/buyer_id/content')
+    # 图片/语音消息**可能没有文字**（买家只发一张图）：只要三者有一个就不算空帧。
+    # 用 `.get(...) or []` 这种防御写法 —— 协议层（task-43）还没落地时这些键根本不存在。
+    images = [str(url).strip() for url in (parsed.get('images') or []) if str(url or '').strip()]
+    audio_url = str(parsed.get('audio_url') or '').strip()
+    audio_duration = parsed.get('audio_duration')
+    msg_type = str(parsed.get('msg_type') or '').strip()
+    if not (account_id and buyer_id and (content or images or audio_url)):
+        _warn_unparsed_frame(im_module, payload, '缺少 account_id/buyer_id/正文或媒体')
         return None
 
     item_id = str(parsed.get('item_id') or '')
@@ -1350,10 +1548,20 @@ def dispatch_im_message(account_id: str, payload: Any) -> Optional[Any]:
     }
     # 图片地址必须透传（任务 A2）：`roles.role_for_conversation()` 靠
     # `messages.meta.image_url` 才会选 `vision`，`runtime` 也靠它塞 image_url 消息块。
-    # 协议层 `parse_incoming_message()` 目前只回文本字段，所以这里从**原始帧**里再抠一次。
+    # 协议层（task-43）给了 `images` 列表就用它，否则从**原始帧**里再抠一次。
+    if images:
+        incoming_meta['images'] = images
     image_url = str(parsed.get('image_url') or parsed.get('image') or '') or _first_image_url(payload)
+    if not image_url and images:
+        image_url = images[0]
     if image_url:
         incoming_meta['image_url'] = image_url
+    if audio_url:
+        incoming_meta['audio_url'] = audio_url
+    if audio_duration not in (None, ''):
+        incoming_meta['audio_duration'] = audio_duration
+    if msg_type:
+        incoming_meta['msg_type'] = msg_type
     return handle_incoming(
         conversation['id'], content,
         item_id=item_id,

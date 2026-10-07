@@ -568,5 +568,240 @@ class RealThreeLayerShapeTest(unittest.TestCase):
         self.assertIsNone(im.parse_conversation(group, ACCOUNT_ID))
 
 
+# --------------------------------------------------------------------------- 媒体消息
+
+BUYER_ID = '2200000001'
+
+
+class MediaMessageTest(unittest.TestCase):
+    """task-43：入站图片/语音/卡片消息不许再被丢掉、也不许再变成「(空消息)」。
+
+    **为什么需要**：真机库里 806 条消息全是 ``msg_type='text'``，其中 18 条 content 是空的
+    （界面显示「(空消息)」）。原因是 ``parse_incoming_message`` 只取文本，图片/语音帧在
+    协议层就被当成「不是消息」扔了。
+
+    **不打真实闲鱼平台**：全部是本地构造的帧。
+    """
+
+    def _frame(self, inner: dict, *, encoded: bool = True, **extra) -> dict:
+        data = json.dumps(inner, ensure_ascii=False)
+        if encoded:
+            data = base64.b64encode(data.encode('utf-8')).decode('ascii')
+        item = {
+            'msgId': 'im-9',
+            'cid': 'conv-9@goofish',
+            'senderId': f'{BUYER_ID}@goofish',
+            'content': {'custom': {'type': 1, 'data': data}},
+            'extension': {'itemId': '1087247101297'},
+        }
+        item.update(extra)
+        return {'lwp': '/r/MessageManager/listUserMessages', 'body': [item]}
+
+    def _item(self, inner: dict, **extra) -> dict:
+        """``parse_message_item`` 吃的那层 ``{'message': {...}}``。"""
+        return {'message': self._frame(inner, **extra)['body'][0]}
+
+    # ------------------------------------------------------------------ 图片
+
+    def test_image_frame_parses_from_base64_and_plain_json(self):
+        inner = {'contentType': 2, 'image': {'pics': [{'url': 'https://img.example/a.jpg'}]}}
+        for encoded in (True, False):
+            with self.subTest(encoded=encoded):
+                one = im.parse_incoming_message(self._frame(inner, encoded=encoded))
+                assert one is not None
+                self.assertEqual(one['images'], ['https://img.example/a.jpg'])
+                self.assertEqual(one['msg_type'], 'image')
+                self.assertEqual(one['image_url'], 'https://img.example/a.jpg')
+                self.assertEqual(one['content'], '', '没有正文就不要编造正文')
+
+    def test_pics_accepts_str_and_dict_and_dedupes(self):
+        inner = {'contentType': 2, 'image': {'pics': [
+            'https://img.example/plain.jpg',
+            {'url': 'https://img.example/dict.jpg'},
+            {'major': 'https://img.example/major.jpg'},
+            {'picUrl': 'https://img.example/picurl.jpg'},
+            'https://img.example/plain.jpg',   # 重复的要去掉
+            {'url': ''}, {'thumb': '   '}, '', None,
+        ]}}
+        one = im.parse_incoming_message(self._frame(inner))
+        assert one is not None
+        self.assertEqual(one['images'], [
+            'https://img.example/plain.jpg',
+            'https://img.example/dict.jpg',
+            'https://img.example/major.jpg',
+            'https://img.example/picurl.jpg',
+        ])
+
+    def test_image_only_frame_still_carries_the_message(self):
+        """回归：修之前这里返回 None（「不是可处理的买家文本消息」）。"""
+        one = im.parse_incoming_message(self._frame(
+            {'contentType': 2, 'image': {'pics': ['https://img.example/x.jpg']}}))
+        self.assertIsNotNone(one, '图片帧被丢掉 = 库里漏消息 / 多一条「(空消息)」')
+        self.assertEqual(one['buyer_id'], BUYER_ID, '认出来了还得认得出是谁发的')
+        self.assertEqual(one['item_id'], '1087247101297')
+
+    def test_image_without_pics_is_still_typed_as_image(self):
+        """一张 URL 都抠不出来时也得有句可读文案，否则界面上就是「(空消息)」。"""
+        one = im.parse_incoming_message(self._frame({'contentType': 2, 'image': {}}))
+        assert one is not None
+        self.assertEqual(one['images'], [])
+        self.assertEqual(one['msg_type'], 'image')
+        self.assertEqual(one['content'], '[图片]')
+
+    def test_explicit_image_type_wins_over_a_stray_text_key(self):
+        """`contentType=2` 的帧里带一个空的 `text` 键时，图片不能被丢掉（审查发现的坑）。"""
+        inner = {'contentType': 2, 'text': {'text': ''},
+                 'image': {'pics': ['https://img.example/stray.jpg']}}
+        one = im.parse_incoming_message(self._frame(inner))
+        assert one is not None
+        self.assertEqual(one['images'], ['https://img.example/stray.jpg'])
+        self.assertEqual(one['msg_type'], 'image')
+        two = im.parse_message_item(self._item(inner), ACCOUNT_ID)
+        assert two is not None
+        self.assertEqual(two['images'], ['https://img.example/stray.jpg'])
+        self.assertEqual(two['msg_type'], 'image')
+
+    def test_card_frame_does_not_get_a_voice_url(self):
+        """卡片帧顶层也有通用 `url`/`length`，不能当成语音地址（前端会渲染出播放器）。"""
+        inner = {'contentType': 5, 'title': '订单已发货',
+                 'url': 'https://item.taobao.com/item.htm?id=1', 'length': 12}
+        for one in (im.parse_incoming_message(self._frame(inner)),
+                    im.parse_message_item(self._item(inner), ACCOUNT_ID)):
+            assert one is not None
+            self.assertEqual(one['msg_type'], 'card')
+            self.assertEqual(one['content'], '订单已发货')
+            self.assertEqual((one['audio_url'], one['audio_duration']), ('', None))
+
+    def test_whitespace_text_frame_is_still_not_a_message(self):
+        """回归 HEAD：纯空白正文不算消息（base64 形状以前会漏过去）。"""
+        one = im.parse_incoming_message(
+            self._frame({'contentType': 1, 'text': {'text': '   '}}))
+        self.assertIsNone(one)
+        self.assertIsNone(im.parse_incoming_message(
+            self._frame({'contentType': 1, 'text': {'text': ''}})))
+
+    # ------------------------------------------------------------------ 语音
+
+    def test_voice_frame_is_typed_and_not_empty(self):
+        inner = {'contentType': 3, 'audio': {'url': 'https://audio.example/v.m4a',
+                                             'duration': 3}}
+        one = im.parse_incoming_message(self._frame(inner))
+        assert one is not None
+        self.assertEqual(one['msg_type'], 'voice')
+        self.assertEqual(one['audio_url'], 'https://audio.example/v.m4a')
+        self.assertEqual(one['audio_duration'], 3)
+        self.assertEqual(one['images'], [])
+        self.assertEqual(one['content'], '[语音] 3″',
+                         '入站语音也得有 content：服务层拿它当「是不是消息」的闸门')
+
+    def test_voice_summary_carries_seconds(self):
+        item = self._item({'contentType': 3, 'audio': {'url': 'u', 'duration': '7'}})
+        one = im.parse_message_item(item, ACCOUNT_ID)
+        assert one is not None
+        self.assertEqual(one['msg_type'], 'voice')
+        self.assertEqual(one['audio_duration'], 7)
+        self.assertEqual(one['content'], '[语音] 7″',
+                         '历史同步靠 content 非空才不会被服务层当空消息丢掉')
+        self.assertEqual(im.extract_message_summary(item), '[语音] 7″')
+
+    def test_voice_without_audio_field_still_typed_voice(self):
+        one = im.parse_incoming_message(self._frame({'contentType': 3}))
+        assert one is not None
+        self.assertEqual(one['msg_type'], 'voice')
+        self.assertEqual((one['audio_url'], one['audio_duration']), ('', None))
+        self.assertEqual(one['content'], '[语音]', '没有可信时长就不显示数字')
+
+    def test_audio_duration_unit_is_not_guessed(self):
+        """时长单位没有真机证据（0 条语音样本），所以只在「像秒」时显示数字。"""
+        for duration, expected in ((3, '[语音] 3″'), (0, '[语音]'),
+                                   (800, '[语音]'), ('abc', '[语音]'), (None, '[语音]')):
+            with self.subTest(duration=duration):
+                audio = {'url': 'u'}
+                if duration is not None:
+                    audio['duration'] = duration
+                one = im.parse_message_item(self._item({'contentType': 3, 'audio': audio}))
+                self.assertEqual(one['content'], expected)
+
+    # ------------------------------------------------------------------ 卡片 / 系统
+
+    def test_unknown_content_type_becomes_readable_text(self):
+        for inner, expected in (
+            ({'contentType': 14}, '[系统消息]'),            # 旧项目注释里的 tip 类型
+            ({'contentType': 9, 'cardData': {}}, '[卡片消息]'),
+            ({'contentType': 2, 'image': {}}, '[图片]'),
+        ):
+            with self.subTest(inner=inner):
+                one = im.parse_incoming_message(self._frame(inner))
+                assert one is not None
+                self.assertTrue(one['content'] or one['images'], '空串+空图 = 「(空消息)」')
+                if expected:
+                    self.assertEqual(one['content'], expected)
+
+    def test_card_with_title_keeps_using_the_title(self):
+        one = im.parse_incoming_message(self._frame({'contentType': 5, 'title': '订单已发货'}))
+        assert one is not None
+        self.assertEqual(one['content'], '订单已发货')
+        self.assertEqual(one['msg_type'], 'card')
+
+    # ------------------------------------------------------------------ 发图帧
+
+    def test_send_image_frame_round_trips(self):
+        frame = im.build_send_image_frame('conv-9', BUYER_ID, ACCOUNT_ID,
+                                          'https://img.example/send.jpg')
+        self.assertEqual(frame['lwp'], '/r/MessageSend/sendByReceiverScope')
+        self.assertEqual(frame['body'][1]['actualReceivers'],
+                         [f'{BUYER_ID}@goofish', f'{ACCOUNT_ID}@goofish'])
+        item = frame['body'][0]
+        self.assertEqual(item['cid'], 'conv-9@goofish')
+        self.assertEqual(item['content']['contentType'], 101)
+        self.assertTrue(item['uuid'])
+        decoded = im._load_content(item['content']['custom']['data'])
+        self.assertEqual(decoded, {'contentType': 2,
+                                   'image': {'pics': ['https://img.example/send.jpg']}})
+        text, images, msg_type = im._interpret_content(decoded)
+        self.assertEqual((text, images, msg_type),
+                         ('', ['https://img.example/send.jpg'], 'image'),
+                         '自己发出去的帧必须能被自己的解析器读回来')
+
+    def test_send_image_frame_rejects_empty_url(self):
+        with self.assertRaises(ValueError):
+            im.build_send_image_frame('c', 't', 'm', '   ')
+
+    # ------------------------------------------------------------------ 回归
+
+    def test_text_frame_shape_is_unchanged(self):
+        frame = im.build_send_frame('conv-9', BUYER_ID, ACCOUNT_ID, '在的')
+        encoded = frame['body'][0]['content']['custom']['data']
+        self.assertEqual(im._load_content(encoded),
+                         {'contentType': 1, 'text': {'text': '在的'}})
+        one = im.parse_incoming_message({'body': [{
+            'msgId': 'm-1', 'cid': 'conv-9@goofish',
+            'senderId': f'{BUYER_ID}@goofish',
+            'content': {'custom': {'data': encoded}},
+        }]})
+        assert one is not None
+        self.assertEqual(one['content'], '在的')
+        self.assertEqual(one['msg_type'], 'text')
+        self.assertEqual((one['images'], one['audio_url'], one['audio_duration']),
+                         ([], '', None))
+
+    def test_plain_text_content_shape_still_parses(self):
+        one = im.parse_incoming_message({'body': [{
+            'cid': 'c', 'senderId': BUYER_ID,
+            'content': {'text': {'text': '这个还在吗'}},
+        }]})
+        assert one is not None
+        self.assertEqual((one['content'], one['msg_type']), ('这个还在吗', 'text'))
+
+    def test_non_message_frames_still_return_none(self):
+        for payload in (
+            None, '', 'pong', {}, {'headers': {}, 'body': []},
+            {'body': {'message': {'cid': 'c', 'senderId': BUYER_ID, 'content': {}}}},
+            {'body': {'message': {'cid': 'c', 'senderId': BUYER_ID,
+                                 'content': {'text': {'text': '   '}}}}},
+        ):
+            self.assertIsNone(im.parse_incoming_message(payload), f'不该解析: {payload!r}')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
