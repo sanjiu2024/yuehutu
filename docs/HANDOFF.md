@@ -801,19 +801,27 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
     用户诉求 ④ 的两个原因至此都能对号入座：①商品在闲鱼上真的已卖出（`operation_logs`
     里 `3998190171/1087577639387`「专拍」那条，2026-10-08 02:21 本地时间）；②这件商品是
     单件库存发布，平台不让改多件。
+99. **编辑弹窗只提交真的改动过的字段**（用户那句「以下字段仅本地生效：description, price,
+    stock, title」的直接来源）。`EditItemModal::save()` 以前无条件把 `title`/`description`
+    塞进 patch，并且只要输入框非空就带 `price`/`original_price`/`stock` —— 用户只改了一个
+    字段，返回的 `local_only_fields` 也会把那四个都列出来，看着像「我什么都没动它却改了一堆」；
+    更糟的是 `original_price` 会被静默写成 `0`。现在 patch 的构造口径与弹窗里的「改动预览」
+    完全一致：**值真的变了才进 patch**（`title`/`description` 也不例外），空输入框一律表示
+    「这次不改」。已卖出商品的提示因此只列用户真的改过的那几个字段。
 
 > **第十三批证据链**：`backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_r6c`）
 > `TOTAL 27  PASS 27  FAIL 0  CASES 817  SKIPPED 2`（第十二批 803）；
 > `test_services_items.py` 145、`test_xianyu_items.py` 83、`test_items_api.py` 33、
 > `test_item_stats_api.py` 39。前端 `npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0
-> （57 modules，`dist/assets/index-Dmp5pOuD.js` 321.03 kB / `index-Cuic_y7D.css` 99.24 kB）。
+> （57 modules，最终产物 `dist/assets/index-CxlIsVf9.js` 321.18 kB / `index-Cuic_y7D.css` 99.24 kB；
+> 收尾前那一次是 `index-Dmp5pOuD.js` 321.03 kB）。
 > 真机数据核对（只读脚本，不打平台）：3 账号 95 商品、108 会话、956 消息、订单 0 行。
 > 用户诉求 ④ 的两个原因来自真实 `operation_logs` 行（不是推测）。
 
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**27 个测试文件、803 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**27 个测试文件、817 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -859,6 +867,11 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
   `/api/health` 200 `frozen:true`、`MainWindowTitle=闲鱼 AI 工作台`。
   上面第八批那行、以及本轮更早那次（9604905 字节 / `index-BfXGSc4s.js`，
   那是 P1/P7/P8 修之前的包）都是**历史记录**，别再当成当前产物。
+  **第十三批（用户第六次实测的排序 / 售罄归下架 / 编辑页之后）重新打包的最新值**：产物
+  **9608365 字节**（`2026-10-08 03:38:39`）、`GET /` 里是 `index-CxlIsVf9.js`
+  + `index-Cuic_y7D.css`，与 `frontend/dist/assets` 逐文件一致（SHA256 前缀
+  `E01170020E21` / `190900B87F1D`）；`--port 18400` 上 `/api/health` 200
+  `frozen:true`。第十二批那次（9604897 字节 / `index-AwCzqtxS.js`）同样是历史记录。
 - **扫码登录真的通了**（唯一一处真打闲鱼平台的路径，且不涉及任何账号凭据）：
   - 源码直调：`_get_login_params` 拿到完整 `loginFormData`（`_csrf_token`/`umidToken`/
     `hsiz`/`bizParams=taobaoBizLoginFrom=web` 等），`_generate_qr` 拿到

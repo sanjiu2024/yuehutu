@@ -267,6 +267,12 @@ POST   /api/items/{account_id}/{item_id}/edit  {price?,original_price?,title?,de
       -- 已卖出（`status='sold'`）的商品：平台不接受编辑，服务层 `SOLD_WARNING` 闸门让
       --   `synced=false` + `warning`，**本地照改**。前端编辑弹窗对这类商品要提前讲清
       --   「本地会变、闲鱼上的不会变，这不是保存失败」，并把按钮写成「保存到本地」。
+      -- **只提交真的改动过的字段**（前端硬性要求）：请求里出现的每个字段都会进
+      --   `updated_fields`/`local_only_fields`，所以「原样回提整表单」会让用户看到一堆
+      --   自己没动过的字段名（真机反馈：「仅本地生效：description, price, stock, title」），
+      --   而且 `original_price` 会被静默写成 0。空输入框 = 这次不改。
+      -- 服务层自身是「patch 合并到库里那条商品再回提整份原表单」（`_apply_patch`），
+      --   所以省略没变的字段完全安全，不需要前端凑齐整份表单。
 POST   /api/uploads/images                     multipart/form-data: file(单张) + account_id(可选)
       -> {success:true,data:{url,file_id,width,height,name,local_path}}
       -- 把本地图片传到闲鱼图床，拿到可直接放进商品/消息的直链。限制：jpg/jpeg/png/webp，≤10MB。
