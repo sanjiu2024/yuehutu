@@ -128,6 +128,15 @@ items(id INTEGER PK, account_id TEXT, item_id TEXT UNIQUE, title TEXT, price REA
   认不出的「像指标」字段（含 exposure/visit/want/曝光/浏览/想要 等词根）要留一条
   `WARN_PLATFORM_PARTIAL` warning，不许静默丢掉；`item_id`/`title`/`code` 这类结构性
   字段不报（每次都响的 warning 等于没有 warning）。
+- **这个接口只能按商品逐个查，所以服务层硬性限流**（第十四批）：`?source=auto|platform`
+  时一次最多查 `item_stats.PLATFORM_ITEM_LIMIT`（=10）件商品，超出的部分用本地统计，
+  并留一条 `WARN_PLATFORM_CAPPED` warning 写明「本次只查了前 N 件（这个账号共 M 件）」。
+  理由：一个 45 件商品的账号点一次「商品数据」= 45 连击 mtop，真机补库存那次就是这样
+  触发平台风控的。`?item_id=<单件>` 不受限流影响（限流只为挡住「全量连击」）。
+  **不许**为了让数字好看而偷偷少查又不说明。
+- 信封剥**多层**（第十四批）：`_stats_payloads()` 按 `data` 键最多剥
+  `client._STATS_ENVELOPE_DEPTH`（=4）层，裸指标 dict 与任意层数的信封都认。
+  只剥一层的话，平台再包一层就会重现「明明有 367 次曝光却报没有可识别的指标」。
 
 -- AI 供应商与角色
 providers(id INTEGER PK, name TEXT, base_url TEXT, api_key TEXT, default_model TEXT,
@@ -435,6 +444,9 @@ GET    /api/settings ; PUT /api/settings       {key:value,...}
   `FAIL_BIZ_ITEM_ERROR_MULTI_INVENTORY_ITEM_CAN_NOT_PUBLISH` —— 单件库存商品不让改成多件，
   真机商品 `2221063792739/1087852912806`），拼在原文后面。**没见过的错误码原样透传、不编解释**
   （有测试锁住）。平台拒绝不影响本地落库：改动照样写进 SQLite，`synced=false` 如实上报。
+  匹配按**词边界**（前后不紧邻 `[A-Za-z0-9_]`），不是子串包含：平台的错误码在异常文案里
+  前面还挂着 `MTOP 调用失败 [api]: ` 这类前缀，但将来出现的**同前缀新码**
+  （`..._CAN_NOT_PUBLISH_V2`）绝不许套用旧解释 —— 那等于给用户讲了一个错的理由。
 
 错误响应统一：`{"success":false,"message":"...","code":"..."}`，HTTP 用语义状态码（4xx 业务、5xx 内部）。成功统一 `{"success":true,"data":{...}}`。
 **404/405 也必须走这个信封**（挂的是 Starlette 的 `HTTPException`，不是 FastAPI 的子类）。

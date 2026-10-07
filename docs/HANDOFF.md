@@ -22,7 +22,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 27  PASS 27  FAIL 0  CASES 817  SKIPPED 2
+-> TOTAL 27  PASS 27  FAIL 0  CASES 821  SKIPPED 2
 ```
 
 ```text
@@ -818,10 +818,61 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 > 真机数据核对（只读脚本，不打平台）：3 账号 95 商品、108 会话、956 消息、订单 0 行。
 > 用户诉求 ④ 的两个原因来自真实 `operation_logs` 行（不是推测）。
 
+### 第十四批：第十三批的独立复审（两个只读审查员）与复审后的硬化（100~103）
+
+> 第十三批交付后派了两个**独立只读审查员**（一个审后端、一个审前端，各自真跑脚本、
+> 不许改仓库）。两份报告结论都是「可以交付，0 个必须修的问题」；下面 100~103 是
+> 复审报出来的口子 + 我在复审过程中自己发现的一个**真隐患**。
+
+100. **商品数据接口会把账号打到熔断**【Lead 顺着复审自己发现的真隐患】。
+     `services/item_stats.py::account_stats` 在 `mode != 'local'` 时对**该账号全部商品**
+     逐个调 `client.item_stats` —— 一个 45 件商品的账号点一次「商品数据」就是 **45 连击
+     mtop**。这不是理论风险：真机补库存那次（第十批）就是这样触发风控的
+     （`stock_refresh_stopped="risk"`）。修：`PLATFORM_ITEM_LIMIT = 10`，一次最多查 10 件，
+     超出的部分用本地统计，并留一条 `WARN_PLATFORM_CAPPED` 如实写明「本次只查了前 10 件
+     （这个账号共 45 件），其余先用本地统计；想查具体某件商品，用搜索框把列表缩小到它再刷新」。
+     `?item_id=<单件>` 不受限流影响。**教训：凡是「按商品逐个查」的接口，页面上一次点击
+     都可能变成几十连击 —— 限流要写在服务层，不能指望用户手快。**
+101. **信封再包一层就会重演第十一批那次事故**【复审 D2】。`_stats_payloads()` 原来只剥
+     一层 `data`：真机是两层（外层信封 + 内层指标），修好之后如果平台**再包一层**，
+     「明明有 367 次曝光却报没有可识别的商品数据指标」就会原样重现（代价是整条降级成本地
+     统计 + 用户看到一句错的原因）。修：按 `data` 键最多剥 `_STATS_ENVELOPE_DEPTH = 4` 层，
+     到顶就停（再深就不是信封而是业务数据了）。`test_deeper_envelope_is_also_unwrapped`
+     锁住三层能解析、超过上限返回 `None`（不猜）。
+102. **同前缀的新错误码不许套用旧解释**【复审 D4】。`_platform_error_hint` 原来用
+     `if code in text` 做**子串包含**，于是平台将来出现
+     `FAIL_BIZ_ITEM_ERROR_MULTI_INVENTORY_ITEM_CAN_NOT_PUBLISH_V2` 会命中「单件库存」那条
+     解释 —— 用户会拿着一个**错的理由**去想办法。修：改成**词边界匹配**
+     （前后不紧邻 `[A-Za-z0-9_]`），既能穿过日志里 `MTOP 调用失败 [api]: CODE::文案`
+     这种 `: ` 分隔的前缀，又不会把 `_V2` 当成旧码；文案里出现同一个词根也不算命中。
+     `test_same_prefix_but_new_error_code_is_not_translated` 锁住三种情形。
+103. **前端三个小口子**【复审 D1/D2/D3，都是会被用户看见或让扫描一直报警的】。
+     ①编辑弹窗保存按钮的 `title` 三元顺序改成与页脚一致（上传中 > 已卖出 > 没改动 > 正常）：
+     原来「没有改动的已卖出商品」按钮文案是「保存到本地」、hover 却提示「先改点东西」，
+     两处打架；②`items.css` 8 处 `color-mix` 补上字面量兜底（行 38/76/432/469/480/509/543/715）
+     —— 文件头自己定的约定是「rgba 在前当老内核降级、主题感知的 `color-mix` 在后」，
+     这 8 处只有 `color-mix`，老内核上整条声明被丢弃（背景/边框变透明），现在全文件
+     13 条 `color-mix` 声明 **100% 有兜底**（有脚本可复查）；③`icons.tsx` 注释里的鱼形
+     emoji 换成文字 —— dist 产物本来就 0 emoji，但源码层留着会让「零 emoji」的扫描一直报警。
+     （复审的 D4 是 `items.css` 里的**存量**硬编码颜色/px 字号，明确不混进本轮，另开一轮清。）
+
+> **第十四批证据链**：`backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_hard2`）
+> `TOTAL 27  PASS 27  FAIL 0  CASES 821  SKIPPED 2`（第十三批 817；新增 4 条：
+> `test_item_stats_api.py` 39→41 的两条限流用例、`test_xianyu_items.py` 83→84 的多层信封、
+> `test_services_items.py` 145→146 的同前缀新码）。
+> 前端 `npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0（57 modules，
+> `dist/assets/index-kmUrJvdH.js` 321.20 kB / `index-iTNo5yli.css` 99.44 kB）。
+> `scripts/ui_smoke.py --port 18099` **9/9 页**、`scripts/live_refresh_smoke.py --port 18127`
+> **2/2 阶段**。真机数据接口探测（只打 1 次 mtop）：商品 `1087258469593` 回
+> `exposure=367 / visits=24 / wants=1` —— 第十一批那个信封修复在**真实平台**上成立，
+> 用户截图里那句「没有可识别的商品数据指标」已不复现。
+> 两个独立审查员的结论与全部证据（含他们真跑出来的数字）见会话记录；他们**没有**改过仓库
+> 任何文件（`git status` 在他们跑完后仍与审查前一致）。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**27 个测试文件、817 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**27 个测试文件、821 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -872,6 +923,12 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
   + `index-Cuic_y7D.css`，与 `frontend/dist/assets` 逐文件一致（SHA256 前缀
   `E01170020E21` / `190900B87F1D`）；`--port 18400` 上 `/api/health` 200
   `frozen:true`。第十二批那次（9604897 字节 / `index-AwCzqtxS.js`）同样是历史记录。
+  **第十四批（限流 / 多层信封 / 错误码词边界 / 前端三个小口子之后）重新打包的最新值**：产物
+  **9609153 字节**（`2026-10-08 04:11:08`）、`GET /` 里是 `index-kmUrJvdH.js`（321.20 kB）
+  + `index-iTNo5yli.css`（99.44 kB），与 `frontend/dist/assets` 逐文件一致（SHA256 前缀
+  `D31F09CA6B20` / `F16E87DA0462`；`build_exe.ps1` 自报「打包内前端: …（与快照逐文件一致）」）；
+  `--port 18400` 上 `/api/health` 200 `frozen:true`。第十三批那次（9608365 字节 /
+  `index-CxlIsVf9.js`）同样是历史记录。
 - **扫码登录真的通了**（唯一一处真打闲鱼平台的路径，且不涉及任何账号凭据）：
   - 源码直调：`_get_login_params` 拿到完整 `loginFormData`（`_csrf_token`/`umidToken`/
     `hsiz`/`bizParams=taobaoBizLoginFrom=web` 等），`_generate_qr` 拿到
