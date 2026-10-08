@@ -22,7 +22,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 30  PASS 30  FAIL 0  CASES 934  SKIPPED 2
+-> TOTAL 31  PASS 31  FAIL 0  CASES 941  SKIPPED 2
 ```
 
 ```text
@@ -945,10 +945,35 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 > 两个真浏览器只读探针（临时数据目录 + 真 Edge，不碰真平台/真 LLM）：
 > 商品数据缓存优先 **OK**、主管 AI 历史 **OK**（命令与输出见 104/105 两条）。
 
+### 第十六批：用户第九次真机实测「删除的账号数据怎么还在？」（113）
+
+113. **删号只清了账号/风控/会话三组表，商品与日志留在库里**（2026-10-09 真机）。
+     用户原话：「删除的账号数据怎么还在？」截图里商品页「全部账号」下 `共 95 条`，
+     多行已售出商品的账号后缀是 `3998190171`。只读盘点真库（`mode=ro`）：`accounts`
+     只剩 2 行，而 `items.account_id='3998190171'` 有 **39 行**、`operation_logs` 15 行
+     （该账号的会话/风控/凭证早就被清了）。根因：`xianyu/store.py::delete_account()` 只删
+     `accounts`/`account_credentials`/`risk_state`/`risk_events`，
+     `services/chats.py::purge_account_data()` 只删 `conversations`/`messages`，
+     `items`/`item_stats_cache`/`operation_logs`/`orders`/`shipments`/账号级 `ai_prompts`
+     没有任何人清理，于是 `account_id` 指向一个不存在的账号。修：新增
+     `backend/app/services/purge.py`（`purge_account_data()` 幂等；`orphan_account_ids()`
+     只按「`account_id` 不在 `accounts` 表里」判断，不猜时间/前缀；`purge_orphans()` 供启动
+     自愈；`shipments` 挂在 `orders.order_id` 上而不是 `account_id`，必须先按订单号删），
+     `api/accounts.py` 的 DELETE 增加 `data_purged`，并在确实删掉商品行时广播
+     `items.updated`（`action:'account_deleted'`，开着的商品页静默重拉）；
+     `main.lifespan` 在风控回灌之后调 `purge_orphans()`。
+     **重启一次应用就会把真机上那 39 件商品 + 15 行日志清掉**（启动自愈，无需手点）。
+     口径写进 `docs/CONTRACTS.md` §3：删号 = 删掉这台机器上属于它的所有本地行，唯一例外是
+     `agent_chat_messages`（主管 AI 的对话，不属于任何账号）。
+
+> **第十六批证据链**：`backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_purge_all`）
+> `TOTAL 31  PASS 31  FAIL 0  CASES 941  SKIPPED 2`（第十五批 934；新增
+> `tests/test_services_purge.py` 6 条 + `tests/test_accounts_im.py` 1 条 API 级用例）。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**30 个测试文件、934 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**31 个测试文件、941 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -959,6 +984,12 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
   前端「商品数据」页读缓存显示 **曝光次数合计 11,512 / 浏览次数合计 1,320、
   已汇总 10/11 个商品**，且打开页面只发 `source=cache` + `/stats/progress` 两条请求
   （**零平台调用**）。这条链把第 110~112 三个缺陷一次证实（含真因是环境代理）。
+- **删号残留已在真机清干净**（2026-10-09，打包版 + 真库）：重启前只读盘点
+  `ORPHAN_ROWS=54`（`items.account_id='3998190171'` 39 行 + `operation_logs` 15 行），
+  重启打包版后 `ORPHAN_ROWS=0`，日志 `purge_orphans: 清掉 1 个已删除账号的残留本地数据
+  （共 54 行）: {'3998190171': {'items': 39, 'operation_logs': 15, …}}`；商品页「全部账号」
+  从 `共 95 条` 变成 `共 56 条`（= 两个在售账号的 45 + 11），页面里再也搜不到 `3998190171`，
+  只读探针（真 Edge）`has_deleted_account: false`、`page_errors: []`。
 - 真实 HTTP：只读 17 条 + 写路径 11 条，均结构化信封、无 500。
 - **真实浏览器逐页冒烟 9/9 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
   临时数据目录，逐页断言未白屏、未掉回登录页、无 JS 报错，截图在 `logs/ui_smoke/`）。

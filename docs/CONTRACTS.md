@@ -212,10 +212,22 @@ GET    /api/accounts              -> [{id,nickname,enabled,auto_reply,login_stat
 POST   /api/accounts/qr/start     -> {ticket,qr_image_b64,expires_in}
 GET    /api/accounts/qr/{ticket}  -> {state:pending|scanned|confirmed|expired|failed,account_id?}
 PATCH  /api/accounts/{id}         {enabled?,auto_reply?,remark?}   -- enabled 就是 IM 入站的生命周期
-DELETE /api/accounts/{id}         -> {deleted:true,purged:true,counts:{conversations,messages}}
+DELETE /api/accounts/{id}         -> {deleted:true,purged:true,counts:{conversations,messages},
+                                      data_purged:{purged:true,counts:{items,item_stats_cache,
+                                      operation_logs,orders,ai_prompts,shipments}}}
       -- 删号**连带清掉该账号的 conversations 与 messages**（审计 C4，以前删完还能看到该账号的会话）；
       --   先摘 IM 会话再删行。清理失败不假装成功：回 `purged:false` + `error`。
       --   `counts` 由 `services/chats.py::purge_account_data(account_id)` 给出（幂等，第二次 0/0）。
+      -- **删号 = 删掉这台机器上属于它的所有本地行**（第十六批）：`items` / `item_stats_cache` /
+      --   `operation_logs` / `orders` / `shipments` / 账号级 `ai_prompts` 由
+      --   `services/purge.py::purge_account_data()` 清（`shipments` 挂在 `orders.order_id` 上而不是
+      --   `account_id`，只能按订单号删）。唯一例外是 `agent_chat_messages`（主管 AI 的对话，
+      --   `thread='master'`，不属于任何账号）。真机现象：删掉账号 `3998190171` 之后商品页仍列出
+      --   它的 39 件商品、`operation_logs` 还剩 15 行。
+      --   确实删掉商品行时广播 `items.updated`（`action:'account_deleted'`），开着的商品页静默重拉。
+      -- 启动自愈：`main.lifespan` 在风控回灌之后调 `purge.purge_orphans()`，清掉老版本留下的孤儿行
+      --   （判断依据只有账号表：`account_id <> '' AND account_id NOT IN (SELECT id FROM accounts)`，
+      --   不猜时间/前缀，所以不会误伤「刚导入还没同步完」的正常账号）。
 POST   /api/accounts/{id}/relogin -> 触发重新扫码/续期（成功后重新挂 IM）
 POST   /api/accounts/{id}/refresh-profile -> {account_id,nickname,avatar_url}
       -- 用 `client.user_profile()`（`mtop.idle.web.user.page.head`）刷新账号资料并**窄写**落库。
