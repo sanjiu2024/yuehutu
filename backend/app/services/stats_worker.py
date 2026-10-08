@@ -28,6 +28,12 @@ DEFAULT_LIMIT = 5
 #: `pull_once` 返回里 `stopped` 的取值
 STOP_RISK = 'risk'
 STOP_SESSION = 'session'
+#: 商品数据接口这次就是不可用（`ItemStatsUnavailable`：会话拿不到这个接口族 /
+#: 接口下线 / 响应认不出）。**这是系统性的，不是某一件事的问题** —— 真机实测
+#: 每账号每轮 5 次调用全部以 `接口不可用: MTOP 请求异常:` 失败，`stopped` 还是 None，
+#: 于是每 5 分钟重复 10 次注定失败的 mtop，把风控计数越推越高
+#: （`risk_state.consecutive_hits` 从 1 涨到 2）。所以一件失败就收手，剩下的下一轮再说。
+STOP_UNAVAILABLE = 'unavailable'
 
 #: 只有这些账号会被后台拉：启用 + 有 Cookie + 登录态正常
 ACTIVE_ACCOUNTS_SQL = """
@@ -142,22 +148,20 @@ async def pull_once(limit_per_account: int = DEFAULT_LIMIT, pause: float = 0.0) 
                 payload = await client.item_stats(item_id)
             except Exception as exc:  # noqa: BLE001 —— 单件失败不许崩掉整轮
                 kind = _error_kind(exc)
+                stat['failed'] += 1
+                write_cache(account_id, item_id, None, item_stats.SOURCE_ERROR,
+                            _text(exc) or type(exc).__name__)
                 if kind == 'risk':
                     # 被风控：本账号立刻收手，但这一件也要落一行 error —— 否则下一轮
                     # 第一个挑中的还是它，白撞一次风控。
                     stat['stopped'] = STOP_RISK
-                    stat['failed'] += 1
-                    write_cache(account_id, item_id, None, item_stats.SOURCE_ERROR,
-                                _text(exc) or type(exc).__name__)
                     break
-                if kind == 'session':
-                    stat['stopped'] = STOP_SESSION
-                stat['failed'] += 1
-                write_cache(account_id, item_id, None, item_stats.SOURCE_ERROR,
-                            _text(exc) or type(exc).__name__)
+                if kind in ('session', 'unavailable'):
+                    # 系统性问题：换个商品重试不会有不同结果，只是多打几次 mtop。
+                    stat['stopped'] = STOP_SESSION if kind == 'session' else STOP_UNAVAILABLE
+                    break
                 if pause:
                     await asyncio.sleep(pause)
-                continue
             metrics = item_stats._normalize_platform(payload)
             if not metrics:
                 # 平台没给可识别的指标（含「返回 None」）→ 记失败 + 真实原因

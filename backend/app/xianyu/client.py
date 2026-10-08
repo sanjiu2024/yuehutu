@@ -140,6 +140,17 @@ class ItemStatsUnavailable(XianyuError):
     """
 
 
+def _net_problem(exc: BaseException) -> str:
+    """把网络层异常变成一句能排障的话。
+
+    `str(exc)` 经常是**空的**（httpx 的 `ReadError` / `ConnectError` 就不带文字），
+    原来只拼 `f'MTOP 请求异常: {exc}'`，于是真机上后台拉取写进
+    `item_stats_cache.error` 的全是 `接口不可用: MTOP 请求异常: ` ——
+    连接失败、超时、TLS 错误长得一模一样，排障时等于什么都没说。
+    """
+    return str(exc).strip() or f'{type(exc).__name__}（异常没有带说明文字）'
+
+
 class XianyuClient:
     """一个闲鱼账号的协议客户端。
 
@@ -274,7 +285,7 @@ class XianyuClient:
                     headers=headers,
                 )
             except Exception as exc:
-                raise XianyuError(f'MTOP 请求异常: {exc}') from exc
+                raise XianyuError(f'MTOP 请求异常: {_net_problem(exc)}') from exc
 
             # 无论成败都要吸收续期的 token cookie：失败响应里也常带着新的
             # _m_h5_tk，丢掉它下一次调用还是用旧 token，签名继续失败，死循环。

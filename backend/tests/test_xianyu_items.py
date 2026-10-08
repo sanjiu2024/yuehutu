@@ -130,8 +130,12 @@ class MtopStub:
         #: api → 要回的非成功 ret（用来模拟「接口报错 / 命中违禁词」）
         self.fail_ret = fail_ret or {}
         self.calls: List[Dict[str, Any]] = []
+        #: 可选：无参函数，返回要抛的异常 —— 模拟网络层失败（连接重置 / 读超时）
+        self.raise_error = None
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
+        if self.raise_error is not None:
+            raise self.raise_error()
         params = request.url.params
         query = parse_qs(request.content.decode('utf-8'))
         payload = json.loads(query['data'][0]) if query.get('data') else {}
@@ -855,6 +859,39 @@ class MtopStubSelfTest(ProtocolCase):
         client, _stub = make_client({})
         with self.assertRaises(XianyuError):
             run(client.mtop('mtop.not.exist.api', {}))
+
+
+class NetProblemTextTest(ProtocolCase):
+    """网络层异常必须留下一句能排障的话。
+
+    真机证据：后台拉取每轮每账号 5 行 `item_stats_cache.error` 全是
+    `接口不可用: MTOP 请求异常: ` —— 冒号后面空的，连接失败/超时/TLS 错误
+    长得一模一样。httpx 的 `ReadError`/`ConnectError` 本来就不带文字。
+    """
+
+    def test_empty_message_falls_back_to_class_name(self):
+        self.assertEqual(client_mod._net_problem(RuntimeError()),
+                         'RuntimeError（异常没有带说明文字）')
+        self.assertEqual(client_mod._net_problem(RuntimeError('   ')),
+                         'RuntimeError（异常没有带说明文字）')
+
+    def test_real_message_is_kept_verbatim(self):
+        self.assertEqual(client_mod._net_problem(RuntimeError('boom')), 'boom')
+
+    def test_http_read_error_is_named(self):
+        # httpx 的 ReadError/ConnectError 只要不传 message，`str()` 就是空的 ——
+        # 这正是真机上 `接口不可用: MTOP 请求异常: ` 后面什么都没有的原因。
+        text = client_mod._net_problem(httpx.ReadError(''))
+        self.assertIn('ReadError', text)
+        self.assertTrue(text.strip(), '不许是空串')
+
+    def test_mtop_wraps_the_network_failure_with_that_text(self):
+        client, stub = make_client({})
+        stub.raise_error = lambda: httpx.ReadError('')
+        with self.assertRaises(XianyuError) as ctx:
+            run(client.mtop('mtop.taobao.idle.item.detail', {}))
+        self.assertIn('MTOP 请求异常', str(ctx.exception))
+        self.assertIn('ReadError', str(ctx.exception))
 
 
 class EditStatusMappingTest(ProtocolCase):

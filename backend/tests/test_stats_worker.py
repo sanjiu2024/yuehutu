@@ -226,8 +226,8 @@ class StatsWorkerTest(unittest.TestCase):
         self.assertEqual(report['failed'], 1)
         self.assertEqual(cache_row(ITEM_3), None, 'ITEM_3 根本不该被调')
 
-    def test_session_expired_records_error_and_continues(self):
-        """单件登录态过期不该让整轮崩掉：记 error 后继续下一件。"""
+    def test_session_expired_stops_the_account_instead_of_retrying(self):
+        """登录态没了是**系统性**问题：换个商品重试不会有不同结果，只是多打 mtop。"""
         seed_account()
         seed_item(ITEM_1)
         seed_item(ITEM_2)
@@ -236,10 +236,33 @@ class StatsWorkerTest(unittest.TestCase):
         install_fake_protocol(fake)
 
         report = pull(limit=5)
-        self.assertEqual(sorted(fake.calls), sorted([ITEM_1, ITEM_2]))
-        self.assertEqual(report['pulled'], 1)
+        self.assertEqual(fake.calls, [ITEM_1], f'会话过期后不许继续拉: {fake.calls}')
+        self.assertEqual(report['pulled'], 0)
         self.assertEqual(report['failed'], 1)
         self.assertEqual(report['accounts'][ACC]['stopped'], 'session')
+        self.assertNotEqual(cache_row(ITEM_1), None, '失败的那一件也要落一行，否则下轮还是它')
+
+    def test_unavailable_interface_stops_the_account_instead_of_retrying(self):
+        """真机回归：`接口不可用: MTOP 请求异常:` 每账号每轮连打 5 次、`stopped` 还是 None。
+
+        那 5 次注定失败，却把风控计数越推越高（`risk_state.consecutive_hits` 1 → 2）。
+        """
+        seed_account()
+        for item_id in (ITEM_1, ITEM_2, ITEM_3):
+            seed_item(item_id)
+        fake = FakeClient({}, errors={
+            item_id: ItemStatsUnavailable('接口不可用: MTOP 请求异常: ')
+            for item_id in (ITEM_1, ITEM_2, ITEM_3)
+        })
+        install_fake_protocol(fake)
+
+        report = pull(limit=3)
+        self.assertEqual(fake.calls, [ITEM_1], f'接口不可用就收手，别把剩下的都试一遍: {fake.calls}')
+        self.assertEqual(report['failed'], 1)
+        self.assertEqual(report['accounts'][ACC]['stopped'], 'unavailable')
+        row = cache_row(ITEM_1)
+        self.assertEqual(row['source'], 'error')
+        self.assertIn('MTOP 请求异常', row['error'])
 
     # -- ⑥ NULL 语义 -----------------------------------------------------
 
