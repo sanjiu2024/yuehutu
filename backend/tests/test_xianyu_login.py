@@ -502,6 +502,74 @@ class NoProxyConstructionTest(unittest.TestCase):
             net.sanitize_no_proxy()
 
 
+class EnvProxyIsIgnoredTest(unittest.TestCase):
+    """本机代理环境变量不许打挂平台调用。
+
+    审计 AI-7 在 LLM 那条路上修过同一件事（`agents/llm.py` 的
+    `trust_env=False`），平台这条路上漏了。真机实测（2026-10-08 打包版）：
+    `HTTPS_PROXY=http://127.0.0.1:7897` 对 `h5api.m.goofish.com` 握手即断
+    （`ConnectError: EOF occurred in violation of protocol`），直连是通的；
+    于是「商品数据」后台拉取每轮每账号 5 件全失败。
+
+    `proxy=None` **单独用不够** —— httpx 在 `trust_env=True`（默认）时仍会
+    `get_environment_proxies()`，必须同时关掉 `trust_env`。
+    """
+
+    def test_async_client_ignores_env_proxy(self):
+        import asyncio
+        import os
+        from unittest import mock
+
+        captured = {}
+        real = httpx.AsyncClient
+
+        def make_client(**kwargs):
+            captured.update(kwargs)
+            return real(**kwargs)
+
+        with mock.patch.dict(os.environ, {'HTTPS_PROXY': 'http://127.0.0.1:7897'}):
+            with mock.patch('httpx.AsyncClient', side_effect=make_client):
+                client = net.async_client()
+
+        self.assertIs(captured.get('trust_env'), False, captured)
+        self.assertIsNone(captured.get('proxy'), captured)
+        asyncio.run(client.aclose())
+
+    def test_connection_failure_names_the_local_proxy(self):
+        import os
+        from unittest import mock
+
+        from backend.app.xianyu import client as client_mod
+
+        with mock.patch.dict(os.environ, {'HTTPS_PROXY': 'http://127.0.0.1:7897'}):
+            text = client_mod._net_problem(
+                httpx.ConnectError('EOF occurred in violation of protocol'))
+        self.assertIn('EOF occurred in violation of protocol', text)
+        self.assertIn('127.0.0.1:7897', text)
+        self.assertIn('本机设了代理', text)
+
+    def test_hint_is_absent_when_no_proxy_env(self):
+        import os
+        from unittest import mock
+
+        from backend.app.xianyu import client as client_mod
+
+        clean = {k: v for k, v in os.environ.items() if 'proxy' not in k.lower()}
+        with mock.patch.dict(os.environ, clean, clear=True):
+            text = client_mod._net_problem(httpx.ConnectError('boom'))
+        self.assertEqual(text, 'boom')
+
+    def test_non_transport_error_never_mentions_proxy(self):
+        import os
+        from unittest import mock
+
+        from backend.app.xianyu import client as client_mod
+
+        with mock.patch.dict(os.environ, {'HTTPS_PROXY': 'http://127.0.0.1:7897'}):
+            text = client_mod._net_problem(RuntimeError('业务报错'))
+        self.assertEqual(text, '业务报错')
+
+
 class AccountsApiTest(unittest.TestCase):
     """账号路由：鉴权信封 + 扫码登录全流程（mock 掉真实平台）。"""
 

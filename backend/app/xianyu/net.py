@@ -86,9 +86,20 @@ def timeout(read: float = 60.0, connect: float = 30.0) -> 'object':
 def async_client(transport=None, follow_redirects: bool = True):
     """建一个带正确代理设置的 AsyncClient。
 
-    ``proxy=None`` 是刻意的：我们不使用系统代理。旧项目让 httpx 从环境变量
-    推断代理，结果 ``NO_PROXY`` 一坏全盘皆输；显式关掉后，行为只取决于
-    本函数，不会再被外部环境改动。
+    ``proxy=None`` **单独用是不够的**：httpx 的 `Client.__init__` 里
+    `_get_proxy_map(proxy, allow_env_proxies)` 在 `proxy is None` 且
+    `trust_env=True`（默认）时，仍然会 `get_environment_proxies()` —— 也就是
+    照样读 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`。所以必须同时
+    `trust_env=False`，行为才真的只取决于本函数。
+
+    **真机实测（2026-10-08，打包版）**：本机 env 有
+    `HTTPS_PROXY=http://127.0.0.1:7897`，而该代理对 `h5api.m.goofish.com`
+    握手就断：`ConnectError: EOF occurred in violation of protocol`，
+    直连同一个域名 404（通）。于是「商品数据」后台拉取每轮每账号 5 件全失败，
+    `item_stats_cache.error` 里只有一句 `接口不可用: MTOP 请求异常:` ——
+    看起来像平台拒绝，实际是本机代理不支持这个域名。`agents/llm.py`
+    早就因为同一类问题（审计 AI-7）关掉了 `trust_env`，这里补上，两条出网
+    路径口径一致。
     """
     import httpx
 
@@ -96,8 +107,20 @@ def async_client(transport=None, follow_redirects: bool = True):
     kwargs = {
         'timeout': timeout(),
         'proxy': None,
+        'trust_env': False,  # 不读 HTTP_PROXY/HTTPS_PROXY/NO_PROXY，避免被本机代理打挂
         'follow_redirects': follow_redirects,
     }
     if transport is not None:
         kwargs['transport'] = transport
     return httpx.AsyncClient(**kwargs)
+
+
+def env_proxies() -> dict:
+    """当前进程里设了哪些代理环境变量（httpx 会读、我们刻意不读）。
+
+    只用于**把失败讲清楚**：连接不上网关时，如果本机设着代理，很可能就是它
+    干的（见 `async_client` 的真机实测），得让用户知道去清掉或配直连。
+    """
+    keys = ('HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY',
+            'https_proxy', 'http_proxy', 'all_proxy')
+    return {key: os.environ[key] for key in keys if os.environ.get(key)}

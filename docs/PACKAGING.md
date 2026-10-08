@@ -209,7 +209,8 @@ C:\Python310\python.exe -c "import sqlite3,os;c=sqlite3.connect(os.path.join(os.
 | 打包时前端目录突然变空 | 前端工作流并发跑了 `npm run build`（vite 先清空 dist）。`build_exe.ps1` 已先把 dist **快照**到 `build\frontend_stage` 再打包，规避了这个竞态 |
 | `ModuleNotFoundError: backend` | 打包时 `pathex` 没加仓库根，或运行时 `sys.path` 没加 `_MEIPASS`（本仓库两者都已处理） |
 | 路由 404（新模块没注册） | `backend/app/main.py` 的 `ROUTE_MODULES` 名单由 Lead 维护，新增模块要请 Lead 加 |
-| 打包体积大（~190MB） | 主要是 patchright（含 node.exe driver，约 93MB）/ pythonnet / WebView2 依赖；已排除 tkinter/Qt。真要瘦身先去掉 patchright 再打 |
+| 打包体积大（~190MB） | 主要是 playwright / patchright 的浏览器 driver（含 `node.exe` 约 92MB，占一半）/ pythonnet / WebView2 依赖；已排除 tkinter/Qt。**注意别收两份 driver**：见 8 节的 hook 覆盖 |
+| 打包版点「手动验证」报 `[WinError 2] 系统找不到指定的文件` | 漏收 playwright driver 这个**数据文件**（`_internal\playwright\driver\node.exe` + `package\cli.js`）。`desktop/desktop.spec` 已 `collect_data_files('playwright')`；`backend/app/xianyu/captcha.py::_driver_problem()` 现在会在弹窗之前就给出人话 |
 | 端口被占 | 桌面模式默认 `port=0` 自动挑空闲端口，正常不会撞；`--port` 指定端口时才会 |
 
 ## 8. 验收记录
@@ -227,3 +228,30 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\build_exe.ps1
   `/api/health` 200 `frozen:true`、`/` 200 真 index.html、旧资源 `index-CFmNBGgU.js` 404、
   `/api/settings` 401、`POST /api/auth/desktop` 200（`username=admin`, token 43 字符）
 - 开发态 `python desktop\main.py --no-window --port 18098`：`/api/health` 200 `frozen:false`、`/` 200
+
+### 8.1 浏览器 driver：必须收，但只能收一份
+
+2026-10-08 实测（`-SkipFrontend` 打包，`exe` 9807368 字节 / 产物目录 **190.3 MB**）：
+
+- **必须收**：driver 是 `node.exe` + `package/cli.js`，属**数据文件**不是模块，只
+  `collect_submodules` 收不到。漏了的表现是打包版点「手动验证」直接
+  `[WinError 2] 系统找不到指定的文件`（真机 `operation_logs` id=165~171 连续 7 条），
+  而源码直跑正常。`desktop/desktop.spec` 因此加了
+  `datas += collect_data_files(browser_pkg)`。
+- **只能收一份**：`patchright` 在 site-packages 里注册了同名 hook
+  （`hook-playwright.async_api.py` / `hook-playwright.sync_api.py`，内容是
+  `datas = collect_data_files("patchright")`）。只要分析到 `playwright.async_api`，
+  它就把 **patchright 的 driver** 也收进来 —— 而打包版运行时只用 `playwright`
+  （patchright 只有源码里跑的 `scripts/ui_smoke.py` / `live_refresh_smoke.py` 用）。
+  收两份的实测代价：`dist` **292.6 MB**，`_internal\playwright\driver` 与
+  `_internal\patchright\driver` 各 102.3 MB。
+- **覆盖办法**：`desktop/hooks/hook-playwright.{async_api,sync_api}.py` 里只写
+  `datas = collect_data_files('playwright')`，spec 里
+  `hookspath=[str(REPO_ROOT / 'desktop' / 'hooks')]`。构建日志会显示
+  `Processing standard module hook 'hook-playwright.async_api.py' from
+  '...\xianyu-ai-workbench\desktop\hooks'`（注意来源是本仓库而不是 site-packages）。
+  结果 `_internal\patchright\driver` 不再存在，体积回到 190.3 MB，
+  `_internal\playwright\driver\node.exe` 与 `package\cli.js` 都在 —— 正是
+  `backend/app/xianyu/captcha.py::_driver_problem()` 检查的两个文件。
+- 教训：onedir 模式下 exe 只有 9.8 MB，**体积全在 `_internal`**；谈「产物多大」
+  要量整个目录，只看 exe 会得出错误结论。

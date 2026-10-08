@@ -147,8 +147,25 @@ def _net_problem(exc: BaseException) -> str:
     原来只拼 `f'MTOP 请求异常: {exc}'`，于是真机上后台拉取写进
     `item_stats_cache.error` 的全是 `接口不可用: MTOP 请求异常: ` ——
     连接失败、超时、TLS 错误长得一模一样，排障时等于什么都没说。
+
+    连接类失败再补一句「本机设了代理」：真机上就是这么被坑的 ——
+    `HTTPS_PROXY=http://127.0.0.1:7897` 对 `h5api.m.goofish.com` 握手即断，
+    而直连是通的，错误信息里却看不出来。
     """
-    return str(exc).strip() or f'{type(exc).__name__}（异常没有带说明文字）'
+    text = str(exc).strip() or f'{type(exc).__name__}（异常没有带说明文字）'
+    try:
+        import httpx
+
+        if isinstance(exc, httpx.TransportError):
+            proxies = net.env_proxies()
+            if proxies:
+                shown = '、'.join(f'{k}={v}' for k, v in sorted(proxies.items()))
+                text = (f'{text}（本机设了代理 {shown}，本程序刻意不走环境代理、'
+                        f'直连闲鱼网关；如果这台机器必须经代理才能出网，'
+                        f'请把 *.goofish.com 配成直连或清掉这些变量后重启）')
+    except Exception:  # noqa: BLE001 —— 解释性文案不许把原始错误盖掉
+        pass
+    return text
 
 
 class XianyuClient:
