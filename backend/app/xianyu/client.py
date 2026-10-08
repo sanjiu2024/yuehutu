@@ -99,6 +99,34 @@ ITEM_STATS_API = 'mtop.alibaba.idle.seller.pc.item.stats.query'
 ITEM_STATS_VERSION = '1.0'
 ITEM_STATS_SPM = 'a21ybx.im.0.0'
 
+# 「财务」四页（收入账单 / 支出账单 / 申请发票 / 开票信息）。接口名与参数取自真机
+# 卖家工作台抓包（2026-10-09，账号 2217970177348；脚本 `.dsh-tmp/discover_seller_api7.py`，
+# 原始数据 `logs/seller_discover/finance_calls.json`），**不是猜的**。
+#
+# 两处必须照抄的怪癖，抄错参数会被平台忽略或直接报错：
+# * 账单族（metadata / monthbill.*）的参数包在 ``{"request": {...}}`` 里；
+# * 发票族（invoice.*）的参数包在 ``{"mtopRequest": ...}`` 里，其中
+#   ``invoice.bill.query`` 要的是**字符串化 JSON**（``'{"pageNo":1,...}'``），
+#   而 ``invoice.request.list.query`` 要的是对象 —— 真机抓包里就是这个形状。
+FINANCE_METADATA_API = 'mtop.idle.finance.metadata.query'
+FINANCE_INCOME_SUMMARY_API = 'mtop.idle.finance.monthbill.income.summary.query'
+FINANCE_INCOME_DETAIL_API = 'mtop.idle.finance.monthbill.income.detail.query'
+FINANCE_EXPENSE_SUMMARY_API = 'mtop.idle.finance.monthbill.expense.summary.query'
+FINANCE_EXPENSE_DETAIL_API = 'mtop.idle.finance.monthbill.expense.detail.query'
+FINANCE_INVOICE_META_API = 'mtop.idle.finance.invoice.metadata.get'
+FINANCE_INVOICE_BILL_API = 'mtop.idle.finance.invoice.bill.query'
+FINANCE_INVOICE_REQUEST_API = 'mtop.idle.finance.invoice.request.list.query'
+FINANCE_PURCHASER_API = 'mtop.idle.finance.invoice.purchaser.info.get'
+FINANCE_SPM = 'a21ybx.im.0.0'
+
+# 账单大类：官方工作台写死的两个 billCode（收入页「交易货款」、支出页「通用结算」）。
+BILL_CODE_INCOME = 'goods_income'
+BILL_CODE_EXPENSE = 'common_settle'
+# 支出页默认业务大类；收入页默认就是 billCode 本身。
+EXPENSE_BIZ_DEFAULT = 'ILDE_LOCAL_SERVICE_TECH_FEE_STD_PROCESS'
+# 账单聚合维度：官方页面固定按「业务大类」聚合（真机抓包 aggregateType=BIZ_TYPE）。
+BILL_AGGREGATE_BY_BIZ = 'BIZ_TYPE'
+
 
 class XianyuError(RuntimeError):
     """协议层通用错误。
@@ -722,6 +750,100 @@ class XianyuClient:
             )
         return parsed
 
+    # -- 财务（只读） -------------------------------------------------------
+
+    async def _finance(self, api: str, data: Any) -> Optional[Dict[str, Any]]:
+        """调一次财务接口，返回信封里的 ``data``（形状不对给 ``None``）。
+
+        **这里不吞登录态过期**（与 `item_stats` 相反，理由是真机实测）：
+        2026-10-09 用网页版 Cookie 打这 10 个 ``mtop.idle.finance.*`` 接口，
+        全部 ``SUCCESS::调用成功`` —— 它们**不受** ``seller.pc.*`` 那种
+        「要卖家工作台会话」的限制。所以这些接口若回
+        ``FAIL_SYS_SESSION_EXPIRED``，那就是账号**真的**掉线了，该由上层
+        ``store.mark_need_relogin()`` 如实告诉用户，瞒下来只会让人对着
+        「财务没有数据」反复点刷新。
+        """
+        result = await self.mtop(api, data, v='1.0', spm_cnt=FINANCE_SPM)
+        payload = result.get('data')
+        return payload if isinstance(payload, dict) else None
+
+    async def finance_metadata(self, bill_code: str) -> Optional[Dict[str, Any]]:
+        """账单页的筛选项（业务大类树）。``bill_code`` ∈ goods_income | common_settle。"""
+        payload = await self._finance(
+            FINANCE_METADATA_API, {'request': {'billCode': str(bill_code)}})
+        return None if payload is None else parse_finance_metadata(payload)
+
+    async def finance_month_summary(self, kind: str, bill_cycle_from: str,
+                                    bill_cycle_to: str, bill_code: str,
+                                    biz_type: str = '') -> Optional[Dict[str, Any]]:
+        """月度汇总（收入/支出共用，``kind`` ∈ ``income`` | ``expense``）。"""
+        api = (FINANCE_INCOME_SUMMARY_API if kind == 'income'
+               else FINANCE_EXPENSE_SUMMARY_API)
+        request: Dict[str, Any] = {
+            'billCycleFrom': str(bill_cycle_from),
+            'billCycleTo': str(bill_cycle_to),
+            'billCode': str(bill_code),
+            'aggregateType': BILL_AGGREGATE_BY_BIZ,
+        }
+        if biz_type:
+            request['bizType'] = str(biz_type)
+        payload = await self._finance(api, {'request': request})
+        return None if payload is None else parse_finance_summary(payload)
+
+    async def finance_month_detail(self, kind: str, bill_cycle_from: str,
+                                   bill_cycle_to: str, bill_code: str,
+                                   biz_type: str = '', page_no: int = 1,
+                                   page_size: int = 20) -> Optional[Dict[str, Any]]:
+        """月度流水明细（收入/支出共用）。"""
+        api = (FINANCE_INCOME_DETAIL_API if kind == 'income'
+               else FINANCE_EXPENSE_DETAIL_API)
+        request: Dict[str, Any] = {
+            'billCycleFrom': str(bill_cycle_from),
+            'billCycleTo': str(bill_cycle_to),
+            'billCode': str(bill_code),
+            'pageNo': int(page_no),
+            'pageSize': int(page_size),
+            'aggregateType': BILL_AGGREGATE_BY_BIZ,
+        }
+        if biz_type:
+            request['bizType'] = str(biz_type)
+        payload = await self._finance(api, {'request': request})
+        return None if payload is None else parse_finance_bills(payload)
+
+    async def finance_invoice_meta(self) -> Optional[List[Dict[str, Any]]]:
+        """可开票的业务类型（含开票主体公司名/税号/税率）。"""
+        payload = await self._finance(FINANCE_INVOICE_META_API, {})
+        return None if payload is None else parse_finance_invoice_meta(payload)
+
+    async def finance_invoice_bills(self, page_no: int = 1, page_size: int = 20,
+                                    biz_types: Optional[Sequence[str]] = None
+                                    ) -> Optional[Dict[str, Any]]:
+        """待申请发票的账单分组。
+
+        ``mtopRequest`` 要**字符串化 JSON**（真机抓包原文：
+        ``{"mtopRequest": "{\\"pageNo\\":1,\\"pageSize\\":20,\\"bizTypes\\":[]}"}``）。
+        """
+        request = json.dumps({
+            'pageNo': int(page_no),
+            'pageSize': int(page_size),
+            'bizTypes': [str(b) for b in (biz_types or [])],
+        }, separators=(',', ':'))
+        payload = await self._finance(FINANCE_INVOICE_BILL_API, {'mtopRequest': request})
+        return None if payload is None else parse_finance_invoice_bills(payload)
+
+    async def finance_invoice_requests(self, page_no: int = 1, page_size: int = 20
+                                       ) -> Optional[Dict[str, Any]]:
+        """已提交的开票申请列表（``mtopRequest`` 这里是**对象**，与上面不同）。"""
+        payload = await self._finance(
+            FINANCE_INVOICE_REQUEST_API,
+            {'mtopRequest': {'pageNo': int(page_no), 'pageSize': int(page_size)}})
+        return None if payload is None else parse_finance_invoice_requests(payload)
+
+    async def finance_purchaser(self) -> Optional[Dict[str, Any]]:
+        """开票信息：发票抬头 / 纳税类型 / 支持的票种。"""
+        payload = await self._finance(FINANCE_PURCHASER_API, {})
+        return None if payload is None else parse_finance_purchaser(payload)
+
     # -- 图片上传 ---------------------------------------------------------
 
     async def upload_image(self, path: str) -> Dict[str, Any]:
@@ -1104,6 +1226,258 @@ def parse_item_stats(data: Any) -> Optional[Dict[str, Any]]:
             stats['raw'] = raw
             return stats
     return None
+
+
+# ---------------------------------------------------------------------------
+# 财务（只读）：解析。真机响应形状见 `logs/seller_discover/finance_calls.json`。
+# 铁律：**认不出的数字一律 None**，不补 0 —— 「平台没给」与「真的是 0 元」
+# 在界面上是两回事（前者显示「-」，后者显示 0.00）。
+# ---------------------------------------------------------------------------
+
+
+def _money(value: Any) -> Optional[float]:
+    """金额 → ``float``（元），认不出给 ``None``。
+
+    平台同一个字段混着给两种类型：``incomeAmount`` 是 ``40.11``（float），
+    ``canInvoiceAmount`` 是 ``'0.40'``（字符串）—— 真机都出现过，两种都得吃。
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return round(float(value), 2)
+    text = str(value).strip().replace(',', '')
+    if not text:
+        return None
+    try:
+        return round(float(text), 2)
+    except ValueError:
+        return None
+
+
+def _count_of(value: Any) -> Optional[int]:
+    """计数 → ``int``；认不出给 ``None``（``True``/``False`` 不当 1/0）。"""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    text = str(value).strip().replace(',', '')
+    if not text:
+        return None
+    try:
+        return int(float(text))
+    except ValueError:
+        return None
+
+
+def _text_of(value: Any) -> str:
+    return '' if value is None else str(value).strip()
+
+
+def _finance_model(data: Any) -> Dict[str, Any]:
+    """剥财务响应的信封。
+
+    真机形状是 ``{'httpStatusCode': 0, 'model': {...}, 'ret': [...]}``（``model``
+    与 ``hasNext``/``totalCount`` 平级）。这里同时接受**裸 model**：单测与将来
+    平台少包一层都用得上 —— `parse_item_stats` 当初只认一种形状，平台多包一层
+    信封就静默变成「没有可识别的指标」，那个坑不重踩。
+    """
+    if not isinstance(data, dict):
+        return {}
+    model = data.get('model')
+    if isinstance(model, dict):
+        return model
+    inner = data.get('data')
+    if isinstance(inner, dict):
+        nested = inner.get('model')
+        return nested if isinstance(nested, dict) else inner
+    return data
+
+
+def parse_finance_metadata(data: Any) -> Dict[str, Any]:
+    """解析 ``mtop.idle.finance.metadata.query`` → 账单页筛选项。
+
+    ``model.metadata`` 里是业务大类树（``bizCategories[].subBizCategories[]``），
+    前端拿它填「业务大类」下拉。
+    """
+    model = _finance_model(data)
+    metadata = model.get('metadata')
+    if not isinstance(metadata, dict):
+        metadata = model
+    categories: List[Dict[str, Any]] = []
+    for item in metadata.get('bizCategories') or []:
+        if not isinstance(item, dict):
+            continue
+        children: List[Dict[str, str]] = []
+        for child in item.get('subBizCategories') or []:
+            if not isinstance(child, dict):
+                continue
+            children.append({
+                'code': _text_of(child.get('subBizCode')),
+                'name': _text_of(child.get('subBizName')),
+            })
+        categories.append({
+            'code': _text_of(item.get('bizCode')),
+            'name': _text_of(item.get('bizName')),
+            'children': children,
+        })
+    return {
+        'bill_code': _text_of(metadata.get('billCode')),
+        'bill_name': _text_of(metadata.get('billName')),
+        'categories': categories,
+    }
+
+
+def parse_finance_summary(data: Any) -> Dict[str, Any]:
+    """解析月度汇总（收入/支出同形状，``model.content`` 里八个金额 + 流水笔数）。"""
+    model = _finance_model(data)
+    content = model.get('content')
+    if not isinstance(content, dict):
+        content = model
+    return {
+        'currency': _text_of(content.get('currency')) or 'CNY',
+        'income': _money(content.get('totalIncomeAmount')),
+        'income_refund': _money(content.get('totalIncomeRefundAmount')),
+        'expense': _money(content.get('totalExpendAmount')),
+        'expense_refund': _money(content.get('totalExpendRefundAmount')),
+        'net_income': _money(content.get('netIncomeAmount')),
+        'net_expense': _money(content.get('netExpendAmount')),
+        'agg_counts': _count_of(content.get('totalAggCounts')),
+    }
+
+
+def parse_finance_bills(data: Any) -> Dict[str, Any]:
+    """解析月度流水明细 → ``{'bills', 'total', 'has_next'}``。
+
+    ``hasNext``/``totalCount`` 与 ``model`` **平级**（在信封顶层），不在 ``model`` 里。
+    """
+    if not isinstance(data, dict):
+        return {'bills': [], 'total': None, 'has_next': False}
+    model = _finance_model(data)
+    rows = model.get('data')
+    bills: List[Dict[str, Any]] = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        bills.append({
+            'bill_cycle': _text_of(row.get('billCycle')),
+            'bill_no': _text_of(row.get('billNo')),
+            'biz_name': _text_of(row.get('bizName')),
+            'biz_type': _text_of(row.get('bizType')),
+            'amount': _money(row.get('curAmount')),
+            'income': _money(row.get('incomeAmount')),
+            'income_refund': _money(row.get('incomeRefundAmount')),
+            'expense': _money(row.get('expendAmount')),
+            'expense_refund': _money(row.get('expendRefundAmount')),
+            'currency': _text_of(row.get('currency')) or 'CNY',
+            'agg_counts': _count_of(row.get('aggCounts')),
+        })
+    return {
+        'bills': bills,
+        'total': _count_of(data.get('totalCount')),
+        'has_next': bool(data.get('hasNext')),
+    }
+
+
+def parse_finance_invoice_meta(data: Any) -> List[Dict[str, Any]]:
+    """解析 ``invoice.metadata.get`` → 可开票业务类型（含开票主体与税率）。"""
+    model = _finance_model(data)
+    configs = model.get('bizTypeConfigs')
+    out: List[Dict[str, Any]] = []
+    for cfg in configs if isinstance(configs, list) else []:
+        if not isinstance(cfg, dict):
+            continue
+        out.append({
+            'biz_type': _text_of(cfg.get('bizType')),
+            'biz_type_name': _text_of(cfg.get('bizTypeName')),
+            'cargo_name': _text_of(cfg.get('cargoName')),
+            'company_name': _text_of(cfg.get('companyName')),
+            'company_code': _text_of(cfg.get('companyCode')),
+            'company_tax_no': _text_of(cfg.get('companyTaxNo')),
+            'company_address': _text_of(cfg.get('companyAddress')),
+            'company_phone': _text_of(cfg.get('companyPhone')),
+            'tax_rate': _money(cfg.get('taxRate')),
+        })
+    return out
+
+
+def parse_finance_invoice_bills(data: Any) -> Dict[str, Any]:
+    """解析 ``invoice.bill.query`` → 待申请发票的账单分组。
+
+    真机形状：``model.billGroups[].bills[]``，金额是**字符串**（``'0.40'``），
+    ``choiceType`` 是嵌套 dict（``{'choiceType': 'CAN_CHOICE'}``）。
+    """
+    if not isinstance(data, dict):
+        return {'groups': [], 'total_amount': None, 'total_count': None}
+    model = _finance_model(data)
+    groups: List[Dict[str, Any]] = []
+    for group in model.get('billGroups') or []:
+        if not isinstance(group, dict):
+            continue
+        bills: List[Dict[str, Any]] = []
+        for bill in group.get('bills') or []:
+            if not isinstance(bill, dict):
+                continue
+            choice = bill.get('choiceType')
+            bills.append({
+                'id': _text_of(bill.get('id')),
+                'bill_cycle': _text_of(bill.get('billCycle')),
+                'biz_type': _text_of(bill.get('bizType')),
+                'item_name': _text_of(bill.get('itemName')),
+                'can_invoice_amount': _money(bill.get('canInvoiceAmount')),
+                'invoice_amount_with_tax': _money(bill.get('invoiceAmountWithTax')),
+                'unable_amount': _money(bill.get('unableAmount')),
+                'tax_rate': _money(bill.get('taxRate')),
+                'company_name': _text_of(bill.get('companyName')),
+                'company_tax_no': _text_of(bill.get('companyTaxNo')),
+                'company_code': _text_of(bill.get('companyCode')),
+                'status': _text_of(bill.get('status')),
+                'deal_status': _text_of(bill.get('dealStatus')),
+                'choice_type': (_text_of(choice.get('choiceType'))
+                                if isinstance(choice, dict) else ''),
+                'gmt_create': _text_of(bill.get('gmtCreate')),
+            })
+        groups.append({
+            'biz_type': _text_of(group.get('bizType')),
+            'biz_type_name': _text_of(group.get('bizTypeName')),
+            'total_amount': _money(group.get('totalAmount')),
+            'bills': bills,
+        })
+    return {
+        'groups': groups,
+        'total_amount': _money(model.get('totalAmount')),
+        'total_count': _count_of(model.get('totalCount')),
+    }
+
+
+def parse_finance_invoice_requests(data: Any) -> Dict[str, Any]:
+    """解析 ``invoice.request.list.query`` → 已提交的开票申请。
+
+    ⚠️ 真机这个列表是**空的**（``list: []``），所以字段名一个都没见过 ——
+    这里**原样透传**每个元素（不做字段归一化），宁可在前端显示得朴素，
+    也不猜字段名去映射（猜错等于给用户看错数字）。
+    """
+    model = _finance_model(data)
+    rows = model.get('list')
+    requests = [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+    return {
+        'requests': requests,
+        'total': _count_of(model.get('totalCount')),
+        'has_next': bool(model.get('hasNext')),
+    }
+
+
+def parse_finance_purchaser(data: Any) -> Dict[str, Any]:
+    """解析 ``invoice.purchaser.info.get`` → 开票信息（抬头 / 纳税类型 / 票种）。"""
+    model = _finance_model(data)
+    types = model.get('supportInvoiceTypes')
+    return {
+        'purchaser_name': _text_of(model.get('purchaserName')),
+        'purchaser_type': _text_of(model.get('purchaserType')),
+        'support_invoice_types': ([str(t) for t in types]
+                                  if isinstance(types, list) else []),
+    }
 
 
 def _https(url: str) -> str:

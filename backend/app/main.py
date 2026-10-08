@@ -48,6 +48,9 @@ ROUTE_MODULES: List[str] = [
     'providers',
     'orders',
     'risk',
+    # 财务四页（只读）：`/api/finance/{account_id}/{income|expense|invoices|purchaser}`。
+    # 前缀与其它模块不重叠，顺序无所谓。
+    'finance',
 ]
 
 PLACEHOLDER = """<!doctype html>
