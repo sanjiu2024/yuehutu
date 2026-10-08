@@ -1,0 +1,182 @@
+/*
+ * 财务页样式（前缀 `fn-`）。
+ *
+ * 只依赖 `styles.css` 的令牌变量与公共 class（`.card`/`.tabs`/`.tab`/`.btn`/`.badge`/`.kv`/
+ * `.table-wrap`/`.num`/`.mono`/`.dim`），以及 `pages/pages.css` 的 `.page*` 骨架。
+ * 这里**不写死颜色**，也不重定义任何既有 class —— 浅色主题靠变量自动跟随。
+ * 没用 `color-mix()`：现有 soft/line 令牌已经够用，少一层函数就少一处浏览器兼容风险。
+ */
+
+/* 工具条：筛选条件一行放不下就换行，右对齐的刷新按钮由 `.fn-spacer` 顶开 */
+.fn-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+
+.fn-bar .field {
+  min-width: 148px;
+}
+
+.fn-spacer {
+  flex: 1 1 auto;
+}
+
+/* 图标与文字对齐：`.btn` 里塞 SVG 时不加这层会基线错位 */
+.fn-ico {
+  display: inline-flex;
+  align-items: center;
+  margin-right: var(--sp-1);
+  vertical-align: -2px;
+}
+
+/* 校验不过的输入框：描边用语义色，不用滤镜 */
+.fn-invalid {
+  border-color: var(--warn);
+}
+
+.fn-legend {
+  font-size: var(--fs-12);
+  color: var(--text-mute);
+  line-height: 1.6;
+}
+
+/* 汇总卡片：自适应列宽，窄屏自动落到下一行 */
+.fn-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+}
+
+/* 小节标题（待申请发票 / 已申请发票） */
+.fn-section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: var(--sp-4) 0 var(--sp-2);
+}
+
+.fn-section-head:first-child {
+  margin-top: 0;
+}
+
+.fn-section-title {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.fn-section-desc {
+  font-size: var(--fs-12);
+  color: var(--text-mute);
+}
+
+/* 合计条：数字用等宽数字，避免每行宽度跳动 */
+.fn-total {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+
+.fn-total-label {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--fs-13);
+  color: var(--text-dim);
+}
+
+.fn-total-value {
+  font-size: var(--fs-16);
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 分页条 */
+.fn-pager {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+  font-size: var(--fs-12);
+  color: var(--text-mute);
+}
+
+/* 已申请发票：轻量列表，不用表格（字段形状还没冻结，表格列一空就是一片 -） */
+.fn-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.fn-list-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-12);
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.fn-list-row:last-child {
+  border-bottom: none;
+}
+
+.fn-list-row:hover {
+  background: var(--row-hover);
+}
+
+.fn-list-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 支持票种：药丸标签 */
+.fn-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+
+.fn-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--sp-2);
+  font-size: var(--fs-11);
+  line-height: 18px;
+  color: var(--text-dim);
+  background: var(--muted-soft);
+  border: 1px solid var(--muted-line);
+  border-radius: var(--radius-pill);
+}
+
+/* 窄屏：工具条与合计条竖排，别把数字挤成两行 */
+@media (max-width: 720px) {
+  .fn-bar,
+  .fn-total,
+  .fn-pager {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .fn-spacer {
+    display: none;
+  }
+}

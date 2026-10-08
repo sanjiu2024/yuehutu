@@ -1,4 +1,4 @@
-/** 应用外壳：左侧导航 + 顶部栏 + 9 个页面；未登录时显示登录页。 */
+/** 应用外壳：左侧导航 + 顶部栏 + 10 个页面；未登录时显示登录页。 */
 
 import { useCallback, useEffect, useState } from 'react'
 import { api, clearToken, errorText, getToken, isNotReady, setToken, setUnauthorizedHandler } from './api'
@@ -20,6 +20,7 @@ import { OverviewPage } from './pages/Overview'
 import { AccountsPage } from './pages/Accounts'
 import { ItemsPage } from './pages/Items'
 import { ChatsPage } from './pages/Chats'
+import { FinancePage } from './pages/Finance'
 import { AgentsPage } from './pages/Agents'
 import { MasterPage } from './pages/Master'
 import { ProvidersPage } from './pages/Providers'
@@ -37,7 +38,7 @@ interface NavItem {
 }
 
 /**
- * 9 个入口平铺一列太长、也看不出彼此关系，按用途分成 4 组。
+ * 10 个入口平铺一列太长、也看不出彼此关系，按用途分成 5 组。
  * 分组只影响侧栏排版，`key` 与路由一一对应，**顺序/分组都不改变 hash 行为**。
  */
 const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
@@ -59,6 +60,17 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
       { key: 'accounts', label: '账号', icon: 'user', desc: '扫码登录、账号状态与手动验证', ownHeader: true },
       { key: 'items', label: '商品', icon: 'box', desc: '商品列表、编辑、批量改价与上下架' },
       { key: 'chats', label: '会话', icon: 'chat', desc: '买家会话与人工接管' },
+    ],
+  },
+  {
+    title: '财务',
+    items: [
+      {
+        key: 'finance',
+        label: '财务',
+        icon: 'chart',
+        desc: '收入账单、支出账单、申请发票与开票信息（只读）',
+      },
     ],
   },
   {
@@ -276,6 +288,7 @@ function Shell() {
             {page === 'accounts' && <AccountsPage />}
             {page === 'items' && <ItemsPage />}
             {page === 'chats' && <ChatsPage />}
+            {page === 'finance' && <FinancePage />}
             {page === 'agents' && <AgentsPage />}
             {page === 'master' && <MasterPage />}
             {page === 'providers' && <ProvidersPage />}
