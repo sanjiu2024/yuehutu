@@ -54,10 +54,16 @@ for optional_pkg in ('webview', 'pystray', 'PIL', 'patchright', 'loguru'):
 # （真机 operation_logs id=165~171 连续 7 条，用户看到的是「点了没反应」），
 # 而源码直跑完全正常 —— 这类「只有打包版坏」的 bug 最难查。
 #
-# 代价：driver 约 100 MB（node.exe 占 89 MB），产物因此从 ~9.6 MB 涨到 ~110 MB。
-# 换来的是一台**没装 Chrome** 的机器也能弹滑块验证（`_open_context` 会回退到
-# 自带 Chromium；真浏览器内核仍在 `%LOCALAPPDATA%\ms-playwright`，不重复打包）。
-for browser_pkg in ('playwright', 'patchright'):
+# 代价：driver 约 102 MB（node.exe 占 91 MB）。换来的是一台**没装 Chrome** 的机器也能
+# 弹滑块验证（`_open_context` 会回退到自带 Chromium；真浏览器内核仍在
+# `%LOCALAPPDATA%\ms-playwright`，不重复打包）。
+#
+# **只收 `playwright` 的 driver，不收 `patchright` 的**：应用运行时（`xianyu/captcha.py`）
+# 用的是 `playwright`；`patchright` 只有 `scripts/ui_smoke.py` / `live_refresh_smoke.py`
+# 这两个**源码里跑的**自检脚本用，而它们永远不从打包产物里加载。两个 driver 一模一样大
+# （各 102.3 MB），一起收会把产物从 190 MB 撑到 292 MB，纯属白送一份用不到的 node.exe。
+# `patchright` 的 Python 代码仍然由上面的可选包循环收进去，只是没有 driver 数据文件。
+for browser_pkg in ('playwright',):
     try:
         hiddenimports += collect_submodules(browser_pkg)
         datas += collect_data_files(browser_pkg)
@@ -83,7 +89,10 @@ a = Analysis(
     binaries=[],
     datas=datas,
     hiddenimports=sorted(set(hiddenimports)),
-    hookspath=[],
+    # desktop/hooks/ 里放着覆盖 patchright 的同名 hook（见那两个文件的注释）：
+    # 不覆盖的话 patchright 会顺着 `playwright.async_api` 把它的 driver 也收进来，
+    # 平白多 102 MB 且打包版用不到。
+    hookspath=[str(REPO_ROOT / 'desktop' / 'hooks')],
     hooksconfig={},
     runtime_hooks=[],
     excludes=excludes,
