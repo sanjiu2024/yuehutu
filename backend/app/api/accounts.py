@@ -35,6 +35,7 @@ from pydantic import BaseModel
 from ..core import events
 from ..services import accounts as accounts_service
 from ..services import im_service, risk_service
+from ..services import purge as purge_service
 from ..xianyu import login as qr_login
 from ..xianyu import risk as risk_mod
 from ..xianyu import store
@@ -123,6 +124,21 @@ def _purge_account_chats(account_id: str) -> Dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         return {'purged': False, 'error': f'清理会话/消息失败: {exc}'}
     return {'purged': True, 'counts': counts if isinstance(counts, dict) else {}}
+
+
+def _purge_account_data(account_id: str) -> Dict[str, Any]:
+    """删号时清掉该账号的商品/统计缓存/操作日志/订单/发货单/账号级提示词。
+
+    为什么要单独一步（用户真机提问「删除的账号数据怎么还在？」）：`store.delete_account()`
+    只管账号与风控表、`_purge_account_chats()` 只管会话，剩下的业务表以前没人清 ——
+    真机上删掉的账号留下 39 件商品，商品页照旧列出来。
+    """
+    try:
+        counts = purge_service.purge_account_data(account_id)
+    except Exception as exc:  # noqa: BLE001 - 清不掉也不能把已删的账号「回滚」成 500
+        logger.warning(f'[{account_id}] 清理账号本地数据失败: {exc}')
+        return {'purged': False, 'error': f'清理商品/日志/订单失败: {exc}'}
+    return {'purged': True, 'counts': counts}
 
 
 class PollPayload(BaseModel):
@@ -445,5 +461,12 @@ def delete_account(account_id: str, user=Depends(current_user)) -> Dict[str, Any
     # 资料节流缓存也要忘掉：同一个 id 重新导入时不该继承上一轮的 30 分钟窗口。
     accounts_service.forget_profile_cache(account_id)
     purged = _purge_account_chats(account_id)
+    data_purged = _purge_account_data(account_id)
+    # 商品行被删掉了就得让「商品」页静默重拉一次：否则用户刚在账号页删完号，
+    # 切到商品页（或已经开着商品页）还会看到那个账号的商品，直到手动刷新。
+    if int((data_purged.get('counts') or {}).get('items') or 0) > 0:
+        _publish('items.updated', {
+            'account_id': account_id, 'item_ids': [], 'action': 'account_deleted'})
     _publish('accounts.changed', {'account_id': account_id, 'deleted': True})
-    return {'success': True, 'data': {'id': account_id, 'deleted': True, **purged}}
+    return {'success': True, 'data': {
+        'id': account_id, 'deleted': True, **purged, 'data_purged': data_purged}}

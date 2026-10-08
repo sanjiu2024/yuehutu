@@ -328,6 +328,56 @@ class AccountsImTest(unittest.TestCase):
         self.assertTrue(session.closed, '删号后旧 IM 会话还活着')
         self.assertEqual(im_service.active_accounts(), [])
 
+    def test_delete_also_purges_items_stats_logs_orders_and_prompts(self):
+        """用户真机提问「删除的账号数据怎么还在？」。
+
+        原样证据：账号 `3998190171` 删掉之后，`items` 里还留着它的 39 件商品、
+        `operation_logs` 15 行，于是商品页照旧列出来。删号必须把这台机器上属于
+        它的业务行一起清掉，且不许碰到别的账号。
+        """
+        self._account('acc4')
+        self._account('other_acc')
+
+        def seed(account_id, item_id):
+            db.execute('INSERT INTO items(account_id, item_id, title) VALUES(?,?,?)',
+                       (account_id, item_id, '标题'))
+            db.execute('INSERT INTO item_stats_cache(account_id, item_id, exposure) '
+                       'VALUES(?,?,?)', (account_id, item_id, 12))
+            db.execute('INSERT INTO operation_logs(account_id, item_id, action) VALUES(?,?,?)',
+                       (account_id, item_id, 'edit'))
+            db.execute('INSERT INTO orders(account_id, order_id, item_id) VALUES(?,?,?)',
+                       (account_id, 'O-' + item_id, item_id))
+            db.execute('INSERT INTO shipments(order_id, company) VALUES(?,?)',
+                       ('O-' + item_id, '顺丰'))
+            db.execute("INSERT INTO ai_prompts(role, scope, account_id, content) "
+                       "VALUES('item','account',?,?)", (account_id, '账号级提示词'))
+
+        seed('acc4', 'i4')
+        seed('other_acc', 'i7')
+
+        resp = self.client.delete('/api/accounts/acc4', headers=self.headers)
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data_purged = resp.json()['data']['data_purged']
+        self.assertTrue(data_purged['purged'], data_purged)
+        counts = data_purged['counts']
+        self.assertEqual(counts, {'items': 1, 'item_stats_cache': 1, 'operation_logs': 1,
+                                  'orders': 1, 'ai_prompts': 1, 'shipments': 1}, counts)
+
+        for table in ('items', 'item_stats_cache', 'operation_logs', 'orders', 'ai_prompts'):
+            left = db.query_one('SELECT COUNT(*) AS n FROM %s WHERE account_id = ?' % table,
+                                ('acc4',))['n']
+            self.assertEqual(left, 0, '%s 还留着已删账号的行' % table)
+            kept = db.query_one('SELECT COUNT(*) AS n FROM %s WHERE account_id = ?' % table,
+                                ('other_acc',))['n']
+            self.assertEqual(kept, 1, '%s 误删了别的账号的行' % table)
+        self.assertEqual(
+            db.query_one('SELECT COUNT(*) AS n FROM shipments WHERE order_id = ?',
+                         ('O-i4',))['n'], 0)
+        self.assertEqual(
+            db.query_one('SELECT COUNT(*) AS n FROM shipments WHERE order_id = ?',
+                         ('O-i7',))['n'], 1, '误删了别的账号的发货单')
+
     def test_purge_missing_is_reported_not_faked(self):
         """`purge_account_data` 还没就绪时必须如实报，不能假装清干净了。"""
         from backend.app.services import chats as chats_service

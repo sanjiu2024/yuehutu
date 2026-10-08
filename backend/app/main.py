@@ -29,6 +29,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .core import config, db, events, security
 from .services import im_service, risk_service, stats_worker
+from .services import purge as purge_service
 
 # 按需注册的路由模块（api/<name>.py 里必须有 router 对象）
 ROUTE_MODULES: List[str] = [
@@ -86,6 +87,10 @@ async def lifespan(app: FastAPI):
     restored = risk_service.resync_from_db()
     if restored:
         logger.info('已从库里恢复 {} 个账号的风控冷却', restored)
+    # 删号自愈：老版本删账号只清账号/风控/会话表，商品、统计缓存、操作日志、订单会留下
+    # （真机现象：删掉的账号 39 件商品还挂在商品页）。只删「account_id 不在 accounts 里」
+    # 的行，判断依据只有账号表本身，所以不会误伤正常账号。
+    purge_service.purge_orphans()
     _start_im_services()
     stats_task = _start_stats_worker()
     _write_port_file()
