@@ -16,13 +16,13 @@
 | 6 | 主 AI 对接我 / 插件让 DSH 控制 | `POST /api/agents/master/chat` + `mcp_server/` | 冒烟 ⑦；`test_mcp_server.py` 55 项；端口文件端到端 |
 | 7 | 除 AI 外我自己也能回消息 | `POST /api/chats/{id}/send` | 冒烟 ⑤（消息落库） |
 | 8 | 不能老登录、风控要做好 | `xianyu/risk.py` 熔断 + `xianyu/login.py` 人工验证 | `test_xianyu_cookies.py` 37 项 |
-| 9 | 集成闲鱼客服 / 网页版功能 | `services/cs.py` 意图分类 + 快捷回复；**官方卖家工作台「财务」四页**（`services/finance.py` + `/api/finance/*` + 「财务」页） | `test_services_cs.py` 20 项；`test_finance_api.py` 28 项 + 真机 `finance_min_probe.py`（第十七批） |
+| 9 | 集成闲鱼客服 / 网页版功能 | `services/cs.py` 意图分类 + 快捷回复；**官方卖家工作台「财务」四页**（`services/finance.py` + `/api/finance/*` + 「财务」页） | `test_services_cs.py` 20 项；`test_finance_api.py` 29 项 + 真机 `finance_min_probe.py`（第十七批） |
 
 ## 二、验收基线（真实命令与输出）
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 33  PASS 33  FAIL 0  CASES 997  SKIPPED 2
+-> TOTAL 33  PASS 33  FAIL 0  CASES 999  SKIPPED 2
 ```
 
 ```text
@@ -1022,17 +1022,35 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
     agg_counts 4`、`total=1`、`has_next=True`、`bills[0].bill_no='2026090000664051081999891099'`
     `biz_name='交易货款'`、`warnings=[]`。
 
-> **第十七批证据链**：`backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_fin_all`）
-> `TOTAL 33  PASS 33  FAIL 0  CASES 997  SKIPPED 2`（第十六批 941；新增
-> `tests/test_xianyu_finance.py` 28 条协议层用例 + `tests/test_finance_api.py` 28 条
-> 服务层/HTTP 用例）。前端 `npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0
-> （61 modules，`index-CLjzKYvC.js 343.79 kB` + `index-B6VwuY8J.css 105.82 kB`）；
+117. **默认账期是本月 ⇒ 首次打开财务页必 502**（打包版真机取证 `finance_shots.py` 抓到）。
+    收入/支出两个 tab 默认 `from=202610&to=202610`，平台当月账单还没生成，回
+    `BILL_QUERY_DELAY_ERROR::暂无法查看2026年10月的账单，请在2026-11-05后查看`
+    （income 与 expense 各一条 502）。**用户自己截图的官方页面用的就是上个月的
+    `202609`。** 修两处：①服务层 `_cycle_pair` 与前端 `latestBillMonth()` 的默认值都改成
+    **上一个自然月**（`(datetime.now().replace(day=1) - timedelta(days=1)).strftime('%Y%m')`
+    / `new Date(y, m-1, 1)`），账期说明也写明「平台当月账单要次月 5 号后才有」；
+    ②`services/platform_errors.py` 收录 `BILL_QUERY_DELAY_ERROR`（真机见过的码），
+    财务服务层 `_call` 的失败原因过一遍 `platform_errors.explain()`，于是 502 的
+    `message` 会带「改成上一个月再查」。回归：`test_default_cycle_is_previous_month`、
+    `test_bill_delay_error_is_explained_in_plain_words`、
+    `test_bill_query_delay_says_when_the_bill_will_exist`。
+    同时刻真机拿到的正确数据（与用户截图逐字对上）：申请发票 = 软件服务费 `0.40` +
+    基础软件服务费 `0.24`（杭州闲鱼信息技术有限公司、税率 0.06、状态 VALID）、
+    `开票金额合计 0.64`、`共 2 条`；开票信息 = 发票抬头 `万春华` / 纳税类型 `个人` /
+    支持票种 `数字化电子普票`；`fetched_at` 显示为本地时间（UTC 口径正确）。
+
+> **第十七批证据链**：`backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_fin_fix2`）
+> `TOTAL 33  PASS 33  FAIL 0  CASES 999  SKIPPED 2`（第十六批 941；新增
+> `tests/test_xianyu_finance.py` 28 条协议层用例 + `tests/test_finance_api.py` 29 条
+> 服务层/HTTP 用例 + `tests/test_platform_errors.py` 25 条里的 `BILL_QUERY_DELAY_ERROR`
+> 一条）。前端 `npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0
+> （61 modules，`index-DlUnL6LY.js 343.86 kB` + `index-B6VwuY8J.css 105.82 kB`）；
 > `scripts/ui_smoke.py --port 18097` → **10/10 页通过**（新增财务页，`PAGES` 已补）。
 
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**33 个测试文件、997 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**33 个测试文件、999 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。

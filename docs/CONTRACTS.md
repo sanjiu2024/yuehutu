@@ -559,8 +559,12 @@ GET    /api/finance/{account_id}/purchaser
       --   那种「要卖家工作台会话」的限制，所以回 `FAIL_SYS_SESSION_EXPIRED` 就是账号真掉线，
       --   **不能**像商品数据那样降级成本地统计（那会把掉线瞒过去）。
       --   没有 Cookie / `login_state='need_relogin'` 时**一次平台都不打**，直接 409。
-      -- 参数校验：账期只认 `YYYYMM`（`from`/`to` 都空 = 本月；格式错或 from>to → 400
+      -- 参数校验：账期只认 `YYYYMM`（`from`/`to` 都空 = **上一个自然月**；格式错或 from>to → 400
       --   `invalid_fields`）；`page<1` 或 `size` 不在 1~50 → 400；`kind` 只认 income/expense。
+      --   **默认上个月而不是本月**：平台当月账单要等次月 5 号之后才生成，查本月必然拿到
+      --   `BILL_QUERY_DELAY_ERROR::暂无法查看 2026 年 10 月的账单，请在 2026-11-05 后查看`
+      --   （真机 2026-10-09 实测；官方卖家工作台打开时用的也是上个月）。这个码在
+      --   `services/platform_errors.py` 里有人话，502 的 `message` 会带上「改成上一个月再查」。
       -- **业务大类必须传**（真机 `INVALID_PARAM::业务大类不能为空`）：`biz_type` 没给时服务层
       --   先用 metadata 的**第一级**大类编码（收入账单是 `goods_income`），再退支出账单的兜底
       --   `ILDE_LOCAL_SERVICE_TECH_FEE_STD_PROCESS`（官方页面默认选中的「同城服务软件服务费」），
