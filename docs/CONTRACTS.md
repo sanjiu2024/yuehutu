@@ -291,6 +291,16 @@ GET    /api/items/{account_id}/stats/progress
       --   两层信封都认；真认不出时错误里带上信封的 `code`/`msg`，不再只说「无法识别: 」。
       -- 路由**必须挂在 `/api/items/{account_id}/{item_id}` 之前**（`main.py` 的
       --   `ROUTE_MODULES` 里 `item_stats` 排在 `items` 前），否则被动态段吞成「商品不存在」。
+      -- 后台一轮的失败处理（第十五批真机修）：`pull_once` 返回里每账号有 `stopped`
+      --   ∈ `null | 'risk' | 'session' | 'unavailable'`。**`risk`/`session`/`unavailable`
+      --   都立刻 `break` 这个账号**（系统性问题换件重试不会有不同结果，只会白打 mtop：
+      --   真机曾每 300s 打 10 次注定失败的请求，把 `risk_state.consecutive_hits` 从 1 推到 2）。
+      --   失败件仍然落一行 `source='error'`，否则下一轮第一个挑中的还是它。
+      -- 出网不吃本机代理（第十五批真机修）：`xianyu/net.py::async_client()` 是
+      --   `proxy=None` **加** `trust_env=False`。只写 `proxy=None` 不够 —— httpx 在
+      --   `trust_env=True`（默认）时仍会读 `HTTP(S)_PROXY`；真机上本机代理对
+      --   `h5api.m.goofish.com` 握手即断（`ConnectError: EOF occurred in violation of protocol`），
+      --   直连是通的。连接类失败时 `client._net_problem()` 会把本机代理变量名列出来。
 POST   /api/items/{account_id}/sync            -> 从闲鱼拉取在售商品入库
 POST   /api/items/{account_id}/publish         {title,price,description,images,category_id,...}
 POST   /api/items/{account_id}/{item_id}/edit  {price?,original_price?,title?,description?,stock?,images?,ai_enabled?}

@@ -231,7 +231,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\build_exe.ps1
 
 ### 8.1 浏览器 driver：必须收，但只能收一份
 
-2026-10-08 实测（`-SkipFrontend` 打包，`exe` 9807368 字节 / 产物目录 **190.3 MB**）：
+2026-10-08 实测（`-SkipFrontend` 打包，`exe` 9808684 字节 / 产物目录 **190.3 MB**）：
 
 - **必须收**：driver 是 `node.exe` + `package/cli.js`，属**数据文件**不是模块，只
   `collect_submodules` 收不到。漏了的表现是打包版点「手动验证」直接

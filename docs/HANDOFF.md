@@ -22,7 +22,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 30  PASS 30  FAIL 0  CASES 925  SKIPPED 2
+-> TOTAL 30  PASS 30  FAIL 0  CASES 934  SKIPPED 2
 ```
 
 ```text
@@ -915,11 +915,32 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
      在 `message` 后追加一句可行动的中文（例：售价 99999999/库存 19999999 → 「先把售价、库存
      改回正常范围，隔几分钟再试一次」），并补 `platform_code`/`platform_hint`（风控再加
      `risk: true`）。**没见过的码原样透传、不编解释**；**绝不改 `code`**（它决定 HTTP 状态码）。
+110. **平台调用一直在吃本机环境代理**（2026-10-08 打包版真机抓到）。本机 env 有
+     `HTTPS_PROXY=http://127.0.0.1:7897`，该代理对 `h5api.m.goofish.com` 握手即断
+     （`ConnectError: EOF occurred in violation of protocol (_ssl.c:1007)`），而**直连同一个
+     域名是通的**（`GET /` 404）。`net.async_client()` 只写了 `proxy=None` —— 这**单独用不够**：
+     httpx 的 `_get_proxy_map(proxy, allow_env_proxies)` 在 `proxy is None` 且 `trust_env=True`
+     （默认）时仍然 `get_environment_proxies()`。于是模块 docstring 里「我们不使用系统代理」
+     一直不是真的；`agents/llm.py` 早就因同类问题（审计 AI-7）关掉了 `trust_env`，平台这条
+     路径漏了。修：`async_client()` 加 `trust_env=False`；`_net_problem()` 在
+     `httpx.TransportError` 且本机设了代理时补一句人话（列出变量名与值 + 该怎么办）。
+111. **后台拉取在系统性失败上不收手**（同一批真机日志）。两个账号每 300s 一轮、每账号 5 件
+     **全部**失败（`item_stats_cache` 5 行 `source='error'`），而报告里 `stopped` 还是 `None`，
+     于是每 5 分钟重复 10 次注定失败的 mtop，把 `risk_state.consecutive_hits` 从 1 推到 2 ——
+     **为了拉数据反而把账号往风控里推**。修：新增 `STOP_UNAVAILABLE`，`session` 与
+     `unavailable` 都 `break`（原来 session 只记 `stopped` 却继续拉剩下 4 件）；失败件照旧
+     落一行 error，否则下一轮第一个挑中的还是它。修后真机同一轮变成
+     `{'2217970177348': {'pulled': 0, 'failed': 1, 'stopped': 'unavailable'}, …}`（10 次 mtop → 2 次）。
+112. **网络异常没有类名，排障等于没说**。httpx 的 `ReadError`/`ConnectError` 只要不传 message，
+     `str()` 就是空的，于是 `item_stats_cache.error` 里全是 `接口不可用: MTOP 请求异常: `，
+     连接失败 / 超时 / TLS 错误长得一模一样。修：`client._net_problem()` 在空消息时退回类名
+     （真机因此一眼看出是 `ConnectError`，直接指向第 110 条）。
 
-> **第十五批证据链**：`backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_r7_final`）
-> `TOTAL 30  PASS 30  FAIL 0  CASES 925  SKIPPED 2`（第十四批 821；本轮新增
+> **第十五批证据链**：`backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_r7_net_all`）
+> `TOTAL 30  PASS 30  FAIL 0  CASES 934  SKIPPED 2`（第十四批 821；本轮新增
 > `test_stats_worker.py` / `test_agent_history.py` / `test_platform_errors.py` 三个文件
-> 与 chats/im 的 3 条回归用例）。前端 `npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0
+> 与 chats / im / login / items 的 12 条回归用例）。前端 `npx tsc --noEmit` EXIT=0、
+> `npm run build` EXIT=0
 > （59 modules，`index-BtOoYIBj.js` 331.97 kB / `index-RKsxVLgj.css` 103.56 kB）。
 > 两个真浏览器只读探针（临时数据目录 + 真 Edge，不碰真平台/真 LLM）：
 > 商品数据缓存优先 **OK**、主管 AI 历史 **OK**（命令与输出见 104/105 两条）。
@@ -927,10 +948,17 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**30 个测试文件、925 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**30 个测试文件、934 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
+- **商品数据真的从平台拉回来了**（2026-10-08，打包版 + 真账号 `2221063792739`）：
+  `app.log` 一轮 `{'2221063792739': {'pulled': 5, 'failed': 0, 'stopped': None}}`，
+  `item_stats_cache` 出现 5 行 `source='platform'` 真值（曝光/浏览/想要分别
+  789/62/3、573/154/2、60/15/0、14/14/0、9/5/0；`visitors` 平台不给 → NULL 不编 0）。
+  前端「商品数据」页读缓存显示 **曝光次数合计 11,512 / 浏览次数合计 1,320、
+  已汇总 10/11 个商品**，且打开页面只发 `source=cache` + `/stats/progress` 两条请求
+  （**零平台调用**）。这条链把第 110~112 三个缺陷一次证实（含真因是环境代理）。
 - 真实 HTTP：只读 17 条 + 写路径 11 条，均结构化信封、无 500。
 - **真实浏览器逐页冒烟 9/9 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
   临时数据目录，逐页断言未白屏、未掉回登录页、无 JS 报错，截图在 `logs/ui_smoke/`）。
