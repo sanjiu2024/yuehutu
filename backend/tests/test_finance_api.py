@@ -23,7 +23,7 @@ import sys
 import tempfile
 import types
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -298,12 +298,14 @@ class FinanceApiTest(unittest.TestCase):
         self.assertIn('业务大类', body['message'])
         self.assertEqual([c[0] for c in self.fake.calls], ['finance_metadata'])
 
-    def test_default_cycle_is_current_month(self):
+    def test_default_cycle_is_previous_month(self):
+        """默认账期是**上一个自然月**：平台当月账单要次月 5 号后才有（真机 BILL_QUERY_DELAY_ERROR）。"""
         seed_account()
         install_fake_protocol(self.fake)
         data = self.ok_data(f'/{ACC}/income')
-        current = datetime.now().strftime('%Y%m')
-        self.assertEqual(data['period'], {'from': current, 'to': current})
+        previous = (datetime.now().replace(day=1) - timedelta(days=1)).strftime('%Y%m')
+        self.assertEqual(data['period'], {'from': previous, 'to': previous})
+        self.assertNotEqual(previous, datetime.now().strftime('%Y%m'))
 
     def test_unknown_numbers_stay_null(self):
         seed_account()
@@ -341,6 +343,21 @@ class FinanceApiTest(unittest.TestCase):
         body = self.assert_error(self.get(f'/{ACC}/income'), 502, 'protocol_error')
         self.assertIn('平台财务接口调用失败', body['message'])
         self.assertIn('接口 500', body['message'])
+
+    def test_bill_delay_error_is_explained_in_plain_words(self):
+        """真机：查当月账单回 BILL_QUERY_DELAY_ERROR（平台要次月 5 号后才出账）。
+
+        502 里必须带上人话，否则用户只看到一串错误码，不知道该把账期改成上个月。
+        """
+        seed_account()
+        self.fake.errors['finance_month_summary'] = RuntimeError(
+            'MTOP 调用失败 [mtop.idle.finance.monthbill.income.summary.query]: '
+            'BILL_QUERY_DELAY_ERROR::暂无法查看2026年10月的账单，请在2026-11-05后查看')
+        self.fake.errors['finance_month_detail'] = RuntimeError('接口 500')
+        install_fake_protocol(self.fake)
+        body = self.assert_error(self.get(f'/{ACC}/income'), 502, 'protocol_error')
+        self.assertIn('BILL_QUERY_DELAY_ERROR', body['message'])
+        self.assertIn('次月 5 号', body['message'])
 
     # -- 登录态 / 参数 ----------------------------------------------------
 

@@ -96,6 +96,19 @@ class ExplainTest(unittest.TestCase):
     def test_hint_for_unknown_code_is_empty(self):
         self.assertEqual(pe.hint_for('FAIL_SYS_SOMETHING_NEW'), '')
 
+    def test_bill_query_delay_says_when_the_bill_will_exist(self):
+        """真机：查当月账单回 `BILL_QUERY_DELAY_ERROR::…请在 2026-11-05 后查看`。
+
+        人话必须点出「次月 5 号」并给出出路（改成上个月），否则用户只会反复点刷新。
+        """
+        hint = pe.explain(
+            '协议层调用失败: MTOP 调用失败 [mtop.idle.finance.monthbill.expense.summary.query]: '
+            'BILL_QUERY_DELAY_ERROR::暂无法查看2026年10月的账单，请在2026-11-05后查看')
+        self.assertIn('次月 5 号', hint)
+        self.assertIn('上一个月', hint)
+        self.assertEqual(pe.find_code(
+            'BILL_QUERY_DELAY_ERROR::暂无法查看2026年10月的账单'), 'BILL_QUERY_DELAY_ERROR')
+
 
 class DecorateTest(unittest.TestCase):
     """`decorate()` 只给失败信封补人话，不动其它任何东西。"""

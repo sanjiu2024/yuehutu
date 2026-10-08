@@ -22,12 +22,12 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..core import db
 from ..xianyu import client as client_mod
-from . import common
+from . import common, platform_errors
 
 KINDS: Tuple[str, ...] = ('income', 'expense')
 KIND_LABEL = {'income': '收入账单', 'expense': '支出账单'}
@@ -97,12 +97,17 @@ def _fetched_at() -> str:
 
 
 def _cycle_pair(cycle_from: str, cycle_to: str) -> Tuple[str, str, Optional[Dict[str, Any]]]:
-    """校验/补全账期。返回 `(from, to, 失败信封)`。"""
+    """校验/补全账期。返回 `(from, to, 失败信封)`。
+
+    都不传时默认**上一个自然月**，不是本月：平台当月账单要等次月 5 号之后才生成，
+    查本月必然拿到 `BILL_QUERY_DELAY_ERROR::暂无法查看 2026 年 10 月的账单，
+    请在 2026-11-05 后查看`（真机 2026-10-09 实测）。
+    """
     start = _text(cycle_from).strip()
     end = _text(cycle_to).strip()
     if not start and not end:
-        current = datetime.now().strftime('%Y%m')
-        return current, current, None
+        previous = (datetime.now().replace(day=1) - timedelta(days=1)).strftime('%Y%m')
+        return previous, previous, None
     if not start:
         start = end
     if not end:
@@ -177,6 +182,11 @@ def _call(client: Any, name: str, *args: Any) -> Tuple[bool, Any, str, Optional[
     if isinstance(failure, dict):
         reason = _text(failure.get('message'))
     reason = reason or _text(value) or '未知错误'
+    # 平台错误码翻人话：账单延迟（当月账单要次月 5 号后才有）、风控、接口下线这些
+    # 光看错误码用户没法行动。认不出的码 explain() 返回空串，原样透传。
+    hint = platform_errors.explain(reason)
+    if hint:
+        reason = f'{reason}。{hint}'
     return False, None, reason, None
 
 

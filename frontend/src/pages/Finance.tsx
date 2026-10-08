@@ -141,10 +141,17 @@ interface PurchaserResult {
   source?: string
 }
 
-/** 当前月份 `YYYYMM`：账期输入的默认值。 */
-function currentMonth(): string {
+/**
+ * 账期输入的默认值：**上一个自然月**（`YYYYMM`）。
+ *
+ * 为什么不默认本月：平台当月账单要等**次月 5 号**之后才生成，查本月只会拿到
+ * `BILL_QUERY_DELAY_ERROR::暂无法查看 2026 年 10 月的账单，请在 2026-11-05 后查看`。
+ * 官方卖家工作台打开时用的也是上个月。
+ */
+function latestBillMonth(): string {
   const now = new Date()
-  return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`
+  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+  return `${prev.getFullYear()}${String(prev.getMonth() + 1).padStart(2, '0')}`
 }
 
 /** 账期必须是合法的 `YYYYMM`。不合法就不发请求，免得后端回一句用户看不懂的 400。 */
@@ -208,8 +215,8 @@ function RefreshButton({ onClick, disabled }: { onClick: () => void; disabled?: 
 
 function BillPanel({ kind, accountId }: { kind: 'income' | 'expense'; accountId: string }) {
   const isIncome = kind === 'income'
-  const [from, setFrom] = useState(currentMonth())
-  const [to, setTo] = useState(currentMonth())
+  const [from, setFrom] = useState(latestBillMonth())
+  const [to, setTo] = useState(latestBillMonth())
   const [bizType, setBizType] = useState('')
   const [page, setPage] = useState(1)
 
@@ -249,7 +256,7 @@ function BillPanel({ kind, accountId }: { kind: 'income' | 'expense'; accountId:
       </h3>
 
       <div className="fn-bar">
-        <Field label="起始账期" tip="格式 YYYYMM，例如 202610">
+        <Field label="起始账期" tip="格式 YYYYMM，例如 202609；默认是上个月 —— 平台当月账单要次月 5 号后才有">
           <input
             type="text"
             value={from}
@@ -312,7 +319,7 @@ function BillPanel({ kind, accountId }: { kind: 'income' | 'expense'; accountId:
       </div>
 
       {!periodOk && (
-        <Notice kind="warn">账期要填 6 位数字的「年 + 月」，例如 202610。填对了才会去查账单。</Notice>
+        <Notice kind="warn">账期要填 6 位数字的「年 + 月」，例如 202609。填对了才会去查账单。</Notice>
       )}
 
       <div className="fn-cards">
