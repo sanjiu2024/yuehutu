@@ -529,6 +529,51 @@ GET    /api/settings ; PUT /api/settings       {key:value,...}
   平台拒绝不影响本地落库：改动照样写进 SQLite，`synced=false` 如实上报。
 
 
+GET    /api/finance/{account_id}/income?from=YYYYMM&to=YYYYMM&biz_type=&page=1&size=20
+GET    /api/finance/{account_id}/expense?   （同形状，参数名与口径完全一样）
+GET    /api/finance/{account_id}/invoices?page=1&size=20&biz_types=a,b
+GET    /api/finance/{account_id}/purchaser
+      -- 「财务」页（第十七批）：收入账单 / 支出账单 / 申请发票 / 开票信息，**四个页面全是只读**。
+      --   没有任何写接口 —— 开票申请在官方卖家工作台提交，平台侧不可逆，这里不代发
+      --   （`POST/PUT/PATCH/DELETE` 一律 405，有回归 `test_finance_routes_are_read_only`）。
+      -- income/expense -> {success:true,data:{account_id,kind,bill_code,bill_name,
+      --     period:{from,to},biz_type,summary,bills,total,has_next,page,size,
+      --     biz_categories,warnings,fetched_at,source:'platform'}}
+      --   `summary`={currency,income,income_refund,expense,expense_refund,net_income,
+      --     net_expense,agg_counts}（收入页只用 income/income_refund/agg_counts，支出页用 expense 那三个）；
+      --   `bills[]`={bill_cycle,bill_no,biz_name,biz_type,amount,income,income_refund,
+      --     expense,expense_refund,currency,agg_counts}；`has_next`/`total` 取自平台**顶层**
+      --   `hasNext`/`totalCount`；`biz_categories` 是业务大类树（第一级给筛选下拉、`children`
+      --   是商品类目，**不能**当 `bizType` 用）。
+      -- invoices -> {...,groups,total_amount,total_count,has_next,requests,request_total,
+      --     meta,warnings,fetched_at,source}；`groups[].bills[].can_invoice_amount` 平台给的是
+      --   **字符串**（`"0.40"`），协议层统一成数字；`choice_type` 在平台响应里是嵌套 dict
+      --   （`{'choiceType':'CAN_CHOICE'}`）。`requests` **原样透传**（真机这个列表是空的，
+      --   字段名一个都没见过，不许猜映射）；`has_next` 平台不给，用平台自己的 `total_count`
+      --   算（`page*size < total_count`），算不出来是 `null`。
+      -- purchaser -> {account_id,purchaser_name,purchaser_type,support_invoice_types,
+      --     warnings,fetched_at,source}（真机：万春华 / 个人 / ['数字化电子普票']）。
+      -- **数字拿不到一律 `null`**（前端 `-`），不补 0 —— 0.00 是真实金额，两者混起来用户会以为账对不上。
+      -- **登录态过期如实 409** `verification_required` + `login_state=need_relogin`：
+      --   真机实测（10/10 次成功）这族接口用**网页版 Cookie** 就能调通，不受 `seller.pc.*`
+      --   那种「要卖家工作台会话」的限制，所以回 `FAIL_SYS_SESSION_EXPIRED` 就是账号真掉线，
+      --   **不能**像商品数据那样降级成本地统计（那会把掉线瞒过去）。
+      --   没有 Cookie / `login_state='need_relogin'` 时**一次平台都不打**，直接 409。
+      -- 参数校验：账期只认 `YYYYMM`（`from`/`to` 都空 = 本月；格式错或 from>to → 400
+      --   `invalid_fields`）；`page<1` 或 `size` 不在 1~50 → 400；`kind` 只认 income/expense。
+      -- **业务大类必须传**（真机 `INVALID_PARAM::业务大类不能为空`）：`biz_type` 没给时服务层
+      --   先用 metadata 的**第一级**大类编码（收入账单是 `goods_income`），再退支出账单的兜底
+      --   `ILDE_LOCAL_SERVICE_TECH_FEE_STD_PROCESS`（官方页面默认选中的「同城服务软件服务费」），
+      --   两者都没有才 502。**不要自己写死大类编码** —— 编码以平台 metadata 为准。
+      -- 降级：metadata 失败只加 `warnings`（分类下拉空）；summary 与 detail 只成功一个时加
+      --   `warnings` 并返回那半边；两个都失败才 502 `protocol_error`。发票同理（meta 失败只 warning）。
+      -- `fetched_at` 是 **UTC** 的 `'%Y-%m-%d %H:%M:%S'`（`formatTime` 对不带时区的这种串补 Z
+      --   再本地化，写本地时间页面会白多 8 小时）。财务**不落库、不缓存**（金额过期比没有更糟）。
+      -- 协议层真名与参数形状（`mtop.idle.finance.*`）：账单族包在 `{'request': {...}}`、
+      --   发票族包在 `{'mtopRequest': ...}`，其中 `invoice.bill.query` 要**字符串化 JSON**、
+      --   `invoice.request.list.query` 要**对象** —— 三种写法都是真机抓包得来的，写错只回含糊错误码。
+      --   抓包与真值证据见 `docs/HANDOFF.md` 第十七批。
+
 错误响应统一：`{"success":false,"message":"...","code":"..."}`，HTTP 用语义状态码（4xx 业务、5xx 内部）。成功统一 `{"success":true,"data":{...}}`。
 **404/405 也必须走这个信封**（挂的是 Starlette 的 `HTTPException`，不是 FastAPI 的子类）。
 

@@ -16,13 +16,13 @@
 | 6 | 主 AI 对接我 / 插件让 DSH 控制 | `POST /api/agents/master/chat` + `mcp_server/` | 冒烟 ⑦；`test_mcp_server.py` 55 项；端口文件端到端 |
 | 7 | 除 AI 外我自己也能回消息 | `POST /api/chats/{id}/send` | 冒烟 ⑤（消息落库） |
 | 8 | 不能老登录、风控要做好 | `xianyu/risk.py` 熔断 + `xianyu/login.py` 人工验证 | `test_xianyu_cookies.py` 37 项 |
-| 9 | 集成闲鱼客服 / 网页版功能 | `services/cs.py` 意图分类 + 快捷回复 | `test_services_cs.py` 20 项 |
+| 9 | 集成闲鱼客服 / 网页版功能 | `services/cs.py` 意图分类 + 快捷回复；**官方卖家工作台「财务」四页**（`services/finance.py` + `/api/finance/*` + 「财务」页） | `test_services_cs.py` 20 项；`test_finance_api.py` 28 项 + 真机 `finance_min_probe.py`（第十七批） |
 
 ## 二、验收基线（真实命令与输出）
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 31  PASS 31  FAIL 0  CASES 941  SKIPPED 2
+-> TOTAL 33  PASS 33  FAIL 0  CASES 997  SKIPPED 2
 ```
 
 ```text
@@ -34,12 +34,12 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_xianyu_log
 cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
--> BUILD_EXIT=0   frontend/dist/assets/index-BtOoYIBj.js (331.97 kB) + index-RKsxVLgj.css (103.56 kB)
+-> BUILD_EXIT=0   frontend/dist/assets/index-CLjzKYvC.js (343.79 kB) + index-B6VwuY8J.css (105.82 kB)
 ```
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18097"
--> UI SMOKE ALL OK  (9/9 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
+-> UI SMOKE ALL OK  (10/10 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
 ```
 
 ```text
@@ -970,10 +970,69 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 > `TOTAL 31  PASS 31  FAIL 0  CASES 941  SKIPPED 2`（第十五批 934；新增
 > `tests/test_services_purge.py` 6 条 + `tests/test_accounts_im.py` 1 条 API 级用例）。
 
+### 第十七批：用户第十次真机实测（官方卖家工作台「财务」四页截图）（114~116）
+
+用户这次**没有文字**，只发了 4 张官方 `seller.goofish.com` 的财务页截图（收入账单
+`收入金额合计 ¥40.11 / 流水笔数 4 / 202609 / 业务大类 交易货款`、支出账单
+`业务大类 同城服务软件服务费 / 流水笔数 0 / 暂无数据`、申请发票 `待申请发票 2 /
+软件服务费 0.40元 / 基础软件服务费 0.24元`、开票信息 `发票抬头 万春华 / 纳税类型 个人`）。
+按原始诉求⑨「集成闲鱼客服与网页版功能」解读为「把这四页做进工作台」，仓库里
+`grep 账单|发票|财务|invoice` 只命中三处文案（FAQ/提示词/测试语料），**财务功能从零做**。
+
+114. **财务接口族必须靠真浏览器发现**（2026-10-09）。`web_search` 在本机没有 key，
+    只能自己发现。用库里真账号 Cookie（`2217970177348`，489 字符）打开
+    `https://seller.goofish.com/` 是**通的**（落地 `#/seller-data/data`，标题「数据总览」，
+    正文含真实数字），于是真 Chrome headless 注入 cookie 抓 mtop。**踩了 5 个坑**：
+    ①猜 hash 路由 `#/finance/income-bill` 一律被 SPA 重定向回 `#/seller-data/data`；
+    ②`get_by_text('财务', exact=True).click()` 超时；③JS `closest('a,li,div[class*=menu]')`
+    点了父级 wrap，React handler 挂在元素自己身上，URL 不变、零 mtop；④
+    `locator('div[class^="subMenuItem"]').click(force=True)` 点击成功但不换页；⑤真实鼠标
+    事件（坐标 `{"收入账单":{x:85,y:575}}` 正确、`visible:true`）仍不换页。
+    **正解**：路由名只能从菜单接口拿 —— `mtop.alibaba.idle.seller.platform.sys.menu.query`
+    的 `data.data[0].accessiblePathList` 里写着 `/seller-finance/income-bill`、
+    `/seller-finance/expense-bill`、`/seller-finance/invoice-apply`、`/seller-finance/basic-info`，
+    直接 goto 这些 hash 路由就能拿到各页的 mtop 调用与响应体。
+
+115. **财务族不受「卖家工作台会话」限制（决定性可行性判定）**。`client.py` 里记着
+    `seller.pc.*`（如 `mtop.alibaba.idle.seller.pc.item.stats.query`）要卖家工作台会话，
+    但用**项目自己的客户端**（`XianyuClient(cookie)` + `mtop(api, data, v='1.0')`）对
+    财务族打 10 次只读调用 → **`failures=0/10`，全部 `SUCCESS::调用成功`**。所以这族接口
+    回 `FAIL_SYS_SESSION_EXPIRED` 就是账号**真掉线**，服务层必须如实 409 +
+    `need_relogin`，**不能**像 `item_stats` 那样本地降级（会把掉线瞒过去）。
+    协议层真名：账单族 `mtop.idle.finance.metadata.query` /
+    `mtop.idle.finance.monthbill.{income,expense}.{summary,detail}.query`；
+    发票族 `mtop.idle.finance.invoice.{metadata.get,bill.query,request.list.query}` +
+    `mtop.idle.finance.invoice.purchaser.info.get`。参数形状三处怪癖：账单族包在
+    `{'request': {...}}`、发票族包在 `{'mtopRequest': ...}`，其中 `invoice.bill.query` 要
+    **字符串化 JSON**、`invoice.request.list.query` 要**对象**。
+
+116. **「不传 bizType 就取全部」是错的**（真机 502 抓到）。第一次真机探针
+    （`finance_service_probe.py`）不传 `bizType` → `协议层调用失败: MTOP 调用失败
+    [mtop.idle.finance.monthbill.income.summary.query]: INVALID_PARAM::业务大类不能为空`。
+    修：默认值从**平台自己的 metadata** 取第一级大类（收入账单 `categories[0].code` =
+    `goods_income`，名字「交易货款」），支出账单兜底到官方默认选中的
+    `ILDE_LOCAL_SERVICE_TECH_FEE_STD_PROCESS`（同城服务软件服务费），都没有才 502
+    并明说「取不到分类列表」。**不要自己写死大类编码。**
+    另：探针脚本 `finance_biztype_probe.py` 把 metadata 的整棵类目树（`goods_income`
+    下挂着上百个**商品类目** `126866937`…）逐个大类打真接口，**把账号打到风控**
+    （`risk_state.consecutive_hits=1`、`blocked_until` 约 2 分钟后、`login_state` 仍 active）。
+    ⇒ **绝不要对真平台遍历类目/商品列表**，探针一次最多 3~4 次调用并留间隔。
+    改成只 3 次调用的 `finance_min_probe.py` 后拿到与用户截图**逐字对上**的真值：
+    `biz_type='goods_income'`、`bill_name='订单收入'`、`income 40.11 / net_income 40.11 /
+    agg_counts 4`、`total=1`、`has_next=True`、`bills[0].bill_no='2026090000664051081999891099'`
+    `biz_name='交易货款'`、`warnings=[]`。
+
+> **第十七批证据链**：`backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_fin_all`）
+> `TOTAL 33  PASS 33  FAIL 0  CASES 997  SKIPPED 2`（第十六批 941；新增
+> `tests/test_xianyu_finance.py` 28 条协议层用例 + `tests/test_finance_api.py` 28 条
+> 服务层/HTTP 用例）。前端 `npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0
+> （61 modules，`index-CLjzKYvC.js 343.79 kB` + `index-B6VwuY8J.css 105.82 kB`）；
+> `scripts/ui_smoke.py --port 18097` → **10/10 页通过**（新增财务页，`PAGES` 已补）。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**31 个测试文件、941 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**33 个测试文件、997 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -991,7 +1050,7 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
   从 `共 95 条` 变成 `共 56 条`（= 两个在售账号的 45 + 11），页面里再也搜不到 `3998190171`，
   只读探针（真 Edge）`has_deleted_account: false`、`page_errors: []`。
 - 真实 HTTP：只读 17 条 + 写路径 11 条，均结构化信封、无 500。
-- **真实浏览器逐页冒烟 9/9 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
+- **真实浏览器逐页冒烟 10/10 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
   临时数据目录，逐页断言未白屏、未掉回登录页、无 JS 报错，截图在 `logs/ui_smoke/`）。
   它抓到了后端全绿时仍然「UI 完全不可用」的登录死循环。
 - **真实浏览器实时刷新 2/2 阶段通过**（`scripts/live_refresh_smoke.py`）：后端写账号
@@ -1089,7 +1148,7 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
   单测里造过。
 - 桌面 exe 在**无 WebView2** 的机器上的表现（本机已装 154.0.4258.53）。
 - 带窗口的托盘交互未在**打包产物**上人工点过（开发态真窗口已验）。
-- 前端仍无单元测试运行器：UI 只有真浏览器冒烟这一道闸门（9 页 × 白屏/登录态/
+- 前端仍无单元测试运行器：UI 只有真浏览器冒烟这一道闸门（10 页 × 白屏/登录态/
   控制台报错），页面内部的交互细节没有自动化覆盖。
 - **MCP 注册要重启 DSH 宿主才生效**：配置已写、预检已过，但本会话是改配置前启动的，
   宿主级生效与否要重启后才能确认（留给机器主人决定时机）。
