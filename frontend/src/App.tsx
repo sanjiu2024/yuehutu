@@ -21,6 +21,8 @@ import { AccountsPage } from './pages/Accounts'
 import { ItemsPage } from './pages/Items'
 import { ChatsPage } from './pages/Chats'
 import { FinancePage } from './pages/Finance'
+import { PromotionPage } from './pages/Promotion'
+import { SecurityCenterPage } from './pages/SecurityCenter'
 import { AgentsPage } from './pages/Agents'
 import { MasterPage } from './pages/Master'
 import { ProvidersPage } from './pages/Providers'
@@ -60,6 +62,13 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
       { key: 'accounts', label: '账号', icon: 'user', desc: '扫码登录、账号状态与手动验证', ownHeader: true },
       { key: 'items', label: '商品', icon: 'box', desc: '商品列表、编辑、批量改价与上下架' },
       { key: 'chats', label: '会话', icon: 'chat', desc: '买家会话与人工接管' },
+    ],
+  },
+  {
+    title: '推广',
+    items: [
+      { key: 'promotion', label: '超级擦亮', icon: 'chart', desc: '余额、推广指标与计划概览（只读）' },
+      { key: 'security-center', label: '安全中心', icon: 'shield', desc: '闲气值与违规记录（只读）' },
     ],
   },
   {
@@ -289,6 +298,8 @@ function Shell() {
             {page === 'items' && <ItemsPage />}
             {page === 'chats' && <ChatsPage />}
             {page === 'finance' && <FinancePage />}
+            {page === 'promotion' && <PromotionPage />}
+            {page === 'security-center' && <SecurityCenterPage />}
             {page === 'agents' && <AgentsPage />}
             {page === 'master' && <MasterPage />}
             {page === 'providers' && <ProvidersPage />}

@@ -119,6 +119,34 @@ FINANCE_INVOICE_REQUEST_API = 'mtop.idle.finance.invoice.request.list.query'
 FINANCE_PURCHASER_API = 'mtop.idle.finance.invoice.purchaser.info.get'
 FINANCE_SPM = 'a21ybx.im.0.0'
 
+# 超级擦亮只读接口：参数形状由官方微应用抓包确认；不包含充值、提现、投放写操作。
+AD_HOME_API = 'mtop.taobao.idle.ad.home'
+AD_MEMBER_DATA_API = 'mtop.taobao.idle.ad.member.data.query'
+AD_ACCOUNT_CARD_API = 'mtop.taobao.idle.ad.bp.account.card.query'
+AD_CAMPAIGN_SEARCH_API = 'mtop.taobao.idle.ad.campaign.search'
+AD_CAMPAIGN_DATA_API = 'mtop.taobao.idle.ad.campaign.data.batch.query'
+AD_ITEM_DATA_API = 'mtop.taobao.idle.ad.item.data.batch.query'
+AD_SETTLE_API = 'mtop.taobao.idle.ad.bp.settle.settle.query'
+AD_SPM = 'a21ybx.im.0.0'
+
+
+def _ad_range(start_date: str, end_date: str, page: int, size: int) -> Dict[str, Any]:
+    """官方「报表」类接口共用的区间参数（bundle 调用点原文）。"""
+    return {
+        'startDate': str(start_date), 'endDate': str(end_date),
+        'pageNum': int(page), 'pageSize': int(size),
+        'includeEndDate': True, 'allPeriod': False,
+    }
+
+# 安全中心（闲气值 / 违规记录）：官方微应用会把卖家工作台的**站点 CODE** 放进
+# 请求头 `idle_site_biz_code`（取值就是工作台 URL 上的 `?site=COMMONPRO`）。
+# 不带这个头时平台回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`，data.errorMsg 是
+# 「站点CODE不能为空」；带了空串是「用户无权限访问当前站点[]」——都**不是**账号掉线。
+# 真机已验证：带上 `COMMONPRO` 后 score.get / violation.list 都返回 SUCCESS。
+SECURITY_SITE_BIZ_CODE = 'COMMONPRO'
+SECURITY_API = 'mtop.idle.pc.security.score.get'
+SECURITY_VIOLATION_API = 'mtop.idle.pc.security.violation.list'
+
 # 账单大类：官方工作台写死的两个 billCode（收入页「交易货款」、支出页「通用结算」）。
 BILL_CODE_INCOME = 'goods_income'
 BILL_CODE_EXPENSE = 'common_settle'
@@ -288,7 +316,8 @@ class XianyuClient:
     # -- MTOP -------------------------------------------------------------
 
     async def mtop(self, api: str, data: Any = None, v: str = '1.0',
-                   spm_cnt: str = mtop.DEFAULT_SPM_CNT) -> Dict[str, Any]:
+                   spm_cnt: str = mtop.DEFAULT_SPM_CNT,
+                   extra_headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """调一次 MTOP，返回 ``{"success", "data", "message", "ret", "cookies_str"}``。
 
         与旧实现的差别：**成功才 reset 熔断计数**。旧实现只在调用方显式
@@ -322,6 +351,8 @@ class XianyuClient:
                 'referer': 'https://www.goofish.com/',
                 'cookie': self.cookie_str.replace('\n', '').replace('\r', ''),
             })
+            if extra_headers:
+                headers.update(extra_headers)
 
             client = await self._http()
             try:
@@ -843,6 +874,93 @@ class XianyuClient:
         """开票信息：发票抬头 / 纳税类型 / 支持的票种。"""
         payload = await self._finance(FINANCE_PURCHASER_API, {})
         return None if payload is None else parse_finance_purchaser(payload)
+
+    # -- 超级擦亮（只读） ---------------------------------------------------
+
+    async def ad_home(self) -> Optional[Dict[str, Any]]:
+        """推广首页：余额、计划统计与今日概览。官方请求 data 为空对象。"""
+        result = await self.mtop(AD_HOME_API, {}, v='1.0', spm_cnt=AD_SPM)
+        payload = result.get('data')
+        return payload if isinstance(payload, dict) else None
+
+    async def ad_account_card(self) -> Optional[Dict[str, Any]]:
+        """推广账户卡片。requestJson 必须是字符串化 JSON。"""
+        request = json.dumps({'scene': 'PC_HOME'}, separators=(',', ':'))
+        result = await self.mtop(
+            AD_ACCOUNT_CARD_API, {'requestJson': request}, v='1.0', spm_cnt=AD_SPM)
+        payload = result.get('data')
+        return payload if isinstance(payload, dict) else None
+
+    async def ad_member_data(self, start_date: str, end_date: str) -> Optional[Dict[str, Any]]:
+        """推广指标：日期为 YYYYMMDD，includeEndDate 为布尔值。"""
+        request = json.dumps({
+            'startDate': str(start_date), 'endDate': str(end_date),
+            'includeEndDate': True,
+        }, separators=(',', ':'))
+        result = await self.mtop(
+            AD_MEMBER_DATA_API, {'requestJson': request}, v='1.0', spm_cnt=AD_SPM)
+        payload = result.get('data')
+        return payload if isinstance(payload, dict) else None
+
+    async def ad_campaigns(self, start_date: str, end_date: str, page: int = 1,
+                           size: int = 10, title_like: str = '') -> Optional[Dict[str, Any]]:
+        """擦亮计划列表。官方调用点：``{pageNum,pageSize,startDate,endDate,titleLike?}``。"""
+        body: Dict[str, Any] = {
+            'pageNum': int(page), 'pageSize': int(size),
+            'startDate': str(start_date), 'endDate': str(end_date),
+        }
+        if title_like and str(title_like).strip():
+            body['titleLike'] = str(title_like).strip()
+        return await self._ad_json(AD_CAMPAIGN_SEARCH_API, body)
+
+    async def ad_campaign_metrics(self, start_date: str, end_date: str, page: int = 1,
+                                  size: int = 10) -> Optional[Dict[str, Any]]:
+        """计划维度的指标（官方「计划报表」）。"""
+        return await self._ad_json(AD_CAMPAIGN_DATA_API, _ad_range(start_date, end_date, page, size))
+
+    async def ad_item_metrics(self, start_date: str, end_date: str, page: int = 1,
+                              size: int = 10) -> Optional[Dict[str, Any]]:
+        """商品维度的指标（官方「商品报表」）。"""
+        return await self._ad_json(AD_ITEM_DATA_API, _ad_range(start_date, end_date, page, size))
+
+    async def ad_settle(self, start_date: str, end_date: str) -> Optional[Dict[str, Any]]:
+        """结算汇总：金额是**元**字符串（``totalAmountOfYuan`` 等）。"""
+        return await self._ad_json(AD_SETTLE_API, {
+            'startDate': str(start_date), 'endDate': str(end_date),
+        })
+
+    async def _ad_json(self, api: str, body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """`idle.ad.*` 统一把业务参数塞进 ``requestJson`` 字符串。"""
+        request = json.dumps(body, separators=(',', ':'), ensure_ascii=False)
+        result = await self.mtop(api, {'requestJson': request}, v='1.0', spm_cnt=AD_SPM)
+        payload = result.get('data')
+        return payload if isinstance(payload, dict) else None
+
+    # -- 安全中心（只读） ---------------------------------------------------
+
+    @staticmethod
+    def _security_headers() -> Dict[str, str]:
+        """安全中心专用头：站点 CODE 由官方工作台 URL 的 `site=` 参数而来。"""
+        return {
+            'idle_site_biz_code': SECURITY_SITE_BIZ_CODE,
+            'idle_user_group_member_id': '',
+            'origin': 'https://seller.goofish.com',
+            'referer': 'https://seller.goofish.com/',
+        }
+
+    async def security_score(self) -> Optional[Dict[str, Any]]:
+        result = await self.mtop(SECURITY_API, {
+            'appName': 'FM', 'scoreType': 1, 'queryScoreLimit': False,
+        }, v='1.0', extra_headers=self._security_headers())
+        payload = result.get('data')
+        return payload if isinstance(payload, dict) else None
+
+    async def security_violations(self, page: int = 1, size: int = 20) -> Optional[Dict[str, Any]]:
+        result = await self.mtop(SECURITY_VIOLATION_API, {
+            'biz': 'FM', 'pageNum': int(page), 'pageSize': int(size),
+        }, v='1.0', extra_headers=self._security_headers())
+        payload = result.get('data')
+        return payload if isinstance(payload, dict) else None
 
     # -- 图片上传 ---------------------------------------------------------
 

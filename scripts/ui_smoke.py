@@ -46,6 +46,8 @@ PAGES = [
     ('items', '商品'),
     ('chats', '会话'),
     ('finance', '财务'),
+    ('promotion', '超级擦亮'),
+    ('security-center', '安全中心'),
     ('agents', 'AI 沟通'),
     ('master', '主管 AI'),
     ('providers', 'AI 配置'),
