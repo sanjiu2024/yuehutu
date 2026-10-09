@@ -7,6 +7,19 @@ import { formatTime } from '../format'
 import type { Account } from '../types'
 import './security-center.css'
 
+/**
+ * 真机结构（2026-10-10 打包版取证）：PC 文案不在顶层，而是在
+ * `viewConfig.viewConfig.{punishTitleFromPc,punishReasonFromPc,punishResultFromPc,operationSuggestFromPc}`；
+ * 顶层 `punishReason` 是 null，所以只读顶层会显示成 `-`。
+ * 官方申诉入口在 `viewConfig.appealConfig.appealUrl`（`canAppeal:false` 时为空串）。
+ */
+type PcConfig = {
+  contentType?: unknown
+  punishTitleFromPc?: string
+  punishReasonFromPc?: string
+  punishResultFromPc?: string
+  operationSuggestFromPc?: string
+}
 type Violation = {
   punishId?: number
   punishTitle?: string
@@ -17,12 +30,10 @@ type Violation = {
   status?: string | number
   appealTimeLimit?: string
   action?: { actionType?: string; actionUrl?: string; actionTypes?: { linkTitle?: string; linkUrl?: string }[] }
-  viewConfig?: { contentType?: {
-    punishTitleFromPc?: string
-    punishReasonFromPc?: string
-    punishResultFromPc?: string
-    operationSuggestFromPc?: string
-  } }
+  viewConfig?: {
+    viewConfig?: PcConfig
+    appealConfig?: { canAppeal?: boolean; appealUrl?: string }
+  }
 }
 type Result = {
   score?: any
@@ -56,6 +67,8 @@ function pick(...values: (string | null | undefined)[]): string {
 
 /** 官方申诉入口：只打开链接，工作台自己绝不提交申诉。 */
 function appealUrl(row: Violation): string {
+  const official = row.viewConfig?.appealConfig
+  if (official && official.canAppeal !== false && official.appealUrl) return String(official.appealUrl).trim()
   return String(row.action?.actionTypes?.[0]?.linkUrl || row.action?.actionUrl || '').trim()
 }
 
@@ -96,7 +109,7 @@ export function SecurityCenterPage() {
         <div className="table-wrap"><table>
           <thead><tr><th>违规名称</th><th>违规编号</th><th>违规原因</th><th>违规影响</th><th>扣分</th><th>违规时间</th><th>申诉截止</th><th>操作</th></tr></thead>
           <tbody>{rows.map((row) => {
-            const content = row.viewConfig?.contentType
+            const content = row.viewConfig?.viewConfig
             const url = appealUrl(row)
             return <tr key={String(row.punishId)}>
               <td><div className="sc-name">{pick(row.punishTitle, content?.punishTitleFromPc)}</div></td>
