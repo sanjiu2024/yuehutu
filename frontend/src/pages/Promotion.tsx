@@ -3,6 +3,7 @@ import { api } from '../api'
 import { AsyncBox, Notice, Stat } from '../components'
 import { useAsync } from '../hooks/useAsync'
 import { IconChart, IconInfo, IconRefresh } from '../icons'
+import { formatTime } from '../format'
 import type { Account } from '../types'
 import './promotion.css'
 
@@ -124,7 +125,7 @@ export function PromotionPage() {
         <Stat label="手动暂停" value={num(home?.campaignInfo?.userPauseCampaignCount)} />
         <Stat label="结算金额（元）" value={settle?.totalAmountOfYuan ?? '-'} />
       </div>
-      <Notice kind="info"><IconInfo size={15} /> 本页只读推广数据，不提供充值、提现、创建或修改投放计划。数据更新于 {overview.data?.fetched_at || '-'}</Notice>
+      <Notice kind="info"><IconInfo size={15} /> 本页只读推广数据，不提供充值、提现、创建或修改投放计划。数据更新于 {formatTime(overview.data?.fetched_at)}</Notice>
     </AsyncBox>}
 
     {tab === 'campaigns' && <AsyncBox loading={campaigns.loading} error={campaigns.error} notReady={campaigns.notReady} empty={!campaigns.data} onRetry={campaigns.reload} emptyTitle="暂无擦亮计划" emptyDesc="这个区间里平台没有返回计划" emptyIcon="">

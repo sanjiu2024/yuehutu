@@ -388,6 +388,12 @@ class SecurityCenterApiTest(ReadOnlyPageTest):
         self.ok_data(f'{SEC_BASE}/{ACC}', '?page=2&size=50')
         self.assertEqual(self.fake.args_of('security_violations'), (2, 50))
 
+    def test_payload_carries_fetched_at(self):
+        """页脚「数据更新于」靠它；缺了就会显示成 `-`（真机 2026-10-10 踩过）。"""
+        seed_account()
+        data = self.ok_data(f'{SEC_BASE}/{ACC}')
+        self.assertRegex(str(data.get('fetched_at')), r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$')
+
     def test_page_bounds_are_rejected(self):
         seed_account()
         for query in ('?page=0', '?size=0', '?size=51'):

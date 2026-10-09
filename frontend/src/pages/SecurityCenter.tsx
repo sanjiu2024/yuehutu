@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react'
 import { api } from '../api'
 import { AsyncBox, Notice, Stat } from '../components'
 import { useAsync } from '../hooks/useAsync'
-import { IconInfo, IconRefresh, IconShield } from '../icons'
+import { IconExternal, IconInfo, IconRefresh, IconShield } from '../icons'
+import { formatTime } from '../format'
 import type { Account } from '../types'
 import './security-center.css'
 
@@ -15,6 +16,13 @@ type Violation = {
   point?: number
   status?: string | number
   appealTimeLimit?: string
+  action?: { actionType?: string; actionUrl?: string; actionTypes?: { linkTitle?: string; linkUrl?: string }[] }
+  viewConfig?: { contentType?: {
+    punishTitleFromPc?: string
+    punishReasonFromPc?: string
+    punishResultFromPc?: string
+    operationSuggestFromPc?: string
+  } }
 }
 type Result = {
   score?: any
@@ -35,6 +43,20 @@ function when(ms: unknown): string {
 function scoreOf(score: any): string {
   const value = score?.data?.totalScore ?? score?.totalScore
   return value === null || value === undefined ? '-' : String(value)
+}
+
+/** 平台对同一件事给两套字段：移动端那套常为 null，PC 文案在 `*FromPc` 里（真机取证）。 */
+function pick(...values: (string | null | undefined)[]): string {
+  for (const value of values) {
+    const str = String(value ?? '').trim()
+    if (str) return str
+  }
+  return '-'
+}
+
+/** 官方申诉入口：只打开链接，工作台自己绝不提交申诉。 */
+function appealUrl(row: Violation): string {
+  return String(row.action?.actionTypes?.[0]?.linkUrl || row.action?.actionUrl || '').trim()
 }
 
 export function SecurityCenterPage() {
@@ -72,21 +94,30 @@ export function SecurityCenterPage() {
       <div className="card">
         <div className="sc-table-head">违规记录 · 共 {total ?? '-'} 条</div>
         <div className="table-wrap"><table>
-          <thead><tr><th>违规名称</th><th>违规编号</th><th>违规原因</th><th>违规影响</th><th>扣分</th><th>违规时间</th><th>申诉截止</th></tr></thead>
-          <tbody>{rows.map((row) => <tr key={String(row.punishId)}>
-            <td><div className="sc-name">{row.punishTitle || '-'}</div><div className="sc-sub">{row.status === null || row.status === undefined ? '' : `状态 ${row.status}`}</div></td>
-            <td className="sc-sub">{row.punishId ?? '-'}</td>
-            <td className="sc-reason">{row.punishReason || '-'}</td>
-            <td className="sc-sub">{row.punishResult || '-'}</td>
-            <td>{row.point === null || row.point === undefined ? '-' : `${row.point} 分`}</td>
-            <td className="sc-sub">{when(row.punishTime)}</td>
-            <td className="sc-sub">{row.appealTimeLimit || '-'}</td>
-          </tr>)}</tbody>
+          <thead><tr><th>违规名称</th><th>违规编号</th><th>违规原因</th><th>违规影响</th><th>扣分</th><th>违规时间</th><th>申诉截止</th><th>操作</th></tr></thead>
+          <tbody>{rows.map((row) => {
+            const content = row.viewConfig?.contentType
+            const url = appealUrl(row)
+            return <tr key={String(row.punishId)}>
+              <td><div className="sc-name">{pick(row.punishTitle, content?.punishTitleFromPc)}</div></td>
+              <td className="sc-sub">{row.punishId ?? '-'}</td>
+              <td className="sc-reason" title={content?.operationSuggestFromPc || ''}>{pick(row.punishReason, content?.punishReasonFromPc)}</td>
+              <td className="sc-sub">{pick(row.punishResult, content?.punishResultFromPc)}</td>
+              <td>{row.point === null || row.point === undefined ? '-' : `${row.point} 分`}</td>
+              <td className="sc-sub">{when(row.punishTime)}</td>
+              <td className="sc-sub">{row.appealTimeLimit || '-'}</td>
+              <td>{url
+                ? <button className="btn sm" onClick={() => window.open(url, '_blank', 'noopener,noreferrer')}>
+                    <IconExternal size={13} /> {row.action?.actionTypes?.[0]?.linkTitle || row.action?.actionType || '去申诉'}
+                  </button>
+                : <span className="sc-sub">-</span>}</td>
+            </tr>
+          })}</tbody>
         </table></div>
         {rows.length === 0 && <div className="sc-empty">平台没有返回违规记录</div>}
       </div>
 
-      <Notice kind="info"><IconInfo size={15} /> 本页只读。要申诉请点官方入口自己提交 —— 工作台不会替你提交任何申诉或上传材料。数据更新于 {data.data?.fetched_at || '-'}</Notice>
+      <Notice kind="info"><IconInfo size={15} /> 本页只读。要申诉请点「去申诉」到官方页面自己提交 —— 工作台不会替你提交任何申诉或上传材料。数据更新于 {formatTime(data.data?.fetched_at)}</Notice>
     </AsyncBox>
   </>
 }
