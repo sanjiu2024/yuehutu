@@ -22,7 +22,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 33  PASS 33  FAIL 0  CASES 999  SKIPPED 2
+-> TOTAL 35  PASS 35  FAIL 0  CASES 1027  SKIPPED 2
 ```
 
 ```text
@@ -1047,10 +1047,99 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 > （61 modules，`index-DlUnL6LY.js 343.86 kB` + `index-B6VwuY8J.css 105.82 kB`）；
 > `scripts/ui_smoke.py --port 18097` → **10/10 页通过**（新增财务页，`PAGES` 已补）。
 
+### 第十八批：用户第十一次真机实测（官方「超级擦亮」+「安全中心」截图）（118~121）
+
+用户这次同样**没有文字**，只发了 12 张截图：超级擦亮（推广）首页 / 擦亮计划表 / 充值页 /
+账户报表 / 计划报表 / 商品报表 / 账户明细 / 活动奖励 / 资质管理 / 新建擦亮计划（两步）+
+安全中心（闲气值 100 分 + 3 条「发布违禁商品信息」违规、扣 0 分、处罚完结）。
+按原始诉求⑨「集成闲鱼客服与网页版功能」解读为「把这两块**只读**部分做进工作台」，
+**充值 / 提现 / 申诉 / 上传资质 / 新建或修改擦亮计划一律不做**（写平台、涉钱、不可逆）。
+
+118. **别在真机上点微应用，直接下载 bundle 读接口名**（2026-10-09）。菜单接口
+    `mtop.alibaba.idle.seller.platform.sys.menu.query` 的响应里每个一级菜单都带
+    `entry`（微应用 bundle 的 alicdn 地址）+ `hashType: true` + `version`，于是
+    `https://g.alicdn.com/idle-pc/fish-ad-pc/0.0.12/js/main.js`（3,760,912 字节）与
+    `https://g.alicdn.com/idle-pc/idle-seller-security-center/0.0.6/js/main.js`
+    （4,441,635 字节）可以直接下下来静态扫 `mtop.` 字面量：超级擦亮 **86 个**、
+    安全中心 **34 个**、营销 28 个。**这条路一个平台请求都不发，完全不碰风控**，
+    比在 headless 里点菜单可靠得多。真路由同样来自菜单接口的 `accessiblePathList`：
+    `/seller-ad/home`、`/seller-sc/home`（另 38 条官方页面清单见该响应）。
+    **踩坑**：①微应用顶栏导航在 headless 下没渲染，「擦亮/账户/报表」全部
+    `TimeoutError`；②hash-only goto 不会重载页面，7 个猜的路由 goto 后 URL 原样保留
+    ——**不能据此判断路由存在**；③PowerShell 内联 python 带 `\"` 会
+    `ParserError: 字符串缺少终止符`，含引号的脚本一律写成 `.py` 文件再跑；
+    ④`Get-ChildItem -Filter a,b` 报参数类型错（`-Filter` 只收单值）。
+
+119. **安全中心不是没权限，是缺站点 CODE 头**（这是本轮最值钱的一条）。
+    同一账号 `2217970177348` 的 Cookie：`ad.home`、`finance.summary` 都是
+    `SUCCESS`，唯独 `idle.pc.security.score.get` 回
+    `FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问`。差点误判成「账号掉线 / 安全中心没资格」。
+    真因：官方微应用把工作台 URL 上的 `?site=COMMONPRO` 放进**请求头**
+    `idle_site_biz_code`（另有 `idle_user_group_member_id: ''`）并用
+    `origin/referer=https://seller.goofish.com`。取证方式是真 Chrome headless +
+    `captcha.to_playwright_cookies(cookie)` 打开 `https://seller.goofish.com/?site=COMMONPRO#/seller-sc/home`
+    抓请求头（落 `logs/seller_discover/site_code.json`）。裸调时平台回的
+    `data.errorMsg` 是「**站点CODE不能为空**」，带空串头是「用户无权限访问当前站点[]」——
+    两句话都指向头，不指向账号。修法：`client.py` 新增 `SECURITY_SITE_BIZ_CODE='COMMONPRO'`、
+    `XianyuClient._security_headers()`，并给 `mtop()` 加通用逃生口
+    `extra_headers=None`（`if extra_headers: headers.update(extra_headers)`）。
+    **带上头之后 score.get / score.record.list / violation.list 全部 SUCCESS**
+    （闲气值 `totalScore:100`、违规 `punishId:187988498827`、`action.actionUrl` 指向官方申诉表单）。
+    回归用例 `test_site_code_permission_error_is_not_reported_as_logout` 专门钉住
+    「这个错必须落 502 `protocol_error`，**不能**落 409 `verification_required`」——
+    否则用户会被反复叫去重新扫码，而问题一直在客户端缺头。
+    （`window.__PC_SELLER_WORKBENCH__` 在这个页面上是 `undefined`，站点 CODE 只能从请求头取。）
+
+120. **推广只读接口的真名、参数与单位**。协议层真名（`mtop.taobao.idle.ad.*`）：
+    `home`（`data:{}`）、`bp.account.card.query`（`{scene:'PC_HOME'}`）、
+    `member.data.query`、`bp.account.log.query`、`bp.account.recharge.query`、
+    `bp.account.withdraw.query`、`bp.settle.settle.query`、`bp.coupon.info/statistic.query`、
+    `campaign.search`、`campaign.data.batch.query`、`campaign.log.query`、`group.list`、
+    `group.data.query`、`item.data.batch.query`、`item.recommend`、`package.info`、
+    `message.list`、`qualification.*`；**写接口一个都不接**（`campaign.edit/delete/pause/
+    startV2/batch.delete`、`item.campaign.renew`、`activity.apply`、`qualification.packages.submit`、
+    `bp.account.log.operates`、`message.read`）。除 `home` 外全部包成
+    `{'requestJson': json.dumps(body)}`，报表族的 body 是
+    `{startDate,endDate,pageNum,pageSize,includeEndDate:true,allPeriod:false}`
+    （`campaign.search` 另有可选 `titleLike`）。
+    **单位是两种，必须分清**：`idle.ad.*` 指标里的 `cost`/`realCost`/`payAmount`/
+    `costPerClick`/`cpm` 是**分**（真机 `cost:5990` 与官方计划报表的 `59.9` 对得上，
+    换算只在前端 `cents()` 做，服务层原样透传）；`settle` 与 `bp.account.card.query`
+    的金额是**元字符串**（`'169.27'`、`'33.58'`）；`showPv`/`clickPv` 是次数，
+    `ctr`/`cvr` 平台已经给了百分数。真机形状（`logs/promotion_probe/readonly_shapes.json`）：
+    `campaign.search` → `{result[],total:9,nextPage}`（行含 `campaignId/title/
+    campaignTypeName/statusDescCode/startTime/endTime/adGroupCount/entityList[]/adDataDetailVO`）；
+    `campaign.data.batch.query` → `result[].idleAdGroupDataVO.data`（total 6）；
+    `item.data.batch.query` → `result[{itemId,title,imgUrl,price,adData,previousData}]`（total 26）。
+
+121. **两页都做成只读镜像，并且失败必须如实**。服务层 `services/promotion.py` 4 个视图
+    （`overview`/`campaigns`/`reports`/`account`）+ `services/security_center.py`；
+    路由 `GET /api/promotion/{account_id}/{overview,campaigns,reports,account}` 与
+    `GET /api/security-center/{account_id}`，`POST/PUT/PATCH/DELETE` 一律 405。
+    日期只认 `YYYYMMDD`（都空 = 最近 7 天，格式错或 from>to → 400 `invalid_fields`）、
+    `size` 限 1~50、安全中心 `page/size` 走 FastAPI `ge/le`（越界 422）。
+    没有 Cookie / `need_relogin` 时**一次平台都不打**，直接 409 `verification_required`；
+    平台报错 → 502 `protocol_error`，**绝不把拿不到画成 0**。两页都**不落库、不缓存**
+    （余额与投放数据过期比没有更糟）。前端 `pages/Promotion.tsx` 四页签（概览/擦亮计划/
+    数据报表/账户，按页签懒加载）+ `pages/SecurityCenter.tsx`（闲气值卡片 + 违规表，
+    删掉了原来直接倾倒 JSON 的 `<pre>`），新样式各自进 `promotion.css`/`security-center.css`
+    （不动 `styles.css` 的既有 class 与令牌名）。
+
+> **第十八批证据链**：`backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_promo_full3`）
+> `TOTAL 35  PASS 35  FAIL 0  CASES 1027  SKIPPED 2`（第十七批 999；新增
+> `tests/test_promotion_api.py` 24 条 + `tests/test_xianyu_promotion.py` 4 条协议层用例）。
+> 前端 `npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0（65 modules，
+> `index-DMcFX2PI.js 356.99 kB` + `index-DVjUX-r9.css 108.24 kB`）；
+> `scripts/ui_smoke.py --port 18117` → **12/12 页通过**（新增 `promotion`、`security-center`）。
+> 真机五路由（真数据目录 + `POST /api/auth/desktop`）**全部 HTTP 200**：
+> overview（余额 3358 分 / 暂停 3 + 系统暂停 6）、campaigns total 9、
+> reports plans 6 + items 26、account settle 169.27、security-center 闲气值 100 + 违规 3 条；
+> 证据 `logs/promotion_probe/report.json`、`logs/seller_discover/site_code.json`。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**33 个测试文件、999 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**35 个测试文件、1027 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -1170,6 +1259,15 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
   控制台报错），页面内部的交互细节没有自动化覆盖。
 - **MCP 注册要重启 DSH 宿主才生效**：配置已写、预检已过，但本会话是改配置前启动的，
   宿主级生效与否要重启后才能确认（留给机器主人决定时机）。
+- **推广 / 安全中心只做了「读」的四个视图，官方还有 6 块没做**（第十八批）：
+  充值页、账户明细流水、活动奖励、资质管理、新建/编辑擦亮计划、申诉入口 ——
+  其中**充值/提现/申诉/上传资质/新建或修改计划是本项目明确不做**（写平台、涉钱、不可逆），
+  账户流水/活动奖励/资质列表属「可做但本轮没做」。已做的四个视图（余额与首页、
+  擦亮计划表、计划+商品报表、结算）都在真机取到真值，但**没有在打包版上复验过**
+  （第十七批那样重打包后复验的动作，本轮见提交记录）。
+- **推广与安全中心没有任何缓存**：每次打开页面都实打实打平台（`idle.ad.*` 与
+  `idle.pc.security.*` 各 2~4 次），刷新频繁时会不会触发平台限流**没测过**；
+  商品数据那套「后台 worker 慢慢拉 + 本地缓存」的降级策略**没有**用在这两页。
 
 ## 五、下一步（按优先级）
 

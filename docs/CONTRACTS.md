@@ -578,6 +578,51 @@ GET    /api/finance/{account_id}/purchaser
       --   `invoice.request.list.query` 要**对象** —— 三种写法都是真机抓包得来的，写错只回含糊错误码。
       --   抓包与真值证据见 `docs/HANDOFF.md` 第十七批。
 
+GET    /api/promotion/{account_id}/overview?start=YYYYMMDD&end=YYYYMMDD
+GET    /api/promotion/{account_id}/campaigns?start=&end=&page=1&size=20
+GET    /api/promotion/{account_id}/reports?  （计划报表 + 商品报表，参数同上）
+GET    /api/promotion/{account_id}/account?start=&end=
+GET    /api/security-center/{account_id}
+      -- 「超级擦亮（推广）」与「安全中心」页（第十八批）：**全部只读**。
+      --   没有任何写接口 —— 充值、提现、申诉、上传资质、创建/暂停/修改擦亮计划一律不做
+      --   （`POST/PUT/PATCH/DELETE` 405；`idle.ad.*` 里的 `campaign.edit/delete/pause/startV2`、
+      --   `activity.apply`、`qualification.packages.submit`、`bp.account.log.operates`、
+      --   `idle.pc.security.appeal.*` 一个都不接）。
+      -- overview -> {success:true,data:{account_id,period:{from,to},home,account,metrics,
+      --     fetched_at,source:'platform'}}
+      --   `home`=平台 `mtop.taobao.idle.ad.home` 原样（`campaignInfo.{allCampaignCount,
+      --     systemPauseCampaignCount,userPauseCampaignCount}`、`allAccountBalanceDetails[].balance`
+      --     单位是**分**）；`account`=`bp.account.card.query`（`totalUsableBalanceOfYuan` 等是**元字符串**）；
+      --   `metrics`=`member.data.query`（`data`/`dataDetailVOList`/`previousData`）。
+      -- campaigns -> {...,campaigns:{result[],total,nextPage}}；`result[].adDataDetailVO` 的
+      --   `cost`/`realCost`/`payAmount`/`costPerClick`/`cpm` 单位是**分**，`showPv`/`clickPv` 是次数，
+      --   `ctr`/`cvr` 是百分数（原样，不除 100）；`entityList[]` 是挂在这个计划下的宝贝
+      --   （`imgUrl`/`title`/`price`）。
+      -- reports -> {...,plans:{result[],total},items:{result[],total}}；计划指标在
+      --   `result[].idleAdGroupDataVO.data`，商品指标在 `result[].adData`，商品行自带
+      --   `itemId`/`title`/`imgUrl`/`price`。
+      -- account -> {...,account,settle}（`settle`=`bp.settle.settle.query`，金额是**元字符串**：
+      --   `totalAmountOfYuan`/`cashAmountOfYuan`/`giftAmountOfYuan`/`redPacketAmountOfYuan`）。
+      -- security-center -> {success:true,data:{account_id,score,violations,fetched_at,source}}
+      --   `score`=`idle.pc.security.score.get`（闲气值在 `data.totalScore`）；`violations`=
+      --   `idle.pc.security.violation.list`（`data[].punishId/punishTitle/punishReason/punishResult/
+      --   punishTime(ms)/point/appealTimeLimit`，`totalCount`/`hasNext`）。
+      -- **安全中心必须带站点 CODE 头**：官方微应用把工作台 URL 上的 `?site=COMMONPRO` 放进请求头
+      --   `idle_site_biz_code`（另有 `idle_user_group_member_id: ''`），并用
+      --   `origin/referer=https://seller.goofish.com`。**不带时平台回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`，
+      --   `data.errorMsg` 是「站点CODE不能为空」；带空串是「用户无权限访问当前站点[]」** ——
+      --   两个都不是账号掉线，别误判成掉线去让用户重扫码。真机 2026-10-10 验证：带上 `COMMONPRO`
+      --   后 score.get / violation.list 都 SUCCESS（闲气值 100、违规 3 条）。客户端入口
+      --   `XianyuClient._security_headers()`，`mtop(..., extra_headers=...)` 是通用逃生口。
+      -- 日期与分页：`start`/`end` 只认 `YYYYMMDD`（格式错或 from>to → 400 `invalid_fields`；
+      --   都空 = 最近 7 天）；`size` 必须 1~50（越界 400）。报表族参数照官方 bundle 调用点：
+      --   `{startDate,endDate,pageNum,pageSize,includeEndDate:true,allPeriod:false}`；
+      --   `campaign.search` 另有可选 `titleLike`。
+      -- 登录态过期如实 409 `verification_required` + `login_state=need_relogin`；没有 Cookie 时
+      --   **一次平台都不打**。**数字拿不到一律 `null`**（前端 `-`），不补 0。
+      -- 推广/安全中心都**不落库、不缓存**（余额与投放数据过期比没有更糟）。
+      -- 协议层真名、参数形状与真值证据见 `docs/HANDOFF.md` 第十八批。
+
 错误响应统一：`{"success":false,"message":"...","code":"..."}`，HTTP 用语义状态码（4xx 业务、5xx 内部）。成功统一 `{"success":true,"data":{...}}`。
 **404/405 也必须走这个信封**（挂的是 Starlette 的 `HTTPException`，不是 FastAPI 的子类）。
 
