@@ -607,6 +607,12 @@ GET    /api/security-center/{account_id}
       --   `score`=`idle.pc.security.score.get`（闲气值在 `data.totalScore`）；`violations`=
       --   `idle.pc.security.violation.list`（`data[].punishId/punishTitle/punishReason/punishResult/
       --   punishTime(ms)/point/appealTimeLimit`，`totalCount`/`hasNext`）。
+      --   ⚠ 真机结构比看起来深一层：**PC 文案不在顶层**，而在
+      --   `data[].viewConfig.viewConfig.{punishTitleFromPc,punishReasonFromPc,punishResultFromPc,
+      --   operationSuggestFromPc}`；顶层 `punishReason` 真机是 **null**（只读顶层会显示成 `-`，
+      --   2026-10-10 打包版踩过）。官方申诉入口在 `data[].viewConfig.appealConfig.appealUrl`
+      --   （`canAppeal:false` 时是空串，如申诉期已过的记录），前端只 `window.open` 该链接，
+      --   自身**不提交**申诉。
       -- **安全中心必须带站点 CODE 头**：官方微应用把工作台 URL 上的 `?site=COMMONPRO` 放进请求头
       --   `idle_site_biz_code`（另有 `idle_user_group_member_id: ''`），并用
       --   `origin/referer=https://seller.goofish.com`。**不带时平台回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`，

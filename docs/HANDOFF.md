@@ -22,7 +22,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 35  PASS 35  FAIL 0  CASES 1027  SKIPPED 2
+-> TOTAL 35  PASS 35  FAIL 0  CASES 1028  SKIPPED 2
 ```
 
 ```text
@@ -1125,12 +1125,38 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
     删掉了原来直接倾倒 JSON 的 `<pre>`），新样式各自进 `promotion.css`/`security-center.css`
     （不动 `styles.css` 的既有 class 与令牌名）。
 
+122. **打包版复验抓出两个「字段映射错」的真机 bug**（`0be41d4` 之后、同一轮修完，`822b206` + `21625b1`）。
+    静态扫 bundle 能拿到接口名，但**响应字段的嵌套层级只有真机响应说了算**：
+    1. 安全中心「违规原因」恒为 `-`。顶层 `punishReason` 真机是 **null**，PC 文案在
+       `viewConfig.viewConfig.punishReasonFromPc`（"发布的商品内容中含有违禁信息"）。
+       第一次改错了层级（写成 `viewConfig.contentType.*`，那里是空的），
+       最后靠**逐路径扫真机响应**才定位：
+       `body/data/violations/data[i]/viewConfig/viewConfig/{punishTitleFromPc,punishReasonFromPc,
+       punishResultFromPc,operationSuggestFromPc}`。教训：嵌套字段别靠缩进猜，把响应按路径打出来。
+    2. 页脚「数据更新于」两页都直接打印 `fetched_at`（UTC 串，真机显示 `2026-10-09 21:48:39`，
+       本地是 `2026-10-10 05:48`）→ 改走 `formatTime()`；并且 `security_center.read()`
+       根本没返回 `fetched_at`，页脚显示 `-` → 补上（与推广侧一致，回归用例
+       `test_payload_carries_fetched_at` 钉住）。
+    3. 顺带修掉两处噪音/缺失：「状态 1」是无意义数字，换成官方申诉入口按钮
+       （`viewConfig.appealConfig.appealUrl`，`canAppeal:false` 时是空串，如申诉期已过；
+       拿不到再退 `action.actionTypes[0].linkUrl`），只 `window.open`，工作台**不提交**申诉；
+       原因单元格挂 `operationSuggestFromPc` 作 title 提示。
+    打包版真机复验（frozen exe `--port 18400`）：违规原因三行都有真文案、前两行有「去申诉」、
+    第三行（申诉期已过）为 `-`、页脚 `2026-10-10 06:41:48`（本地时间）、
+    `page_errors: []` / `http_errors: []`、只读请求仍是 5 条。
+
 > **第十八批证据链**：`backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_promo_full3`）
 > `TOTAL 35  PASS 35  FAIL 0  CASES 1027  SKIPPED 2`（第十七批 999；新增
-> `tests/test_promotion_api.py` 24 条 + `tests/test_xianyu_promotion.py` 4 条协议层用例）。
+> `tests/test_promotion_api.py` 24 条 + `tests/test_xianyu_promotion.py` 4 条协议层用例），
+> 补 `test_payload_carries_fetched_at` 后 **CASES 1028**（`%TEMP%\xywb_sec_ft2`）。
 > 前端 `npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0（65 modules，
-> `index-DMcFX2PI.js 356.99 kB` + `index-DVjUX-r9.css 108.24 kB`）；
-> `scripts/ui_smoke.py --port 18117` → **12/12 页通过**（新增 `promotion`、`security-center`）。
+> `index-DMcFX2PI.js 356.99 kB` + `index-DVjUX-r9.css 108.24 kB`）；修完两个显示 bug 后
+> `index-8P2tsRqB.js 357.89 kB`；
+> `scripts/ui_smoke.py --port 18117` → **12/12 页通过**（新增 `promotion`、`security-center`），
+> 修复后 `--port 18137` 仍 **12/12**；
+> 打包版 `dist\闲鱼AI工作台\闲鱼AI工作台.exe` **9,835,514 字节 / 2026-10-10 06:38:58**
+> （修复前 9,835,435 / 05:43:10），产物目录 190.3 MB；`logs/promo_shots/` 是打包版截图与
+> 请求清单（`page_errors: []` / `http_errors: []`）。
 > 真机五路由（真数据目录 + `POST /api/auth/desktop`）**全部 HTTP 200**：
 > overview（余额 3358 分 / 暂停 3 + 系统暂停 6）、campaigns total 9、
 > reports plans 6 + items 26、account settle 169.27、security-center 闲气值 100 + 违规 3 条；
@@ -1139,7 +1165,7 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**35 个测试文件、1027 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**35 个测试文件、1028 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
