@@ -200,6 +200,122 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'method': 'GET', 'path': '/api/agents/messages',
         'query': ['conversation_id'],
     },
+    # ---------------- 交易（只读）----------------
+    'trade_orders': {
+        'method': 'GET', 'path': '/api/trade/{account_id}/orders',
+        'path_params': ['account_id'],
+        'query': ['page', 'size', 'include_counts'],
+    },
+    'trade_refunds': {
+        'method': 'GET', 'path': '/api/trade/{account_id}/refunds',
+        'path_params': ['account_id'], 'query': ['page', 'size'],
+    },
+    'trade_evaluations': {
+        'method': 'GET', 'path': '/api/trade/{account_id}/evaluations',
+        'path_params': ['account_id'], 'query': ['page', 'size'],
+    },
+    'trade_complaints': {
+        'method': 'GET', 'path': '/api/trade/{account_id}/complaints',
+        'path_params': ['account_id'], 'query': ['page', 'size'],
+    },
+    'trade_addresses': {
+        'method': 'GET', 'path': '/api/trade/{account_id}/addresses',
+        'path_params': ['account_id'],
+    },
+    # ---------------- 小铺（只读）----------------
+    'shop_sub_accounts': {
+        'method': 'GET', 'path': '/api/shop/{account_id}/sub-accounts',
+        'path_params': ['account_id'], 'query': ['page', 'size'],
+    },
+    'shop_cs_routing': {
+        'method': 'GET', 'path': '/api/shop/{account_id}/cs-routing',
+        'path_params': ['account_id'], 'query': ['page', 'size'],
+    },
+    # ---------------- 数据中心（只读）----------------
+    'datacenter_overview': {
+        'method': 'GET', 'path': '/api/datacenter/{account_id}/overview',
+        'path_params': ['account_id'], 'query': ['start', 'end'],
+    },
+    'datacenter_fans': {
+        'method': 'GET', 'path': '/api/datacenter/{account_id}/fans',
+        'path_params': ['account_id'], 'query': ['start', 'end'],
+    },
+    'datacenter_customer_service': {
+        'method': 'GET', 'path': '/api/datacenter/{account_id}/customer-service',
+        'path_params': ['account_id'], 'query': ['start', 'end'],
+    },
+    # ---------------- 通知（只读）----------------
+    'notifications_list': {
+        'method': 'GET', 'path': '/api/notifications/{account_id}',
+        'path_params': ['account_id'], 'query': ['page', 'size'],
+    },
+    # ---------------- 运费模版（只读）----------------
+    'item_templates_list': {
+        'method': 'GET', 'path': '/api/item-templates/{account_id}',
+        'path_params': ['account_id'], 'query': ['page', 'size', 'template_name'],
+    },
+    'item_templates_get': {
+        'method': 'GET', 'path': '/api/item-templates/{account_id}/{template_id}',
+        'path_params': ['account_id', 'template_id'],
+    },
+    # ---------------- 财务（只读）----------------
+    'finance_income': {
+        'method': 'GET', 'path': '/api/finance/{account_id}/income',
+        'path_params': ['account_id'],
+        'query': ['cycle_from', 'cycle_to', 'biz_type', 'page', 'size'],
+    },
+    'finance_expense': {
+        'method': 'GET', 'path': '/api/finance/{account_id}/expense',
+        'path_params': ['account_id'],
+        'query': ['cycle_from', 'cycle_to', 'biz_type', 'page', 'size'],
+    },
+    'finance_invoices': {
+        'method': 'GET', 'path': '/api/finance/{account_id}/invoices',
+        'path_params': ['account_id'], 'query': ['page', 'size', 'biz_types'],
+    },
+    'finance_purchaser': {
+        'method': 'GET', 'path': '/api/finance/{account_id}/purchaser',
+        'path_params': ['account_id'],
+    },
+    # ---------------- 推广（只读）----------------
+    'promotion_overview': {
+        'method': 'GET', 'path': '/api/promotion/{account_id}/overview',
+        'path_params': ['account_id'], 'query': ['start', 'end'],
+    },
+    'promotion_campaigns': {
+        'method': 'GET', 'path': '/api/promotion/{account_id}/campaigns',
+        'path_params': ['account_id'], 'query': ['start', 'end', 'page', 'size'],
+    },
+    'promotion_reports': {
+        'method': 'GET', 'path': '/api/promotion/{account_id}/reports',
+        'path_params': ['account_id'], 'query': ['start', 'end', 'page', 'size'],
+    },
+    'promotion_account': {
+        'method': 'GET', 'path': '/api/promotion/{account_id}/account',
+        'path_params': ['account_id'], 'query': ['start', 'end'],
+    },
+    # ---------------- 安全中心（只读）----------------
+    'security_center_status': {
+        'method': 'GET', 'path': '/api/security-center/{account_id}',
+        'path_params': ['account_id'], 'query': ['page', 'size'],
+    },
+    # ---------------- 营销（只读）----------------
+    'marketing_items': {
+        'method': 'GET', 'path': '/api/marketing/{account_id}/items',
+        'path_params': ['account_id'], 'query': ['page', 'size'],
+    },
+    'marketing_tasks': {
+        'method': 'GET', 'path': '/api/marketing/{account_id}/tasks',
+        'path_params': ['account_id'], 'query': [],
+    },
+    'marketing_price_competitiveness': {
+        'method': 'GET', 'path': '/api/marketing/{account_id}/price-competitiveness',
+        'path_params': ['account_id'], 'query': ['item_ids'],
+    },
+    'marketing_records': {
+        'method': 'GET', 'path': '/api/marketing/{account_id}/records',
+        'path_params': ['account_id'], 'query': ['page', 'size'],
+    },
 }
 
 # 动词式别名（task-6 任务卡里的写法）→ 规范名

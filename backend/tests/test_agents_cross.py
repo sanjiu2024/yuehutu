@@ -488,6 +488,25 @@ class MasterChatTest(unittest.TestCase):
             'orders_list', 'orders_deliver',
             'risk_status', 'risk_clear',
             'providers_list', 'providers_upsert',
+            # ---- 交易 ----
+            'trade_orders', 'trade_refunds', 'trade_evaluations', 'trade_complaints', 'trade_addresses',
+            # ---- 小铺 ----
+            'shop_sub_accounts', 'shop_cs_routing',
+            # ---- 数据中心 ----
+            'datacenter_overview', 'datacenter_fans', 'datacenter_customer_service',
+            # ---- 通知 ----
+            'notifications_list',
+            # ---- 运费模版 ----
+            'item_templates_list', 'item_templates_get',
+            # ---- 财务 ----
+            'finance_income', 'finance_expense', 'finance_invoices', 'finance_purchaser',
+            # ---- 推广 ----
+            'promotion_overview', 'promotion_campaigns', 'promotion_reports', 'promotion_account',
+            # ---- 安全中心 ----
+            'security_center_status',
+            # ---- 营销 ----
+            'marketing_items', 'marketing_tasks', 'marketing_price_competitiveness',
+            'marketing_records',
             'master_chat',
         ]
         self.assertEqual(tools.TOOL_NAMES, expected)
