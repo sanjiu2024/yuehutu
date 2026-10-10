@@ -59,6 +59,8 @@ PAGES = [
     ('notifications', '通知中心'),
     ('finance', '财务'),
     ('promotion', '超级擦亮'),
+    ('marketing', '营销'),
+    ('qualification', '资质管理'),
     ('security-center', '安全中心'),
     ('agents', 'AI 沟通'),
     ('master', '主管 AI'),

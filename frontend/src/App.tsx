@@ -34,6 +34,8 @@ import { ItemTemplatesPage } from './pages/ItemTemplates'
 import { NotificationsPage } from './pages/Notifications'
 import { FinancePage } from './pages/Finance'
 import { PromotionPage } from './pages/Promotion'
+import { MarketingPage } from './pages/Marketing'
+import { QualificationPage } from './pages/Qualification'
 import { SecurityCenterPage } from './pages/SecurityCenter'
 import { AgentsPage } from './pages/Agents'
 import { MasterPage } from './pages/Master'
@@ -116,8 +118,10 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
   {
     title: '推广',
     items: [
-      { key: 'promotion', label: '超级擦亮', icon: 'chart', desc: '余额、推广指标与计划概览（只读）' },
-      { key: 'security-center', label: '安全中心', icon: 'shield', desc: '闲气值与违规记录（只读）' },
+      { key: 'promotion', label: '超级擦亮', icon: 'chart', desc: '余额、指标、计划概览与投放管理（写操作要二次确认）' },
+      { key: 'marketing', label: '营销', icon: 'sparkle', desc: '商品指标、营销任务、价格竞争力与操作记录（只读）' },
+      { key: 'qualification', label: '资质管理', icon: 'database', desc: '擦亮资质、类目与模板（提交材料要二次确认）' },
+      { key: 'security-center', label: '安全中心', icon: 'shield', desc: '闲气值、违规记录与申诉入口' },
     ],
   },
   {
@@ -360,6 +364,8 @@ function Shell() {
             {page === 'notifications' && <NotificationsPage />}
             {page === 'finance' && <FinancePage />}
             {page === 'promotion' && <PromotionPage />}
+            {page === 'marketing' && <MarketingPage />}
+            {page === 'qualification' && <QualificationPage />}
             {page === 'security-center' && <SecurityCenterPage />}
             {page === 'agents' && <AgentsPage />}
             {page === 'master' && <MasterPage />}
