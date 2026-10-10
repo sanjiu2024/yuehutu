@@ -20,6 +20,18 @@ import { OverviewPage } from './pages/Overview'
 import { AccountsPage } from './pages/Accounts'
 import { ItemsPage } from './pages/Items'
 import { ChatsPage } from './pages/Chats'
+import { OrdersPage } from './pages/Orders'
+import { RefundsPage } from './pages/Refunds'
+import { EvaluationsPage } from './pages/Evaluations'
+import { ComplaintsPage } from './pages/Complaints'
+import { ReturnAddressesPage } from './pages/ReturnAddresses'
+import { SubAccountsPage } from './pages/SubAccounts'
+import { CsRoutingPage } from './pages/CsRouting'
+import { DataOverviewPage } from './pages/DataOverview'
+import { FansPage } from './pages/Fans'
+import { CsDataPage } from './pages/CsData'
+import { ItemTemplatesPage } from './pages/ItemTemplates'
+import { NotificationsPage } from './pages/Notifications'
 import { FinancePage } from './pages/Finance'
 import { PromotionPage } from './pages/Promotion'
 import { SecurityCenterPage } from './pages/SecurityCenter'
@@ -62,6 +74,43 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
       { key: 'accounts', label: '账号', icon: 'user', desc: '扫码登录、账号状态与手动验证', ownHeader: true },
       { key: 'items', label: '商品', icon: 'box', desc: '商品列表、编辑、批量改价与上下架' },
       { key: 'chats', label: '会话', icon: 'chat', desc: '买家会话与人工接管' },
+    ],
+  },
+  {
+    title: '商品',
+    items: [
+      { key: 'item-templates', label: '运费模版', icon: 'box', desc: '运费模版列表与明细（只读）' },
+    ],
+  },
+  {
+    title: '交易',
+    items: [
+      { key: 'orders', label: '订单', icon: 'tag', desc: '买家订单、发货与物流' },
+      { key: 'refunds', label: '退款', icon: 'refresh', desc: '退款申请与处理进度' },
+      { key: 'evaluations', label: '评价', icon: 'checkCircle', desc: '买家评价与回复' },
+      { key: 'complaints', label: '投诉', icon: 'warn', desc: '平台投诉与处理状态' },
+      { key: 'return-addresses', label: '退货地址', icon: 'link', desc: '退货收货地址管理' },
+    ],
+  },
+  {
+    title: '小铺',
+    items: [
+      { key: 'sub-accounts', label: '子账号', icon: 'user', desc: '子账号与权限' },
+      { key: 'cs-routing', label: '客服分流', icon: 'send', desc: '客服分组与分流规则' },
+    ],
+  },
+  {
+    title: '数据',
+    items: [
+      { key: 'data-overview', label: '数据总览', icon: 'chart', desc: '曝光、访问、询单与支付' },
+      { key: 'fans', label: '粉丝数据', icon: 'users', desc: '粉丝增长与活跃' },
+      { key: 'cs-data', label: '客服数据', icon: 'send', desc: '询单响应与服务质量' },
+    ],
+  },
+  {
+    title: '消息',
+    items: [
+      { key: 'notifications', label: '通知中心', icon: 'bell', desc: '平台通知与待办提醒' },
     ],
   },
   {
@@ -297,6 +346,18 @@ function Shell() {
             {page === 'accounts' && <AccountsPage />}
             {page === 'items' && <ItemsPage />}
             {page === 'chats' && <ChatsPage />}
+            {page === 'orders' && <OrdersPage />}
+            {page === 'refunds' && <RefundsPage />}
+            {page === 'evaluations' && <EvaluationsPage />}
+            {page === 'complaints' && <ComplaintsPage />}
+            {page === 'return-addresses' && <ReturnAddressesPage />}
+            {page === 'sub-accounts' && <SubAccountsPage />}
+            {page === 'cs-routing' && <CsRoutingPage />}
+            {page === 'data-overview' && <DataOverviewPage />}
+            {page === 'fans' && <FansPage />}
+            {page === 'cs-data' && <CsDataPage />}
+            {page === 'item-templates' && <ItemTemplatesPage />}
+            {page === 'notifications' && <NotificationsPage />}
             {page === 'finance' && <FinancePage />}
             {page === 'promotion' && <PromotionPage />}
             {page === 'security-center' && <SecurityCenterPage />}

@@ -1,0 +1,608 @@
+# -*- coding: utf-8 -*-
+"""交易组只读路由的契约测试（订单 / 退款 / 评价 / 投诉 / 退货地址）。
+
+**为什么单开一组**：这一组接口最容易犯的四个错 ——
+
+1. 把平台**没给**的字段画成 0（订单金额、退款金额、评价条数）；
+2. 自己给金额换算单位（真机给的是字符串 `"39.90"`，不是分也不是浮点）；
+3. 把 `NO_PERMISSION` / `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（卖家工作台会话才有的
+   权限）当成账号掉线，让用户白扫一次码；
+4. 悄悄**写**平台（发货、同意退款、评价、改价），本项目绝对禁止。
+
+**真机样本**：下面 `ORDER_COUNT` / `SOLD_LIST` / `REFUND_LIST` / `RATE_LIST` 的字段
+与取值来自 2026-10-10 账号 2217970177348 的只读探针
+（`logs/seller_discover/trade_probe.json`），不是编的；两个失败信封同样是真机原文。
+
+跑法（仓库根目录）：
+    cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\\Python310\\python.exe backend\\tests\\test_trade_api.py"
+
+**不打真实闲鱼平台**：协议层用假模块注入（`install_fake_protocol`）。
+"""
+from __future__ import annotations
+
+import sys
+import tempfile
+import types
+import unittest
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from backend.app.api import trade as trade_api  # noqa: E402
+from backend.app.core import db, security  # noqa: E402
+from backend.app.xianyu import trade as trade_proto  # noqa: E402
+from backend.tests.testenv import use_temp_app_dir  # noqa: E402
+
+ACC = 'trade_acc'
+BASE = '/api/trade'
+PATHS = ('orders', 'refunds', 'evaluations', 'complaints', 'addresses')
+
+#: 真机 `mtop.taobao.idle.merchant.order.count`（queryType=ORDER）——字段是
+#: `count` + `queryCode`，**不是** bundle 里前端自己的 title/number/key。
+ORDER_COUNT = {
+    'success': True,
+    'data': {'module': {'countInfoList': [
+        {'count': 2, 'queryCode': 'TRADE_CLOSED'},
+        {'count': 0, 'queryCode': 'SHIPPED'},
+        {'count': 0, 'queryCode': 'NOT_PAY'},
+        {'count': 15, 'queryCode': 'ALL'},
+        {'count': 0, 'queryCode': 'REFUND'},
+        {'count': 9, 'queryCode': 'TRADE_SUCCESS'},
+        {'count': 1, 'queryCode': 'NOT_SHIP'},
+        {'count': 3, 'queryCode': 'SOMETHING_NEW'},
+    ]}},
+    'message': 'SUCCESS::调用成功',
+    'ret': ['SUCCESS::调用成功'],
+}
+
+#: 真机 `mtop.taobao.idle.trade.merchant.sold.get`（第一条，交易关闭）
+SOLD_LIST = {
+    'success': True,
+    'data': {'module': {'ext': {}, 'items': [{
+        'buyerInfoVO': {
+            'address': '山西省大同市平城区新旺街道新旺乡 正德嘉苑2号楼',
+            'buyerId': 1817788280, 'isPrivacy': False, 'name': '王圆圆',
+            'phone': '13353520828',
+            'userIcon': 'http://img.alicdn.com/bao/uploaded/i4/TB2233uw5QnBKNjSZFmXXcApVXa_!!0-mytaobao.jpg',
+            'userNick': '水星有趣的珍珠贝',
+        },
+        'columnVOList': [{
+            'contentVOList': [{'key': {'text': '交易关闭'}}, {}],
+            'name': '发货/退款状态', 'num': 2,
+        }],
+        'commonData': {
+            'buyerApplyModifyAddress': False, 'consignTipsText': [{'text': '未发货'}],
+            'createTime': '2026-10-09 08:29:55', 'finishTime': '2026-10-10 08:30:00',
+            'inRefund': False, 'itemId': 1086671365960, 'orderId': 3317095524016013282,
+            'orderStatus': '交易关闭', 'sellerRateStatus': 5, 'showDetail': True,
+        },
+        'itemVO': {
+            'itemInfoLines': [],
+            'itemPicUrl': 'http://img.alicdn.com/bao/uploaded/i1/O1CN01GTNueXM96pJ2XrKe_!!2217970177348-2-fleamarket.png',
+            'title': '指定商品补货提醒｜库存监控｜尺码颜色关注｜到货通知',
+        },
+        'priceVO': {'auctionPrice': '39.90', 'buyNum': 1, 'confirmFee': '0.00',
+                    'discountFee': '0.00', 'postFee': '0.00', 'refundFee': '0.00',
+                    'totalPrice': '39.90'},
+        'rightVO': {'btnList': [{
+            'buttonDisable': False,
+            'clickEvent': {'data': {'code': 'DELETE_ORDER'}, 'type': 'actionCode',
+                           'utParam': {'arg1': 'DeleteOrder'}},
+            'expanded': True, 'ext': {}, 'name': '删除订单', 'style': 'grey',
+            'tradeAction': 'DELETE_ORDER',
+        }]},
+    }]}},
+    'lastEndRow': 20, 'nextPage': 2, 'totalCount': 15, 'needDecryptKeys': [],
+    'serverTime': 1791605956329,
+    'message': 'SUCCESS::调用成功',
+    'ret': ['SUCCESS::调用成功'],
+}
+
+#: 真机 `mtop.taobao.idle.merchant.refund.list` —— 容器是**双层** `data.data`，
+#: 分页键在信封顶层。
+REFUND_LIST = {
+    'success': True,
+    'data': {'data': {
+        'ext': {'totalRefundFee': '468.90'},
+        'items': [{
+            'buyerInfoVO': {
+                'buyerId': 1817788280,
+                'userIcon': 'https://api.goofish.com/m/userAvatar.action?id=1817788280&suffix=_60x60.jpg&needHttps=1',
+                'userNick': '水星有趣的珍珠贝',
+            },
+            'commonData': {
+                'createTime': '2026-09-29 22:23:30', 'itemId': '1086671365960',
+                'orderId': '3317077308271013282',
+                'orderSimpleRemark': '已退款买家¥10.00',
+                'orderSimpleRemarkRichText': {'data': [{
+                    'content': '已退款买家¥10.00',
+                    'style': {'color': '#999999', 'fontSize': 14}, 'type': 'TEXT'}]},
+                'orderStatus': '未发货退款', 'refundStatus': 5, 'showDetail': True,
+            },
+            'itemVO': {
+                'itemInfoLines': [{'key': '规格', 'value': '其他服务/1-5天/元/次'}],
+                'itemPicUrl': 'http://img.alicdn.com/bao/uploaded/i1/O1CN01GTNueXM96pJ2XrKe_!!2217970177348-2-fleamarket.png',
+                'title': '指定商品补货提醒｜库存监控｜尺码颜色关注｜到货通知',
+            },
+            'priceVO': {'auctionPrice': '39.90', 'buyNum': 1, 'refundFee': '10.00',
+                        'refundFeeView': 'alipays://platformapi/startapp?appId=20000003'},
+            'refundInfoVO': {
+                'csStatus': '不需要客服介入', 'gmtCreate': '2026-10-08 03:41:22',
+                'goodsNeeds': 0, 'inSale': True, 'reason': '其它问题/协商一致退款',
+                'refundAccept': False, 'refundId': '287567835887788280',
+                'refundStatus': '已退款买家¥10.00（待发货）', 'refundType': 1,
+            },
+            'rightVO': {'btnList': [{
+                'clickEvent': {'data': {'url': ''}, 'type': 'url', 'utParam': {}},
+                'code': 'contact', 'name': '联系买家', 'style': {'bgColor': 'yellow'},
+            }]},
+        }],
+    }},
+    'lastEndRow': 20, 'nextPage': 2, 'totalCount': 4, 'needDecryptKeys': [],
+    'serverTime': 1791605956329,
+    'message': 'SUCCESS::调用成功',
+    'ret': ['SUCCESS::调用成功'],
+}
+
+#: 真机 `mtop.taobao.idle.merchant.rate.list`：items 是**订单**，评价在
+#: `rateItemVOList`；本项目账号这一项目前都是空数组。
+RATE_LIST = {
+    'success': True,
+    'data': {'module': {'ext': {}, 'items': [{
+        'merchantBuyerVO': {
+            'address': '辽宁省沈阳市沈北新区虎石台街道辽宁经济职业技术学院',
+            'buyerId': 2222886507942, 'isPrivacy': False, 'name': '1',
+            'phone': '18041364380',
+            'userIcon': 'http://gtms03.alicdn.com/tps/i3/TB1LFGeKVXXXXbCaXXX07tlTXXX-200-200.png',
+            'userNick': 'x***2',
+        },
+        'merchantCommonData': {
+            'buyerApplyModifyAddress': False, 'consignTime': '2026-10-09 03:19:03',
+            'createTime': '2026-10-09 03:01:52', 'finishTime': '2026-10-09 03:22:04',
+            'inRefund': False, 'itemId': 1087247101297, 'orderId': 3316918549013103465,
+            'orderStatus': '交易成功', 'paySuccessTime': '2026-10-09 03:02:57',
+            'sellerRateStatus': 5, 'showDetail': True,
+        },
+        'merchantItemVO': {
+            'itemInfoLines': [],
+            'itemPicUrl': 'http://img.alicdn.com/bao/uploaded/i1/O1CN01Sn32Klmnu6C2XrKe_!!2217970177348-2-fleamarket.png',
+            'title': '我的世界MC开服一条龙｜服务器部署｜整合包定制｜插件模组配置',
+        },
+        'rateItemVOList': [],
+    }]}},
+    'lastEndRow': 20, 'nextPage': 2, 'totalCount': 12,
+    'message': 'SUCCESS::调用成功',
+    'ret': ['SUCCESS::调用成功'],
+}
+
+#: 平台字段名取自 bundle 里的读法（`rateItemVOList[]`），**本项目账号还没有评价**，
+#: 所以这条不是真机样本，只用来锁归一化器的字段映射。
+RATE_WITH_RECORD = {
+    'success': True,
+    'data': {'module': {'items': [{
+        'merchantCommonData': {'orderId': 3316918549013103465, 'itemId': 1087247101297,
+                               'orderStatus': '交易成功', 'sellerRateStatus': 6},
+        'merchantItemVO': {'title': '专拍', 'itemPicUrl': 'https://img.alicdn.com/x.jpg',
+                           'itemInfoLines': []},
+        'merchantBuyerVO': {'buyerId': 2222886507942, 'userNick': 'x***2'},
+        'rateItemVOList': [{
+            'rateId': 123456789, 'rate': '很好', 'main': '卖家很耐心',
+            'feedBack': '谢谢支持', 'buyerMainRateLevel': '好评', 'gmtCreate': 1791605956329,
+            'illegal': False, 'pictCdnUrlList': ['https://img.alicdn.com/a.jpg'],
+            'raterHeadImg': 'https://img.alicdn.com/h.jpg',
+            'serviceTags': ['态度好'], 'seller': {'reply': '欢迎再来'},
+        }],
+    }]}},
+    'message': 'SUCCESS::调用成功',
+    'ret': ['SUCCESS::调用成功'],
+}
+
+#: 真机原文：投诉列表没有权限
+COMPLAIN_DENIED = {'success': False, 'message': 'NO_PERMISSION::用户没有权限',
+                   'ret': ['NO_PERMISSION::用户没有权限']}
+#: 真机原文：退货地址没有权限（卖家工作台会话才有的能力）
+ADDRESS_DENIED = {'success': False,
+                  'message': 'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问',
+                  'ret': ['FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问']}
+
+
+class SessionExpiredError(RuntimeError):
+    """与协议层同名：`common._is_session_expired` 按**类名**认登录态过期。"""
+
+
+class FakeTradeClient:
+    """假协议层：只实现 `mtop`，记录每次调用的 (api, data, v)。"""
+
+    def __init__(self, payloads: Optional[Dict[str, Any]] = None,
+                 errors: Optional[Dict[str, BaseException]] = None):
+        self.payloads = payloads or {}
+        self.errors = errors or {}
+        self.calls: List[Dict[str, Any]] = []
+
+    async def mtop(self, api: str, data: Any = None, v: str = '1.0') -> Any:
+        self.calls.append({'api': api, 'data': data, 'v': v})
+        error = self.errors.get(api)
+        if error is not None:
+            raise error
+        if api not in self.payloads:
+            raise AssertionError(f'假协议层没有准备 {api} 的响应')
+        return self.payloads[api]
+
+    def apis(self) -> List[str]:
+        return [call['api'] for call in self.calls]
+
+    def call_of(self, api: str) -> Dict[str, Any]:
+        for call in self.calls:
+            if call['api'] == api:
+                return call
+        raise AssertionError(f'没有调用 {api}，实际调用: {self.apis()}')
+
+
+def install_fake_protocol(client: FakeTradeClient) -> None:
+    module = types.ModuleType('backend.app.xianyu.client')
+
+    def factory(account_id: str) -> FakeTradeClient:
+        # `common._note_session_expired` 靠 `client.account_id` 找要标记的账号
+        client.account_id = account_id
+        return client
+
+    module.get_client = factory  # type: ignore[attr-defined]
+    module.XianyuClient = type(client)  # type: ignore[attr-defined]
+    sys.modules['backend.app.xianyu.client'] = module
+
+
+def remove_fake_protocol() -> None:
+    sys.modules.pop('backend.app.xianyu.client', None)
+
+
+def seed_account(account_id: str = ACC, cookie: str = 'cookie-ok',
+                 login_state: str = 'active') -> None:
+    db.execute('INSERT OR REPLACE INTO accounts(id, nickname, enabled, auto_reply) '
+               'VALUES(?,?,?,?)', (account_id, f'账号 {account_id}', 1, 1))
+    db.execute('INSERT OR REPLACE INTO account_credentials(account_id, cookie, login_state) '
+               'VALUES(?,?,?)', (account_id, cookie, login_state))
+
+
+def full_client(**overrides: Any) -> FakeTradeClient:
+    payloads = {
+        trade_proto.ORDER_COUNT_API: ORDER_COUNT,
+        trade_proto.ORDER_LIST_API: SOLD_LIST,
+        trade_proto.REFUND_LIST_API: REFUND_LIST,
+        trade_proto.RATE_LIST_API: RATE_LIST,
+        trade_proto.COMPLAIN_LIST_API: COMPLAIN_DENIED,
+        trade_proto.ADDRESS_LIST_API: ADDRESS_DENIED,
+    }
+    payloads.update(overrides)
+    return FakeTradeClient(payloads)
+
+
+class TradePageTest(unittest.TestCase):
+    """共用的脚手架（自挂本模块路由，不依赖 main.py 是否已挂）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        use_temp_app_dir(cls.tmp.name)
+
+    @classmethod
+    def tearDownClass(cls):
+        remove_fake_protocol()
+        db.reset_connection()
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        db.reset_connection()
+        remove_fake_protocol()
+        for table in ('accounts', 'account_credentials', 'operation_logs', 'risk_state'):
+            db.execute(f'DELETE FROM {table}')
+        self.fake = full_client()
+        install_fake_protocol(self.fake)
+        app = FastAPI()
+        app.include_router(trade_api.router)
+        self.app_ctx = TestClient(app)
+        self.client = self.app_ctx.__enter__()
+        self.user_id = int(db.execute(
+            "INSERT INTO users(username, password_hash, is_admin) VALUES('tradeapi','x',1)"))
+        self.headers = {'Authorization': 'Bearer ' + security.issue_token(self.user_id)}
+
+    def tearDown(self):
+        db.execute('DELETE FROM users')
+        self.app_ctx.__exit__(None, None, None)
+
+    # -- 小工具 ----------------------------------------------------------
+
+    def get(self, path: str, query: str = '', headers: Optional[Dict[str, str]] = None):
+        return self.client.get(f'{path}{query}',
+                               headers=self.headers if headers is None else headers)
+
+    def ok_data(self, path: str, query: str = '') -> Dict[str, Any]:
+        resp = self.get(path, query)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertTrue(body.get('success'), body)
+        return body['data']
+
+    def fail(self, path: str, query: str = '', status: int = 400) -> Dict[str, Any]:
+        resp = self.get(path, query)
+        self.assertEqual(resp.status_code, status, resp.text)
+        body = resp.json()
+        self.assertFalse(body.get('success'), body)
+        return body
+
+
+class TradeReadOnlyTest(TradePageTest):
+    """只读边界：五个路由都只有 GET。"""
+
+    def test_all_trade_routes_reject_writes(self):
+        for name in PATHS:
+            path = f'{BASE}/{ACC}/{name}'
+            for method in ('post', 'put', 'patch', 'delete'):
+                resp = getattr(self.client, method)(path, headers=self.headers)
+                self.assertEqual(resp.status_code, 405, f'{method} {path} → {resp.status_code}')
+
+    def test_protocol_layer_refuses_write_apis(self):
+        for api in trade_proto.WRITE_APIS:
+            with self.assertRaises(trade_proto.ReadOnlyViolation):
+                trade_proto.assert_read_only(api)
+
+    def test_requests_require_login(self):
+        resp = self.get(f'{BASE}/{ACC}/orders', headers={})
+        self.assertIn(resp.status_code, (401, 403), resp.text)
+
+
+class TradeOrdersTest(TradePageTest):
+    """订单：真机形状透传 + 请求参数形状 + 页签计数。"""
+
+    def setUp(self):
+        super().setUp()
+        seed_account()
+
+    def test_orders_pass_the_real_frame_through(self):
+        data = self.ok_data(f'{BASE}/{ACC}/orders')
+        self.assertEqual(data['api'], trade_proto.ORDER_LIST_API)
+        self.assertEqual(data['source'], 'platform')
+        self.assertEqual(data['page'], 1)
+        self.assertEqual(data['page_size'], 10)
+        self.assertTrue(data['fetched_at'])
+        order = data['orders'][0]
+        self.assertEqual(order['order_id'], '3317095524016013282')
+        self.assertEqual(order['item_id'], '1086671365960')
+        self.assertEqual(order['order_status'], '交易关闭')
+        self.assertEqual(order['buyer']['nick'], '水星有趣的珍珠贝')
+        self.assertEqual(order['buyer']['name'], '王圆圆')
+        self.assertEqual(order['buyer']['user_id'], '1817788280')
+        self.assertEqual(order['item']['title'], '指定商品补货提醒｜库存监控｜尺码颜色关注｜到货通知')
+        self.assertEqual(order['times']['create_time'], '2026-10-09 08:29:55')
+        self.assertEqual(order['times']['finish_time'], '2026-10-10 08:30:00')
+        self.assertEqual(order['consign_tips'], ['未发货'])
+        self.assertEqual(order['columns'][0]['name'], '发货/退款状态')
+        self.assertEqual(order['columns'][0]['values'][0]['text'], '交易关闭')
+        self.assertEqual(order['buttons'][0]['name'], '删除订单')
+        self.assertEqual(order['buttons'][0]['code'], 'DELETE_ORDER')
+        self.assertFalse(order['in_refund'])
+        self.assertEqual(order['seller_rate_status'], 5)
+        self.assertEqual(data['paging']['total_count'], 15)
+        self.assertEqual(data['paging']['next_page'], 2)
+
+    def test_money_stays_the_string_the_platform_sent(self):
+        price = self.ok_data(f'{BASE}/{ACC}/orders')['orders'][0]['price']
+        self.assertEqual(price['auction_price'], '39.90')
+        self.assertEqual(price['total_price'], '39.90')
+        self.assertEqual(price['post_fee'], '0.00')
+        self.assertNotIsInstance(price['auction_price'], float)
+        self.assertEqual(price['buy_num'], 1)
+
+    def test_order_request_shape_matches_the_bundle(self):
+        self.ok_data(f'{BASE}/{ACC}/orders?page=2&size=20')
+        call = self.fake.call_of(trade_proto.ORDER_LIST_API)
+        self.assertEqual(call['data'], {'pageNumber': 2, 'rowsPerPage': 20})
+        self.assertEqual(call['v'], '1.0')
+
+    def test_include_counts_costs_one_more_call(self):
+        data = self.ok_data(f'{BASE}/{ACC}/orders?include_counts=1')
+        self.assertEqual(self.fake.apis(),
+                         [trade_proto.ORDER_LIST_API, trade_proto.ORDER_COUNT_API])
+        self.assertEqual(self.fake.call_of(trade_proto.ORDER_COUNT_API)['data'],
+                         {'queryType': 'ORDER'})
+        self.assertEqual(data['counts']['ALL'], 15)
+        self.assertEqual(data['counts']['TRADE_SUCCESS'], 9)
+        self.assertEqual(data['tabs'][0]['label'], '交易关闭')
+        self.assertIsNone(data['tabs'][-1]['label'])
+
+    def test_counts_are_not_requested_by_default(self):
+        self.ok_data(f'{BASE}/{ACC}/orders')
+        self.assertEqual(self.fake.apis(), [trade_proto.ORDER_LIST_API])
+
+    def test_missing_fields_are_null_and_never_zero(self):
+        frame = {'success': True, 'data': {'module': {'items': [{'commonData': {
+            'orderId': 1, 'orderStatus': '待发货'}}]}}}
+        self.fake.payloads[trade_proto.ORDER_LIST_API] = frame
+        order = self.ok_data(f'{BASE}/{ACC}/orders')['orders'][0]
+        self.assertEqual(order['order_id'], '1')
+        self.assertIsNone(order['price']['auction_price'])
+        self.assertIsNone(order['price']['buy_num'])
+        self.assertIsNone(order['columns'])
+        self.assertIsNone(order['buttons'])
+        self.assertIsNone(order['buyer'])
+        self.assertIsNone(order['in_refund'])
+        self.assertNotEqual(order['price']['auction_price'], 0)
+
+
+class TradeRefundsTest(TradePageTest):
+    """退款：双层容器 `data.data` + 顶层分页 + `ext.totalRefundFee`。"""
+
+    def setUp(self):
+        super().setUp()
+        seed_account()
+
+    def test_refunds_read_the_double_nested_container(self):
+        data = self.ok_data(f'{BASE}/{ACC}/refunds')
+        self.assertEqual(data['api'], trade_proto.REFUND_LIST_API)
+        refund = data['refunds'][0]
+        self.assertEqual(refund['refund_id'], '287567835887788280')
+        self.assertEqual(refund['order_id'], '3317077308271013282')
+        self.assertEqual(refund['order_status'], '未发货退款')
+        self.assertEqual(refund['refund_status'], 5)
+        self.assertEqual(refund['refund_status_text'], '已退款买家¥10.00（待发货）')
+        self.assertEqual(refund['reason'], '其它问题/协商一致退款')
+        self.assertEqual(refund['cs_status'], '不需要客服介入')
+        self.assertEqual(refund['remark'], '已退款买家¥10.00')
+        self.assertEqual(refund['refund_time'], '2026-10-08 03:41:22')
+        self.assertEqual(refund['price']['refund_fee'], '10.00')
+        self.assertEqual(refund['item']['info_lines'][0]['key'], '规格')
+        self.assertEqual(data['total_refund_fee'], '468.90')
+        self.assertEqual(data['paging']['total_count'], 4)
+        self.assertFalse(refund['refund_accept'])
+        self.assertTrue(refund['in_sale'])
+
+    def test_refund_request_shape_matches_the_bundle(self):
+        self.ok_data(f'{BASE}/{ACC}/refunds')
+        call = self.fake.call_of(trade_proto.REFUND_LIST_API)
+        self.assertEqual(call['data'], {'pageNumber': 1, 'rowsPerPage': 10,
+                                        'queryType': 'refund'})
+        self.assertEqual(call['v'], '1.0')
+
+
+class TradeEvaluationsTest(TradePageTest):
+    """评价：`rateItemVOList` 为空就是没有评价，不许画 0 条。"""
+
+    def setUp(self):
+        super().setUp()
+        seed_account()
+
+    def test_empty_rate_list_is_reported_as_no_rate(self):
+        evaluation = self.ok_data(f'{BASE}/{ACC}/evaluations')['evaluations'][0]
+        self.assertFalse(evaluation['has_rate'])
+        self.assertIsNone(evaluation['rates'])
+        self.assertEqual(evaluation['order_id'], '3316918549013103465')
+        self.assertEqual(evaluation['order_status'], '交易成功')
+        self.assertEqual(evaluation['buyer']['nick'], 'x***2')
+        self.assertEqual(evaluation['item']['title'],
+                         '我的世界MC开服一条龙｜服务器部署｜整合包定制｜插件模组配置')
+
+    def test_rate_records_are_mapped_field_by_field(self):
+        self.fake.payloads[trade_proto.RATE_LIST_API] = RATE_WITH_RECORD
+        evaluation = self.ok_data(f'{BASE}/{ACC}/evaluations')['evaluations'][0]
+        self.assertTrue(evaluation['has_rate'])
+        record = evaluation['rates'][0]
+        self.assertEqual(record['rate_id'], '123456789')
+        self.assertEqual(record['rate'], '很好')
+        self.assertEqual(record['main'], '卖家很耐心')
+        self.assertEqual(record['feedback'], '谢谢支持')
+        self.assertEqual(record['level'], '好评')
+        self.assertEqual(record['pictures'], ['https://img.alicdn.com/a.jpg'])
+        self.assertEqual(record['service_tags'], ['态度好'])
+        self.assertFalse(record['illegal'])
+
+    def test_evaluation_request_shape_matches_the_bundle(self):
+        self.ok_data(f'{BASE}/{ACC}/evaluations')
+        call = self.fake.call_of(trade_proto.RATE_LIST_API)
+        self.assertEqual(call['data'], {'pageNumber': 1, 'rowsPerPage': 10,
+                                        'queryType': 'RATE'})
+        self.assertEqual(call['v'], '1.0')
+
+
+class TradePlatformFailureTest(TradePageTest):
+    """平台级失败：如实报错，绝不返回空列表假装成功。"""
+
+    def setUp(self):
+        super().setUp()
+        seed_account()
+
+    def test_complaints_permission_error_is_a_platform_error(self):
+        body = self.fail(f'{BASE}/{ACC}/complaints', status=502)
+        self.assertEqual(body['code'], 'protocol_error')
+        self.assertIn('NO_PERMISSION', body['platform_errors']['explain'])
+        self.assertEqual(body['platform_errors']['api'], trade_proto.COMPLAIN_LIST_API)
+        self.assertIn('NO_PERMISSION', body['message'])
+
+    def test_addresses_unauthorized_is_a_platform_error(self):
+        body = self.fail(f'{BASE}/{ACC}/addresses', status=502)
+        self.assertEqual(body['code'], 'protocol_error')
+        self.assertIn('FAIL_BIZ_IDLE_USER_UNAUTHORIZED',
+                      body['platform_errors']['explain'])
+
+    def test_address_request_sends_no_data(self):
+        self.fail(f'{BASE}/{ACC}/addresses', status=502)
+        call = self.fake.call_of(trade_proto.ADDRESS_LIST_API)
+        self.assertIsNone(call['data'])
+        self.assertEqual(call['v'], '1.0')
+
+    def test_failure_without_message_still_explains_itself(self):
+        self.fake.payloads[trade_proto.ORDER_LIST_API] = {'success': False}
+        body = self.fail(f'{BASE}/{ACC}/orders', status=502)
+        self.assertTrue(body['platform_errors']['explain'])
+
+    def test_empty_platform_body_is_not_treated_as_data(self):
+        self.fake.payloads[trade_proto.ORDER_LIST_API] = {'success': True, 'data': {}}
+        data = self.ok_data(f'{BASE}/{ACC}/orders')
+        self.assertEqual(data['orders'], [])
+        self.assertIsNone(data['paging']['total_count'])
+
+
+class TradeCredentialTest(TradePageTest):
+    """登录态：缺 Cookie / need_relogin 一律 409，且一次平台都不打。"""
+
+    def test_missing_cookie_is_409_and_never_calls_platform(self):
+        seed_account(cookie='')
+        body = self.fail(f'{BASE}/{ACC}/orders', status=409)
+        self.assertEqual(body['code'], 'verification_required')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_need_relogin_is_409(self):
+        seed_account(login_state='need_relogin')
+        body = self.fail(f'{BASE}/{ACC}/refunds', status=409)
+        self.assertEqual(body['code'], 'verification_required')
+        self.assertEqual(body['login_state'], 'need_relogin')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_unknown_account_is_404(self):
+        body = self.fail(f'{BASE}/nobody/orders', status=404)
+        self.assertEqual(body['code'], 'not_found')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_session_expired_is_reported_as_need_relogin(self):
+        seed_account()
+        self.fake.errors[trade_proto.ORDER_LIST_API] = SessionExpiredError(
+            'FAIL_SYS_SESSION_EXPIRED::Session过期')
+        body = self.fail(f'{BASE}/{ACC}/orders', status=409)
+        self.assertEqual(body['code'], 'verification_required')
+        row = db.query_one('SELECT login_state FROM account_credentials WHERE account_id = ?',
+                           (ACC,))
+        self.assertEqual(row['login_state'], 'need_relogin')
+
+    def test_risk_control_is_a_protocol_error_with_explain(self):
+        seed_account()
+        self.fake.errors[trade_proto.REFUND_LIST_API] = RuntimeError('FAIL_SYS_USER_VALIDATE')
+        body = self.fail(f'{BASE}/{ACC}/refunds', status=502)
+        self.assertEqual(body['code'], 'protocol_error')
+        self.assertIn('FAIL_SYS_USER_VALIDATE', body['platform_errors']['explain'])
+
+
+class TradePagingTest(TradePageTest):
+    """分页参数校验：一律 invalid_fields 信封，不落 422 裸 body。"""
+
+    def setUp(self):
+        super().setUp()
+        seed_account()
+
+    def test_bad_paging_is_rejected_before_calling_platform(self):
+        for query in ('?page=0', '?size=0', '?size=51', '?page=abc', '?size=x'):
+            body = self.fail(f'{BASE}/{ACC}/orders{query}', status=400)
+            self.assertEqual(body['code'], 'invalid_fields', query)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_page_size_upper_bound_is_50(self):
+        self.ok_data(f'{BASE}/{ACC}/orders?size=50')
+        self.assertEqual(self.fake.call_of(trade_proto.ORDER_LIST_API)['data'],
+                         {'pageNumber': 1, 'rowsPerPage': 50})
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)

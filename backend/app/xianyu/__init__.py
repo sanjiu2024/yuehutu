@@ -24,6 +24,8 @@ __all__ = [
     'risk',
     'mtop',
     'client',
+    'im',
+    'trade',
     'stealth',
     'captcha',
     'login',

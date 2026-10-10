@@ -1,0 +1,239 @@
+# 数据组（数据总览 / 粉丝数据 / 客服数据）只读契约
+
+> 本文件是 `backend/app/xianyu/datacenter.py` / `backend/app/services/datacenter.py` /
+> `backend/app/api/datacenter.py` 的对外契约，**只覆盖只读能力**。
+>
+> 证据来源（2026-10-10，账号 `2217970177348`，全部可复核）：
+> - **真机只读探针**（2 轮，共 12 次直连 mtop，2.5s 间隔，命中风控词立即中止）：
+>   `logs/seller_discover/datacenter_probe.json`、`logs/seller_discover/datacenter_probe2.json`；
+>   脚本 `logs/seller_discover/probe_datacenter.py`、`logs/seller_discover/probe_datacenter2.py`。
+> - **官方数据微应用 bundle**（静态 CDN，零风控）：
+>   `https://g.alicdn.com/idle-pc/idle-seller-data/0.0.11/js/main.js`（4,168,486 字节），
+>   本地副本 `logs/seller_discover/datacenter_index.html` + `datacenter_main.js`，
+>   从里面抽出 56 个 mtop token（调用形态 `xge({api, v:'1.0', data:{...}})`），
+>   其中 **46 个是真 API 名**（`mtop.alibaba.*` 44 + `mtop.taobao.*` 2；datacompass 族 39），
+>   另 10 个是 `mtop.config.*` / `mtop.request` 这类模块路径。
+> - **契约测试**：`backend/tests/test_datacenter_api.py`（44 用例，样本即真机原文形状）。
+
+## 0. 一句话结论
+
+`get.begin.time` **能读**；`datacompass` 的 `singleuser` / `fans` / `cs` 族对**这个账号
+一律无权限**——所以三个页面如实返回 `null`（前端显示「-」），**不是**本项目的 bug：
+
+| 能力 | 真机结果 | 结论 |
+| --- | --- | --- |
+| 数据起始日 `get.begin.time` | `{"code":"success","data":"20260201","msg":"成功"}` | 可读 |
+| 数据总览 `singleuser.browse.summary` | `FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问` | **无权限** |
+| 数据总览 `singleuser.item.summary` | 同上 | **无权限** |
+| 粉丝数据 `fans.summary` | 同上（不给 `dateType` 也一样） | **无权限** |
+| 客服数据 `cs.overview.summary` | 不给 `dateType` → `FAIL_SYS_BIZPARAM_MISSED::缺少业务参数dateType`；给了 → 无权限 | **`dateType` 必填 + 无权限** |
+
+两条口径，缺一不可：
+
+1. **平台没给的指标是 `null`，不是 0**。画成 0 用户会以为「昨天真的没人看」；
+   只有平台**真的**返回 0 时才原样保留 0（`0` 与 `null` 是两件事，测试各锁一条）。
+2. **`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 不是掉线**：这类失败**不写** `need_relogin`，
+   用户不会被逼着重新扫码。只有 `SessionExpiredError`（`FAIL_SYS_SESSION_EXPIRED`）
+   才回写 `need_relogin` 并给 409。
+
+## 1. 已实现（只读）
+
+### 1.1 HTTP
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/datacenter/{account_id}/overview` | 数据总览：曝光 / 访问 / 浏览 / 在线商品 / 询单 |
+| GET | `/api/datacenter/{account_id}/fans` | 粉丝数据：总数 / 新增 / 流失 / 活跃 / 订单 / 买家 + 画像洞察 |
+| GET | `/api/datacenter/{account_id}/customer-service` | 客服数据：询单人数 / 询单量 / 3 分钟响应率 / 平均响应时长 / 未回复 / 满意度 |
+
+- 三个端点都要求登录（`Depends(current_user)`），响应走全局信封
+  `{success: true, data: {...}}` / `{success: false, message, code, login_state?}`。
+- Query：`start`、`end`，都是 `YYYYMMDD`；缺省为「今天往前 7 天」（`start=今天-6`、`end=今天`）。
+  非法值（`2026-10-04` / 开始晚于结束 / 位数不对 / 非数字）一律 `400 invalid_fields`，
+  且**一次平台都不打**。
+- 状态码由 `common.FAIL_STATUS` 决定：`invalid_fields`→400、`not_found`→404、
+  `verification_required`→409（登录态过期，附 `login_state: "need_relogin"`）、
+  `xianyu_not_ready`→503（协议层未就绪）、`protocol_error`→502。
+- **没有任何写方法**：POST/PUT/PATCH/DELETE 一律 405（`test_routes_are_read_only` 锁死）。
+- 挂载：`backend/app/main.py` 的 `ROUTE_MODULES` 已含 `datacenter`（Lead 加的行）。
+
+### 1.2 每个响应都带
+
+`account_id`、`kind`（`overview` / `fans` / `customer_service`）、
+`period: {from, to}`（实际请求区间）、`metrics`（见 §2）、
+`begin_time`（平台给的数据起始日，认不出为 `null`）、
+`real_date_range`（平台回的**真实**区间，`extendInfo.realDateRange`，认不出为 `null`）、
+`warnings: []`（逐接口失败的人话解释）、`source: "platform"`、
+`fetched_at`（`YYYY-MM-DD HH:MM:SS`，UTC）。
+
+`kind == 'fans'` 时另有 `insights`（画像列表，认不出为 `null`）。
+响应里出现「像指标但一个别名都没命中」的字段名时，另有 `unrecognized_keys`（最多 8 个）——
+这是**字段名猜错时的自证**，不是错误。
+
+## 2. 指标键（前端只能依赖这些键）
+
+平台没给的键**也一定出现**，值为 `null`。
+
+**`overview`（9 个）**：`exposure`（曝光次数）、`exposure_visitors`（曝光人数）、
+`visits`（商品访问次数）、`visit_visitors`（访问人数）、`browse`（浏览次数）、
+`browse_visitors`（浏览人数）、`online_items`（在线商品数）、`inquiry_visitors`（询单人数）、
+`inquiry_reply_rate_3min`（3 分钟询单响应率，平台原样百分比如 `33.33`）。
+
+**`fans`（6 个）**：`fans_total`、`fans_new`、`fans_lost`、`fans_active`、
+`fans_orders`、`fans_buyers`。
+
+**`customer_service`（6 个）**：`inquiry_visitors`、`inquiry_count`、`reply_rate_3min`、
+`avg_reply_seconds`（秒）、`unreplied_count`、`satisfaction`。
+
+官方页面对照值（账号 `2217970177348` 的**官方页面**上显示的当期数字，用于有权限账号复验时对账）：
+商品访问次数 124 / 访问人数 47 / 曝光次数 1971 / 曝光人数 1298 / 浏览次数 97 / 浏览人数 45 /
+在线商品数 45 / 询单人数 8 / 3 分钟询单响应率 33.33%。真机接口对这个账号全部无权限，
+所以这组数字**没有**被本项目接口取到过，属于「待有权限账号复验」。
+
+## 3. 协议层（mtop）
+
+| 用途 | mtop 名 | 入参 |
+| --- | --- | --- |
+| 数据起始日 | `mtop.alibaba.idle.seller.datacompass.get.begin.time` | 无 |
+| 总览（曝光/访问/浏览） | `mtop.alibaba.idle.seller.pc.datacompass.singleuser.browse.summary` | `dateType` + `selectedSellerId`（+ 自定义区间时的 `ms`/`date`） |
+| 总览（商品维度） | `...pc.datacompass.singleuser.item.summary` | 同上 |
+| 粉丝概览 | `...pc.datacompass.fans.summary` | 同上 |
+| 粉丝画像 | `...pc.datacompass.fans.insights.query` | 同上 |
+| 客服概览 | `...pc.datacompass.cs.overview.summary` | 同上 |
+
+入参由 `date_data(start, end, seller_id)` 构造：**两头都不给**才用 `{'dateType': 'recent1d'}`；
+只要给了 `start` 或 `end`（**单日 `start == end` 也算**）就切 `dateType='month'`
+并加 `ms=start`、`date=[start, end]`，缺哪一头用另一头顶。
+**理由**：只发 `recent1d` 平台只能回「今天」，而 `period` 却标成用户要的那天——对外撒谎。
+拼法与官方 bundle 里 `singleuser.browse.summary` / `flow.detail` 的写法一致。
+服务层 `_date_pair` 永远会给出一对日期（缺省补「今天往前 7 天」），所以**经 HTTP 的
+请求实际总是带日期**，`recent1d` 只在协议层被裸调用时出现。
+`dateType` **必填**——真机上不给直接 `FAIL_SYS_BIZPARAM_MISSED`。
+
+字段名别名表 `METRIC_ALIASES` 是**按官方口径假设**的（真机拿不到有权限账号的响应），
+所以：认不出 → `null` + 进 `unrecognized_keys`，**绝不猜值、绝不兜底 0**。
+
+## 4. 真机原始片段（逐字）
+
+```
+# logs/seller_discover/datacenter_probe.json
+get.begin.time   mtop.alibaba.idle.seller.datacompass.get.begin.time
+  ret: ["SUCCESS::调用成功"]
+  data_raw: {"code": "success", "data": "20260201", "msg": "成功"}
+
+browse.summary   mtop.alibaba.idle.seller.pc.datacompass.singleuser.browse.summary
+  data: {"dateType": "recent1d"}
+  error: XianyuError: MTOP 调用失败 [mtop.alibaba.idle.seller.pc.datacompass.singleuser.browse.summary]: FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问
+
+item.summary     mtop.alibaba.idle.seller.pc.datacompass.singleuser.item.summary
+  data: {"dateType": "recent1d"}
+  error: ... FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问
+
+seller.summary   mtop.alibaba.idle.seller.pc.datacompass.singleuser.seller.summary
+  data: {"dateType": "recent1d"}
+  error: ... FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问
+
+repurchase.summary  mtop.alibaba.idle.seller.pc.datacompass.singleuser.repurchase.summary
+  data: {"dateType": "recent1d"}
+  error: ... FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问
+
+flow.detail      mtop.alibaba.idle.seller.pc.datacompass.flow.detail
+  data: {"dateType": "recent1d"}
+  error: ... FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问
+
+fans.summary     mtop.alibaba.idle.seller.pc.datacompass.fans.summary
+  data: {}
+  error: ... FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问
+
+cs.overview.summary  mtop.alibaba.idle.seller.pc.datacompass.cs.overview.summary
+  data: {}
+  error: ... FAIL_SYS_BIZPARAM_MISSED::缺少业务参数dateType
+
+merchant.info.query  mtop.alibaba.idle.seller.pc.datacompass.merchant.info.query
+  error: ... FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问
+```
+
+```
+# logs/seller_discover/datacenter_probe2.json（第二轮：带参数复验）
+browse.summary+seller        data: {"dateType": "recent1d", "selectedSellerId": "2217970177348"}
+  error: ... FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问
+cs.overview.summary+dateType data: {"dateType": "recent1d"}
+  error: ... FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问   # 补上 dateType 后，参数错变成权限错
+fans.summary+dateType        data: {"dateType": "recent1d"}
+  error: ... FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问
+```
+
+## 5. 失败时的行为
+
+- **部分接口失败**：其它接口的指标照给，失败的那个贡献 `null`，并在 `warnings` 里说人话
+  （**只用中文业务名**：数据总览 / 商品数据 / 粉丝数据 / 粉丝画像 / 客服数据，不漏
+  `overview` 这种内部调用名）：无权限 → 「平台拒绝访问数据总览接口：这个账号没有
+  「数据」权限，对应指标显示 -。换个有数据权限的卖家账号再试。」；其它 → 「平台数据
+  总览接口调用失败：<原文>，对应指标显示 -。」**不是**一屏「-」就完事——根因必须能看见。
+- **全部接口都失败**：分两种。
+  * **全是「无权限」**（真机现状）：**不算致命**，照样 200 + 一屏 `null` + 每页一句人话。
+    理由：`fans` 只有 2 个调用、`cs` 只有 1 个，按「全坏即抛」这两个页面会**永远** 502，
+    用户连「这个账号没有数据权限」都看不到。
+  * **含其它错误**：502 `protocol_error`，`message` 带平台原文（如 `...缺少业务参数dateType`）；
+    混合失败时 **SessionExpired 优先**于业务错（它要触发 409 + 回写 `need_relogin`，
+    被排在前面的业务错吞掉的话，掉线的账号界面还显示已登录）。
+- **协议层「成功但空着手」**（结构变了 / 别名全崩）：一律 502 `protocol_error`，
+  **不是** 200 + 一屏 `-` 让用户以为今天真的没人来。三种形状都会被拦：
+  `metrics` 不是 dict、`metrics` 是 `{}`（`{}` 是 dict，`isinstance` 挡不住，单独判）、
+  `metrics` 缺本页契约键（报「数据组协议层缺指标字段：…」）。
+  契约键清单**以协议模块为唯一真相**（`overview`→`OVERVIEW_METRICS`、`fans`→`FANS_METRICS`、
+  `customer_service`→`CS_METRICS`，经 `getattr` 取），服务层不抄第二份——抄了就会和
+  `METRIC_ALIASES` 一起漂移；协议模块取不到时退回只判「空 dict」。
+- **登录态过期**：409 `verification_required` + `login_state: "need_relogin"`，
+  并回写 `account_credentials.login_state`（见 §6 的 `_BoundProtocol`）。
+- **缓存**：进程内 `_CACHE`，键 `(kind, account_id, start, end)`，TTL 300 秒，上限 64 条
+  （满了淘汰最旧的一条），**只缓存成功结果**（失败不缓存，否则用户重试也看不到变化）；
+  不落库。**读在建客户端之前**：命中缓存直接返回，既不付建客户端的代价，本地登录态变脏
+  也不会把 5 分钟内的成功结果盖成 409。
+
+## 6. 实现要点（为什么这么做）
+
+- 协议层用「模块级 async 函数 + 调用方传 `client`」而不是往 `xianyu/client.py` 加方法：
+  该文件是冻结文件，且数据组接口名/入参/响应结构与 `item_stats` 完全不同族。
+- `_BoundProtocol`（`services/datacenter.py`）：把协议模块与 client 绑在一起再交给
+  `common.call_method`。**理由**：`call_method` 在登录态过期时会用**第一个参数**去回写
+  `need_relogin`（读它的 `cookie_id` / `account_id`）；直接传协议模块的话模块没有账号身份，
+  掉线就写不回库——真机表现是「协议报 Session过期，界面还显示已登录」。
+  转发方向：**协议函数**转发到模块，**账号身份**只从 client 上取
+  `cookie_id` / `account_id` / `persist_account_id`（真 `XianyuClient` **没有** `account_id`
+  属性，必须退回 `persist_account_id`，否则恒为 `''`、回写被静默跳过）；client 的其它属性
+  （如 `cookie_str`）不转发。
+- `_collect` 逐接口容错：只有**全坏**才抛异常，抛哪个看**严重度**——SessionExpired 优先
+  （要触发 409 + 回写 `need_relogin`），其次取调用顺序里的第一个；抛的都是**原始异常**
+  （类名/原文保留），好让 `common.call_failed` 认出登录态过期并翻对信封。
+  例外：**全是「无权限」不抛**，见 §5。
+- `_collect` 的 label 就是页内身份：`raw` **只按 label 写**，取 `real_date_range` /
+  `suspect_keys` 时必须用本页标签（总览页 `overview`/`items`、粉丝页 `fans`、客服页 **`cs`**）。
+  客服页曾误读 `raw['overview']`，导致 `real_date_range` 恒 `None`、别名认错时也没有
+  `unrecognized_keys` 自证。
+- 协议层返回的裸字符串也能认：`_mtop` 会剥掉外层信封（`result.get('data')`），
+  所以 `begin.time` 回来的是 `'20260201'` 这种**裸日期**，`_begin_from` 两种形状都要吃。
+
+## 7. 跑法与未验证项
+
+```bash
+# 仓库根目录
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\test_datacenter_api.py"
+# 或
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
+```
+
+**未验证（需要另一个有「数据」权限的卖家账号，或有权限账号的真机响应）**：
+
+1. 有权限时 `browse.summary` / `item.summary` / `fans.summary` / `cs.overview.summary`
+   的**真实响应字段名**——`METRIC_ALIASES` 目前是假设的；认不出会进 `unrecognized_keys`，
+   届时按它补别名即可（不需要改契约的键名）。
+2. **⚠ 运行期风险（当前最大）**：服务层 `_date_pair` 永远补全两端日期，所以 **HTTP 入口
+   发出的每个请求都是 `dateType='month'` + `ms` + `date=[d1,d2]`**，而真机只验过
+   `{"dateType":"recent1d"}`（§4）。若平台不接受 `month` 形态，三个页面会一起 502/全 null。
+   复验法（对照法）：拿有权限账号打一次 `month` 形态，错误从 `FAIL_SYS_BIZPARAM_MISSED`
+   变成 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 就说明**参数被接受了**、只是没权限（参考 §4 里
+   `cs.overview.summary` 补 `dateType` 前后的对照）。
+3. `fans.insights.query` 的返回结构（画像列表埋在哪个键下）。
+4. 「字段名猜对了但平台回了**字符串数字**」时 `find_number` 判 `None` 且**不进**
+   `unrecognized_keys`——用户看到的和无权限一模一样，自证机制不会提示。

@@ -1,0 +1,225 @@
+/*
+ * 通知中心样式（前缀 `nt-`）。只用 `styles.css` 的令牌变量与既有公共 class（`.card`/`.badge`/
+ * `.btn`/`.notice`/`.field`），**不重定义任何既有选择器、不写死颜色** —— 浅色主题自动跟随。
+ * 页面本身复用了 `./Orders` 里的 `.tr-head` / `.tr-raw`（那两个在 trade.css 里，随 Orders 一起加载）。
+ */
+
+.nt-head {
+  align-items: center;
+}
+
+.nt-head h3 {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-1);
+  font-size: var(--fs-20);
+}
+
+.nt-head p {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-12);
+  line-height: 1.6;
+}
+
+/* 账号条 */
+.nt-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+
+.nt-field {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-12);
+  color: var(--text-dim);
+}
+
+.nt-field select {
+  min-width: 180px;
+}
+
+.nt-readonly {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 2px var(--sp-2);
+  font-size: var(--fs-11);
+  color: var(--text-mute);
+  background: var(--muted-soft);
+  border: 1px solid var(--muted-line);
+  border-radius: var(--radius-pill);
+}
+
+/* 三个计数卡 */
+.nt-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+
+.nt-stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.nt-stat > span {
+  font-size: var(--fs-12);
+  color: var(--text-dim);
+}
+
+.nt-stat b {
+  font-size: var(--fs-20);
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 拿不到的计数：不补 0，样式上也和真数字区分开 */
+.nt-stat b.nt-na {
+  color: var(--text-mute);
+}
+
+.nt-stat em {
+  font-style: normal;
+  font-size: var(--fs-11);
+  color: var(--text-mute);
+  line-height: 1.5;
+}
+
+/* 平台 / 后端给的 warning 列表 */
+.nt-warn {
+  margin: var(--sp-1) 0 0;
+  padding-left: 18px;
+}
+
+.nt-warn li {
+  line-height: 1.7;
+  font-size: var(--fs-12);
+}
+
+/* 面板 */
+.nt-panel {
+  margin-bottom: var(--sp-3);
+}
+
+.nt-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+}
+
+.nt-panel-head h4 {
+  margin: 0;
+  font-size: var(--fs-14);
+  color: var(--text);
+}
+
+.nt-note {
+  font-size: var(--fs-11);
+  color: var(--text-mute);
+  line-height: 1.6;
+}
+
+/* 渠道卡片 */
+.nt-channels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--sp-3);
+}
+
+.nt-channel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.nt-channel-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.nt-channel-head strong {
+  font-size: var(--fs-13);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 24ch;
+}
+
+.nt-time {
+  margin-left: auto;
+  font-size: var(--fs-11);
+  color: var(--text-mute);
+}
+
+.nt-body {
+  margin: 0;
+  font-size: var(--fs-12);
+  color: var(--text-dim);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+/* 空态：本页的「空」都带原因，不冒充成「你没有通知」 */
+.nt-empty {
+  padding: var(--sp-4);
+  text-align: center;
+  background: var(--panel-2);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.nt-empty-title {
+  margin: 0 0 var(--sp-1);
+  font-size: var(--fs-13);
+  color: var(--text);
+}
+
+.nt-empty-desc {
+  margin: 0;
+  font-size: var(--fs-12);
+  color: var(--text-dim);
+  line-height: 1.7;
+}
+
+.nt-pager {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+@media (max-width: 820px) {
+  .nt-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .nt-channel-head strong {
+    max-width: 100%;
+  }
+
+  .nt-time {
+    margin-left: 0;
+  }
+}

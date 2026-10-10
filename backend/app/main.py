@@ -53,6 +53,13 @@ ROUTE_MODULES: List[str] = [
     'finance',
     'promotion',
     'security_center',
+    # 官方卖家工作台复刻（只读）：交易组 / 小铺组 / 通知中心 / 数据组 / 运费模版。
+    # 前缀互不重叠，顺序无所谓。
+    'trade',
+    'shop',
+    'notify',
+    'datacenter',
+    'item_templates',
 ]
 
 PLACEHOLDER = """<!doctype html>

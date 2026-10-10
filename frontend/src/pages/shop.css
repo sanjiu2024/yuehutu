@@ -1,0 +1,198 @@
+/**
+ * 小铺组页面样式（子账号管理 / 客服分流共用）。
+ * 只依赖 styles.css 的令牌变量，不新增全局 class。
+ */
+
+.sh-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.sh-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 220px;
+}
+
+.sh-label {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.sh-spacer {
+  flex: 1;
+}
+
+.sh-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.sh-head-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.sh-count {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-dim);
+}
+
+.sh-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.sh-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 32px 12px;
+  text-align: center;
+}
+
+.sh-empty-ico {
+  color: var(--text-mute);
+}
+
+.sh-empty-title {
+  font-weight: 600;
+}
+
+.sh-empty-desc {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.sh-mono {
+  font-variant-numeric: tabular-nums;
+}
+
+.sh-extra {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.sh-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.sh-muted {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.sh-ico {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* ---- 客服分流 ---- */
+
+.sh-rules {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.sh-rule {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+}
+
+.sh-rule-k {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.sh-rule-v {
+  font-weight: 600;
+}
+
+.sh-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sh-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  font-size: 13px;
+}
+
+.sh-section {
+  margin-top: 20px;
+}
+
+.sh-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.sh-section-title .sh-count {
+  font-weight: 400;
+}
+
+/* 表格：小铺 / 客服分流 / 粉丝画像共用。 */
+.sh-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.sh-table th {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-dim);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.sh-table td {
+  font-size: 13px;
+  color: var(--text);
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  vertical-align: top;
+}
+
+.sh-table tr:last-child td {
+  border-bottom: none;
+}
