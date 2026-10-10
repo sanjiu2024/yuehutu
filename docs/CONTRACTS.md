@@ -209,6 +209,15 @@ GET    /api/health                -> {ok:true,version,frozen,...}
 GET    /api/system/info
 
 GET    /api/accounts              -> [{id,nickname,enabled,auto_reply,login_state,runtime_state,remark}]
+       -- 三个**可选**筛选参数（2026-10-11 加，不传时行为与以前逐字一致）：
+       --   `enabled=true|false`、`q=`（昵称/备注/账号 id 模糊，大小写不敏感）、`limit=`（0=不限）。
+       --   加它们是因为 MCP 侧的 `accounts_list` 一直宣称支持这三个参数
+       --   （`mcp_server/client.py::CANONICAL_SPECS` + `TOOL_ROUTES`），而端点过去根本不收 ——
+       --   FastAPI 对未知 query **静默忽略**，模型以为筛过了、其实拿到全量。同批还修了
+       --   `finance_income`/`finance_expense` 的同类漂移（工具参数 `cycle_from`/`cycle_to`
+       --   在端点上叫 `from`/`to`，现由 `TOOL_ROUTES[..]['query_rename']` 翻译）。
+       --   守卫测试：`backend/tests/test_mcp_server.py::RouteParamAlignmentTest`
+       --   （把每条 MCP 路由声明的 query/body 键跟 `app.openapi()` 的真实签名对账）。
 POST   /api/accounts/qr/start     -> {ticket,qr_image_b64,expires_in}
 GET    /api/accounts/qr/{ticket}  -> {state:pending|scanned|confirmed|expired|failed,account_id?}
 PATCH  /api/accounts/{id}         {enabled?,auto_reply?,remark?}   -- enabled 就是 IM 入站的生命周期
@@ -629,6 +638,89 @@ GET    /api/security-center/{account_id}
       -- 推广/安全中心都**不落库、不缓存**（余额与投放数据过期比没有更糟）。
       -- 协议层真名、参数形状与真值证据见 `docs/HANDOFF.md` 第十八批。
 
+--------------------------------------------------------------------------
+第十九 / 二十批：官方卖家工作台复刻（新增路由组，2026-10-10 ~ 10-11）
+--------------------------------------------------------------------------
+-- 每组都有独立的契约文件（`docs/contracts/<name>.md`），那里才是字段级真相
+-- （信封、null 口径、平台错误码、真机证据）。这里只列路由，便于一眼看全。
+
+【只读 · 交易】`docs/contracts/trade.md`
+GET /api/trade/{account_id}/orders?page=&size=&include_counts=
+GET /api/trade/{account_id}/refunds?page=&size=
+GET /api/trade/{account_id}/evaluations?page=&size=
+GET /api/trade/{account_id}/complaints?page=&size=
+GET /api/trade/{account_id}/addresses
+
+【只读 · 小铺与通知】`docs/contracts/shop.md`、`docs/contracts/notify.md`
+GET /api/shop/{account_id}/sub-accounts?page=&size=
+GET /api/shop/{account_id}/cs-routing
+GET /api/notifications/{account_id}        -- ⚠ 前缀是 /api/notifications（不是 /api/notify）
+
+【只读 · 数据】`docs/contracts/datacenter.md`
+GET /api/datacenter/{account_id}/overview?start=YYYYMMDD&end=YYYYMMDD
+GET /api/datacenter/{account_id}/fans?start=&end=
+GET /api/datacenter/{account_id}/customer-service?start=&end=
+
+【只读 · 运费模版】`docs/contracts/item_templates.md`
+GET /api/item-templates/{account_id}?page=&size=&template_name=
+GET /api/item-templates/{account_id}/{template_id}
+       -- ⚠ 官方 `post-temple` 是**运费模版**，不是「发布模板」；前缀特意避开 /api/items/，
+       --   否则会被 `GET /api/items/{account_id}/{item_id}` 把 `templates` 当成 item_id 吞掉。
+
+【只读 · 营销】`docs/contracts/marketing.md`
+GET /api/marketing/{account_id}/items?item_id=&date_type=&date_range=
+GET /api/marketing/{account_id}/tasks?biz_scene=&query_scene=&page=&size=&item_ids=
+GET /api/marketing/{account_id}/price-competitiveness?biz_scene=&item_id=&sku_prices=&commission_rate=
+GET /api/marketing/{account_id}/records?task_id=&biz_scene=&query_scene=
+
+【只读 · 资质】`docs/contracts/qualification.md`
+GET /api/qualification/{account_id}/detail
+GET /api/qualification/{account_id}/submitted-records?page=&size=
+GET /api/qualification/{account_id}/categories
+GET /api/qualification/{account_id}/templates
+GET /api/qualification/{account_id}/reusable
+
+【写 · 交易】`docs/contracts/trade_write.md`   —— 全部 `POST`，body 一律要 `confirm: true`
+POST /api/trade/{account_id}/orders/ship                    {trade_ids,mail_no,cp_code,address_id,confirm}
+POST /api/trade/{account_id}/orders/{order_id}/ship-dummy    {trade_text,pic_urls,confirm}
+POST /api/trade/{account_id}/orders/{order_id}/adjust-price  {modify_fee,new_transport_fee,confirm}  -- 单位**元**
+POST /api/trade/{account_id}/refunds/{refund_id}/agree       {auth_token,confirm}
+POST /api/trade/{account_id}/refunds/{refund_id}/refuse      {order_id,refuse_reason_id,proof_desc,proof_urls,negotiation,confirm}
+POST /api/trade/{account_id}/evaluations                     {trade_ids,feedback,rate,image_urls,anonymous,confirm}  -- 无等级传 -1
+POST /api/trade/{account_id}/complaints/{complain_id}/refuse {proof_desc,proof_urls,confirm}
+POST /api/trade/{account_id}/complaints/{complain_id}/proof  {proof_desc,proof_urls,kind,confirm}
+
+【写 · 推广（投放计划）】`docs/contracts/ad_write.md`
+GET  /api/promotion/write/actions                            -> 动作目录（哪些能调、哪些平台没有）
+POST /api/promotion/write/{account_id}/{action}               {confirm:true,payload:{...}}
+       -- `confirm` **只认字面量 true**（`1`/`"true"`/缺省都是 400 `confirm_required`）。
+       -- **充值/提现不提供**：官方 bundle 里没有网页版下单接口，官方按钮原文就是
+       --   「请进入闲鱼App内操作」；`actions` 目录里如实返回 `unsupported` + 原因，一次平台调用都不发。
+
+【写 · 资质】`docs/contracts/qualification.md`
+POST /api/qualification/{account_id}/packages/submit   {confirm:true,request:{...}}
+POST /api/qualification/{account_id}/oss-credential    {confirm:true,request:{...}}
+
+【写 · 安全中心申诉】`docs/contracts/security_write.md`
+POST /api/security-center/{account_id}/appeal/form       {form_id}            -- 只读语义，**故意不要 confirm**
+POST /api/security-center/{account_id}/appeal/submit     {parameter,confirm}
+POST /api/security-center/{account_id}/appeal/cro/submit {punish_id,proof_items,confirm}
+POST /api/security-center/{account_id}/appeal/urge       {punish_id,confirm}
+       -- 站点 CODE 头与只读侧同一条路径（复用 `item_templates.site_headers(client)`）。
+       -- `confirm` 的口径一句话：**只钉有副作用的那一步** —— 读表单不钉，提交申诉才钉。
+
+【写接口的三条硬口径（所有 *_write 一律遵守）】
+1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /
+   `confirm_required`），**一次平台请求都不发**；
+2. 平台没返回的字段一律 `null`，不补 `0`/`false`/`{}`；
+3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
+   **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
+
+【AI 侧】22 个复刻只读工具 + 12 个写工具已进 `TOOL_SPECS` 与 MCP `TOOL_ROUTES`
+（写工具 `required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
+`MASTER_TOOLS` = `TOOL_SPECS` 去掉 `master_chat`（防递归）。
+
+--------------------------------------------------------------------------
 错误响应统一：`{"success":false,"message":"...","code":"..."}`，HTTP 用语义状态码（4xx 业务、5xx 内部）。成功统一 `{"success":true,"data":{...}}`。
 **404/405 也必须走这个信封**（挂的是 Starlette 的 `HTTPException`，不是 FastAPI 的子类）。
 

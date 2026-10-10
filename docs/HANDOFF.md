@@ -21,25 +21,34 @@
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 35  PASS 35  FAIL 0  CASES 1028  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_r3_full_final&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 46  PASS 46  FAIL 0  CASES 1356  SKIPPED 2
+   （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
 ```text
 cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_xianyu_login.py"
--> Ran 23 tests ... OK (skipped=1)
+-> Ran 29 tests ... OK (skipped=2)
+```
+
+```text
+cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_mcp_server.py"
+-> Ran 60 tests ... OK        （含 RouteParamAlignmentTest：MCP 路由参数 ↔ 真实端点签名）
 ```
 
 ```text
 cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
--> BUILD_EXIT=0   frontend/dist/assets/index-CLjzKYvC.js (343.79 kB) + index-B6VwuY8J.css (105.82 kB)
+-> BUILD_EXIT=0   ✓ 86 modules transformed.
+   frontend/dist/assets/index-DCPlrc-0.js (481.76 kB, gzip 150.53 kB)
+   frontend/dist/assets/index-RSxYiLGu.css (127.22 kB, gzip 20.33 kB)
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18097"
--> UI SMOKE ALL OK  (10/10 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_ui_final&& C:\Python310\python.exe scripts\ui_smoke.py --port 18211"
+-> UI SMOKE ALL OK  (26/26 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
+   截图目录：logs/ui_smoke
 ```
 
 ```text
@@ -1161,6 +1170,168 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 > overview（余额 3358 分 / 暂停 3 + 系统暂停 6）、campaigns total 9、
 > reports plans 6 + items 26、account settle 169.27、security-center 闲气值 100 + 违规 3 条；
 > 证据 `logs/promotion_probe/report.json`、`logs/seller_discover/site_code.json`。
+
+### 第十九批：用户要求「把整个闲鱼工作台复刻下来」（122~128）
+
+用户原话（`m11617`）：「你就按照咸鱼上面的复刻就行了 充值之类的更改接口也可以碰 顺便留个接口给AI调用的，
+我以后打算用AI管理 把整个闲鱼的工作台给他复刻下来 我后面懒得一个一个发截图了 以及你感觉有哪些不足的
+地方也可以进行优化调优，然后修复之类的自己检查有没有bug 不要做完的就给我自己多检查检查 还有自己看看
+有些地方符不符合人类的使用习惯之的进行优化 还有UI不要跟我写很丑，要稍微写好看点」
+
+122. **官方微应用是「静态可读」的 —— 这条改变了整个复刻方式**。官方工作台每个一级菜单在
+     `mtop.alibaba.idle.seller.platform.sys.menu.query` 的响应里都带 `entry`（微应用 bundle 的
+     alicdn 地址）+ `hashType:true`。把 bundle 拉下来 grep `mtop\.` 就能拿到**全部接口名**，
+     一个平台请求都不发（因此完全不碰风控）。本批据此挖出交易 / 小铺 / 通知 / 数据 / 运费模版 /
+     营销 / 资质 / 超强擦亮 / 安全中心 的只读接口清单。
+     **教训**：先在真机点菜单试图抓包是错的方向 —— headless 下 SPA 菜单用 locator / JS /
+     真实鼠标三种点法都**点了不换页**（坐标与 `visible` 都对），而路由名只能从菜单接口拿、不能猜
+     （真前缀是 `/seller-finance/`、`/seller-ad/`、`/seller-sc/`，猜的 `/finance/` 一律被重定向回
+     `#/seller-data/data`）。
+
+123. **交易只读 5 端点**（`backend/app/xianyu/trade.py` + `services/trade.py` + `api/trade.py`，
+     26 用例）：订单 / 退款 / 评价 / 投诉 / 退货地址。真机抓到的形状差异都写进了契约：
+     `order.count` 的计数在 `data.module.countInfoList[]`（`queryCode` = ALL/TRADE_SUCCESS/
+     TRADE_CLOSED/NOT_SHIP）；`refund.list` 是**双层** `data.data.items[]`，退款总额在
+     `data.data.ext.totalRefundFee`；`rate.list` 的评价在 `rateItemVOList`；金额一律是**字符串**
+     `"39.90"`。分页键 `totalCount`/`nextPage`/`lastEndRow`/`serverTime` 在 `data` 的**兄弟层**。
+     投诉与退货地址接口真机回 `NO_PERMISSION::用户没有权限` / `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`
+     —— **如实透出，不当成 0 条、也不标掉线**。协议层 `assert_read_only()` + 19 个写接口黑名单。
+
+124. **通知中心根本没有列表接口**（`docs/contracts/notify.md`）。官方只给了频道树
+     `pc.notify.sessions.list` + 未读 `pc.redpoint.query`，条目本身走 IM/ACCS 长连接。
+     所以契约是 `channels` + `unread` + **`items: []` + warning**，而不是伪造一个空列表。
+     另：抓包时误触通知标签，页面自己发出写接口 `mtop.taobao.idlemessage.pc.notifys.read`
+     —— 代码从未调用它，已钉进 `WRITE_APIS`（**披露而不是假装没发生**）。
+
+125. **数据中心：这个账号没有「数据」权限**。`mtop.alibaba.idle.seller.datacompass.*` 族
+     （overview / fans / customer-service）真机一律 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`；
+     参数形状经核对是对的（不给 `dateType` 会先报 `FAIL_SYS_BIZPARAM_MISSED::缺少业务参数dateType`，
+     补上才变成无权限）。所以三个端点返回**指标 null + 人话 warning**
+     「这个账号没有『数据』权限（不是 0）」，前端显示 `-`。**null ≠ 0：平台真给 0 时要保留 0。**
+
+126. **`post-temple` 是运费模版，不是「发布模板」**（纠偏）。官方 bundle 里中文计数
+     「模版」= 49、「模板」= 0、「发布模板」= 0 —— 真正的「模板」是草稿箱
+     `#/publish/success?draftId=…&scene=draft`。契约与页面都按运费模版写。
+     真机该账号运费模版数 0（`{"data":[],"totalCount":0}`）。
+
+127. **12 个新页面 + 导航接线**（订单 / 退款 / 评价 / 投诉 / 退货地址 / 子账号 / 客服分流 /
+     数据总览 / 粉丝数据 / 客服数据 / 运费模版 / 通知中心）。**这里又踩了同一类「半接线」bug**：
+     `frontend/src/App.tsx` 的 `readHash()` 是 `PAGE_TITLES[raw] ? raw : 'overview'`，而
+     `PAGE_TITLES` 由 `NAV` 派生 —— `item-templates` 没进 NAV，于是 `#/item-templates`
+     **静默回落到概览页**、侧栏也没有入口（渲染分支白写了）。教训：**「渲染分支写了、NAV 没写」
+     是半接线**，冒烟测试必须比对「NAV key ⊆ 渲染分支」。现在 `App.tsx` 的 NAV / 渲染分支 /
+     `scripts/ui_smoke.py` 的 PAGES 三方一致（26 页）。
+
+128. **`_data` 只放行 dict，把平台的裸数组吞成了 None**（真 bug，服务层自查抓到）。
+     `platform.user.role.list` 真机返回的是裸数组 `[{roleId,roleName,selected}]`，旧 `_data`
+     只 `isinstance(data, dict)` 才认，于是数组被丢掉**而且不给 warning** —— 页面显示「没有角色」
+     和「拿不到」看起来一模一样。改成 `isinstance(data, (dict, list))`，并给「缺键的列表」补
+     中文 warning（真机给空数组的仍然给 `[]`）。同批还修了 `quota` 缺业务参数
+     `BIZ_TYPE='COMMONPRO'`、协议函数缺失（半升级）走 `CALL_MISSING` → **503**。
+
+> **第十九批证据链**：`backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_r2_audit` 起，
+> 最终 `%TEMP%\xywb_r2_full2`）→ `TOTAL 40  PASS 40  FAIL 0  CASES 1162  SKIPPED 2`；
+> 新增 `tests/test_trade_api.py` 26 条、`test_shop_api.py` 30 条、`test_notify_api.py` 17 条、
+> `test_datacenter_api.py` 41 条、`test_item_templates_api.py` 13 条。
+> 前端 `npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0（82 modules，
+> `index-BLqTHqIn.css 119.75 kB` + `index-Ctj8g4W_.js 433.96 kB`）；
+> `scripts/ui_smoke.py` → **24/24 页**（12 页新增）；
+> 提交 `29f08c7`（46 文件 / +11119 行）。
+> 真机证据：`logs/seller_discover/menu.json`（38 条真路由 + 10 个微应用 entry）。
+
+### 第二十批：写接口 + AI 可调用接口 + 营销/资质页（129~135）
+
+129. **营销两个接口名漏了 `bpro.marketing.` 这一段**（真 bug）。原常量写成
+     `mtop.taobao.idle.item.price.competitiveness.info.query` /
+     `mtop.taobao.idle.operation.record.list.pc`；用官方营销 bundle 逐字 grep：
+     长名 `mtop.taobao.idle.bpro.marketing.item.price.competitiveness.info.query` 出现 **1 次**、
+     短名 **0 次**（`operation.record.list.pc` 同理）⇒ 真机会直接回 `FAIL_SYS_API_NOT_FOUNDED`。
+     原测试只按常量符号引用，所以没抓住。**修法**：改长名 + 新增
+     `test_mtop_names_match_the_official_bundle` 逐字冻结四个只读名（防再漂）。
+     证据落盘 `logs/seller_discover/marketing_src/`（`js_main.js` 3,516,103 字节 + `apis.json`）。
+
+130. **22 个新只读工具只写在 `TOOL_SPECS` 里，MCP 侧永远看不到**（真 bug，fail-closed 测试抓到）。
+     `mcp_server/client.py::TOOL_ROUTES` 没登记它们 ⇒ `tools/list` 不暴露。
+     同批还修了一条**静默死测试**：`backend/tests/test_agents_tools_workbench.py` 缺
+     `if __name__ == '__main__': unittest.main()` 入口，而 `run_all.py:58` 是
+     `subprocess.run([sys.executable, path])` 逐文件当脚本跑 ⇒ 该文件 3 个测试类**从未执行过**，
+     `run_all.py:76-79` 把「0 用例」记成 FAIL。**教训：任何 `test_*.py` 缺入口都会静默 0 用例。**
+
+131. **写接口落地**（四个模块，全部带 `confirm` 闸门 + `WRITE_APIS` 黑名单 + 假协议层单测）：
+     交易 8 个（发货 / 代发 / 改价 / 同意退款 / 拒绝退款 / 评价 / 投诉拒绝 / 投诉举证，33 用例）、
+     推广 10 个（投放计划增删改停启 + 续投 + 活动报名 + 账户流水操作，21 用例）、
+     资质 2 个（提交材料 / 取 OSS 凭证，20 用例）、安全中心申诉 4 个（取表单 / 提交 / CRO 提交 /
+     催办，21 用例）。**关键发现**：交易微应用所有业务 mtop 都走本地封装、默认 `type:"POST"`
+     —— 只读接口在**传输层同样是 POST**，「读/写」只能靠接口名语义 + 调用点行为判断。
+     另一条：**「同意退货退款」很可能没有静态接口名**（UI 动作枚举有
+     `agreeRefundGoodsApply`/`agreeRefundApply`/`sellerConfirm`，但 mtop 名不在 bundle，
+     附近是通用分支 `hO({api:b.apiName, v:b.apiVersion, data:b.params})` ⇒ 疑似**服务端动态下发**）
+     —— 无证据不猜名，本次**未实现**。
+
+132. **充值 / 提现没有网页版下单接口**（诚实边界，不是没做完）。官方超级擦亮 bundle 的 86 个
+     mtop 里，账户资金只有 4 个只读 query；`recharge` 的 92 处命中全是 CSS 类名/枚举；
+     `payOrder`/`cashier` **0 命中**；官方提现按钮原文就是「请进入闲鱼App内操作」。
+     所以 `GET /api/promotion/write/actions` 把 `recharge`/`withdraw` 放进 `unsupported` 并给出原因，
+     **一次协议调用都不发**（用户说「充值之类的更改接口也可以碰」，但平台确实没给网页入口）。
+
+133. **AI 可调用写接口 12 个**（`backend/app/agents/tools.py` + `mcp_server/client.py`）：
+     11 个写（`trade_write_*` × 8、`promotion_write_execute`、`qualification_submit_packages`、
+     `qualification_oss_credential`）+ 1 个只读 `promotion_write_actions`。硬约束由测试钉住：
+     写工具 `required` 必含 `confirm`、MCP `method` 必为 `POST`、description 必含 `confirm=true`；
+     **工具层不做确认判定、原样透传**（拦截来自服务层 `confirmation_required`/`confirm_required`，
+     用「参数齐全但 `confirm=false`」的调用证明）。`MASTER_TOOLS` = `TOOL_SPECS` 去掉
+     `master_chat`（防递归），最终 `TOOL_SPECS=58 / MASTER_TOOLS=57 / TOOL_ROUTES=59 / WRITE=12`。
+
+134. **营销契约返工（参数形状订正）**。旧契约钉的是**猜错**的参数形态（`sellerId`/`pageNum`）
+     与猜错的契约键（`item_count`/`running_count`…）。新证据：`itmId`（**官方确实少一个 e**）/
+     `dateType`/`dateRange`、`bizScene`+`queryScene`+`pageNum`+`pageSize`+`itemIdListStr`（JSON 字符串）、
+     `itemId`+`currentSkuPriceMapStr`、`taskId`+`queryScene`；`DATE_TYPES =
+     ('recent1d','recent7d','recent30d','customDate')`、`CUSTOM_DATE_RANGE_SEPARATOR='|'`、
+     `CUSTOM_DATE_MAX_BACK_DAYS=90`。证据口径改为**字符偏移**（bundle 是单行压缩 JS，行号无意义）。
+     **诚实边界**：四个接口置信度**只有「中」** —— 响应字段是从压缩消费代码反推「页面怎么读」，
+     不是响应样本「服务端怎么答」。前端 4 个面板已按新契约重做（`frontend/src/pages/Marketing.tsx`
+     36703 B），必填缺失一律**一个请求都不发**、只给黄条。
+
+135. **★ MCP 路由参数漂移（本批最后抓到的真 bug，影响 AI 与 MCP 两条路）**。
+     FastAPI 对**未知 query 参数是静默忽略**的，所以路由声明写错键名不会报错、不会 4xx，
+     只会让筛选条件失效、悄悄返回默认范围的数据。Lead 用独立对账脚本
+     （`C:\Users\Administrator\.dsh-tmp\reconcile_lead.py`，把每条 MCP 路由声明的 query/body 键
+     跟 `app.openapi()` 的**真实端点签名**对账）抓到三处：
+     - `finance_income` / `finance_expense` 声明 `cycle_from`/`cycle_to`，而端点是
+       `backend/app/api/finance.py:44,60` 的 `Query(alias='from'/'to')` ⇒ 实际只认 `from`/`to`。
+       **发 `?cycle_from=…` 会被静默忽略，账期悄悄回落默认值 —— 结果错但不报错。**
+       修法：`TOOL_ROUTES` 新增 `query_rename`（工具参数名 → HTTP 线上名）翻译表，
+       `_dispatch_route` 按它组 query。注意**主管 AI 路径不受影响**（走 `_dispatch_service`
+       直接调服务层 `finance.account_bills(..., cycle_from=…)`，签名就是 `cycle_from`）。
+     - `accounts_list` 声明 `enabled`/`q`/`limit`，而 `backend/app/api/accounts.py:206`
+       的 `list_accounts` **不接受任何 query** ⇒ 三个筛选条件同样被静默忽略。修法：给端点
+       **补上这三个可选筛选参数**（不传时行为与以前逐字一致），并让主管 AI 的
+       `_accounts_list` 用同一口径；这样 MCP / AI / HTTP 三条路对外宣称的能力才是真的。
+     - 守卫：新增 `backend/tests/test_mcp_server.py::RouteParamAlignmentTest`（4 条）把这一类
+       漂移变成**不可能再悄悄发生** —— 它遍历 `TOOL_ROUTES`，把声明的每个 query/body 键与真实
+       端点签名比对（body 是自由 dict 时跳过），另加 1 条端到端用例断言财务账期真的发出
+       `from`/`to` 而不是 `cycle_from`/`cycle_to`。
+     另外 `frontend/src/App.tsx` 的「推广」组新增 `marketing`（营销）与 `qualification`（资质管理）
+     两个导航项 + 两条渲染分支，`scripts/ui_smoke.py` 同步到 **26 页**。
+     附：`confirm` 的口径本批定死 —— **只钉有副作用的那一步**。所以
+     `POST /api/security-center/{account_id}/appeal/form`（语义只读）**故意不要 confirm**；
+     给只读操作加确认只会训练用户无脑点确认、稀释真危险操作的信号。
+
+> **第二十批证据链**：`backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_r3_full_final`）
+> → **`TOTAL 46  PASS 46  FAIL 0  CASES 1356  SKIPPED 2`**（第十九批 1162 → 第二十批 1343 → 修完
+> 漂移 1356）；`backend/tests/test_mcp_server.py` → **Ran 60 tests ... OK**；
+> `backend/tests/test_accounts_im.py` → **Ran 15 tests ... OK**（含新增的筛选参数用例）；
+> 独立对账 `reconcile_lead.py` → `specs=58 master=57 routes=59 targets=38 handlers=58
+> route_checked=59 ALIASES=22`、`RECON OK`；
+> 前端 `npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0（86 modules，
+> `index-DCPlrc-0.js 481.76 kB` + `index-RSxYiLGu.css 127.22 kB`）；
+> `scripts/ui_smoke.py --port 18211` → **26/26 页通过**；
+> 提交：`3a59bb7`（营销只读）、`b5e8865`（交易写）、`b467b6b`（推广写）、`b025c25`（资质）、
+> `f70e441`（22 个只读工具补 MCP 路由）、`6c89cfd`（主管 AI 接营销工具）、`6401563`（挂四个 router +
+> 补只读层写黑名单）。
+> 诚实边界：写接口的字段形状全部来自**官方 bundle 静态提取**，**一次真机写请求都没发过**
+> （红线：不许改真实平台数据）；`trade_write` 的 8 个端点、`ad_write` 的 10 个动作、
+> `qualification` 的 `request` 字段名、`security_write` 的 `parameter` 形状都还没被真机响应验证过。
 
 ## 四、已验证 / 未验证（诚实边界）
 
