@@ -195,6 +195,21 @@ class ToolCallTest(ClientTestCase):
                                              'price': 9.9, 'bogus': 'x'})
         self.assertEqual(self.recorder.calls[-1]['body'], {'price': 9.9})
 
+    def test_finance_cycle_goes_out_as_from_to(self):
+        """账期的线上名是 from/to：工具参数 cycle_from/cycle_to 必须被翻译。
+
+        回归钉（2026-10-11）：曾经发 `?cycle_from=…`，FastAPI 静默忽略未知 query
+        ⇒ 账期悄悄回落默认值，**结果错但不报错**。
+        """
+        self.recorder.routes['/api/finance/acc1/income'] = {'success': True, 'data': {}}
+        result = self.client.call_tool('finance_income', {
+            'account_id': 'acc1', 'cycle_from': '202609', 'cycle_to': '202609'})
+        self.assertTrue(result['success'], result)
+        call = self.recorder.calls[-1]
+        self.assertEqual(call['path'], '/api/finance/acc1/income')
+        self.assertEqual(call['query'], {'from': '202609', 'to': '202609'})
+        self.assertNotIn('cycle_from', call['query'])
+
     def test_verb_alias_accepted(self):
         """任务卡里的动词式名字仍可调用（但不进 tools/list）。"""
         self.recorder.routes['/api/chats/conversations'] = {'success': True, 'data': []}
@@ -623,6 +638,97 @@ class RouteRegistrationTest(unittest.TestCase):
         for name, (method, path) in expected.items():
             route = mcp_client.TOOL_ROUTES[name]
             self.assertEqual((route['method'], route['path']), (method, path), name)
+
+
+class RouteParamAlignmentTest(unittest.TestCase):
+    """每条 MCP 路由声明的 query / body 键，必须被**真实端点**接受。
+
+    为什么需要这条：FastAPI 对未知 query 参数是**静默忽略**的。路由声明里写错一个
+    键名（例如 finance 写 `cycle_from`，而端点的线上名是 `from`）既不会报错、也不会
+    4xx，只会让筛选条件失效、悄悄返回默认范围的数据 —— 单看任何一侧都发现不了。
+
+    2026-10-11 这条检查抓到三处真漂移：`finance_income` / `finance_expense` 的
+    `cycle_from`/`cycle_to`（端点认 `from`/`to`，现由 `query_rename` 翻译）、
+    `accounts_list` 声明了 `enabled/q/limit`（端点根本不收任何 query）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from backend.app.main import create_app
+        cls.spec = create_app().openapi()
+
+    def _op(self, path: str, method: str):
+        return self.spec['paths'][path][method]
+
+    def _known(self, path: str, method: str) -> bool:
+        return path in self.spec['paths'] and method in self.spec['paths'][path]
+
+    def _query_names(self, path: str, method: str) -> set:
+        return {p['name'] for p in self._op(path, method).get('parameters', [])
+                if p.get('in') == 'query'}
+
+    def _body_names(self, path: str, method: str):
+        """端点接受的 body 键；body 是自由 dict（`Dict[str, Any]`）时返回 None = 什么都收。"""
+        schema = ((self._op(path, method).get('requestBody') or {})
+                  .get('content', {}).get('application/json', {}) or {}).get('schema') or {}
+        ref = schema.get('$ref')
+        if ref:
+            schema = self.spec['components']['schemas'][ref.split('/')[-1]]
+        props = schema.get('properties')
+        return set(props) if props else None
+
+    def test_declared_query_keys_are_accepted(self):
+        problems = []
+        for name, route in sorted(mcp_client.TOOL_ROUTES.items()):
+            declared = route.get('query') or []
+            path, method = route['path'], route['method'].lower()
+            if not declared or not self._known(path, method):
+                continue  # 路径本身由 RouteRegistrationTest 管
+            rename = route.get('query_rename') or {}
+            wire = {rename.get(k, k) for k in declared}
+            accepted = self._query_names(path, method)
+            bad = sorted(wire - accepted)
+            if bad:
+                problems.append(f'{name}: {bad} 端点不接受（它接受 {sorted(accepted)}）')
+        self.assertFalse(
+            problems,
+            '这些 MCP 路由的 query 键端点不接受，会被 FastAPI 静默忽略：\n  '
+            + '\n  '.join(problems)
+            + '\n（要么改键名，要么在路由里加 query_rename 做翻译）')
+
+    def test_declared_body_keys_are_accepted(self):
+        problems = []
+        for name, route in sorted(mcp_client.TOOL_ROUTES.items()):
+            declared = route.get('body') or []
+            path, method = route['path'], route['method'].lower()
+            if not declared or not self._known(path, method):
+                continue
+            accepted = self._body_names(path, method)
+            if accepted is None:
+                continue  # 自由 dict，端点什么都收
+            bad = sorted(set(declared) - accepted)
+            if bad:
+                problems.append(f'{name}: {bad} 端点不接受（它接受 {sorted(accepted)}）')
+        self.assertFalse(problems, '这些 MCP 路由的 body 键端点不接受：\n  ' + '\n  '.join(problems))
+
+    def test_query_rename_maps_declared_keys_only(self):
+        """`query_rename` 的键必须同时出现在 `query` 里，否则是写错了没人会用。"""
+        problems = []
+        for name, route in sorted(mcp_client.TOOL_ROUTES.items()):
+            rename = route.get('query_rename') or {}
+            if not rename:
+                continue
+            orphan = sorted(set(rename) - set(route.get('query') or []))
+            if orphan:
+                problems.append(f'{name}: query_rename 里的 {orphan} 不在 query 里')
+        self.assertFalse(problems, 'query_rename 写错了：\n  ' + '\n  '.join(problems))
+
+    def test_finance_cycle_is_renamed_on_the_wire(self):
+        """财务账期的回归钉：工具参数叫 cycle_from/cycle_to，线上必须发 from/to。"""
+        for name in ('finance_income', 'finance_expense'):
+            route = mcp_client.TOOL_ROUTES[name]
+            self.assertEqual(route.get('query_rename'),
+                             {'cycle_from': 'from', 'cycle_to': 'to'}, name)
 
 
 class RobustnessTest(unittest.TestCase):

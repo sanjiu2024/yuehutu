@@ -590,5 +590,54 @@ class AccountsImTest(unittest.TestCase):
                          '列表每次刷新都重复拉平台资料（节流没接上）')
 
 
+    def test_list_filters_enabled_keyword_and_limit(self):
+        """`GET /api/accounts` 的三个可选筛选参数：不传=原行为，传了必须真筛。
+
+        这三个参数一直写在 MCP 侧（`mcp_server/client.py::CANONICAL_SPECS` 的
+        `accounts_list` 与 `TOOL_ROUTES`）与 `TOOL_SPECS` 里，但端点过去根本不收，
+        发出去会被 FastAPI **静默忽略** —— 模型以为筛过了，其实拿到全量。
+        """
+        self._account('f_on', nickname='月狐兔_', enabled=True)
+        self._account('f_off', nickname='宅萌小玄', enabled=False)
+        self._account('f_other', nickname='月狐兔_小号', enabled=True)
+
+        def ids(resp):
+            self.assertEqual(resp.status_code, 200, resp.text)
+            return [row['id'] for row in resp.json()['data']]
+
+        # 不传参数：三个都在（与旧行为逐字一致）
+        self.assertEqual(sorted(ids(self.client.get('/api/accounts', headers=self.headers))),
+                         ['f_off', 'f_on', 'f_other'])
+
+        # enabled 真假各筛一次
+        self.assertEqual(sorted(ids(self.client.get(
+            '/api/accounts?enabled=true', headers=self.headers))), ['f_on', 'f_other'])
+        self.assertEqual(ids(self.client.get(
+            '/api/accounts?enabled=false', headers=self.headers)), ['f_off'])
+
+        # q 命中昵称（大小写不敏感）
+        self.assertEqual(sorted(ids(self.client.get(
+            '/api/accounts?q=月狐兔', headers=self.headers))), ['f_on', 'f_other'])
+        # q 也命中账号 id 与备注
+        self.assertEqual(ids(self.client.get(
+            '/api/accounts?q=F_OFF', headers=self.headers)), ['f_off'])
+
+        # limit 截断（列表顺序由 store 决定，不断言具体是哪两条，只断言被截短了）
+        limited = ids(self.client.get('/api/accounts?limit=2', headers=self.headers))
+        self.assertEqual(len(limited), 2, limited)
+        self.assertEqual(set(limited) - {'f_on', 'f_off', 'f_other'}, set())
+        self.assertEqual(sorted(ids(self.client.get(
+            '/api/accounts?limit=99', headers=self.headers))),
+            ['f_off', 'f_on', 'f_other'])
+
+        # 组合：enabled + q + limit
+        self.assertEqual(ids(self.client.get(
+            '/api/accounts?enabled=true&q=月狐兔&limit=1', headers=self.headers)), ['f_on'])
+
+        # 筛不到的词给空列表，不是全量、也不是报错
+        self.assertEqual(ids(self.client.get(
+            '/api/accounts?q=不存在的号', headers=self.headers)), [])
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

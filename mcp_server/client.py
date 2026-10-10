@@ -116,6 +116,8 @@ def ok(data: Any) -> Dict[str, Any]:
 # kind: query / path / body
 TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
     'accounts_list': {
+        # 这三个筛选参数在端点上是**可选**的（`backend/app/api/accounts.py:206`
+        # 的 `list_accounts` 收 enabled/q/limit），不传时行为与以前一致。
         'method': 'GET', 'path': '/api/accounts',
         'query': ['enabled', 'q', 'limit'],
     },
@@ -259,15 +261,21 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'path_params': ['account_id', 'template_id'],
     },
     # ---------------- 财务（只读）----------------
+    # 注意 query_rename：工具参数叫 cycle_from/cycle_to（= 服务层 `finance.account_bills`
+    # 的签名），但 HTTP 端点的线上名是 `from`/`to`（`backend/app/api/finance.py:44,60`
+    # 用的是 `Query(alias='from'/'to')`）。没有这张表就会发 `?cycle_from=…`，
+    # FastAPI 静默忽略未知 query ⇒ 账期悄悄回落默认值，**结果错但不报错**。
     'finance_income': {
         'method': 'GET', 'path': '/api/finance/{account_id}/income',
         'path_params': ['account_id'],
         'query': ['cycle_from', 'cycle_to', 'biz_type', 'page', 'size'],
+        'query_rename': {'cycle_from': 'from', 'cycle_to': 'to'},
     },
     'finance_expense': {
         'method': 'GET', 'path': '/api/finance/{account_id}/expense',
         'path_params': ['account_id'],
         'query': ['cycle_from', 'cycle_to', 'biz_type', 'page', 'size'],
+        'query_rename': {'cycle_from': 'from', 'cycle_to': 'to'},
     },
     'finance_invoices': {
         'method': 'GET', 'path': '/api/finance/{account_id}/invoices',
@@ -300,21 +308,88 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'path_params': ['account_id'], 'query': ['page', 'size'],
     },
     # ---------------- 营销（只读）----------------
+    # 路径名沿用首版（前端与 MCP 都写死了它）；2026-10 订正的是**查询参数**：
+    # /items 与 /records 是单对象口径（必给 item_id / task_id，不吃分页），
+    # /price-competitiveness 要 item_id + sku_prices。
     'marketing_items': {
         'method': 'GET', 'path': '/api/marketing/{account_id}/items',
-        'path_params': ['account_id'], 'query': ['page', 'size'],
+        'path_params': ['account_id'], 'query': ['item_id', 'date_type', 'date_range'],
     },
     'marketing_tasks': {
         'method': 'GET', 'path': '/api/marketing/{account_id}/tasks',
-        'path_params': ['account_id'], 'query': [],
+        'path_params': ['account_id'],
+        'query': ['biz_scene', 'query_scene', 'page', 'size', 'item_ids'],
     },
     'marketing_price_competitiveness': {
         'method': 'GET', 'path': '/api/marketing/{account_id}/price-competitiveness',
-        'path_params': ['account_id'], 'query': ['item_ids'],
+        'path_params': ['account_id'],
+        'query': ['biz_scene', 'item_id', 'sku_prices', 'commission_rate'],
     },
     'marketing_records': {
         'method': 'GET', 'path': '/api/marketing/{account_id}/records',
-        'path_params': ['account_id'], 'query': ['page', 'size'],
+        'path_params': ['account_id'], 'query': ['task_id', 'biz_scene', 'query_scene'],
+    },
+    # ---------------- 交易写（全部 POST；confirm 是必填）----------------
+    'trade_write_ship_offline': {
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/ship',
+        'path_params': ['account_id'],
+        'body': ['trade_ids', 'mail_no', 'cp_code', 'address_id', 'confirm'],
+    },
+    'trade_write_ship_dummy': {
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/{order_id}/ship-dummy',
+        'path_params': ['account_id', 'order_id'],
+        'body': ['trade_text', 'pic_urls', 'confirm'],
+    },
+    'trade_write_adjust_price': {
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/{order_id}/adjust-price',
+        'path_params': ['account_id', 'order_id'],
+        'body': ['modify_fee', 'new_transport_fee', 'confirm'],
+    },
+    'trade_write_refund_agree': {
+        'method': 'POST', 'path': '/api/trade/{account_id}/refunds/{refund_id}/agree',
+        'path_params': ['account_id', 'refund_id'],
+        'body': ['auth_token', 'confirm'],
+    },
+    'trade_write_refund_refuse': {
+        'method': 'POST', 'path': '/api/trade/{account_id}/refunds/{refund_id}/refuse',
+        'path_params': ['account_id', 'refund_id'],
+        'body': ['order_id', 'refuse_reason_id', 'proof_desc', 'proof_urls', 'negotiation', 'confirm'],
+    },
+    'trade_write_rate_create': {
+        'method': 'POST', 'path': '/api/trade/{account_id}/evaluations',
+        'path_params': ['account_id'],
+        'body': ['trade_ids', 'feedback', 'rate', 'image_urls', 'anonymous', 'confirm'],
+    },
+    'trade_write_complain_refuse': {
+        'method': 'POST', 'path': '/api/trade/{account_id}/complaints/{complain_id}/refuse',
+        'path_params': ['account_id', 'complain_id'],
+        'body': ['proof_desc', 'proof_urls', 'confirm'],
+    },
+    'trade_write_complain_proof': {
+        'method': 'POST', 'path': '/api/trade/{account_id}/complaints/{complain_id}/proof',
+        'path_params': ['account_id', 'complain_id'],
+        'body': ['proof_desc', 'proof_urls', 'kind', 'confirm'],
+    },
+    # ---------------- 推广写（POST；目录是只读 GET）----------------
+    'promotion_write_actions': {
+        'method': 'GET', 'path': '/api/promotion/write/actions',
+        'path_params': [], 'query': [],
+    },
+    'promotion_write_execute': {
+        'method': 'POST', 'path': '/api/promotion/write/{account_id}/{action}',
+        'path_params': ['account_id', 'action'],
+        'body': ['confirm', 'payload'],
+    },
+    # ---------------- 资质写（POST；confirm 是必填）----------------
+    'qualification_submit_packages': {
+        'method': 'POST', 'path': '/api/qualification/{account_id}/packages/submit',
+        'path_params': ['account_id'],
+        'body': ['confirm', 'request'],
+    },
+    'qualification_oss_credential': {
+        'method': 'POST', 'path': '/api/qualification/{account_id}/oss-credential',
+        'path_params': ['account_id'],
+        'body': ['confirm', 'request'],
     },
 }
 
@@ -503,7 +578,14 @@ class BackendClient:
         if missing:
             return error('invalid_args', f'{cname} 缺少必填参数：{", ".join(missing)}', missing=missing)
 
-        query = {k: args.get(k) for k in route.get('query', []) if args.get(k) is not None}
+        # query_rename：工具参数名 → HTTP 线上名（两端不一致时才需要，例如
+        # finance 的 cycle_from/cycle_to 在端点上叫 from/to）。
+        rename = route.get('query_rename') or {}
+        query = {}
+        for key in route.get('query', []):
+            value = args.get(key)
+            if value is not None:
+                query[rename.get(key, key)] = value
         body = {k: args.get(k) for k in route.get('body', []) if k in args}
         if 'body' in route and not body and route['method'] != 'GET':
             return error('invalid_args', f'{cname} 至少需要一个请求体字段：{", ".join(route["body"])}')

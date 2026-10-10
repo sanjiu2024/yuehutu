@@ -507,9 +507,31 @@ class MasterChatTest(unittest.TestCase):
             # ---- 营销 ----
             'marketing_items', 'marketing_tasks', 'marketing_price_competitiveness',
             'marketing_records',
+            # ---- 交易写（会真的改平台数据，required 必含 confirm）----
+            'trade_write_ship_offline', 'trade_write_ship_dummy', 'trade_write_adjust_price',
+            'trade_write_refund_agree', 'trade_write_refund_refuse', 'trade_write_rate_create',
+            'trade_write_complain_refuse', 'trade_write_complain_proof',
+            # ---- 推广写 ----
+            'promotion_write_actions', 'promotion_write_execute',
+            # ---- 资质写 ----
+            'qualification_submit_packages', 'qualification_oss_credential',
             'master_chat',
         ]
         self.assertEqual(tools.TOOL_NAMES, expected)
+        # 每个**写**工具的 required 必须含 confirm，且 description 里要有中文告警。
+        # （promotion_write_actions 只是列目录，是只读的，故意不在这个名单里。）
+        write_tools = [
+            'trade_write_ship_offline', 'trade_write_ship_dummy', 'trade_write_adjust_price',
+            'trade_write_refund_agree', 'trade_write_refund_refuse', 'trade_write_rate_create',
+            'trade_write_complain_refuse', 'trade_write_complain_proof',
+            'promotion_write_execute',
+            'qualification_submit_packages', 'qualification_oss_credential',
+        ]
+        for name in write_tools:
+            spec = tools.get_tool(name)
+            self.assertIsNotNone(spec, name)
+            self.assertIn('confirm', spec['function']['parameters']['required'], name)
+            self.assertIn('confirm=true', spec['function']['description'], name)
         for spec in tools.TOOL_SPECS:
             self.assertEqual(spec['type'], 'function')
             self.assertIn('name', spec['function'])

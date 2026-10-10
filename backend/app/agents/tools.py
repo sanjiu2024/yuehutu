@@ -41,6 +41,10 @@ def publish_providers_changed(action: str, provider_id: Any, is_default: bool = 
     except Exception:  # pragma: no cover - 推送失败绝不能影响写入
         pass
 
+#: 写类工具描述里必须出现的一句中文告警。抽成常量是为了 11 个写工具逐字一致，
+#: 也让「所有写工具都警告过」这件事可以被测试直接断言（见 test_agents_tools_workbench.py）。
+_WRITE_HINT = ('这是写操作，会真的改动闲鱼平台上的数据，必须显式传 confirm=true；不确定就不要调。')
+
 TOOL_SPECS: List[Dict[str, Any]] = [
     # ---------------- 账号 ----------------
     {
@@ -48,7 +52,15 @@ TOOL_SPECS: List[Dict[str, Any]] = [
         'function': {
             'name': 'accounts_list',
             'description': '列出所有闲鱼账号及登录状态。想知道「有哪些号、哪个掉线了」时用。',
-            'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'enabled': {'type': 'boolean', 'description': '只看启用(true)/停用(false)的账号；不传=全部'},
+                    'q': {'type': 'string', 'description': '按昵称 / 备注 / 账号 id 模糊搜索；不传=不筛'},
+                    'limit': {'type': 'integer', 'description': '返回条数上限；不传=不限制'},
+                },
+                'additionalProperties': False,
+            },
         },
     },
     {
@@ -757,14 +769,15 @@ TOOL_SPECS: List[Dict[str, Any]] = [
         'type': 'function',
         'function': {
             'name': 'marketing_items',
-            'description': '查该账号的营销商品列表（平台建议推广哪些商品、商品营销状态）。用户问「哪些商品适合推广」时用。'
+            'description': '查**单个商品**的营销数据（曝光/访问/成交/预估花费等一屏指标）。用户问「这个商品最近卖得怎么样」时用，必须给 item_id。'
                            '平台没给的字段返回 null，不要当成 0。account_id 必填。',
             'parameters': {
                 'type': 'object',
                 'properties': {
                     'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
-                    'page': {'type': 'string', 'description': '页码，从 1 开始，缺省 1'},
-                    'size': {'type': 'string', 'description': '每页条数，1~50，缺省 20'},
+                    'item_id': {'type': 'string', 'description': '商品 id（itmId）；这个接口是单商品口径，不传会返回带候选值的中文 400'},
+                    'date_type': {'type': 'string', 'description': '统计区间：recent1d / recent7d / recent30d / customDate，缺省 recent1d'},
+                    'date_range': {'type': 'string', 'description': '仅 customDate 用，格式 YYYYMMDD|YYYYMMDD（最多回溯 90 天）'},
                 },
                 'required': ['account_id'],
                 'additionalProperties': False,
@@ -781,6 +794,11 @@ TOOL_SPECS: List[Dict[str, Any]] = [
                 'type': 'object',
                 'properties': {
                     'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'biz_scene': {'type': 'string', 'description': '业务场景：TRAFFIC_DRIVEN_REPRICING（智能定价）/ TRAFFIC_ORDER_BOOST（流量推广），缺省 TRAFFIC_ORDER_BOOST'},
+                    'query_scene': {'type': 'string', 'description': '查询场景，缺省 ORDER_BOOST_SET；可选值见 GET /api/marketing/{account_id}/tasks 的 400 提示'},
+                    'page': {'type': 'string', 'description': '页码，从 1 开始，缺省 1'},
+                    'size': {'type': 'string', 'description': '每页条数，1~50，缺省 10'},
+                    'item_ids': {'type': 'string', 'description': '逗号分隔的商品 id，可空；空则返回全部'},
                 },
                 'required': ['account_id'],
                 'additionalProperties': False,
@@ -791,13 +809,16 @@ TOOL_SPECS: List[Dict[str, Any]] = [
         'type': 'function',
         'function': {
             'name': 'marketing_price_competitiveness',
-            'description': '查商品的价格竞争力（平台对该商品价格的评级与建议）。用户问「我价格是不是高了」时用。'
-                           'item_ids 不传则返回平台给的全部；平台没给的字段返回 null，不要当成 0。account_id 必填。',
+            'description': '查**单个商品**的价格竞争力（平台对该商品价格的评级与建议）。用户问「我价格是不是高了」时用，必须给 item_id。'
+                           '平台没给的字段返回 null，不要当成 0。account_id 必填。',
             'parameters': {
                 'type': 'object',
                 'properties': {
                     'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
-                    'item_ids': {'type': 'string', 'description': '逗号分隔的商品 id，可空；空则不按商品过滤'},
+                    'biz_scene': {'type': 'string', 'description': '业务场景：TRAFFIC_DRIVEN_REPRICING / TRAFFIC_ORDER_BOOST，缺省 TRAFFIC_ORDER_BOOST'},
+                    'item_id': {'type': 'string', 'description': '商品 id；必填，不传会返回带候选值的中文 400'},
+                    'sku_prices': {'type': 'string', 'description': 'SKU 价格表，JSON 对象字符串，形如 {"<skuId>": <价格元>}；不传则不按 SKU 比价'},
+                    'commission_rate': {'type': 'string', 'description': '佣金比例，仅 biz_scene=TRAFFIC_ORDER_BOOST 时有意义'},
                 },
                 'required': ['account_id'],
                 'additionalProperties': False,
@@ -808,16 +829,256 @@ TOOL_SPECS: List[Dict[str, Any]] = [
         'type': 'function',
         'function': {
             'name': 'marketing_records',
-            'description': '查该账号的营销操作记录（历史推广动作流水）。'
+            'description': '查某条推广任务的营销操作记录（历史推广动作流水）。必须给 task_id；没有分页参数。'
                            '平台没给的字段返回 null，不要当成 0。account_id 必填。',
             'parameters': {
                 'type': 'object',
                 'properties': {
                     'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
-                    'page': {'type': 'string', 'description': '页码，从 1 开始，缺省 1'},
-                    'size': {'type': 'string', 'description': '每页条数，1~50，缺省 20'},
+                    'task_id': {'type': 'string', 'description': '推广任务 id；必填，不传会返回带候选值的中文 400'},
+                    'biz_scene': {'type': 'string', 'description': '业务场景：TRAFFIC_DRIVEN_REPRICING / TRAFFIC_ORDER_BOOST，缺省 TRAFFIC_ORDER_BOOST'},
+                    'query_scene': {'type': 'string', 'description': '查询场景，缺省 ORDER_BOOST_OPERATION_RECORD'},
                 },
                 'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    # ---------------- 交易写（会真的改平台数据；required 必含 confirm） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_write_ship_offline',
+            'description': '订单发货（自己联系物流、有真实运单号）：填快递单号后买家能看到物流。'
+                           + _WRITE_HINT + 'account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'trade_ids': {'type': 'array', 'items': {'type': 'string'},
+                                  'description': '要发货的订单号列表，至少一个'},
+                    'mail_no': {'type': 'string', 'description': '运单号'},
+                    'cp_code': {'type': 'string', 'description': '物流公司编码（平台口径，如 SF / YTO）'},
+                    'address_id': {'type': 'string', 'description': '发货/退货地址 id（trade.address.list.query 拿到的 address_id）'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'trade_ids', 'mail_no', 'cp_code', 'address_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_write_ship_dummy',
+            'description': '无需物流发货（虚拟发货，买家看不到运单号）。'
+                           + _WRITE_HINT + 'account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '订单号'},
+                    'trade_text': {'type': 'string', 'description': '发货备注，可空'},
+                    'pic_urls': {'type': 'array', 'items': {'type': 'string'}, 'description': '发货凭证图片 URL 列表，可空'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'order_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_write_adjust_price',
+            'description': '订单改价：改商品实付价与运费。**单位是元**（协议层换算成分）。'
+                           + _WRITE_HINT + 'account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '订单号'},
+                    'modify_fee': {'type': 'number', 'description': '改后商品价格，单位元，必须大于 0'},
+                    'new_transport_fee': {'type': 'number', 'description': '改后运费，单位元，可为 0'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'order_id', 'modify_fee', 'new_transport_fee', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_write_refund_agree',
+            'description': '同意买家退款。auth_token 是平台下发的操作令牌，必须从退款详情里原样带过来，工具层不会替你猜。'
+                           + _WRITE_HINT + 'account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'refund_id': {'type': 'string', 'description': '退款单号'},
+                    'auth_token': {'type': 'string', 'description': '平台下发的操作令牌（退款详情/渲染接口里给的）'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'refund_id', 'auth_token', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_write_refund_refuse',
+            'description': '拒绝买家退款：必须给平台的拒绝原因 id 与举证材料。'
+                           + _WRITE_HINT + 'account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'refund_id': {'type': 'string', 'description': '退款单号'},
+                    'order_id': {'type': 'string', 'description': '订单号'},
+                    'refuse_reason_id': {'type': 'string', 'description': '拒绝原因 id（来自退款拒绝渲染接口的 refuseReasonList）'},
+                    'proof_desc': {'type': 'string', 'description': '举证说明，可空'},
+                    'proof_urls': {'type': 'array', 'items': {'type': 'string'}, 'description': '举证图片 URL 列表，可空'},
+                    'negotiation': {'type': 'string', 'description': '协商说明，可空'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'refund_id', 'order_id', 'refuse_reason_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_write_rate_create',
+            'description': '卖家给买家评价。rate 是评价等级，不需要等级时传 -1。'
+                           + _WRITE_HINT + 'account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'trade_ids': {'type': 'array', 'items': {'type': 'string'}, 'description': '要评价的订单号列表'},
+                    'feedback': {'type': 'string', 'description': '评价内容'},
+                    'rate': {'type': 'integer', 'description': '评价等级，缺省 -1（不指定等级）'},
+                    'image_urls': {'type': 'array', 'items': {'type': 'string'}, 'description': '评价图片 URL 列表，可空'},
+                    'anonymous': {'type': 'boolean', 'description': '是否匿名评价，缺省 false'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'trade_ids', 'feedback', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_write_complain_refuse',
+            'description': '投诉拒绝（举证反驳）：必须带举证图片。'
+                           + _WRITE_HINT + 'account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'complain_id': {'type': 'string', 'description': '投诉单号'},
+                    'proof_desc': {'type': 'string', 'description': '举证说明'},
+                    'proof_urls': {'type': 'array', 'items': {'type': 'string'}, 'description': '举证图片 URL 列表，至少一张'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'complain_id', 'proof_desc', 'proof_urls', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_write_complain_proof',
+            'description': '投诉举证（主动/被动/提交三选一，用 kind 指定）。'
+                           + _WRITE_HINT + 'account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'complain_id': {'type': 'string', 'description': '投诉单号'},
+                    'proof_desc': {'type': 'string', 'description': '举证说明'},
+                    'proof_urls': {'type': 'array', 'items': {'type': 'string'}, 'description': '举证图片 URL 列表，至少一张'},
+                    'kind': {'type': 'string', 'description': '举证类型，缺省 sellerSubmitProof；可选值见平台投诉举证接口'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'complain_id', 'proof_desc', 'proof_urls', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    # ---------------- 推广写（会真的改平台数据；required 必含 confirm） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_write_actions',
+            'description': '列出推广写接口支持的动作名、对应 mtop 名与参数，以及明确不做的动作（充值/提现）。'
+                           '调 promotion_write_execute 之前先用它确认 action 拼写。这是只读工具，不需要 confirm。',
+            'parameters': {
+                'type': 'object',
+                'properties': {},
+                'required': [],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_write_execute',
+            'description': '执行一个推广写动作（建/删/暂停/重启推广计划、报名活动等）。action 必须是 promotion_write_actions 列出的动作名。'
+                           + _WRITE_HINT + 'account_id 与 action 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'action': {'type': 'string', 'description': '动作名，取自 promotion_write_actions'},
+                    'payload': {'type': 'object', 'description': '该动作的业务参数对象，键名按 promotion_write_actions 返回的 params；可空'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'action', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    # ---------------- 资质写（会真的改平台数据；required 必含 confirm） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'qualification_submit_packages',
+            'description': '提交资质材料（真实改变账号资质状态，不可逆）。业务对象原样进 requestJson，工具层不翻译字段。'
+                           + _WRITE_HINT + 'account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'request': {'type': 'object', 'description': '资质业务对象，原样透传给平台；可空'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'qualification_oss_credential',
+            'description': '申请 OSS 上传凭证（上传资质材料的第一步）。'
+                           + _WRITE_HINT + 'account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'request': {'type': 'object', 'description': '申请参数对象，原样透传给平台；可空'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'confirm'],
                 'additionalProperties': False,
             },
         },
@@ -879,7 +1140,20 @@ def _accounts_list(args: Dict[str, Any]) -> Dict[str, Any]:
         'FROM accounts a LEFT JOIN account_credentials c ON c.account_id = a.id '
         'ORDER BY a.id'
     )
-    return {'ok': True, 'accounts': [dict(r) for r in rows]}
+    accounts = [dict(r) for r in rows]
+    # 与 `GET /api/accounts` 的三个可选筛选参数保持同一口径（两边都对外宣称支持）。
+    enabled = args.get('enabled')
+    if enabled is not None:
+        accounts = [a for a in accounts if bool(a.get('enabled')) is bool(enabled)]
+    keyword = str(args.get('q') or '').strip().lower()
+    if keyword:
+        accounts = [a for a in accounts
+                    if any(keyword in str(a.get(f) or '').lower()
+                           for f in ('nickname', 'remark', 'id'))]
+    limit = args.get('limit')
+    if limit:
+        accounts = accounts[:int(limit)]
+    return {'ok': True, 'accounts': accounts}
 
 
 def _items_list(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -1070,11 +1344,28 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'promotion_account': ['promotion', 'account'],
     # ---- 安全中心 ----
     'security_center_status': ['security_center', 'read'],
-    # ---- 营销 ----
-    'marketing_items': ['marketing', 'items'],
+    # ---- 营销（只读）----
+    # 服务层函数名是 item_metrics / operation_records；对外 HTTP 路径名仍是
+    # /items、/records（首版路径已冻结，MCP 路由表与前端都写死了它，别再改名）。
+    'marketing_items': ['marketing', 'item_metrics'],
     'marketing_tasks': ['marketing', 'tasks'],
     'marketing_price_competitiveness': ['marketing', 'price_competitiveness'],
-    'marketing_records': ['marketing', 'records'],
+    'marketing_records': ['marketing', 'operation_records'],
+    # ---- 交易写（会真的改平台数据）----
+    'trade_write_ship_offline': ['trade_write', 'ship_offline'],
+    'trade_write_ship_dummy': ['trade_write', 'ship_dummy'],
+    'trade_write_adjust_price': ['trade_write', 'adjust_price'],
+    'trade_write_refund_agree': ['trade_write', 'refund_agree'],
+    'trade_write_refund_refuse': ['trade_write', 'refund_refuse'],
+    'trade_write_rate_create': ['trade_write', 'rate_create'],
+    'trade_write_complain_refuse': ['trade_write', 'complain_refuse'],
+    'trade_write_complain_proof': ['trade_write', 'complain_proof'],
+    # ---- 推广写 ----
+    'promotion_write_actions': ['ad_write', 'actions_catalog'],
+    'promotion_write_execute': ['ad_write', 'execute'],
+    # ---- 资质写 ----
+    'qualification_submit_packages': ['qualification', 'submit_packages'],
+    'qualification_oss_credential': ['qualification', 'oss_credential'],
 }
 
 # 有额外位置参数（不是直接透传 args 的）在这里补上固定值
@@ -1174,19 +1465,6 @@ async def _master_chat(args: Dict[str, Any]) -> Dict[str, Any]:
     return {'ok': True, 'reply': result.get('reply', ''), 'tool_calls': result.get('tool_calls', [])}
 
 
-def _marketing_price_competitiveness(args: Dict[str, Any]) -> Dict[str, Any]:
-    """价格竞争力：AI 侧传的是逗号分隔字符串，服务层要的是**列表**，这里翻译一次。
-
-    不能直接透传：`services/marketing.price_competitiveness` 收 `item_ids` 后会
-    `[str(item) for item in item_ids]`，字符串会被逐字符拆开（`'12,34'` → `['1','2',...]`）。
-    """
-    args = dict(args)
-    raw = args.get('item_ids')
-    if raw is not None:
-        args['item_ids'] = [p.strip() for p in str(raw).split(',') if p.strip()]
-    return _dispatch_service('marketing_price_competitiveness', args)
-
-
 # 工具名 -> 执行函数（参数已校验）
 _HANDLERS = {
     'accounts_list': _accounts_list,
@@ -1234,8 +1512,23 @@ _HANDLERS = {
     'security_center_status': lambda a: _dispatch_service('security_center_status', a),
     'marketing_items': lambda a: _dispatch_service('marketing_items', a),
     'marketing_tasks': lambda a: _dispatch_service('marketing_tasks', a),
-    'marketing_price_competitiveness': _marketing_price_competitiveness,
+    'marketing_price_competitiveness': lambda a: _dispatch_service('marketing_price_competitiveness', a),
     'marketing_records': lambda a: _dispatch_service('marketing_records', a),
+    # ---------------- 写能力 ----------------
+    # 工具层**不做**确认判定：`confirm` 原样透传给服务层，由服务层返回
+    # `confirm_required`（HTTP 400 / 工具 ok=False），错误码不许在这里改写。
+    'trade_write_ship_offline': lambda a: _dispatch_service('trade_write_ship_offline', a),
+    'trade_write_ship_dummy': lambda a: _dispatch_service('trade_write_ship_dummy', a),
+    'trade_write_adjust_price': lambda a: _dispatch_service('trade_write_adjust_price', a),
+    'trade_write_refund_agree': lambda a: _dispatch_service('trade_write_refund_agree', a),
+    'trade_write_refund_refuse': lambda a: _dispatch_service('trade_write_refund_refuse', a),
+    'trade_write_rate_create': lambda a: _dispatch_service('trade_write_rate_create', a),
+    'trade_write_complain_refuse': lambda a: _dispatch_service('trade_write_complain_refuse', a),
+    'trade_write_complain_proof': lambda a: _dispatch_service('trade_write_complain_proof', a),
+    'promotion_write_actions': lambda a: _dispatch_service('promotion_write_actions', a),
+    'promotion_write_execute': lambda a: _dispatch_service('promotion_write_execute', a),
+    'qualification_submit_packages': lambda a: _dispatch_service('qualification_submit_packages', a),
+    'qualification_oss_credential': lambda a: _dispatch_service('qualification_oss_credential', a),
 }
 
 

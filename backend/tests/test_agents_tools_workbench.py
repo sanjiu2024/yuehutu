@@ -9,11 +9,13 @@ from __future__ import annotations
 import ast
 import asyncio
 import importlib
+import inspect
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from unittest import mock
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in os.sys.path:
@@ -212,6 +214,305 @@ class ServiceTargetTest(unittest.TestCase):
                          tools._SERVICE_TARGETS['finance_expense'])
         self.assertEqual(tools._SERVICE_FIXED_ARGS['finance_income'], {'kind': 'income'})
         self.assertEqual(tools._SERVICE_FIXED_ARGS['finance_expense'], {'kind': 'expense'})
+
+
+# task-64 新接进来的写能力：11 个**写**工具 + 1 个只读的推广动作目录。
+# `confirm` 一律由**服务层**判定（工具层原样透传），所以这里只核对
+# 「名字 ↔ 服务层函数 ↔ HTTP 路由」三件事，不重复测服务层的确认逻辑。
+WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
+    'trade_write_ship_offline': {
+        'module': 'trade_write', 'fn': 'ship_offline', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/ship'},
+    'trade_write_ship_dummy': {
+        'module': 'trade_write', 'fn': 'ship_dummy', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/{order_id}/ship-dummy'},
+    'trade_write_adjust_price': {
+        'module': 'trade_write', 'fn': 'adjust_price', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/{order_id}/adjust-price'},
+    'trade_write_refund_agree': {
+        'module': 'trade_write', 'fn': 'refund_agree', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/refunds/{refund_id}/agree'},
+    'trade_write_refund_refuse': {
+        'module': 'trade_write', 'fn': 'refund_refuse', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/refunds/{refund_id}/refuse'},
+    'trade_write_rate_create': {
+        'module': 'trade_write', 'fn': 'rate_create', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/evaluations'},
+    'trade_write_complain_refuse': {
+        'module': 'trade_write', 'fn': 'complain_refuse', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/complaints/{complain_id}/refuse'},
+    'trade_write_complain_proof': {
+        'module': 'trade_write', 'fn': 'complain_proof', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/complaints/{complain_id}/proof'},
+    'promotion_write_execute': {
+        'module': 'ad_write', 'fn': 'execute', 'confirm': True,
+        'method': 'POST', 'path': '/api/promotion/write/{account_id}/{action}'},
+    'qualification_submit_packages': {
+        'module': 'qualification', 'fn': 'submit_packages', 'confirm': True,
+        'method': 'POST', 'path': '/api/qualification/{account_id}/packages/submit'},
+    'qualification_oss_credential': {
+        'module': 'qualification', 'fn': 'oss_credential', 'confirm': True,
+        'method': 'POST', 'path': '/api/qualification/{account_id}/oss-credential'},
+    # 只读：列推广写动作目录，故意不要 confirm。
+    'promotion_write_actions': {
+        'module': 'ad_write', 'fn': 'actions_catalog', 'confirm': False,
+        'method': 'GET', 'path': '/api/promotion/write/actions'},
+}
+
+WRITE_TOOL_NAMES = list(WRITE_TOOLS)
+
+#: 一个「参数齐全但 confirm=False」的最小调用，用来验证工具层不替服务层做确认判定。
+_CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
+    'trade_write_ship_offline': {
+        'account_id': 'acc-x', 'trade_ids': ['t1'], 'mail_no': 'SF123',
+        'cp_code': 'SF', 'address_id': 'addr-1', 'confirm': False},
+    'trade_write_ship_dummy': {'account_id': 'acc-x', 'order_id': 't1', 'confirm': False},
+    'trade_write_adjust_price': {
+        'account_id': 'acc-x', 'order_id': 't1', 'modify_fee': 10.5,
+        'new_transport_fee': 0, 'confirm': False},
+    'trade_write_refund_agree': {
+        'account_id': 'acc-x', 'refund_id': 'r1', 'auth_token': 'tok', 'confirm': False},
+    'trade_write_refund_refuse': {
+        'account_id': 'acc-x', 'refund_id': 'r1', 'order_id': 't1',
+        'refuse_reason_id': '9', 'confirm': False},
+    'trade_write_rate_create': {
+        'account_id': 'acc-x', 'trade_ids': ['t1'], 'feedback': '好买家', 'confirm': False},
+    'trade_write_complain_refuse': {
+        'account_id': 'acc-x', 'complain_id': 'c1', 'proof_desc': 'd',
+        'proof_urls': ['http://x/1.png'], 'confirm': False},
+    'trade_write_complain_proof': {
+        'account_id': 'acc-x', 'complain_id': 'c1', 'proof_desc': 'd',
+        'proof_urls': ['http://x/1.png'], 'confirm': False},
+    'promotion_write_execute': {
+        'account_id': 'acc-x', 'action': 'campaign_pause', 'confirm': False},
+    'qualification_submit_packages': {'account_id': 'acc-x', 'confirm': False},
+    'qualification_oss_credential': {'account_id': 'acc-x', 'confirm': False},
+}
+
+
+class WriteToolRegistryTest(unittest.TestCase):
+    """task-64：写工具的「名字 ↔ 服务层函数 ↔ HTTP 路由」三方对账。"""
+
+    def test_write_tools_are_registered(self) -> None:
+        for name in WRITE_TOOL_NAMES:
+            with self.subTest(name=name):
+                self.assertIsNotNone(spec_of(name), f'TOOL_SPECS 里没有 {name}')
+                self.assertIn(name, tools.TOOL_NAMES, f'TOOL_NAMES 里没有 {name}')
+                self.assertIn(name, tools._HANDLERS, f'_HANDLERS 里没有 {name}')
+
+    def test_every_write_target_resolves_to_declared_function(self) -> None:
+        for name, meta in WRITE_TOOLS.items():
+            with self.subTest(name=name):
+                self.assertEqual(tools._SERVICE_TARGETS.get(name), [meta['module'], meta['fn']],
+                                 f'{name} 的 _SERVICE_TARGETS 与预期不符')
+                target, error = tools._resolve_service(name)
+                self.assertIsNone(error, f'{name} 解析失败: {error}')
+                self.assertTrue(callable(target), f'{name} 解析出来不是函数: {target!r}')
+                module = importlib.import_module(f"backend.app.services.{meta['module']}")
+                self.assertIs(target, getattr(module, meta['fn']),
+                              f'{name} 解析到的不是 {meta["module"]}.{meta["fn"]}')
+
+    def test_write_tools_require_confirm_and_warn_in_chinese(self) -> None:
+        """写操作不许有默认确认：`confirm` 必须在 required 里，且描述里有中文告警。"""
+        for name, meta in WRITE_TOOLS.items():
+            with self.subTest(name=name):
+                params = params_of(name)
+                if not meta['confirm']:
+                    self.assertNotIn('confirm', params.get('required', []),
+                                     f'{name} 是只读工具，不该强制 confirm')
+                    continue
+                self.assertIn('confirm', params.get('required', []),
+                              f'{name} 的 required 必须含 confirm')
+                self.assertIn('confirm', properties_of(name), f'{name} 的 properties 里要有 confirm')
+                desc = (spec_of(name) or {}).get('description', '')
+                self.assertIn('这是写操作', desc, f'{name} 的 description 要说明这是写操作')
+                self.assertIn('confirm=true', desc, f'{name} 的 description 要写明确认方式')
+                self.assertIn('不确定就不要调', desc, f'{name} 的 description 要劝退不确定的调用')
+
+    def test_write_routes_are_post_and_listed_keys_cover_required(self) -> None:
+        """MCP 侧：写工具必须 POST；required 里每个字段都要被路由认识。"""
+        from mcp_server import client as mcp_client
+
+        for name, meta in WRITE_TOOLS.items():
+            with self.subTest(name=name):
+                route = mcp_client.TOOL_ROUTES.get(name)
+                self.assertIsNotNone(route, f'{name} 在 MCP TOOL_ROUTES 里没有路由')
+                self.assertEqual(route['method'], meta['method'], f'{name} 的 method 不对')
+                self.assertEqual(route['path'], meta['path'], f'{name} 的 path 不对')
+                if meta['confirm']:
+                    self.assertEqual(route['method'], 'POST', f'{name} 是写工具，必须 POST')
+                known = (set(route.get('path_params', [])) | set(route.get('query', []))
+                         | set(route.get('body', [])))
+                for field in params_of(name).get('required', []):
+                    self.assertIn(field, known, f'{name}.{field} 路由不认识')
+
+
+#: 营销四条只读路由的黄金值。2026-10 用官方 bundle 证据订正过**查询参数**
+#: （路径名沿用首版，别改）：`/items` 与 `/records` 是单对象口径、**不吃分页**。
+#: 写死成黄金表是为了让「把 page/size 加回去」这类漂移一定有测试红。
+MARKETING_ROUTES: Dict[str, Dict[str, Any]] = {
+    'marketing_items': {
+        'method': 'GET', 'path': '/api/marketing/{account_id}/items',
+        'path_params': ['account_id'], 'query': ['item_id', 'date_type', 'date_range']},
+    'marketing_tasks': {
+        'method': 'GET', 'path': '/api/marketing/{account_id}/tasks',
+        'path_params': ['account_id'],
+        'query': ['biz_scene', 'query_scene', 'page', 'size', 'item_ids']},
+    'marketing_price_competitiveness': {
+        'method': 'GET', 'path': '/api/marketing/{account_id}/price-competitiveness',
+        'path_params': ['account_id'],
+        'query': ['biz_scene', 'item_id', 'sku_prices', 'commission_rate']},
+    'marketing_records': {
+        'method': 'GET', 'path': '/api/marketing/{account_id}/records',
+        'path_params': ['account_id'], 'query': ['task_id', 'biz_scene', 'query_scene']},
+}
+
+
+class RepoWideCrossCheckTest(unittest.TestCase):
+    """全仓对账：工具名 → 服务层函数 / spec 参数 → 路由键。只读，不打平台。"""
+
+    def test_every_declared_service_target_exists(self) -> None:
+        """`_SERVICE_TARGETS` 声称的 `[module, fn]` 必须在那个模块上真的存在。
+
+        这条守的是「服务层函数改名了但工具表没跟着改」——只断言 `_resolve_service`
+        不报错是不够的，它会把 AttributeError 变成中文错误串而**看起来正常**。
+        """
+        for name, (module_name, fn_name) in sorted(tools._SERVICE_TARGETS.items()):
+            with self.subTest(name=name):
+                module = importlib.import_module(f'backend.app.services.{module_name}')
+                self.assertTrue(hasattr(module, fn_name),
+                                f'backend.app.services.{module_name} 没有 {fn_name}()，'
+                                f'但 {name} 指向它')
+
+    def test_marketing_targets_point_to_corrected_functions(self) -> None:
+        """2026-10 订正：服务层函数名是 item_metrics / operation_records（不是 items / records）。"""
+        self.assertEqual(tools._SERVICE_TARGETS['marketing_items'], ['marketing', 'item_metrics'])
+        self.assertEqual(tools._SERVICE_TARGETS['marketing_records'],
+                         ['marketing', 'operation_records'])
+        marketing = importlib.import_module('backend.app.services.marketing')
+        self.assertFalse(hasattr(marketing, 'items'),
+                         'services/marketing.py 里出现了一个叫 items 的公开函数，'
+                         '工具表可能又指回了错名字')
+        self.assertFalse(hasattr(marketing, 'records'), 'services/marketing.py 里不该有 records()')
+
+    def test_marketing_routes_match_corrected_contract(self) -> None:
+        """黄金表：四条营销路由的 method/path/query 逐字对齐订正后的契约。"""
+        from mcp_server import client as mcp_client
+
+        for name, expected in MARKETING_ROUTES.items():
+            with self.subTest(name=name):
+                route = mcp_client.TOOL_ROUTES.get(name)
+                self.assertIsNotNone(route, f'{name} 在 MCP TOOL_ROUTES 里没有路由')
+                for key, value in expected.items():
+                    self.assertEqual(route.get(key), value,
+                                     f'{name} 的 {key} 与订正后的契约不符')
+
+    def test_every_route_covers_every_spec_property(self) -> None:
+        """路由的 path_params ∪ query ∪ body 必须覆盖 spec 的**每一个**属性（不只 required）。
+
+        否则参数会被 MCP 客户端静默丢掉——HTTP 那头只会看到缺参数。
+        """
+        from mcp_server import client as mcp_client
+
+        for name, route in sorted(mcp_client.TOOL_ROUTES.items()):
+            spec = spec_of(name)
+            if spec is None:
+                continue
+            with self.subTest(name=name):
+                known = (set(route.get('path_params', [])) | set(route.get('query', []))
+                         | set(route.get('body', [])))
+                for field in params_of(name).get('properties', {}):
+                    self.assertIn(field, known, f'{name}.{field} 路由不认识，会被丢掉')
+
+    def test_write_tool_specs_are_well_formed(self) -> None:
+        """12 条新工具也受 SchemaShapeTest 的同款约束（那边只遍历 22 个只读工具）。"""
+        for name in WRITE_TOOL_NAMES:
+            with self.subTest(name=name):
+                params = params_of(name)
+                self.assertEqual(params.get('type'), 'object', f'{name} 的 parameters.type 必须是 object')
+                self.assertIsInstance(params.get('required'), list, f'{name} 缺 required')
+                self.assertTrue(params.get('additionalProperties') is False,
+                                f'{name} 必须 additionalProperties: False')
+                if WRITE_TOOLS[name]['confirm']:
+                    confirm = properties_of(name).get('confirm')
+                    self.assertIsInstance(confirm, dict, f'{name} 的 confirm 没有 schema')
+                    self.assertEqual(confirm.get('type'), 'boolean',
+                                     f'{name} 的 confirm 必须是 boolean，否则模型会传字符串 "true"')
+
+    def test_spec_properties_are_accepted_by_the_service_function(self) -> None:
+        """spec 里声明的参数必须真能被 `_filter_args` 传给服务层（不能被静默丢掉）。"""
+        for name in sorted(tools._SERVICE_TARGETS):
+            target, error = tools._resolve_service(name)
+            if target is None:
+                continue
+            with self.subTest(name=name):
+                sig = inspect.signature(target)
+                if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+                    continue
+                props = set(params_of(name).get('properties', {}))
+                kept = set(tools._filter_args(target, {k: None for k in props}))
+                self.assertEqual(props - kept, set(),
+                                 f'{name} 的这些参数会被 _filter_args 静默丢掉')
+                required = [p.name for p in sig.parameters.values()
+                            if p.default is p.empty
+                            and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)]
+                self.assertEqual(set(required) - props, set(),
+                                 f'{name} 的服务层必填参数没写进 spec.properties')
+
+
+class WriteToolDispatchTest(unittest.TestCase):
+    """工具层**不做**确认判定：原样透传 confirm，错误码与服务层一致。"""
+
+    def test_confirm_false_is_refused_by_service_not_by_tool_layer(self) -> None:
+        for name, args in _CONFIRM_FALSE_CALLS.items():
+            with self.subTest(name=name):
+                result = asyncio.run(tools.call_tool(name, dict(args)))
+                self.assertIs(result.get('ok'), False, f'{name} 没确认却回成功: {result}')
+                self.assertIn('confirm', str(result.get('code', '')),
+                              f'{name} 的错误码应该来自服务层的 confirm_required: {result}')
+
+    def test_missing_confirm_is_rejected_before_dispatch(self) -> None:
+        """confirm 在 required 里，所以缺参数时连服务层都不会被调到。"""
+        for name in _CONFIRM_FALSE_CALLS:
+            with self.subTest(name=name):
+                args = dict(_CONFIRM_FALSE_CALLS[name])
+                args.pop('confirm')
+                result = asyncio.run(tools.call_tool(name, args))
+                self.assertIs(result.get('ok'), False, f'{name} 缺 confirm 却回成功: {result}')
+
+    def test_confirm_is_actually_passed_through_to_the_service_layer(self) -> None:
+        """把服务层函数换成间谍，证明工具层**真的调了它**、而且 confirm 原样传过去。
+
+        只断言「返回 ok=False 且 code 含 confirm」是不够的：工具层自己插一句
+        `if confirm is not True: return {...}` 也能造出同样的返回体。间谍能区分两者。
+        """
+        seen = []
+
+        def spy(account_id, trade_ids, mail_no, cp_code, address_id, *, confirm=False):
+            seen.append(confirm)
+            return {'from': 'service-spy'}
+
+        with mock.patch('backend.app.services.trade_write.ship_offline', spy):
+            result = asyncio.run(tools.call_tool('trade_write_ship_offline', {
+                'account_id': 'acc-x', 'trade_ids': ['t1'], 'mail_no': 'SF1',
+                'cp_code': 'SF', 'address_id': 'a1', 'confirm': False}))
+        self.assertEqual(seen, [False], '工具层自己短路了，没把 confirm 透传给服务层')
+        self.assertEqual(result.get('result'), {'from': 'service-spy'},
+                         '工具层改写了服务层的返回值')
+
+    def test_unknown_tool_is_not_silently_ok(self) -> None:
+        result = asyncio.run(tools.call_tool('trade_write_nope', {'account_id': 'a', 'confirm': True}))
+        self.assertIs(result.get('ok'), False)
+
+    def test_read_only_promotion_catalog_works_without_confirm(self) -> None:
+        """目录工具是只读的：不打平台、不需要账号，直接读服务层常量。"""
+        result = asyncio.run(tools.call_tool('promotion_write_actions', {}))
+        self.assertIs(result.get('ok'), True, f'目录工具不该失败: {result}')
+        actions = result['result']['actions']
+        self.assertTrue(actions)
+        self.assertTrue(all(item['confirm_required'] is True for item in actions))
+        unsupported = {item['action'] for item in result['result']['unsupported']}
+        self.assertEqual(unsupported, {'recharge', 'withdraw'})
 
 
 if __name__ == '__main__':

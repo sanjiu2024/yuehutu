@@ -28,7 +28,7 @@ import asyncio
 import threading
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from loguru import logger
 from pydantic import BaseModel
 
@@ -204,8 +204,18 @@ def _not_found(account_id: str) -> HTTPException:
 
 
 @router.get('')
-def list_accounts(user=Depends(current_user)) -> Dict[str, Any]:
+def list_accounts(
+    enabled: Optional[bool] = Query(default=None, description='只看启用(true)/停用(false)的账号；不传=全部'),
+    q: str = Query(default='', description='按昵称 / 备注 / 账号 id 模糊搜索；不传=不筛'),
+    limit: int = Query(default=0, ge=0, description='返回条数上限；0=不限制'),
+    user=Depends(current_user),
+) -> Dict[str, Any]:
     """账号列表（含登录态、运行态与风控冷却，不含 Cookie 原文）。
+
+    三个筛选参数都是**可选**的，不传时行为与以前逐字一致（CONTRACTS §3 的返回形状不变）。
+    它们的存在意义是让 MCP/AI 侧的 `accounts_list` 真能用上 `enabled`/`q`/`limit`
+    —— 那三个参数一直写在 `mcp_server/client.py::CANONICAL_SPECS` 与
+    `TOOL_ROUTES` 里，但端点过去根本不收，等于发出去被 FastAPI 静默忽略。
 
     列表返回前，对**缺昵称且有 Cookie** 的账号起一个后台刷新线程（`refresh_profile`
     带 30 分钟节流）：Cookie 导入/续期恢复的账号过去在这里只能显示 `(未命名)`，
@@ -213,6 +223,18 @@ def list_accounts(user=Depends(current_user)) -> Dict[str, Any]:
     `accounts.changed`（reason=`profile_refreshed`）会让前端自己再刷一次列表。
     """
     data = [_decorate(a) for a in store.list_accounts()]
+    if enabled is not None:
+        data = [a for a in data if bool(a.get('enabled')) is enabled]
+    keyword = (q or '').strip().lower()
+    if keyword:
+        def _hit(account: Dict[str, Any]) -> bool:
+            for field in ('nickname', 'remark', 'id'):
+                if keyword in str(account.get(field) or '').lower():
+                    return True
+            return False
+        data = [a for a in data if _hit(a)]
+    if limit:
+        data = data[:limit]
     try:
         accounts_service.refresh_missing_profiles(data)
     except Exception as exc:  # noqa: BLE001 - 资料补位失败不许影响列表本身
