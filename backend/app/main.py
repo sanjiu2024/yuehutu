@@ -71,6 +71,10 @@ ROUTE_MODULES: List[str] = [
     # 交易写（发货 / 改价 / 退款 / 评价 / 投诉）：与只读 `trade` 共用 `/api/trade` 前缀，
     # 只读侧全是 GET、写侧全是 POST，路径与方法都不重叠，顺序无所谓。
     'trade_write',
+    # 安全中心写（申诉表单 / 提交申诉 / 催办）：与只读 `security_center` 共用
+    # `/api/security-center` 前缀。只读侧是 `GET /{account_id}`，写侧全是带后缀的 POST
+    # （`/{account_id}/appeal/...`），路径与方法都不重叠，顺序无所谓。
+    'security_write',
 ]
 
 PLACEHOLDER = """<!doctype html>
