@@ -343,6 +343,485 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---------------- 交易（只读） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_orders',
+            'description': '查该账号闲鱼的订单列表（含待发货/已发货等页签计数）。用户问「我有哪些订单」时用。'
+                           'account_id 必填，不传直接返回「缺少参数: account_id」，不会自己挑账号。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'page': {'type': 'string', 'description': '页码，从 1 开始，缺省 1'},
+                    'size': {'type': 'string', 'description': '每页条数 1~50，缺省 10'},
+                    'include_counts': {'type': 'boolean', 'description': 'true 时额外取一次页签计数（多一次平台请求，默认 false）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_refunds',
+            'description': '查该账号的售后/退款申请列表。用户问「我有几个退款单」时用。'
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'page': {'type': 'string', 'description': '页码，从 1 开始，缺省 1'},
+                    'size': {'type': 'string', 'description': '每页条数 1~50，缺省 10'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_evaluations',
+            'description': '查该账号收到的评价列表。用户问「买家给了我什么评价」时用。'
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'page': {'type': 'string', 'description': '页码，从 1 开始，缺省 1'},
+                    'size': {'type': 'string', 'description': '每页条数 1~50，缺省 10'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_complaints',
+            'description': '查该账号的举报/投诉工单列表。用户问「有没有人投诉我」时用。'
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'page': {'type': 'string', 'description': '页码，从 1 开始，缺省 1'},
+                    'size': {'type': 'string', 'description': '每页条数 1~50，缺省 10'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_addresses',
+            'description': '查该账号的收货地址列表。用户问「我有哪些收货地址」时用。'
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'}},
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    # ---------------- 小铺（只读） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'shop_sub_accounts',
+            'description': '查该账号下小铺的子账号（员工号）列表及其状态。用户问「有几个子账号」时用。'
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'page': {'type': 'string', 'description': '页码，缺省 1'},
+                    'size': {'type': 'string', 'description': '每页条数 1~50，缺省 20'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'shop_cs_routing',
+            'description': '查小铺的客服分流规则（哪个子账号接哪类咨询）。用户问「客服怎么分单」时用。'
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'page': {'type': 'string', 'description': '页码，缺省 1'},
+                    'size': {'type': 'string', 'description': '每页条数 1~50，缺省 20'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    # ---------------- 数据中心（只读） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'datacenter_overview',
+            'description': '查该账号的经营数据总览（曝光、成交等指标）。用户问「我这号数据怎么样」时用。'
+                           '平台没给的指标返回 null，不要当成 0。'
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'start': {'type': 'string', 'description': '开始日期 YYYYMMDD，缺省取平台默认区间'},
+                    'end': {'type': 'string', 'description': '结束日期 YYYYMMDD，缺省取平台默认区间'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'datacenter_fans',
+            'description': '查该账号的粉丝数据。用户问「我有多少粉丝、涨没涨」时用。'
+                           '平台没给的指标返回 null，不要当成 0。account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'start': {'type': 'string', 'description': '开始日期 YYYYMMDD'},
+                    'end': {'type': 'string', 'description': '结束日期 YYYYMMDD'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'datacenter_customer_service',
+            'description': '查该账号的客服数据（响应时长、满意度等）。用户问「客服表现怎么样」时用。'
+                           '平台没给的指标返回 null，不要当成 0。account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'start': {'type': 'string', 'description': '开始日期 YYYYMMDD'},
+                    'end': {'type': 'string', 'description': '结束日期 YYYYMMDD'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    # ---------------- 通知（只读） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'notifications_list',
+            'description': '查该账号的站内通知消息。用户问「平台给我发了什么消息」时用。'
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'page': {'type': 'string', 'description': '页码，从 1 开始，缺省 1'},
+                    'size': {'type': 'string', 'description': '每页条数 1~100，缺省 20'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    # ---------------- 运费模版（只读） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'item_templates_list',
+            'description': '查该账号的运费模版列表。用户问「我有哪些运费模版」时用。'
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'page': {'type': 'string', 'description': '页码，缺省 1'},
+                    'size': {'type': 'string', 'description': '每页条数 1~50，缺省 20'},
+                    'template_name': {'type': 'string', 'description': '按模版名称模糊筛选'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'item_templates_get',
+            'description': '查单个运费模版的详细内容。用户想看某个运费模版的规则时用，先用 item_templates_list 拿到 id。'
+                           'account_id 与 template_id 必填，不传直接返回「缺少参数: ...」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'template_id': {'type': 'string', 'description': '运费模版 id（先用 item_templates_list 查）'},
+                },
+                'required': ['account_id', 'template_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    # ---------------- 财务（只读） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'finance_income',
+            'description': '查该账号某账期的收入流水（进账）。用户问「我挣了多少、哪笔到账」时用。'
+                           '平台没给的字段返回 null，不要当成 0。account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'cycle_from': {'type': 'string', 'description': '起始账期 YYYYMM，缺省按平台默认（上个月）'},
+                    'cycle_to': {'type': 'string', 'description': '结束账期 YYYYMM'},
+                    'biz_type': {'type': 'string', 'description': '业务类型编码，缺省由平台默认'},
+                    'page': {'type': 'integer', 'description': '页码，缺省 1'},
+                    'size': {'type': 'integer', 'description': '每页条数，缺省 20'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'finance_expense',
+            'description': '查该账号某账期的支出流水（货款/佣金/推广费）。用户问「我花了多少」时用。'
+                           '平台没给的字段返回 null，不要当成 0。account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'cycle_from': {'type': 'string', 'description': '起始账期 YYYYMM'},
+                    'cycle_to': {'type': 'string', 'description': '结束账期 YYYYMM'},
+                    'biz_type': {'type': 'string', 'description': '业务类型编码'},
+                    'page': {'type': 'integer', 'description': '页码，缺省 1'},
+                    'size': {'type': 'integer', 'description': '每页条数，缺省 20'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'finance_invoices',
+            'description': '查该账号的开票信息/发票列表。用户问「怎么开发票、开过几」时用。'
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'page': {'type': 'integer', 'description': '页码，缺省 1'},
+                    'size': {'type': 'integer', 'description': '每页条数，缺省 20'},
+                    'biz_types': {'type': 'string', 'description': '按业务类型筛选，缺省全部'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'finance_purchaser',
+            'description': '查该账号的付款方/收货方信息。用户问「买家付款人是谁」时用。'
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'}},
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    # ---------------- 推广（只读） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_overview',
+            'description': '查该账号的推广（超级擦亮/曝光）效果总览。用户问「推广效果怎么样」时用。'
+                           '平台没给的指标返回 null，不要当成 0。account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'start': {'type': 'string', 'description': '开始日期 YYYYMMDD'},
+                    'end': {'type': 'string', 'description': '结束日期 YYYYMMDD'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_campaigns',
+            'description': '查该账号的推广计划列表。用户问「我投了哪些推广」时用。'
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'start': {'type': 'string', 'description': '开始日期 YYYYMMDD'},
+                    'end': {'type': 'string', 'description': '结束日期 YYYYMMDD'},
+                    'page': {'type': 'string', 'description': '页码，缺省 1'},
+                    'size': {'type': 'string', 'description': '每页条数，缺省 20'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_reports',
+            'description': '查该账号的推广数据报表。用户想看推广明细数据时用。'
+                           '平台没给的指标返回 null，不要当成 0。account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'start': {'type': 'string', 'description': '开始日期 YYYYMMDD'},
+                    'end': {'type': 'string', 'description': '结束日期 YYYYMMDD'},
+                    'page': {'type': 'string', 'description': '页码，缺省 1'},
+                    'size': {'type': 'string', 'description': '每页条数，缺省 20'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_account',
+            'description': '查该账号的推广账户信息（余额/开通状态）。用户问「推广还有多少余额」时用。'
+                           '平台没给的字段返回 null，不要当成 0。account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'start': {'type': 'string', 'description': '开始日期 YYYYMMDD'},
+                    'end': {'type': 'string', 'description': '结束日期 YYYYMMDD'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    # ---------------- 安全中心（只读） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'security_center_status',
+            'description': '查该账号安全中心的状态（违规、认证、风控等）。用户问「我这号安全吗、有违规吗」时用。'
+                           '平台没给的字段返回 null，不要当成 0。account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'page': {'type': 'integer', 'description': '分页页码，缺省 1'},
+                    'size': {'type': 'integer', 'description': '每页条数，缺省 20'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    # ---------------- 营销（只读） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'marketing_items',
+            'description': '查该账号的营销商品列表（平台建议推广哪些商品、商品营销状态）。用户问「哪些商品适合推广」时用。'
+                           '平台没给的字段返回 null，不要当成 0。account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'page': {'type': 'string', 'description': '页码，从 1 开始，缺省 1'},
+                    'size': {'type': 'string', 'description': '每页条数，1~50，缺省 20'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'marketing_tasks',
+            'description': '查该账号的营销任务 / 营销信息（平台派发的推广任务、可领的营销权益）。'
+                           '平台没给的字段返回 null，不要当成 0。account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'marketing_price_competitiveness',
+            'description': '查商品的价格竞争力（平台对该商品价格的评级与建议）。用户问「我价格是不是高了」时用。'
+                           'item_ids 不传则返回平台给的全部；平台没给的字段返回 null，不要当成 0。account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'item_ids': {'type': 'string', 'description': '逗号分隔的商品 id，可空；空则不按商品过滤'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'marketing_records',
+            'description': '查该账号的营销操作记录（历史推广动作流水）。'
+                           '平台没给的字段返回 null，不要当成 0。account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'page': {'type': 'string', 'description': '页码，从 1 开始，缺省 1'},
+                    'size': {'type': 'string', 'description': '每页条数，1~50，缺省 20'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 主管 AI（只给 MCP 侧） ----------------
     {
         'type': 'function',
@@ -554,18 +1033,112 @@ def _services():
         return None, str(exc)
 
 
-async def _dispatch_service(fn_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-    services, error = _services()
-    if services is None:
-        return {'ok': False, 'error': f'业务模块还没就绪（backend.app.services 不可用: {error}）'}
-    target = getattr(services, fn_name, None)
-    if target is None:
-        return {'ok': False, 'error': f'业务模块还没实现 {fn_name}()'}
-    import inspect
+# 工具名 -> (services 子模块, 子模块里的函数名)。
+#
+# 为什么要有这张表：`backend/app/services/__init__.py` 只 `__all__` 了子模块名，
+# **没有把函数重导出到包顶层**，所以直接 `getattr(backend.app.services, 'xxx')`
+# 拿不到东西 —— 早先的写类工具就因此永远回「业务模块还没实现 xxx()」。
+# 这里显式写清每个工具打到哪个函数，也是「工具名 ↔ 真实实现」的对账依据。
+_SERVICE_TARGETS: Dict[str, List[str]] = {
+    # ---- 交易 ----
+    'trade_orders': ['trade', 'orders'],
+    'trade_refunds': ['trade', 'refunds'],
+    'trade_evaluations': ['trade', 'evaluations'],
+    'trade_complaints': ['trade', 'complaints'],
+    'trade_addresses': ['trade', 'addresses'],
+    # ---- 小铺 ----
+    'shop_sub_accounts': ['shop', 'sub_accounts'],
+    'shop_cs_routing': ['shop', 'cs_routing'],
+    # ---- 数据中心 ----
+    'datacenter_overview': ['datacenter', 'overview'],
+    'datacenter_fans': ['datacenter', 'fans'],
+    'datacenter_customer_service': ['datacenter', 'customer_service'],
+    # ---- 通知 ----
+    'notifications_list': ['notify', 'notifications'],
+    # ---- 运费模版 ----
+    'item_templates_list': ['item_templates', 'list_templates'],
+    'item_templates_get': ['item_templates', 'template_detail'],
+    # ---- 财务 ----
+    'finance_income': ['finance', 'account_bills'],
+    'finance_expense': ['finance', 'account_bills'],
+    'finance_invoices': ['finance', 'account_invoices'],
+    'finance_purchaser': ['finance', 'account_purchaser'],
+    # ---- 推广 ----
+    'promotion_overview': ['promotion', 'overview'],
+    'promotion_campaigns': ['promotion', 'campaigns'],
+    'promotion_reports': ['promotion', 'reports'],
+    'promotion_account': ['promotion', 'account'],
+    # ---- 安全中心 ----
+    'security_center_status': ['security_center', 'read'],
+    # ---- 营销 ----
+    'marketing_items': ['marketing', 'items'],
+    'marketing_tasks': ['marketing', 'tasks'],
+    'marketing_price_competitiveness': ['marketing', 'price_competitiveness'],
+    'marketing_records': ['marketing', 'records'],
+}
 
-    result = target(**args) if not inspect.iscoroutinefunction(target) else await target(**args)
+# 有额外位置参数（不是直接透传 args 的）在这里补上固定值
+_SERVICE_FIXED_ARGS: Dict[str, Dict[str, Any]] = {
+    'finance_income': {'kind': 'income'},
+    'finance_expense': {'kind': 'expense'},
+}
+
+
+def _resolve_service(fn_name: str):
+    """按工具名查到真正的 service 函数。返回 (callable, error)。"""
+    import importlib
+
+    target_info = _SERVICE_TARGETS.get(fn_name)
+    if target_info is None:
+        # 表外的老路径：尝试包顶层属性（如果将来有人在 __init__ 里重导出）
+        services, error = _services()
+        if services is None:
+            return None, f'业务模块还没就绪（backend.app.services 不可用: {error}）'
+        target = getattr(services, fn_name, None)
+        if target is None:
+            return None, f'业务模块还没实现 {fn_name}()'
+        return target, None
+    module_name, attr = target_info
+    try:
+        module = importlib.import_module(f'backend.app.services.{module_name}')
+    except Exception as exc:  # 模块缺失/导入报错都要变成可读错误
+        return None, f'业务模块 backend.app.services.{module_name} 不可用: {type(exc).__name__}: {exc}'
+    target = getattr(module, attr, None)
+    if target is None:
+        return None, f'backend.app.services.{module_name} 没有 {attr}()'
+    return target, None
+
+
+def _filter_args(target: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+    """只传 target 真正收的参数，避免多余键打成 TypeError（对齐 HTTP 的 Query 白名单）。"""
+    if not inspect.isfunction(target) and not inspect.ismethod(target):
+        return args
+    try:
+        params = inspect.signature(target).parameters
+    except (TypeError, ValueError):
+        return args
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return dict(args)
+    return {k: v for k, v in args.items() if k in params}
+
+
+async def _dispatch_service(fn_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    target, error = _resolve_service(fn_name)
+    if target is None:
+        return {'ok': False, 'error': error or f'业务模块还没实现 {fn_name}()'}
+    call_args = dict(_SERVICE_FIXED_ARGS.get(fn_name, {}))
+    call_args.update(_filter_args(target, args))
+    result = target(**call_args)
+    if inspect.isawaitable(result):
+        result = await result
     if isinstance(result, dict) and 'ok' in result:
         return result
+    # services 的失败信封是 {"success": false, "code": ..., "message": ...} —— 必须原样透出，
+    # 否则失败会被包成 ok=True，模型会以为成功了。
+    if isinstance(result, dict) and result.get('success') is False:
+        payload = dict(result)
+        payload['ok'] = False
+        return payload
     return {'ok': True, 'result': result}
 
 
@@ -601,6 +1174,19 @@ async def _master_chat(args: Dict[str, Any]) -> Dict[str, Any]:
     return {'ok': True, 'reply': result.get('reply', ''), 'tool_calls': result.get('tool_calls', [])}
 
 
+def _marketing_price_competitiveness(args: Dict[str, Any]) -> Dict[str, Any]:
+    """价格竞争力：AI 侧传的是逗号分隔字符串，服务层要的是**列表**，这里翻译一次。
+
+    不能直接透传：`services/marketing.price_competitiveness` 收 `item_ids` 后会
+    `[str(item) for item in item_ids]`，字符串会被逐字符拆开（`'12,34'` → `['1','2',...]`）。
+    """
+    args = dict(args)
+    raw = args.get('item_ids')
+    if raw is not None:
+        args['item_ids'] = [p.strip() for p in str(raw).split(',') if p.strip()]
+    return _dispatch_service('marketing_price_competitiveness', args)
+
+
 # 工具名 -> 执行函数（参数已校验）
 _HANDLERS = {
     'accounts_list': _accounts_list,
@@ -623,6 +1209,33 @@ _HANDLERS = {
     'providers_list': _providers_list,
     'providers_upsert': _providers_upsert,
     'master_chat': _master_chat,
+    # ---------------- 新接的只读能力（懒导入 services） ----------------
+    'trade_orders': lambda a: _dispatch_service('trade_orders', a),
+    'trade_refunds': lambda a: _dispatch_service('trade_refunds', a),
+    'trade_evaluations': lambda a: _dispatch_service('trade_evaluations', a),
+    'trade_complaints': lambda a: _dispatch_service('trade_complaints', a),
+    'trade_addresses': lambda a: _dispatch_service('trade_addresses', a),
+    'shop_sub_accounts': lambda a: _dispatch_service('shop_sub_accounts', a),
+    'shop_cs_routing': lambda a: _dispatch_service('shop_cs_routing', a),
+    'datacenter_overview': lambda a: _dispatch_service('datacenter_overview', a),
+    'datacenter_fans': lambda a: _dispatch_service('datacenter_fans', a),
+    'datacenter_customer_service': lambda a: _dispatch_service('datacenter_customer_service', a),
+    'notifications_list': lambda a: _dispatch_service('notifications_list', a),
+    'item_templates_list': lambda a: _dispatch_service('item_templates_list', a),
+    'item_templates_get': lambda a: _dispatch_service('item_templates_get', a),
+    'finance_income': lambda a: _dispatch_service('finance_income', a),
+    'finance_expense': lambda a: _dispatch_service('finance_expense', a),
+    'finance_invoices': lambda a: _dispatch_service('finance_invoices', a),
+    'finance_purchaser': lambda a: _dispatch_service('finance_purchaser', a),
+    'promotion_overview': lambda a: _dispatch_service('promotion_overview', a),
+    'promotion_campaigns': lambda a: _dispatch_service('promotion_campaigns', a),
+    'promotion_reports': lambda a: _dispatch_service('promotion_reports', a),
+    'promotion_account': lambda a: _dispatch_service('promotion_account', a),
+    'security_center_status': lambda a: _dispatch_service('security_center_status', a),
+    'marketing_items': lambda a: _dispatch_service('marketing_items', a),
+    'marketing_tasks': lambda a: _dispatch_service('marketing_tasks', a),
+    'marketing_price_competitiveness': _marketing_price_competitiveness,
+    'marketing_records': lambda a: _dispatch_service('marketing_records', a),
 }
 
 
