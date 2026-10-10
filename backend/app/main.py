@@ -60,6 +60,17 @@ ROUTE_MODULES: List[str] = [
     'notify',
     'datacenter',
     'item_templates',
+    # 营销（只读）：`/api/marketing/{account_id}/{items|tasks|price-competitiveness|records}`。
+    'marketing',
+    # 推广写（投放计划增删改停启）：`/api/promotion/write/...`。挂在 `promotion`（只读）之后：
+    # 只读侧是 `/{account_id}/{overview|campaigns|reports|account}` 四个**字面量**第二段，
+    # 而写侧第二段是字面量 `write`，两边不会互相抢占。
+    'ad_write',
+    # 推广资质（只读 5 + 写 2）：`/api/qualification/{account_id}/...`。
+    'qualification',
+    # 交易写（发货 / 改价 / 退款 / 评价 / 投诉）：与只读 `trade` 共用 `/api/trade` 前缀，
+    # 只读侧全是 GET、写侧全是 POST，路径与方法都不重叠，顺序无所谓。
+    'trade_write',
 ]
 
 PLACEHOLDER = """<!doctype html>

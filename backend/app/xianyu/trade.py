@@ -92,6 +92,13 @@ WRITE_APIS = (
     'mtop.alibaba.idle.seller.platform.merchant.delivery.address.set.default',
     'mtop.alibaba.idle.seller.platform.merchant.delivery.place.info.set',
     'mtop.alibaba.idle.seller.platform.sms.sms.send',
+    # 下面 4 个是 `trade_write.py`（写接口协议层）用到的，原先漏登记 —— 黑名单必须是
+    # 写协议层的**超集**，否则只读层可能悄悄调用它们。`test_trade_write_api.py` 有一条
+    # 断言钉住这个超集关系，漏一个就红。
+    'mtop.taobao.idle.logistics.merchant.consign.offline',
+    'mtop.taobao.idle.logistics.merchant.consign.dummy',
+    'mtop.taobao.idle.cco.shop.complain.submit.active.proof',
+    'mtop.taobao.idle.cco.shop.complain.submit.passive.proof',
 )
 
 
