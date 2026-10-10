@@ -15,15 +15,21 @@
  *     所以状态/关键字/日期筛选和表头排序都是**客户端对当前页**做的，UI 上必须写清楚，
  *     不能假装成全库搜索。
  *
- * 只读：五个端点都没有写方法（后端 405 锁死），本组页面不提供任何写操作入口。
+ * 6. **列表是只读的，写操作是另一组端点**（`docs/contracts/trade_write.md`）：发货 / 改价 /
+ *    退款处理 / 评价 / 投诉共 8 个 POST，全部走本页的「交易写操作」面板，每个都要
+ *    `ConfirmDialog` 二次确认，且 `confirm` 只能传字面量 `true` —— 前端不做「默认执行」。
+ *    未确认时后端返回 400 `confirmation_required`，一个平台请求都不发。
  */
 
 import { Fragment, useMemo, useState, type ReactNode } from 'react'
-import { api, ApiError } from '../api'
-import { AsyncBox, Badge, Field, Notice } from '../components'
+import { api, ApiError, errorText } from '../api'
+import { AsyncBox, Badge, ConfirmDialog, Field, Modal, Notice, useToast } from '../components'
 import { useAsync } from '../hooks/useAsync'
 import { formatTime } from '../format'
-import { IconChevronDown, IconChevronRight, IconRefresh, IconShield } from '../icons'
+import {
+  IconCheckCircle, IconChevronDown, IconChevronRight, IconEdit, IconRefresh, IconSend,
+  IconShield, IconSparkle, IconWarn,
+} from '../icons'
 import type { Account } from '../types'
 import './trade.css'
 
@@ -108,7 +114,7 @@ export function infoLines(value: unknown): Array<{ key: string; value: string }>
     .filter((line) => line.key || line.value)
 }
 
-/** 平台的 `buttons` —— 只渲染文案，**不绑任何点击**（写接口后端 405）。 */
+/** 平台的 `buttons` —— 只渲染文案，**不绑任何点击**（文案与后端写端点没有契约对应关系）。 */
 export function buttonsOf(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   return value
@@ -511,6 +517,513 @@ export function TradeError({ error, notReady, onRetry }: {
   )
 }
 
+/* ================================================================== 交易写操作 */
+
+/**
+ * 写操作类型 —— 与后端 8 个 POST **一一对应**（`docs/contracts/trade_write.md`）。
+ * 字段名一律用后端契约里的真名，前端不发明字段、不改单位（改价传元，换算在后端做一次）。
+ */
+export type WriteKind =
+  | 'ship'
+  | 'ship-dummy'
+  | 'adjust-price'
+  | 'refund-agree'
+  | 'refund-refuse'
+  | 'rate'
+  | 'complain-refuse'
+  | 'complain-proof'
+
+type WriteGroup = 'ship' | 'price' | 'refund' | 'rate' | 'complain'
+
+/** 打开写面板时带的预填：订单行的「发货 / 改价」按钮会把 order_id 带进来。 */
+export interface WriteDraft {
+  kind: WriteKind
+  orderId?: string
+  refundId?: string
+  complainId?: string
+}
+
+type WriteOutcome =
+  | { ok: true; data: Record<string, unknown> }
+  | { ok: false; message: string }
+
+/**
+ * 唯一的写请求出口。两条硬规矩都在这里：
+ *  1. `confirm` 只能是**字面量 `true`** —— 这是后端 `confirmation_required` 闸门的钥匙，
+ *     前端永远不替用户点这个头；
+ *  2. 失败**原样**把后端 `message`（含平台原文）交回调用方，绝不吞错、绝不改写成成功。
+ */
+async function postWrite(path: string, body: Record<string, unknown>): Promise<WriteOutcome> {
+  try {
+    const data = await api.post<Record<string, unknown>>(path, { ...body, confirm: true })
+    return { ok: true, data: data ?? {} }
+  } catch (err) {
+    return { ok: false, message: errorText(err) || '写请求失败，后端没有给出原因' }
+  }
+}
+
+/** 多行 / 逗号分隔输入 → 数组（去空、保序）。 */
+function splitList(value: string): string[] {
+  return value.split(/[\n,，;；]+/).map((item) => item.trim()).filter(Boolean)
+}
+
+/** 确认框里回显令牌一类的敏感值：只留前 4 位。 */
+function masked(name: string, value: string): string {
+  if (/token|secret|cookie/i.test(name) && value.length > 4) return `${value.slice(0, 4)}…（${value.length} 位）`
+  return ellipsis(value, 60)
+}
+
+/** 平台回执：**拿不到的字段显示 `-`，绝不补 0**。 */
+function writeSummary(data: Record<string, unknown>): string {
+  const parts: string[] = []
+  if (data.total_num !== undefined || data.success_num !== undefined) {
+    parts.push(`平台回执：总数 ${num(data.total_num)} / 成功 ${num(data.success_num)} / 失败 ${num(data.fail_num)}`)
+  }
+  if (data.rate_success !== undefined) parts.push(`平台评价结果：${data.rate_success ? '成功' : '失败'}`)
+  return parts.join(' · ')
+}
+
+interface WriteFieldSpec {
+  /** 真实字段名，原样进 body。 */
+  name: string
+  label: string
+  required?: boolean
+  placeholder?: string
+  hint?: string
+  multiline?: boolean
+}
+
+interface WriteExtra {
+  rate: string
+  anonymous: boolean
+  proofKind: string
+}
+
+interface WriteFormSpec {
+  title: string
+  action: string
+  desc: ReactNode
+  fields: WriteFieldSpec[]
+  extras?: 'rate' | 'proof-kind'
+  path: (accountId: string, value: (name: string) => string) => string
+  body: (value: (name: string) => string, extra: WriteExtra) => Record<string, unknown>
+  /** 额外校验：返回非空文案表示不通过（必填项由 `required` 统一判）。 */
+  check?: (value: (name: string) => string) => string
+}
+
+const PROOF_KINDS: Array<{ value: string; label: string }> = [
+  { value: 'sellerSubmitProof', label: '卖家举证（默认）' },
+  { value: 'submitActiveProof', label: '主动举证' },
+  { value: 'submitPassiveProof', label: '被动举证' },
+]
+
+function tradePath(accountId: string, suffix: string): string {
+  return `/api/trade/${encodeURIComponent(accountId)}${suffix}`
+}
+
+function idPath(accountId: string, value: (name: string) => string, name: string, suffix: string): string {
+  return tradePath(accountId, `/${suffix.replace('{id}', encodeURIComponent(value(name)))}`)
+}
+
+const WRITE_SPECS: Record<WriteKind, WriteFormSpec> = {
+  ship: {
+    title: '订单发货（自己联系物流）',
+    action: '发货',
+    desc: <>平台接口 <code>mtop.taobao.idle.logistics.merchant.consign.offline</code>；一次可以提交多个订单号。</>,
+    fields: [
+      { name: 'trade_ids', label: '订单号列表', required: true, multiline: true, placeholder: '一行一个订单号', hint: '后端会拼成 orderInfos 的 JSON 字符串' },
+      { name: 'mail_no', label: '运单号', required: true, placeholder: '如 SF1234567890' },
+      { name: 'cp_code', label: '物流公司编码', required: true, placeholder: '如 SF / YTO / ZTO', hint: '平台编码，不是中文公司名' },
+      { name: 'address_id', label: '发货地址 id', required: true, placeholder: '如 123456789', hint: '「退货地址」页里平台给的 address_id' },
+    ],
+    path: (accountId) => tradePath(accountId, '/orders/ship'),
+    body: (value) => ({
+      trade_ids: splitList(value('trade_ids')),
+      mail_no: value('mail_no'),
+      cp_code: value('cp_code'),
+      address_id: value('address_id'),
+    }),
+  },
+  'ship-dummy': {
+    title: '无需物流发货（虚拟发货）',
+    action: '无需物流发货',
+    desc: <>平台接口 <code>mtop.taobao.idle.logistics.merchant.consign.dummy</code>；虚拟商品、当面交易用。</>,
+    fields: [
+      { name: 'order_id', label: '订单号', required: true, placeholder: '订单号' },
+      { name: 'trade_text', label: '发货说明', placeholder: '可选，平台原文透传' },
+      { name: 'pic_urls', label: '凭证图片 URL', multiline: true, placeholder: '一行一个 https 图片地址' },
+    ],
+    path: (accountId, value) => idPath(accountId, value, 'order_id', 'orders/{id}/ship-dummy'),
+    body: (value) => ({
+      trade_text: value('trade_text'),
+      pic_urls: splitList(value('pic_urls')),
+    }),
+  },
+  'adjust-price': {
+    title: '订单改价',
+    action: '改价',
+    desc: <>平台接口 <code>mtop.taobao.idle.trade.merchant.user.adjust.price</code>；<strong>这里填元</strong>，后端换算成分（平台口径）。</>,
+    fields: [
+      { name: 'order_id', label: '订单号', required: true, placeholder: '订单号' },
+      { name: 'modify_fee', label: '改后商品价格（元）', required: true, placeholder: '如 39.90' },
+      { name: 'new_transport_fee', label: '改后运费（元）', required: true, placeholder: '如 0' },
+    ],
+    path: (accountId, value) => idPath(accountId, value, 'order_id', 'orders/{id}/adjust-price'),
+    body: (value) => ({
+      modify_fee: value('modify_fee'),
+      new_transport_fee: value('new_transport_fee'),
+    }),
+    check: (value) => {
+      const price = value('modify_fee').trim()
+      if (price === '' || !Number.isFinite(Number(price))) return '改后商品价格必须是数字（元）'
+      if (Number(price) <= 0) return '平台不接受 0 元的商品价格'
+      const post = value('new_transport_fee').trim()
+      if (post === '' || !Number.isFinite(Number(post))) return '改后运费必须是数字（元，可以是 0）'
+      if (Number(post) < 0) return '改后运费不能为负'
+      return ''
+    },
+  },
+  'refund-agree': {
+    title: '同意退款',
+    action: '同意退款',
+    desc: <>平台接口 <code>mtop.taobao.idle.merchant.refund.agree.refund</code>；<code>auth_token</code> 是平台下发的操作令牌，必须原样回传。</>,
+    fields: [
+      { name: 'refund_id', label: '退款单号', required: true, placeholder: '退款单号（退款列表里给）' },
+      { name: 'auth_token', label: '平台操作令牌 auth_token', required: true, placeholder: '退款详情里平台下发的令牌' },
+    ],
+    path: (accountId, value) => idPath(accountId, value, 'refund_id', 'refunds/{id}/agree'),
+    body: (value) => ({ auth_token: value('auth_token') }),
+  },
+  'refund-refuse': {
+    title: '拒绝退款',
+    action: '拒绝退款',
+    desc: <>平台接口 <code>mtop.taobao.idle.merchant.refund.refuse</code>；拒绝原因 id 来自平台只读的 <code>refund.refuse.render</code>。</>,
+    fields: [
+      { name: 'refund_id', label: '退款单号', required: true, placeholder: '退款单号' },
+      { name: 'order_id', label: '订单号', required: true, placeholder: '订单号' },
+      { name: 'refuse_reason_id', label: '拒绝原因 id', required: true, placeholder: 'refuseReasonList[].refuseReasonId' },
+      { name: 'proof_desc', label: '拒绝说明', multiline: true, placeholder: '可选，会作为 refuseProof.desc 提交' },
+      { name: 'proof_urls', label: '凭证图片 URL', multiline: true, placeholder: '一行一个 https 图片地址' },
+    ],
+    path: (accountId, value) => idPath(accountId, value, 'refund_id', 'refunds/{id}/refuse'),
+    body: (value) => ({
+      order_id: value('order_id'),
+      refuse_reason_id: value('refuse_reason_id'),
+      proof_desc: value('proof_desc'),
+      proof_urls: splitList(value('proof_urls')),
+    }),
+  },
+  rate: {
+    title: '卖家评价',
+    action: '评价',
+    desc: <>平台接口 <code>mtop.taobao.idle.merchant.rate.create</code>；bundle 里卖家侧只有这一个评价写接口，没有单独的「回复评价」。</>,
+    fields: [
+      { name: 'trade_ids', label: '订单号列表', required: true, multiline: true, placeholder: '一行一个订单号' },
+      { name: 'feedback', label: '评价内容', required: true, multiline: true, placeholder: '评价文案' },
+      { name: 'image_urls', label: '评价图片 URL', multiline: true, placeholder: '一行一个 https 图片地址' },
+    ],
+    extras: 'rate',
+    path: (accountId) => tradePath(accountId, '/evaluations'),
+    body: (value, extra) => ({
+      trade_ids: splitList(value('trade_ids')),
+      feedback: value('feedback'),
+      rate: Number(extra.rate),
+      image_urls: splitList(value('image_urls')),
+      anonymous: extra.anonymous,
+    }),
+  },
+  'complain-refuse': {
+    title: '投诉拒绝（举证反驳）',
+    action: '投诉拒绝',
+    desc: <>平台接口 <code>mtop.taobao.idle.cco.shop.complain.refuse</code>；举证图片会作为 proofMediaList 提交。</>,
+    fields: [
+      { name: 'complain_id', label: '投诉单号', required: true, placeholder: '投诉单号' },
+      { name: 'proof_desc', label: '举证说明', placeholder: '可选' },
+      { name: 'proof_urls', label: '举证图片 URL', required: true, multiline: true, placeholder: '一行一个 https 图片地址' },
+    ],
+    path: (accountId, value) => idPath(accountId, value, 'complain_id', 'complaints/{id}/refuse'),
+    body: (value) => ({
+      proof_desc: value('proof_desc'),
+      proof_urls: splitList(value('proof_urls')),
+    }),
+  },
+  'complain-proof': {
+    title: '投诉举证',
+    action: '投诉举证',
+    desc: <>同一个提交框按平台按钮选三个接口之一（<code>submit.proof</code> / <code>.active.proof</code> / <code>.passive.proof</code>）。</>,
+    fields: [
+      { name: 'complain_id', label: '投诉单号', required: true, placeholder: '投诉单号' },
+      { name: 'proof_desc', label: '举证说明', placeholder: '可选' },
+      { name: 'proof_urls', label: '举证图片 URL', required: true, multiline: true, placeholder: '一行一个 https 图片地址' },
+    ],
+    extras: 'proof-kind',
+    path: (accountId, value) => idPath(accountId, value, 'complain_id', 'complaints/{id}/proof'),
+    body: (value, extra) => ({
+      proof_desc: value('proof_desc'),
+      proof_urls: splitList(value('proof_urls')),
+      kind: extra.proofKind,
+    }),
+  },
+}
+
+const WRITE_TABS: Array<{ key: WriteGroup; label: string; icon: ReactNode }> = [
+  { key: 'ship', label: '发货', icon: <IconSend size={14} /> },
+  { key: 'price', label: '改价', icon: <IconEdit size={14} /> },
+  { key: 'refund', label: '退款处理', icon: <IconCheckCircle size={14} /> },
+  { key: 'rate', label: '评价', icon: <IconSparkle size={14} /> },
+  { key: 'complain', label: '投诉处理', icon: <IconWarn size={14} /> },
+]
+
+const WRITE_MODES: Partial<Record<WriteGroup, Array<{ value: WriteKind; label: string }>>> = {
+  ship: [{ value: 'ship', label: '自己联系物流' }, { value: 'ship-dummy', label: '无需物流' }],
+  refund: [{ value: 'refund-agree', label: '同意退款' }, { value: 'refund-refuse', label: '拒绝退款' }],
+  complain: [{ value: 'complain-refuse', label: '投诉拒绝' }, { value: 'complain-proof', label: '投诉举证' }],
+}
+
+/** 没有子模式的 tab（改价 / 评价）点一下要直接切到它唯一的那个端点，不能留在上一个 kind。 */
+const GROUP_DEFAULT_KIND: Record<WriteGroup, WriteKind> = {
+  ship: 'ship',
+  price: 'adjust-price',
+  refund: 'refund-agree',
+  rate: 'rate',
+  complain: 'complain-refuse',
+}
+
+function groupOf(kind: WriteKind): WriteGroup {
+  if (kind === 'ship' || kind === 'ship-dummy') return 'ship'
+  if (kind === 'adjust-price') return 'price'
+  if (kind === 'refund-agree' || kind === 'refund-refuse') return 'refund'
+  if (kind === 'rate') return 'rate'
+  return 'complain'
+}
+
+/**
+ * 交易写操作面板：8 个写端点收在一个弹窗里（评价页 / 投诉页不在写范围内，
+ * 所以那两类操作以本面板的 tab 形式提供）。
+ *
+ * 每一次提交都要过 `ConfirmDialog`（危险色），确认文案写明「会真的改动闲鱼平台上的订单数据，
+ * 不可撤销」；未确认时后端一个平台请求都不发。
+ */
+export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
+  accountId: string
+  draft: WriteDraft
+  onClose: () => void
+  onChanged: () => void
+}) {
+  const toast = useToast()
+  const [kind, setKind] = useState<WriteKind>(draft.kind)
+  const [values, setValues] = useState<Record<string, string>>(() => ({
+    order_id: draft.orderId ?? '',
+    trade_ids: draft.orderId ?? '',
+    refund_id: draft.refundId ?? '',
+    complain_id: draft.complainId ?? '',
+  }))
+  const [rate, setRate] = useState('-1')
+  const [anonymous, setAnonymous] = useState(false)
+  const [proofKind, setProofKind] = useState(PROOF_KINDS[0].value)
+  const [asking, setAsking] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  const spec = WRITE_SPECS[kind]
+  const group = groupOf(kind)
+  const modes = WRITE_MODES[group] ?? []
+  const value = (name: string) => values[name] ?? ''
+  const setValue = (name: string, next: string) => setValues((prev) => ({ ...prev, [name]: next }))
+
+  const missing = spec.fields.filter((field) => field.required && value(field.name).trim() === '')
+  const checkMessage = spec.check ? spec.check(value) : ''
+  const blocked = missing.length > 0 || Boolean(checkMessage)
+  const path = spec.path(accountId, value)
+
+  function switchTo(next: WriteKind) {
+    setKind(next)
+    setError('')
+  }
+
+  async function submit() {
+    setAsking(false)
+    setBusy(true)
+    setError('')
+    const outcome = await postWrite(spec.path(accountId, value), spec.body(value, { rate, anonymous, proofKind }))
+    setBusy(false)
+    if (!outcome.ok) {
+      // 后端 message 原样展示（含平台原文）：既进 toast，也留在面板里方便复制。
+      setError(outcome.message)
+      toast.error(outcome.message)
+      return
+    }
+    const summary = writeSummary(outcome.data)
+    toast.success(`${spec.action}已提交${summary ? ` · ${summary}` : ''}`)
+    onChanged()
+    onClose()
+  }
+
+  return (
+    <>
+      <Modal
+        wide
+        title={`交易写操作 · ${spec.title}`}
+        onClose={onClose}
+        footer={
+          <>
+            <span className="tr-sub">
+              写操作会改动闲鱼平台上的真实数据，每次都要二次确认。
+            </span>
+            <span className="tr-spacer" />
+            <button className="btn ghost" onClick={onClose} disabled={busy}>取消</button>
+            <button
+              className="btn danger"
+              disabled={blocked || busy}
+              onClick={() => setAsking(true)}
+              title={blocked ? '必填项还没填完' : '会弹出二次确认'}
+            >
+              <IconShield size={14} /> {spec.action}…
+            </button>
+          </>
+        }
+      >
+        <div className="tr-write">
+          <div className="tr-write-tabs">
+            {WRITE_TABS.map((tab) => (
+              <button
+                key={tab.key}
+                className={`tr-write-tab${tab.key === group ? ' active' : ''}`}
+                onClick={() => switchTo(WRITE_MODES[tab.key]?.[0]?.value ?? GROUP_DEFAULT_KIND[tab.key])}
+              >
+                {tab.icon}{tab.label}
+              </button>
+            ))}
+          </div>
+
+          {modes.length > 1 && (
+            <div className="tr-write-modes">
+              {modes.map((mode) => (
+                <label key={mode.value} className="tr-write-mode">
+                  <input
+                    type="radio"
+                    name="tr-write-mode"
+                    checked={kind === mode.value}
+                    onChange={() => switchTo(mode.value)}
+                  />
+                  {mode.label}
+                </label>
+              ))}
+            </div>
+          )}
+
+          <p className="tr-note">{spec.desc}</p>
+
+          {error && <Notice kind="error">{error}</Notice>}
+
+          <div className="tr-write-grid">
+            {spec.fields.map((field) => (
+              <label className="tr-field" key={field.name}>
+                <span>
+                  {field.label}
+                  {field.required ? <b className="tr-write-req"> *</b> : null}
+                  <code className="tr-write-name">{field.name}</code>
+                </span>
+                {field.multiline ? (
+                  <textarea
+                    rows={3}
+                    value={value(field.name)}
+                    placeholder={field.placeholder}
+                    onChange={(event) => setValue(field.name, event.target.value)}
+                  />
+                ) : (
+                  <input
+                    type="text"
+                    value={value(field.name)}
+                    placeholder={field.placeholder}
+                    onChange={(event) => setValue(field.name, event.target.value)}
+                  />
+                )}
+                {field.hint ? <span className="tr-sub">{field.hint}</span> : null}
+              </label>
+            ))}
+
+            {spec.extras === 'rate' && (
+              <>
+                <label className="tr-field">
+                  <span>评价等级<code className="tr-write-name">rate</code></span>
+                  <select value={rate} onChange={(event) => setRate(event.target.value)}>
+                    <option value="-1">-1（不指定等级）</option>
+                    {[1, 2, 3, 4, 5].map((star) => (
+                      <option key={star} value={String(star)}>{star} 星</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="tr-field tr-write-check">
+                  <span>匿名<code className="tr-write-name">anonymous</code></span>
+                  <span className="tr-write-inline">
+                    <input
+                      type="checkbox"
+                      checked={anonymous}
+                      onChange={(event) => setAnonymous(event.target.checked)}
+                    />
+                    匿名评价
+                  </span>
+                </label>
+              </>
+            )}
+
+            {spec.extras === 'proof-kind' && (
+              <label className="tr-field">
+                <span>举证类型<code className="tr-write-name">kind</code></span>
+                <select value={proofKind} onChange={(event) => setProofKind(event.target.value)}>
+                  {PROOF_KINDS.map((item) => (
+                    <option key={item.value} value={item.value}>{item.label}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
+
+          {blocked && (
+            <p className="tr-note tr-write-blocked">
+              {missing.length > 0
+                ? `还缺必填项：${missing.map((field) => field.label).join('、')}`
+                : checkMessage}
+            </p>
+          )}
+        </div>
+      </Modal>
+
+      {asking && (
+        <ConfirmDialog
+          danger
+          busy={busy}
+          title={`确认${spec.action}？`}
+          confirmText={`确认${spec.action}`}
+          onCancel={() => setAsking(false)}
+          onConfirm={submit}
+          message={
+            <>
+              <p style={{ marginTop: 0 }}>
+                这次操作会<strong>真的改动闲鱼平台上的订单数据，不可撤销</strong>；成功后本页列表会自动刷新。
+              </p>
+              <ul className="tr-write-facts">
+                <li>接口 <code>{path}</code></li>
+                {spec.fields.filter((field) => value(field.name).trim() !== '').map((field) => (
+                  <li key={field.name}>
+                    {field.label} <code>{field.name}</code>：{masked(field.name, value(field.name))}
+                  </li>
+                ))}
+                {spec.extras === 'rate' && <li>rate：{rate} · anonymous：{anonymous ? '是' : '否'}</li>}
+                {spec.extras === 'proof-kind' && <li>kind：{proofKind}</li>}
+              </ul>
+              <p style={{ marginBottom: 0 }} className="tr-sub">
+                提交时 <code>confirm</code> 是字面量 <code>true</code>；未确认时后端不会向平台发任何请求。
+              </p>
+            </>
+          }
+        />
+      )}
+    </>
+  )
+}
+
 /* ================================================================== 订单页 */
 
 interface OrderBuyer {
@@ -559,6 +1072,7 @@ interface OrdersResult extends TradeEnvelope<TradeOrder> {
 export function OrdersPage() {
   const { accounts, picked, setPicked, accountId } = useTradeAccounts()
   const [page, setPage] = useState(1)
+  const [write, setWrite] = useState<WriteDraft | null>(null)
   const pageSize = 10
 
   const state = useAsync<OrdersResult>(
@@ -663,6 +1177,43 @@ export function OrdersPage() {
         return <span className="tr-btns">{names.map((name) => <Badge key={name} tone="muted">{name}</Badge>)}</span>
       },
     },
+    {
+      key: 'write',
+      label: '写操作',
+      render: (row) => {
+        const orderId = String(row.order_id ?? '')
+        return (
+          <span className="tr-writes" onClick={(event) => event.stopPropagation()}>
+            <button
+              className="btn sm danger"
+              disabled={!accountId || !orderId}
+              title={orderId ? '发货：会真的改动平台数据，要二次确认' : '这一行没有订单号，发不了货'}
+              onClick={() => setWrite({ kind: 'ship', orderId })}
+            >
+              <IconSend size={13} /> 发货
+            </button>
+            <button
+              className="btn sm danger"
+              disabled={!accountId || !orderId}
+              title="改价：会真的改动平台数据，要二次确认"
+              onClick={() => setWrite({ kind: 'adjust-price', orderId })}
+            >
+              <IconEdit size={13} /> 改价
+            </button>
+            {row.in_refund ? (
+              <button
+                className="btn sm danger"
+                disabled={!accountId}
+                title="处理退款：平台这里只给了「退款中」标记，退款单号要填退款列表里的 refund_id"
+                onClick={() => setWrite({ kind: 'refund-agree', orderId })}
+              >
+                <IconCheckCircle size={13} /> 退款
+              </button>
+            ) : null}
+          </span>
+        )
+      },
+    },
   ]
 
   return (
@@ -672,7 +1223,7 @@ export function OrdersPage() {
         title="订单"
         desc={
           <>
-            已卖出的订单与状态 · 只读
+            已卖出的订单与状态 · 列表只读，写操作（发货 / 改价 / 退款 / 评价 / 投诉）都要二次确认
             {data?.fetched_at ? ` · 更新于 ${when(data.fetched_at)}` : ''}
             {data?.api ? ` · 平台接口 ${data.api}` : ''}
           </>
@@ -681,7 +1232,21 @@ export function OrdersPage() {
         loading={state.loading}
       />
 
-      <AccountBar accounts={accounts} picked={picked} setPicked={(id) => { setPicked(id); setPage(1) }} />
+      <AccountBar
+        accounts={accounts}
+        picked={picked}
+        setPicked={(id) => { setPicked(id); setPage(1) }}
+        extra={
+          <button
+            className="btn sm danger"
+            disabled={!accountId}
+            title={accountId ? '8 个写端点都在这个面板里，每次都要二次确认' : '先选一个账号'}
+            onClick={() => setWrite({ kind: 'ship' })}
+          >
+            <IconShield size={14} /> 交易写操作
+          </button>
+        }
+      />
 
       {!accountId && <Notice kind="info">先在上方选一个账号，没有账号就没订单可看。</Notice>}
       {relogin && (
@@ -749,6 +1314,15 @@ export function OrdersPage() {
           ) : null
         }
       />
+
+      {write && accountId ? (
+        <TradeWritePanel
+          accountId={accountId}
+          draft={write}
+          onClose={() => setWrite(null)}
+          onChanged={state.reload}
+        />
+      ) : null}
     </>
   )
 }
@@ -797,7 +1371,10 @@ function OrderDetail({ row }: { row: TradeOrder }) {
       {names.length > 0 && (
         <Field label="平台给出的操作">
           <span className="tr-btns">{names.map((name) => <Badge key={name} tone="muted">{name}</Badge>)}</span>
-          <span className="tr-sub">只显示文案、点不动 —— 本项目只读，后端写接口一律 405。</span>
+          <span className="tr-sub">
+            只显示平台文案（与本项目的写端点没有契约对应关系）；要动平台数据请用这一行的
+            「发货 / 改价」，或上方「交易写操作」面板 —— 每次都会二次确认。
+          </span>
         </Field>
       )}
     </div>

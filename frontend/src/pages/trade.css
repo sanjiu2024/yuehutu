@@ -359,6 +359,122 @@ tbody tr.tr-detail-row {
   font-weight: 500;
 }
 
+/* ---------------------------------------------------------------- 交易写操作面板 */
+
+/* 行内写入口：点按钮不要触发行展开（展开由整行点击负责） */
+.tr-writes {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+
+.tr-write {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.tr-write-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+
+.tr-write-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-3);
+  font-size: var(--fs-12);
+  color: var(--text-dim);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+
+.tr-write-tab.active {
+  color: var(--text);
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.tr-write-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+
+.tr-write-mode,
+.tr-write-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-12);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.tr-write-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--sp-3);
+}
+
+.tr-field textarea {
+  min-width: 150px;
+  font-family: inherit;
+  font-size: var(--fs-12);
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.tr-field > span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-1);
+}
+
+/* 字段真名：写进 body 的就是它，别让人猜 */
+.tr-write-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--fs-11);
+  color: var(--text-mute);
+}
+
+.tr-write-req {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.tr-write-blocked {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--warn);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-sm);
+}
+
+.tr-write-check .tr-write-inline {
+  padding-top: var(--sp-1);
+}
+
+/* 二次确认框里的「这次到底提交什么」清单 */
+.tr-write-facts {
+  margin: var(--sp-2) 0;
+  padding-left: var(--sp-4);
+  font-size: var(--fs-12);
+  color: var(--text-dim);
+  line-height: 1.8;
+  word-break: break-all;
+}
+
+.tr-write-facts code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--fs-11);
+}
+
 @media (max-width: 820px) {
   .tr-head {
     flex-direction: column;
