@@ -1,0 +1,168 @@
+/**
+ * 营销页样式（前缀 mk-）。
+ *
+ * 只依赖 `styles.css` 的 `:root` 令牌与公共 class（`.card` `.tabs` `.tab` `.btn` `.field`
+ * `.table-wrap` `.stat` `.notice` `.dim` `.hint`）。**不覆盖**任何全局选择器。
+ */
+
+.mk-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.mk-spacer {
+  flex: 1 1 auto;
+}
+
+.mk-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 2px 0 8px;
+}
+
+.mk-section-title {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.mk-ico {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 5px;
+}
+
+.mk-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 12px;
+}
+
+.mk-warn-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.mk-warn-list li {
+  margin: 2px 0;
+  line-height: 1.6;
+}
+
+.mk-empty {
+  padding: 8px 0 4px;
+}
+
+.mk-empty-title {
+  display: block;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.mk-empty-desc {
+  display: block;
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  line-height: 1.7;
+}
+
+.mk-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.mk-table th,
+.mk-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  text-align: left;
+  font-size: 13px;
+  vertical-align: top;
+}
+
+.mk-table th {
+  color: var(--text-dim);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.mk-table tbody tr:hover {
+  background: var(--row-hover);
+}
+
+.mk-extra {
+  max-width: 340px;
+  color: var(--text-mute);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mk-raw {
+  display: block;
+  margin-top: 6px;
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.mk-pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+/* 「本次请求」：把即将发出的 query 串原样显示，方便和后端日志 / 400 文案对照。 */
+.mk-request {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+/* 口径说明：不抢眼，但要读得到。 */
+.mk-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text-mute);
+  line-height: 1.7;
+}
+
+/* 占满一行的自定义输入区（`sku_prices` 的 JSON 文本框）。 */
+.mk-field-wide {
+  flex: 1 1 100%;
+  margin-top: 8px;
+}
+
+.mk-textarea {
+  width: 100%;
+  min-height: 84px;
+  padding: 8px 10px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.mk-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
