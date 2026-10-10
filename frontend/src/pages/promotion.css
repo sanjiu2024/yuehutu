@@ -1,3 +1,4 @@
+/* 超级擦亮页样式：只读区块（原有）+ 投放管理写区块（task-67）。只用 styles.css 的 :root 令牌。 */
 .pr-bar{display:flex;align-items:end;gap:16px;margin-bottom:16px;flex-wrap:wrap}
 .pr-bar label{display:flex;flex-direction:column;gap:6px;color:var(--text-dim);font-size:var(--fs-12)}
 .pr-bar select{min-width:240px}
@@ -18,3 +19,18 @@
 .page-head h3{display:flex;align-items:center;gap:8px;margin:0 0 6px}
 .page-head p{margin:0;color:var(--text-dim);font-size:var(--fs-12)}
 @media(max-width:700px){.pr-bar{align-items:stretch;flex-direction:column}.pr-bar select{min-width:0;width:100%}}
+
+/* ---- 投放管理（写动作） ---- */
+.pr-write-tip{margin-bottom:14px}
+.pr-write-tip b{color:var(--danger)}
+.pr-api{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.pr-api .mono{color:var(--text-dim);font-size:var(--fs-12);word-break:break-all}
+.pr-json{width:100%;min-height:132px;font-size:var(--fs-12);line-height:1.6;resize:vertical;white-space:pre;overflow-wrap:normal}
+.pr-json.bad{border-color:var(--danger-line);background:var(--danger-soft)}
+.pr-json-hint{margin-top:6px;color:var(--text-mute);font-size:var(--fs-12)}
+.pr-json-hint.bad{color:var(--danger)}
+.pr-json-hint code{color:var(--text-dim)}
+.pr-preview{margin-top:8px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--panel-2);font-size:var(--fs-12);line-height:1.6;max-height:180px;overflow:auto;white-space:pre-wrap;word-break:break-all}
+.pr-unsupported{display:flex;flex-direction:column;gap:10px;padding:12px 14px}
+.pr-result{padding:12px 14px}
+.pr-err{margin-top:12px}
