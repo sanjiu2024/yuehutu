@@ -345,6 +345,23 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'method': 'GET', 'path': '/api/security-center/{account_id}',
         'path_params': ['account_id'], 'query': ['page', 'size'],
     },
+    # ---------------- 安全中心申诉（`form` 是只读语义，其余三条会真的提交，body 必含 confirm）----
+    'security_appeal_form': {
+        'method': 'POST', 'path': '/api/security-center/{account_id}/appeal/form',
+        'path_params': ['account_id'], 'query': [], 'body': ['form_id'],
+    },
+    'security_appeal_submit': {
+        'method': 'POST', 'path': '/api/security-center/{account_id}/appeal/submit',
+        'path_params': ['account_id'], 'query': [], 'body': ['parameter', 'confirm'],
+    },
+    'security_appeal_submit_cro': {
+        'method': 'POST', 'path': '/api/security-center/{account_id}/appeal/cro/submit',
+        'path_params': ['account_id'], 'query': [], 'body': ['punish_id', 'proof_items', 'confirm'],
+    },
+    'security_appeal_urge': {
+        'method': 'POST', 'path': '/api/security-center/{account_id}/appeal/urge',
+        'path_params': ['account_id'], 'query': [], 'body': ['punish_id', 'confirm'],
+    },
     # ---------------- 营销（只读）----------------
     # 路径名沿用首版（前端与 MCP 都写死了它）；2026-10 订正的是**查询参数**：
     # /items 与 /records 是单对象口径（必给 item_id / task_id，不吃分页），

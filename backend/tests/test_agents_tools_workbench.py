@@ -279,6 +279,19 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
     'items_quick_edit': {
         'module': 'items', 'fn': 'quick_edit', 'confirm': True,
         'method': 'POST', 'path': '/api/items/{account_id}/{item_id}/quick-edit'},
+    # ---- 安全中心申诉：1 个只读表单 + 3 个会真的提交 ----
+    'security_appeal_form': {
+        'module': 'security_write', 'fn': 'appeal_form', 'confirm': False,
+        'method': 'POST', 'path': '/api/security-center/{account_id}/appeal/form'},
+    'security_appeal_submit': {
+        'module': 'security_write', 'fn': 'appeal_submit', 'confirm': True,
+        'method': 'POST', 'path': '/api/security-center/{account_id}/appeal/submit'},
+    'security_appeal_submit_cro': {
+        'module': 'security_write', 'fn': 'appeal_submit_cro', 'confirm': True,
+        'method': 'POST', 'path': '/api/security-center/{account_id}/appeal/cro/submit'},
+    'security_appeal_urge': {
+        'module': 'security_write', 'fn': 'appeal_urge', 'confirm': True,
+        'method': 'POST', 'path': '/api/security-center/{account_id}/appeal/urge'},
 }
 
 WRITE_TOOL_NAMES = list(WRITE_TOOLS)
@@ -326,6 +339,14 @@ _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
     'items_quick_edit': {
         'account_id': 'acc-x', 'item_id': 'i1', 'price': 9.9, 'quantity': 3,
         'confirm': False},
+    # ---- 安全中心申诉：只读那个**故意不在**这里（它没有 confirm 判定可测） ----
+    'security_appeal_submit': {
+        'account_id': 'acc-x', 'parameter': {'reason': '我没违规'}, 'confirm': False},
+    'security_appeal_submit_cro': {
+        'account_id': 'acc-x', 'punish_id': 'p1',
+        'proof_items': [{'code': 'appealReason', 'name': '申诉理由'}], 'confirm': False},
+    'security_appeal_urge': {
+        'account_id': 'acc-x', 'punish_id': 'p1', 'confirm': False},
 }
 
 

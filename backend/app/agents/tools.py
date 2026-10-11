@@ -1137,6 +1137,82 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---------------- 安全中心申诉（提交会真的提交到平台；required 必含 confirm） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'security_appeal_form',
+            'description': '获取安全中心的申诉表单内容（**只读**，不会提交任何东西，不需要 confirm）。'
+                           '提交申诉前先用它拿到要填的表单字段。account_id 与 form_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'form_id': {'type': 'string', 'description': '表单 id（违规记录里平台给的）'},
+                },
+                'required': ['account_id', 'form_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'security_appeal_submit',
+            'description': '提交安全中心申诉（**会真的向平台提交申诉材料**，不可撤销）。'
+                           'parameter 就是要填的表单值对象，工具层不翻译字段名。'
+                           + _WRITE_HINT + 'account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'parameter': {'type': 'object', 'description': '申诉表单值对象，原样序列化后提交给平台'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'parameter', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'security_appeal_submit_cro',
+            'description': '提交申诉（复核 cro 流程，需要处罚单号与凭证项）。'
+                           '参数会拼成 parameter = JSON.stringify({punishId, proofItems}) 后提交。'
+                           + _WRITE_HINT + 'account_id 与 punish_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'punish_id': {'type': 'string', 'description': '处罚单号（违规记录里平台给的）'},
+                    'proof_items': {'type': 'array', 'items': {'type': 'object'},
+                                    'description': '凭证项列表，元素形状 {code,name,index,details:[{value,desc}]}'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'punish_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'security_appeal_urge',
+            'description': '催办已提交的申诉（加急处理）。'
+                           + _WRITE_HINT + 'account_id 与 punish_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'punish_id': {'type': 'string', 'description': '处罚单号（违规记录里平台给的）'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'punish_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 推广写（会真的改平台数据；required 必含 confirm） ----------------
     {
         'type': 'function',
@@ -1551,6 +1627,11 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'trade_write_rate_create': ['trade_write', 'rate_create'],
     'trade_write_complain_refuse': ['trade_write', 'complain_refuse'],
     'trade_write_complain_proof': ['trade_write', 'complain_proof'],
+    # ---- 安全中心申诉 ----
+    'security_appeal_form': ['security_write', 'appeal_form'],
+    'security_appeal_submit': ['security_write', 'appeal_submit'],
+    'security_appeal_submit_cro': ['security_write', 'appeal_submit_cro'],
+    'security_appeal_urge': ['security_write', 'appeal_urge'],
     # ---- 推广写 ----
     'promotion_write_actions': ['ad_write', 'actions_catalog'],
     'promotion_write_execute': ['ad_write', 'execute'],
@@ -1725,6 +1806,10 @@ _HANDLERS = {
     'trade_write_rate_create': lambda a: _dispatch_service('trade_write_rate_create', a),
     'trade_write_complain_refuse': lambda a: _dispatch_service('trade_write_complain_refuse', a),
     'trade_write_complain_proof': lambda a: _dispatch_service('trade_write_complain_proof', a),
+    'security_appeal_form': lambda a: _dispatch_service('security_appeal_form', a),
+    'security_appeal_submit': lambda a: _dispatch_service('security_appeal_submit', a),
+    'security_appeal_submit_cro': lambda a: _dispatch_service('security_appeal_submit_cro', a),
+    'security_appeal_urge': lambda a: _dispatch_service('security_appeal_urge', a),
     'promotion_write_actions': lambda a: _dispatch_service('promotion_write_actions', a),
     'promotion_write_execute': lambda a: _dispatch_service('promotion_write_execute', a),
     'qualification_submit_packages': lambda a: _dispatch_service('qualification_submit_packages', a),

@@ -517,6 +517,9 @@ class MasterChatTest(unittest.TestCase):
             'trade_refund_verify_token',
             'trade_write_refund_refuse', 'trade_write_rate_create',
             'trade_write_complain_refuse', 'trade_write_complain_proof',
+            # ---- 安全中心申诉（form 只读；其余三条会真的提交，required 必含 confirm）----
+            'security_appeal_form',
+            'security_appeal_submit', 'security_appeal_submit_cro', 'security_appeal_urge',
             # ---- 推广写 ----
             'promotion_write_actions', 'promotion_write_execute',
             # ---- 资质写 ----
@@ -527,7 +530,8 @@ class MasterChatTest(unittest.TestCase):
         ]
         self.assertEqual(tools.TOOL_NAMES, expected)
         # 每个**写**工具的 required 必须含 confirm，且 description 里要有中文告警。
-        # （promotion_write_actions 只是列目录，是只读的，故意不在这个名单里。）
+        # （promotion_write_actions 只是列目录、security_appeal_form 只是读表单，都是只读的，
+        #   故意不在这个名单里。）
         write_tools = [
             'trade_write_ship_offline', 'trade_write_ship_dummy', 'trade_write_adjust_price',
             'trade_write_refund_agree', 'trade_write_refund_refuse', 'trade_write_rate_create',
@@ -537,6 +541,7 @@ class MasterChatTest(unittest.TestCase):
             'item_templates_create', 'item_templates_modify', 'item_templates_delete',
             'item_templates_unbind',
             'items_batch_offline', 'items_batch_delete', 'items_quick_edit',
+            'security_appeal_submit', 'security_appeal_submit_cro', 'security_appeal_urge',
         ]
         for name in write_tools:
             spec = tools.get_tool(name)
