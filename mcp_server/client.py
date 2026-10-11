@@ -102,6 +102,21 @@ def error(code: str, message: str, **detail: Any) -> Dict[str, Any]:
     return payload
 
 
+def _truthy(value: Any) -> bool:
+    """只认真正的真：`'false'` / `0` / `None` 都不算确认。
+
+    与 `backend/app/services/item_templates.py::_truthy` 同一口径 —— 确认这种事
+    宁可多问一次，也不能因为模型传了个字符串 `'false'` 就当它点了头。
+    """
+    if value is True:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in ('true', '1', 'yes')
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value == 1
+    return False
+
+
 def ok(data: Any) -> Dict[str, Any]:
     return {'success': True, 'data': data}
 
@@ -592,6 +607,16 @@ class BackendClient:
     def _dispatch_route(self, cname: str, args: Dict[str, Any]) -> Dict[str, Any]:
         route = TOOL_ROUTES[cname]
         path = route['path']
+
+        # 写工具先问确认，再问别的。
+        # 不这么做的话，模型什么都不带调 `item_templates_delete` 会收到
+        # 「至少需要一个请求体字段：confirm」—— 那句话听起来像「随便补个字段就能发」，
+        # 而真正缺的是那一步确认。放在最前面还有第二个好处：与 HTTP 侧的口径一致
+        # （服务层也是「确认 → 字段校验 → 建客户端」），AI 看到的错误码统一是
+        # `confirm_required`，不会一会儿 invalid_args 一会儿 confirm_required。
+        if 'confirm' in (route.get('body') or []) and not _truthy(args.get('confirm')):
+            return error('confirm_required', '写操作必须显式确认（confirm=true）后才会执行')
+
         missing: List[str] = []
         for key in route.get('path_params', []):
             if args.get(key) in (None, ''):

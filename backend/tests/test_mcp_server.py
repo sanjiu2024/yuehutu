@@ -928,5 +928,93 @@ class BaseUrlResolutionTest(unittest.TestCase):
                          self.tmp / 'data' / 'backend_port.txt')
 
 
+class WriteToolConfirmGateTest(unittest.TestCase):
+    """AI 这条路上「没确认就一个请求都不发」必须成立，而且说法要统一。
+
+    背景（2026-10-11 真机探针 `mcp_write_gate.py` 抓到的）：`mcp_server/client.py`
+    原来只在「一个请求体字段都没给」时报 `invalid_args`「至少需要一个请求体字段：
+    …」，于是模型调 `item_templates_delete` 会收到「至少需要一个请求体字段：confirm」
+    —— 听起来像「随便补一个字段就能发」，而真正缺的是那一步确认；`promotion_write_execute`
+    （自由 body）却报 `confirm_required`，同一个意思两种说法。
+    """
+
+    def _client(self):
+        """任何 HTTP 都不该发生 —— 一旦真发请求，这个 request() 会直接失败。"""
+        calls = []
+
+        class Recorder(mcp_client.BackendClient):
+            def __init__(self):
+                super().__init__(base_url='http://127.0.0.1:9', token='T')
+
+            def request(self, method, path, query=None, body=None):
+                calls.append((method, path, body))
+                raise AssertionError('未确认的写工具不该发请求：%s %s' % (method, path))
+
+        return Recorder(), calls
+
+    def test_every_write_route_refuses_without_confirm(self):
+        """15 条写路由逐个试：都不发请求、都回 confirm_required。"""
+        write_routes = sorted(k for k, v in mcp_client.TOOL_ROUTES.items()
+                              if 'confirm' in (v.get('body') or []))
+        self.assertEqual(len(write_routes), 15, '写工具数量变了就要同步复核这份清单')
+        for name in write_routes:
+            with self.subTest(tool=name):
+                client, calls = self._client()
+                result = client.call_tool(name, {})
+                self.assertFalse(result['success'], name)
+                self.assertEqual(result['code'], 'confirm_required', name)
+                self.assertEqual(calls, [], name)
+
+    def test_confirm_false_is_not_confirm(self):
+        """`confirm: false` / `'false'` / `0` 都不算点头。"""
+        for value in (False, 'false', 'FALSE', 0, '', None):
+            with self.subTest(confirm=value):
+                client, calls = self._client()
+                result = client.call_tool('item_templates_delete',
+                                          {'account_id': 'a', 'template_id': 't',
+                                           'confirm': value})
+                self.assertEqual(result['code'], 'confirm_required')
+                self.assertEqual(calls, [])
+
+    def test_read_tools_are_not_gated(self):
+        """只读工具不能被这条闸门误伤：它该一路走到 dispatch，而不是回 confirm_required。"""
+        seen = []
+
+        class Recorder(mcp_client.BackendClient):
+            def __init__(self):
+                super().__init__(base_url='http://127.0.0.1:9', token='T')
+
+            def request(self, method, path, query=None, body=None):
+                seen.append((method, path))
+                return mcp_client.ok({})
+
+        result = Recorder().call_tool('accounts_list', {})
+        self.assertTrue(result['success'], result)
+        self.assertEqual(seen, [('GET', '/api/accounts')])
+
+    def test_confirm_routes_are_exactly_the_write_tools(self):
+        """反向断言：声明了 confirm 的 15 条，必须与 `agents/tools.py` 的写工具清单一致。"""
+        from backend.app.agents import tools as agent_tools
+        declared = {n for n, r in mcp_client.TOOL_ROUTES.items()
+                    if 'confirm' in (r.get('body') or [])}
+        write_specs = set()
+        for spec in agent_tools.TOOL_SPECS:
+            fn = spec.get('function') or {}
+            props = (fn.get('parameters') or {}).get('properties') or {}
+            if 'confirm' in props:
+                write_specs.add(fn.get('name'))
+        self.assertEqual(declared, write_specs)
+        self.assertEqual(len(declared), 15)
+
+    def test_truthy_helper_matches_service_layer(self):
+        """与 `backend/app/services/item_templates.py::_truthy` 同一口径。"""
+        self.assertTrue(mcp_client._truthy(True))
+        self.assertTrue(mcp_client._truthy('true'))
+        self.assertTrue(mcp_client._truthy(' 1 '))
+        self.assertFalse(mcp_client._truthy('false'))
+        self.assertFalse(mcp_client._truthy(0))
+        self.assertFalse(mcp_client._truthy(None))
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
