@@ -1035,6 +1035,25 @@ TOOL_SPECS: List[Dict[str, Any]] = [
     {
         'type': 'function',
         'function': {
+            'name': 'trade_refund_verify_token',
+            'description': '取同意退款要用的操作令牌（auth_token）——**只读**，不会改动任何东西，所以不需要 confirm。'
+                           '退款列表里没有这个字段，同意退款前先用它拿一次；返回里的 verify_url 是平台'
+                           '要求用户完成支付宝身份验证的页面。平台没给令牌时 token 是 null，不要自己编。'
+                           'account_id 与 refund_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'refund_id': {'type': 'string', 'description': '退款单号'},
+                },
+                'required': ['account_id', 'refund_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
             'name': 'trade_write_refund_refuse',
             'description': '拒绝买家退款：必须给平台的拒绝原因 id 与举证材料。'
                            + _WRITE_HINT + 'account_id 必填。',
@@ -1527,6 +1546,7 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'trade_write_ship_dummy': ['trade_write', 'ship_dummy'],
     'trade_write_adjust_price': ['trade_write', 'adjust_price'],
     'trade_write_refund_agree': ['trade_write', 'refund_agree'],
+    'trade_refund_verify_token': ['trade_write', 'refund_verify_token'],
     'trade_write_refund_refuse': ['trade_write', 'refund_refuse'],
     'trade_write_rate_create': ['trade_write', 'rate_create'],
     'trade_write_complain_refuse': ['trade_write', 'complain_refuse'],
@@ -1700,6 +1720,7 @@ _HANDLERS = {
     'trade_write_ship_dummy': lambda a: _dispatch_service('trade_write_ship_dummy', a),
     'trade_write_adjust_price': lambda a: _dispatch_service('trade_write_adjust_price', a),
     'trade_write_refund_agree': lambda a: _dispatch_service('trade_write_refund_agree', a),
+    'trade_refund_verify_token': lambda a: _dispatch_service('trade_refund_verify_token', a),
     'trade_write_refund_refuse': lambda a: _dispatch_service('trade_write_refund_refuse', a),
     'trade_write_rate_create': lambda a: _dispatch_service('trade_write_rate_create', a),
     'trade_write_complain_refuse': lambda a: _dispatch_service('trade_write_complain_refuse', a),

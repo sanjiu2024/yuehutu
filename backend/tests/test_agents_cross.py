@@ -512,7 +512,10 @@ class MasterChatTest(unittest.TestCase):
             'marketing_records',
             # ---- 交易写（会真的改平台数据，required 必含 confirm）----
             'trade_write_ship_offline', 'trade_write_ship_dummy', 'trade_write_adjust_price',
-            'trade_write_refund_agree', 'trade_write_refund_refuse', 'trade_write_rate_create',
+            'trade_write_refund_agree',
+            # ---- 交易只读（拿同意退款要用的 auth_token，故意没有 confirm）----
+            'trade_refund_verify_token',
+            'trade_write_refund_refuse', 'trade_write_rate_create',
             'trade_write_complain_refuse', 'trade_write_complain_proof',
             # ---- 推广写 ----
             'promotion_write_actions', 'promotion_write_execute',

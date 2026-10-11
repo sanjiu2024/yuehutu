@@ -388,6 +388,12 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'path_params': ['account_id', 'refund_id'],
         'body': ['auth_token', 'confirm'],
     },
+    # 只读：拿同意退款要用的 auth_token（没有 confirm，不该有）
+    'trade_refund_verify_token': {
+        'method': 'GET', 'path': '/api/trade/{account_id}/refunds/{refund_id}/verify-token',
+        'path_params': ['account_id', 'refund_id'],
+        'query': [],
+    },
     'trade_write_refund_refuse': {
         'method': 'POST', 'path': '/api/trade/{account_id}/refunds/{refund_id}/refuse',
         'path_params': ['account_id', 'refund_id'],
