@@ -1214,6 +1214,21 @@ textarea.it-invalid:focus {
   font-size: var(--fs-13);
 }
 
+/* ---- 行内快捷改价 / 改库存：弹窗里先说清「本次会提交什么」 ---- */
+.it-quick-plan {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-1) var(--sp-3);
+  margin-top: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  font-size: var(--fs-13);
+  color: var(--text);
+}
+
 /* ---- 行内快捷改价 / 改库存：字段填错时就地说明，不靠弹 toast ---- */
 .it-field-bad {
   margin: calc(-1 * var(--sp-1)) 0 var(--sp-2);

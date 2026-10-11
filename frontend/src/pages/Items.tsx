@@ -2892,20 +2892,32 @@ function QuickEditModal({
       !Number.isInteger(quantityValue) ||
       (quantityValue as number) < 0 ||
       (quantityValue as number) > STOCK_MAX)
+  // **只提交真的改动过的字段**：两个输入框都预填了当前值，如果无脑把两个都发出去，
+  // 一个「只想改价」的操作会顺手把库存也写一遍 —— 本地库存若比平台旧（同步不到、
+  // 平台被别人买掉几件），这一下就把平台库存改回旧值，而且用户看不出来。
+  // 所以「和当前值一样」＝ 不改，连请求体里都不放这个键（后端也是「没给的字段不放键」）。
+  const priceChanged =
+    priceFilled && !priceBad && (item.price === undefined || item.price === null || Number(price) !== Number(item.price))
+  const quantityChanged =
+    quantityFilled &&
+    !quantityBad &&
+    (item.stock === undefined || item.stock === null || Number(quantity) !== Number(item.stock))
   // 后端约定：两个字段至少填一个，都不填会 400 `invalid_fields`；这里先挡住，不让用户白点一次。
-  const ready = (priceFilled || quantityFilled) && !priceBad && !quantityBad
+  const ready = (priceChanged || quantityChanged) && !priceBad && !quantityBad
 
   const submit = async () => {
     if (!ready) {
-      toast.info(priceFilled || quantityFilled ? '价格或库存填得不对' : '价格和库存至少填一个')
+      toast.info(
+        priceFilled || quantityFilled ? '价格或库存和当前值一样，等于没改' : '价格和库存至少改一个',
+      )
       setConfirming(false)
       return
     }
     setSaving(true)
     try {
       const body: Record<string, unknown> = {}
-      if (priceFilled) body.price = priceValue
-      if (quantityFilled) body.quantity = quantityValue
+      if (priceChanged) body.price = priceValue
+      if (quantityChanged) body.quantity = quantityValue
       const result = await postItemWrite<{
         item_id: string
         price?: number
@@ -2941,7 +2953,7 @@ function QuickEditModal({
         footer={
           <>
             <span className="dim" style={{ fontSize: 12, marginRight: 'auto' }}>
-              价格和库存至少填一个；留空的那个不会被改动
+              只提交你<b>改动过</b>的字段；和当前值一样的不会被提交
             </span>
             <button className="btn ghost" onClick={onClose} disabled={saving}>
               取消
@@ -2950,7 +2962,7 @@ function QuickEditModal({
               className="btn primary"
               onClick={() => setConfirming(true)}
               disabled={saving || !ready}
-              title={ready ? undefined : '价格和库存至少填一个（且要填对）'}
+              title={ready ? undefined : '把价格或库存改成和当前值不一样，才能提交'}
             >
               提交
             </button>
@@ -3003,6 +3015,29 @@ function QuickEditModal({
           />
         </Field>
         {quantityBad && <div className="it-field-bad">库存要是 0 ~ {STOCK_MAX} 之间的整数。</div>}
+
+        {/* 提交前就把「到底会发什么」摆出来：两个框都预填了当前值，不写清楚用户会以为
+            「我只改了价格」而实际库存也一起发了（或反过来）。 */}
+        <div className="it-quick-plan">
+          <span className="dim">本次会提交：</span>
+          {priceChanged && (
+            <span className="mono">
+              价格 {formatMoney(item.price)} → {formatMoney(priceValue)}
+            </span>
+          )}
+          {quantityChanged && (
+            <span className="mono">
+              库存 {stockText(item.stock).text} → {quantityValue}
+            </span>
+          )}
+          {!priceChanged && !quantityChanged && (
+            <span className="dim">还没改动 —— 把要改的数字改成别的，另一个保持原样就不会被提交。</span>
+          )}
+          {priceFilled && !priceBad && !priceChanged && <span className="dim">价格没改动，不提交</span>}
+          {quantityFilled && !quantityBad && !quantityChanged && (
+            <span className="dim">库存没改动，不提交</span>
+          )}
+        </div>
       </Modal>
 
       {confirming && (
@@ -3016,16 +3051,19 @@ function QuickEditModal({
               会把 <strong>{truncate(item.title || item.item_id, 40)}</strong> 在
               <strong>闲鱼上真的改掉</strong>，<strong>不可撤销</strong>。
               <div className="it-quick-diff">
-                {priceFilled && (
+                {priceChanged && (
                   <span className="mono">
                     价格 {formatMoney(item.price)} → {formatMoney(priceValue)}
                   </span>
                 )}
-                {quantityFilled && (
+                {quantityChanged && (
                   <span className="mono">
                     库存 {stockText(item.stock).text} → {quantityValue}
                   </span>
                 )}
+              </div>
+              <div className="dim" style={{ fontSize: 12 }}>
+                只有上面列出的字段会提交；没列出来的保持闲鱼上的原值。
               </div>
               <div className="it-idlist mono">商品 ID：{item.item_id}</div>
             </>
