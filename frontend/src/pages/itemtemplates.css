@@ -1,0 +1,140 @@
+/* 运费模版页专属样式（`.tpl-*`）。
+ *
+ * 只新增自己的类，不改 `styles.css` 里既有的任何选择器与令牌 —— 那些是全站共享的。
+ * 颜色一律用 `:root` 既有令牌，这样浅色 / 深色主题都能跟着走。
+ */
+
+.tpl-ops-head {
+  width: 150px;
+}
+
+.tpl-ops {
+  display: flex;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.tpl-hint {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  line-height: 1.7;
+}
+
+.tpl-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tpl-cols {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.tpl-items {
+  width: 100%;
+  min-height: 72px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.tpl-items:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* 运费方式：三选一，用分段控件而不是下拉 —— 三个选项一眼能比。 */
+.tpl-seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tpl-seg-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tpl-seg-item:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.tpl-seg-item.on {
+  border-color: var(--accent);
+  background: var(--panel-2);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.tpl-seg-item input {
+  margin: 0;
+}
+
+.tpl-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.tpl-details-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.tpl-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tpl-detail-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) 68px 90px 68px 90px 46px;
+  gap: 6px;
+  align-items: center;
+}
+
+.tpl-detail-head {
+  font-size: 12px;
+  color: var(--text-mute);
+  padding: 0 2px;
+}
+
+@media (max-width: 900px) {
+  .tpl-cols {
+    grid-template-columns: 1fr;
+  }
+
+  .tpl-detail-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .tpl-detail-head {
+    display: none;
+  }
+}
