@@ -81,13 +81,13 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
   {
     title: '商品',
     items: [
-      { key: 'item-templates', label: '运费模版', icon: 'box', desc: '运费模版列表与明细（只读）' },
+      { key: 'item-templates', label: '运费模版', icon: 'box', desc: '运费模版增删改与给商品设置运费（写操作要二次确认）' },
     ],
   },
   {
     title: '交易',
     items: [
-      { key: 'orders', label: '订单', icon: 'tag', desc: '买家订单、发货与物流' },
+      { key: 'orders', label: '订单', icon: 'tag', desc: '买家订单、发货、改价与退款（写操作要二次确认）' },
       { key: 'refunds', label: '退款', icon: 'refresh', desc: '退款申请与处理进度' },
       { key: 'evaluations', label: '评价', icon: 'checkCircle', desc: '买家评价与回复' },
       { key: 'complaints', label: '投诉', icon: 'warn', desc: '平台投诉与处理状态' },
@@ -121,7 +121,7 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
       { key: 'promotion', label: '超级擦亮', icon: 'chart', desc: '余额、指标、计划概览与投放管理（写操作要二次确认）' },
       { key: 'marketing', label: '营销', icon: 'sparkle', desc: '商品指标、营销任务、价格竞争力与操作记录（只读）' },
       { key: 'qualification', label: '资质管理', icon: 'database', desc: '擦亮资质、类目与模板（提交材料要二次确认）' },
-      { key: 'security-center', label: '安全中心', icon: 'shield', desc: '闲气值、违规记录与申诉入口' },
+      { key: 'security-center', label: '安全中心', icon: 'shield', desc: '闲气值、违规记录与申诉入口（提交申诉要二次确认）' },
     ],
   },
   {
