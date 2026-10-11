@@ -779,6 +779,8 @@ POST /api/security-center/{account_id}/appeal/cro/submit {punish_id,proof_items,
 POST /api/security-center/{account_id}/appeal/urge       {punish_id,confirm}
        -- 站点 CODE 头与只读侧同一条路径（复用 `item_templates.site_headers(client)`）。
        -- `confirm` 的口径一句话：**只钉有副作用的那一步** —— 读表单不钉，提交申诉才钉。
+       -- AI 侧 4 个工具同名：`security_appeal_form`（只读、无 `confirm`）+
+         `security_appeal_submit` / `security_appeal_submit_cro` / `security_appeal_urge`（都要 `confirm`）。
 
 【写接口的三条硬口径（所有 *_write 一律遵守）】
 1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /
@@ -787,12 +789,18 @@ POST /api/security-center/{account_id}/appeal/urge       {punish_id,confirm}
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 66 条 / `MASTER_TOOLS` 65 条（去掉 `master_chat` 防递归），
-其中 **18 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 67 条。五方对账（specs / master / routes / service targets / handlers）
-+ 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 `reconcile_lead.py` 一键跑，必须 `RECON OK`。
-> 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `reconcile_lead.py` 里的 `WRITE_PREFIX`
-> 元组；② `backend/tests/test_agents_cross.py` 的工具名清单与写工具 `confirm` 断言。
+【AI 侧】`TOOL_SPECS` 70 条 / `MASTER_TOOLS` 69 条（去掉 `master_chat` 防递归），
+其中 **21 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
+`mcp_server/client.py::TOOL_ROUTES` 71 条。五方对账（specs / master / routes / service targets / handlers）
++ 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
+```text
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
+-> specs=70 master=69 routes=71 targets=50 handlers=70 / write_tools=21 / route_checked=71 / RECON OK
+```
+> 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
+> `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`
+> 真实顺序**）与写工具 `confirm` 断言；③ 若新增/删除写路由，还要同步
+> `backend/tests/test_mcp_server.py` 里两处硬编码的写路由条数。
 
 --------------------------------------------------------------------------
 错误响应统一：`{"success":false,"message":"...","code":"..."}`，HTTP 用语义状态码（4xx 业务、5xx 内部）。成功统一 `{"success":true,"data":{...}}`。

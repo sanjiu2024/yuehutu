@@ -82,12 +82,20 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 87 modules transformed.
-   frontend/dist/assets/index-CXzeA2jP.js (504.01 kB, gzip 157.79 kB)
+   frontend/dist/assets/index-DHN0PnNK.js (504.15 kB, gzip 157.80 kB)
    frontend/dist/assets/index-mh5rQzhQ.css (130.97 kB, gzip 20.88 kB)
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18277"
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon6&& C:\Python310\python.exe scripts\reconcile_tools.py"
+-> specs=70 master=69 routes=71 targets=50 handlers=70
+   write_tools=21  route_checked=71
+   RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
+   （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
+```
+
+```text
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18299"
 -> UI SMOKE ALL OK  (26/26 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
    截图目录：logs/ui_smoke
 ```
@@ -1690,6 +1698,71 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > ② 按 placeholder 找输入框会假失败（placeholder 已改成提示语），要按 `label.tr-field` 的
 > 文案定位。
 
+### 第二十四批：安全中心文案对齐 + 申诉接进 AI 工具 + 对账脚本入仓（154~156）
+
+154. **安全中心页也在说假话**（与第 150 条同源：文案没跟上代码）。`frontend/src/pages/SecurityCenter.tsx:89`
+    的副标题写着「（只读，不会替你申诉）」、`:133` 的底部 Notice 写着「工作台不会替你提交任何申诉
+    或上传材料」，而 `POST /api/security-center/{account_id}/appeal/{submit,cro/submit,urge}` 三条写接口
+    **第二批就实现了**（带 confirm 闸门）。**修法**：副标题改成「闲气值与违规记录（本页只读；申诉提交要
+    显式确认）」；Notice 改成说清三件事 —— 本页只读、页面上没有提交入口（想自己在官方页面提交就点
+    「去申诉」）、申诉**也做成了接口与 AI 工具**但必须显式 `confirm`，不确认一个平台请求都不会发。
+    （JSX 里 `{account_id}` 要写成 `&#123;account_id&#125;`。）
+    > 顺带审计：`grep` 扫 `frontend/src/pages/*.tsx` 的 `只读|405|点不动|在平台操作|不支持|暂时` 共 101 处命中，
+    > 逐条看过，**其余都是诚实的**（`CsData`/`DataOverview`/`Fans`/`Finance`/`Marketing`/`CsRouting`/
+    > `SubAccounts`/`ReturnAddresses` 那些页确实只读、写接口确实没实现）；`Chats.tsx:812-819` 的
+    > 「后端会话消息接口尚未可用」也不是假话 —— `notReady` 来自 `useAsync.ts:73` 的 `isNotReady(err)`
+    > （路由缺失才置位），不是「没选账号」。
+
+155. **写接口做了、AI 调不到**：申诉三条 POST 存在，但 `backend/app/agents/tools.py` 里只有只读的
+    `security_center_status`，AI 一个申诉工具都没有。**修法**：新增 4 个工具（插在
+    `trade_write_complain_proof` 之后，**顺序必须与 `TOOL_SPECS` 一致** —— `test_agents_cross.py` 是按
+    真实顺序逐项比对的）——`security_appeal_form`（**只读**，读申诉表单，`required: ['account_id','form_id']`，
+    **故意没有 confirm**）、`security_appeal_submit` / `security_appeal_submit_cro` / `security_appeal_urge`
+    （三条写，`required` 含 `confirm`）；`_SERVICE_TARGETS` 与 `_HANDLERS` 各 4 条；
+    `mcp_server/client.py` 的 `TOOL_ROUTES` 加 4 条（form 是 POST 但无 confirm，另三条带）。
+    测试三处硬编码清单同步：`test_agents_cross.py` 的工具名清单（**按真实顺序插**，放到组尾会
+    `AssertionError: Lists differ`）与写工具清单（只读的 form 不进）、`test_agents_tools_workbench.py` 的
+    `WRITE_TOOLS`/`_CONFIRM_FALSE_CALLS`、`test_mcp_server.py` 里两处写路由条数 **18 → 21**
+    （不改会报 `AssertionError: 21 != 18 : 写工具数量变了就要同步复核这份清单`）。
+    > 口径沿用第一批就定下的判据：**`confirm` 只钉有副作用的那一步** —— 读表单不钉，提交申诉才钉。
+
+156. **对账脚本原来只在临时目录里，文档却要求「新增写工具必须同步改它」**：把
+    `reconcile_lead.py` 入仓为 **`scripts/reconcile_tools.py`**，唯一改动是硬编码的仓库根换成
+    `ROOT = Path(__file__).resolve().parents[1]`。它比"只比工具名清单"更强：**把每条 MCP 路由声明的
+    query/body 键跟真实端点签名对账**（从 `app.openapi()` 取 `parameters` 与 `requestBody` schema），
+    所以能自动抓「路由参数漂移」—— 例如 `finance_income` 曾声明 `cycle_from`/`cycle_to` 而端点只认
+    `from`/`to`，发过去被 FastAPI **静默忽略**（结果错但不报错）。跑法写进 docstring：
+    `cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&&
+    C:\Python310\python.exe scripts\reconcile_tools.py"`，必须打印 `RECON OK`。
+    `WRITE_PREFIX` 元组补进两个新写工具；docstring 里写明**新增写工具必须同步改这个元组**，
+    否则必然假阳性（"只读工具却带 confirm 参数"——本批之前已经踩过两次）。
+
+> **第二十四批证据链**：`scripts/reconcile_tools.py`（`XIANYU_APP_DIR=%TEMP%\xywb_recon6`）→
+> `specs=70 master=69 routes=71 targets=50 handlers=70` / `write_tools=21` / `route_checked=71` /
+> **`RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。`**；
+> `python -m unittest backend.tests.test_agents_cross backend.tests.test_mcp_server
+> backend.tests.test_agents_tools_workbench` → **`Ran 130 tests in 3.519s OK`**（`EXIT=0`）；
+> `backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_appeal_full`）→
+> **`TOTAL 47  PASS 47  FAIL 0  CASES 1440  SKIPPED 2`**（用例数不变 —— 4 个新工具是被既有循环测试
+> 覆盖的，没有新增用例）；
+> 前端 `npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0（87 modules，
+> `index-DHN0PnNK.js 504.15 kB` / `index-mh5rQzhQ.css 130.97 kB`）；
+> 提交：`9ade196`（安全中心文案）、`25f5b8d`（申诉 AI 工具 + 对账脚本入仓）。
+> 诚实边界：4 个申诉工具与 `scripts/reconcile_tools.py` 都只做了离线验证 —— **申诉一次都没真发过**
+> （本机两账号都 `need_relogin`，且红线是不改真实平台数据）；MCP 侧只验到「不带 confirm 被拦、
+> 带 confirm 后停在 409 凭据检查」，没有真机跑通一条申诉。
+> 踩坑：`pwsh` 里 `python.exe -c "…"` 带中文/引号会被 PowerShell 解析器打断
+> （`ParserError: 缺少终止符`）⇒ 复杂片段改用 here-string 或写成 `.py` 文件；`Select-String` 接管道会让
+> `$LASTEXITCODE` 变 1，判退出码必须重定向到文件再读。
+>
+> 打包版复验（`dist\闲鱼AI工作台\闲鱼AI工作台.exe` = **9990560 字节 / 2026-10-12 07:13:42**，
+> `--port 18400` → `/api/health` 200 `frozen:true`）：
+> `probe_write_gate.py` → **`GATE FAILURES: 0 / 22`**（语义只读的 `sec.appeal_form` 仍 400 `invalid_fields`）；
+> `packaged_ui_smoke.py` → **`PACKAGED UI SMOKE 26/26 页通过`**；
+> `check_assets.py` → `GET /` 引用 `['index-DHN0PnNK.js','index-mh5rQzhQ.css']`、remote/local SHA256
+> 两边相同（`5f02a124d717` / `ce9323192809`）、**`ASSETS_MATCH=True`**；
+> `scripts/ui_smoke.py --port 18299` → **26/26 页通过**。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
@@ -1710,7 +1783,12 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   （共 54 行）: {'3998190171': {'items': 39, 'operation_logs': 15, …}}`；商品页「全部账号」
   从 `共 95 条` 变成 `共 56 条`（= 两个在售账号的 45 + 11），页面里再也搜不到 `3998190171`，
   只读探针（真 Edge）`has_deleted_account: false`、`page_errors: []`。
-- 真实 HTTP：只读 17 条 + 写路径 11 条，均结构化信封、无 500。
+- 真实 HTTP：只读 17 条 + 写路径 11 条（早期探针）；打包版接口面现在
+  `/openapi.json` = **136 条路径 / 148 个操作**（第 20 批 128/140），均结构化信封、无 500。
+- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 70 / `MASTER_TOOLS` 69 /
+  `TOOL_ROUTES` 71，其中 **21 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
+  FastAPI 端点接受 → `RECON OK`。MCP 端到端冒烟（真起 `mcp_server/server.py` 子进程打打包版）
+  `tools/list` 返回 63 个工具（该数字早于本批新增的 4 个申诉工具）。
 - **真实浏览器逐页冒烟 26/26 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
   临时数据目录，逐页断言未白屏、未掉回登录页、无 JS 报错，截图在 `logs/ui_smoke/`）。
   它抓到了后端全绿时仍然「UI 完全不可用」的登录死循环。
