@@ -748,6 +748,19 @@ POST /api/trade/{account_id}/evaluations                     {trade_ids,feedback
 POST /api/trade/{account_id}/complaints/{complain_id}/refuse {proof_desc,proof_urls,confirm}
 POST /api/trade/{account_id}/complaints/{complain_id}/proof  {proof_desc,proof_urls,kind,confirm}
 
+【读 · 退款凭证】`docs/contracts/trade_write.md` §7
+GET  /api/trade/{account_id}/refunds/{refund_id}/verify-token
+       -> {verify_url, token, scene, refund_id, api}
+       -- `mtop.idle.alipay.verify.url.query`（bundle 偏移 2801524 / 2804850，参数逐字
+          `{bizId:refundId, scene:'REFUND_PC', callBackUrl:…/seller-trade/refund-manage}`）。
+       -- **只查不改，所以是 GET、故意没有 `confirm`**：`token` 是「同意退款」要回传的
+          `auth_token`（退款列表帧里没有这个字段，真机 `btnList[].clickEvent.data.url` 是空串），
+          `verify_url` 是官方让用户完成支付宝身份验证的页面（官方嵌 150px iframe）。
+       -- 平台回空串时 `token`/`verify_url` 一律 `null`（不拿 `''` 冒充可用凭证）。
+       -- 平台拒绝走 `protocol_error`/502，**不碰登录态**（官方这条只在 `isAdmin` 为真时才发）。
+       -- 协议层登记在 `trade_write.READ_APIS`，**故意不进 `WRITE_APIS`**（否则会被只读黑名单
+          与写闸门误伤）；AI 侧工具 `trade_refund_verify_token` 同样没有 `confirm`。
+
 【写 · 推广（投放计划）】`docs/contracts/ad_write.md`
 GET  /api/promotion/write/actions                            -> 动作目录（哪些能调、哪些平台没有）
 POST /api/promotion/write/{account_id}/{action}               {confirm:true,payload:{...}}
@@ -774,9 +787,9 @@ POST /api/security-center/{account_id}/appeal/urge       {punish_id,confirm}
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 65 条 / `MASTER_TOOLS` 64 条（去掉 `master_chat` 防递归），
+【AI 侧】`TOOL_SPECS` 66 条 / `MASTER_TOOLS` 65 条（去掉 `master_chat` 防递归），
 其中 **18 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 66 条。五方对账（specs / master / routes / service targets / handlers）
+`mcp_server/client.py::TOOL_ROUTES` 67 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 `reconcile_lead.py` 一键跑，必须 `RECON OK`。
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `reconcile_lead.py` 里的 `WRITE_PREFIX`
 > 元组；② `backend/tests/test_agents_cross.py` 的工具名清单与写工具 `confirm` 断言。

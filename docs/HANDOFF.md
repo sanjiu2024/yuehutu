@@ -51,11 +51,18 @@
 菜单）、以及 `overview`/`accounts`/`agents`/`master`/`providers`/`prompts`/`risk`（AI 与风控
 是我们自己的能力，官方没有）。⇒ **官方 19 个二级页全部有对应落地位置**。
 
+**这些页里哪些能「动手」**（写操作一律二次确认，未确认零平台请求）：商品页（编辑 / 批量下架 /
+批量删除 / 快捷改价改库存 / 发布）、运费模版页（增删改 + 给商品设运费）、订单页（发货 / 改价 /
+退款处理 / 评价 / 投诉处理）、**退款页与评价页与投诉页各自行内的写按钮**（第二十三批接上，
+之前这三页只读且文案还写着「一律 405」）、超级擦亮（投放管理）、资质管理（提交材料）、
+安全中心（申诉提交 / 举证 / 催办）。**同意退款要的 `auth_token` 不用手抄**：面板里的
+「获取凭证」走只读接口 `mtop.idle.alipay.verify.url.query` 向平台要一次（第二十三批）。
+
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_item_write_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 47  PASS 47  FAIL 0  CASES 1429  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_verify_full2&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 47  PASS 47  FAIL 0  CASES 1440  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -75,12 +82,12 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 87 modules transformed.
-   frontend/dist/assets/index-CVDVd1au.js (501.19 kB, gzip 156.83 kB)
-   frontend/dist/assets/index-Dvie3-t8.css (130.80 kB, gzip 20.85 kB)
+   frontend/dist/assets/index-CXzeA2jP.js (504.01 kB, gzip 157.79 kB)
+   frontend/dist/assets/index-mh5rQzhQ.css (130.97 kB, gzip 20.88 kB)
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18255"
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18277"
 -> UI SMOKE ALL OK  (26/26 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
    截图目录：logs/ui_smoke
 ```
@@ -1601,10 +1608,92 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `info.update` 在真实 SKU 商品上的行为，全部未被真机验证**；UI 那三处也没在浏览器里
 > 手动点过（只跑过逐页冒烟，冒烟不点写按钮）。
 
+### 第二十三批：交易三页写入口 + 退款凭证（auth_token）只读接口（150~153）
+
+150. **只读页在说假话**：`grep` 全站「只读 / 405 / 点不动」文案时发现 `Refunds.tsx:307` 写着
+     「同意 / 拒绝退款是写接口，**本项目一律 405**」，而写接口早在
+     `docs/contracts/trade_write.md` 里实现了。**根因不是代码缺失，是文案没跟上代码** ——
+     用户按字面理解就会去平台网页操作，页内入口形同不存在。改法：三页各加一列写按钮
+     （退款「处理退款」→ `refund-agree`、评价「评价买家」→ `rate`、投诉「处理投诉」→
+     `complain-refuse`），复用订单页的 `TradeWritePanel`（`useState<WriteDraft | null>` +
+     末尾 `{write && <TradeWritePanel … />}`），并逐句改掉假话。
+     两处细节：① `Complaints.tsx` 行里的键是 **`complaint_id`**（不是面板预填用的
+     `complainId`），要 `read(row,'complaint_id','complain_id','id')` 映射；
+     ② `Evaluations.tsx` 不能承诺「回复评价」—— 平台卖家侧只有
+     `mtop.taobao.idle.merchant.rate.create`（卖家评价买家），**没有**回复买家评价的接口。
+     `ReturnAddresses.tsx` 的「一律 405」也改成诚实版：「**没有实现**（本页只读）：要先能从
+     官方 bundle 挖出写接口名与入参，也要确认不碰风控敏感路径；在那之前宁可只读，也不猜一个
+     接口去改用户的收货地址」。（顺带取证：退货地址**确实有**官方写接口
+     `...merchant.delivery.address.{add,update,delete,detail.query,set.default}`，偏移
+     3143576~3144501 —— 所以那句「没有实现」是准确的，只是还没做。）
+     提交 `2abb038`（4 文件 +120/-8）。
+151. **「同意退款」的 `auth_token` 用户无处可抄**：离线探针截图显示写面板只报
+     「还缺必填项：平台操作令牌 auth_token」，而退款列表帧里根本没有这个字段
+     （真机 `rightVO.btnList[].clickEvent.data.url` 是空串）。去官方交易 bundle 取证
+     （`C:\Users\Administrator\.dsh-tmp\trade_bundle\main.js`，3879584 B）：
+     **`authToken` 来自 `mtop.idle.alipay.verify.url.query`**，同意退款弹窗偏移 **2801524**、
+     拒绝退款弹窗偏移 **2804850**，两处参数逐字相同
+     `{bizId: refundId, scene:'REFUND_PC', callBackUrl:'…/#/seller-trade/refund-manage'}`，
+     响应读 `data.module.verifyUrl`（官方嵌 150px iframe 让用户完成支付宝身份验证）与
+     `data.module.token`；官方**只在 `window.__PC_SELLER_WORKBENCH__.userInfo.isAdmin` 为真时**
+     才发这个查询，非管理员态用空 token 提交。同一族里偏移 **2838769** 的
+     `compensate.service.pay`（`scene:'DEPOSIT_PC'`）是**钱相关，明确不做**。
+152. **退款凭证只读接口落地**（协议 + 服务 + 路由 + 前端 + 探针）：
+     `backend/app/xianyu/trade_write.py` 加 `VERIFY_URL_API`/`VERIFY_URL_VERSION`/
+     `VERIFY_SCENE_REFUND`/`VERIFY_CALLBACK_URL`、`READ_APIS`、`verify_url_request(refund_id)`
+     （签名里**没有** `confirm`）、`parse_verify_result(raw)`（取 `body['module']`，
+     空串一律 `None`，不拿 `''` 冒充可用凭证）；`backend/app/services/trade_write.py` 加
+     `refund_verify_token(account_id, refund_id)`（不生成、不缓存、不落库；平台拒绝走
+     `protocol_error`/502 且**不碰登录态** —— 无权限 ≠ 掉线）；
+     `backend/app/api/trade_write.py` 加 **`GET /{account_id}/refunds/{refund_id}/verify-token`**。
+     **口径**：只查不改 ⇒ GET、故意没有 `confirm`（判据一句话：**confirm 只钉有副作用的那一步**）；
+     协议层登记在 `READ_APIS`、**故意不进 `WRITE_APIS`**，免得被只读层写黑名单与写闸门误伤。
+     前端在 `Orders.tsx` 的同意退款面板里加「退款凭证 verify-token」一块（`fetchVerify()` 把
+     token 填进 `auth_token`、`verify_url` 显示成「打开验证页」链接；平台没给 token 时明说
+     「官方只在管理员态才下发」），样式 `.tr-write-verify` 插在 `trade.css` 的 `@media` 之前。
+     提交 `13212e9`（后端 4 文件 +233）、`ec8cd3c`（前端 2 文件 +81/-2）。
+153. **AI 侧也补上**：只读工具 `trade_refund_verify_token`（`required` 只有
+     `account_id`/`refund_id`、**没有 `confirm`**、description 明写「平台没给令牌时 token 是
+     null，不要自己编」）+ `_SERVICE_TARGETS` + `_HANDLERS` + MCP 路由
+     `GET /api/trade/{account_id}/refunds/{refund_id}/verify-token`，提交 `49403f7`
+     （3 文件 +31/-1）。**踩坑**：`backend/tests/test_agents_cross.py` 的
+     `tools.TOOL_NAMES` 是**按 `TOOL_SPECS` 真实顺序**逐项断言的 list，把新工具名放在组尾会
+     `AssertionError: Lists differ` —— 必须插到它前面的那个工具名之后。
+
+> **第二十三批证据链**：`backend/tests/test_trade_write_api.py` →
+> **`Ran 44 tests in 0.867s OK`**（原 33 条 + 11 条：`RefundVerifyTokenTest` 8 条断言
+> 形状/没有闸门/空串→`None`/无权限是 502 且 `login_state` 仍 `active`/无 Cookie 零平台请求/
+> 404/401/路由是 GET，`VerifyTokenProtocolTest` 3 条断言签名无 `confirm`、
+> `VERIFY_URL_API` 在 `READ_APIS` 且不在 `WRITE_APIS`、解析器不编 token）；
+> `python -m unittest backend.tests.test_agents_cross backend.tests.test_mcp_server
+> backend.tests.test_agents_tools_workbench` → **`Ran 130 tests OK`**；
+> `backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_verify_full2`）→
+> **`TOTAL 47  PASS 47  FAIL 0  CASES 1440  SKIPPED 2`**；
+> 独立五方对账 `reconcile_lead.py`（`XIANYU_APP_DIR=%TEMP%\xywb_recon4`）→
+> `specs=66 master=65 routes=67 targets=46 handlers=66 write_tools=18 route_checked=67`、
+> **`RECON OK`**（只读工具没被算成写工具）；
+> 前端 `npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0（87 modules，
+> `index-CXzeA2jP.js 504.01 kB` / `index-mh5rQzhQ.css 130.97 kB`）；
+> `scripts/ui_smoke.py --port 18277` → **26/26 页通过**；
+> 两个离线 Playwright 探针（都断言整轮 `non-GET /api/ 请求 == []`）：
+> `trade_write_entry_probe.py` → **`TRADE WRITE ENTRY ALL OK (3/3)`**（三页写入口都能打开、
+> 单号已预填、没点最终确认就一个写请求都不发，截图 `logs/trade_write_entry/`）、
+> `verify_token_probe.py` → **`VERIFY TOKEN ALL OK (2/2)`**（给了 token → 框里就是它 +
+> 「打开验证页」可见；回空串 → 不填框 + 显示提示，截图 `logs/verify_token/`）。
+> 提交：`2abb038`（三页写入口 + 说真话）、`13212e9`（退款凭证后端）、`ec8cd3c`（前端获取凭证）、
+> `49403f7`（AI 只读工具）。
+> 诚实边界：`mtop.idle.alipay.verify.url.query` 的**真实响应未被真机验证**（本机两账号都
+> `need_relogin`），`module.token`/`module.verifyUrl` 的字段名来自 bundle 的读取点而非响应样本；
+> `auth_token` 也**没有被真机用去提交过退款**（红线：不改真实平台数据、不动钱）。
+> 探针里两个坑值得记：① 第二轮点按钮报 `.modal-mask intercepts pointer events` 是因为
+> 第一轮没关面板而 `page.goto` 同 hash 不刷新 —— 加 `page.reload()` 即可，**不是层级 bug**；
+> ② 按 placeholder 找输入框会假失败（placeholder 已改成提示语），要按 `label.tr-field` 的
+> 文案定位。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**47 个测试文件、1429 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**47 个测试文件、1440 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。

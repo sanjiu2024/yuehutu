@@ -25,7 +25,7 @@
    `platform_errors.explain`，**不会**把账号写成 `need_relogin`。只有平台真的回
    `SESSION_EXPIRED`（`common._is_session_expired` 按类名/文案认）才会标掉线。
 
-## 1. HTTP（8 个 POST，全部要求登录）
+## 1. HTTP（8 个 POST + 1 个只读 GET，全部要求登录）
 
 | 方法 | 路径 | body | 说明 |
 | --- | --- | --- | --- |
@@ -37,6 +37,7 @@
 | POST | `/api/trade/{account_id}/evaluations` | `{trade_ids, feedback, rate, image_urls, anonymous, confirm}` | 卖家评价（回评走同一个接口） |
 | POST | `/api/trade/{account_id}/complaints/{complain_id}/refuse` | `{proof_desc, proof_urls, confirm}` | 投诉拒绝（举证反驳） |
 | POST | `/api/trade/{account_id}/complaints/{complain_id}/proof` | `{proof_desc, proof_urls, kind, confirm}` | 投诉举证，`kind` 见 §3 |
+| **GET** | `/api/trade/{account_id}/refunds/{refund_id}/verify-token` | —（无 body，**无 `confirm`**） | 退款凭证（只读，见 §7） |
 
 - body 用 `Dict[str, Any] = Body(default={})` 收，字段校验交给服务层 → 统一信封；
   用 FastAPI 的必填字段校验会先返回 422 的裸 body。
@@ -144,12 +145,13 @@ data 形状同 §2.7；`kind` 不在上表 → `invalid_fields`，不发平台�
 3. **`orderInfos` 的内部结构是推测**：bundle 只内联到 `JSON.stringify([{tradeId}])` 这一层，
    多单发货是否有别的字段（如数量、子单）未验证。
 4. **`rate.create` 的 `rate=-1` 语义是推测**（bundle 注释外推：不需要等级）。
-5. **只读层的写黑名单有缺口**：`backend/app/xianyu/trade.py:75 WRITE_APIS` 目前**没有**收录
-   发货两个名字与投诉举证的 `submit.active.proof` / `submit.passive.proof`（该文件不在本任务写范围，
-   未改）。`test_trade_write_api.py::WriteContractTest::test_write_apis_are_blacklisted_in_the_read_only_layer`
-   把这个缺口钉成了断言，缺口一变化测试就会红。**建议 Lead 把这 4 个名字补进 `trade.WRITE_APIS`。**
-6. **路由与 AI 工具未挂**：`main.py` 与 `agents/tools.py` 由 Lead 挂（不在本任务写范围）。
-   本模块的 router 前缀与只读层一致（`/api/trade`），可直接 `app.include_router`。
+5. **只读层的写黑名单缺口已由 Lead 补上**：`backend/app/xianyu/trade.py` 的 `WRITE_APIS`
+   现在收录了发货两个名字与投诉举证的 `submit.active.proof` / `submit.passive.proof`；
+   `test_trade_write_api.py::WriteContractTest::test_write_apis_are_blacklisted_in_the_read_only_layer`
+   断言「无缺口 + 全被拦」，缺口一回来测试就红。
+6. **路由与 AI 工具已挂**：`backend/app/main.py` 挂了 `trade_write`（`/api/trade` 前缀），
+   `backend/app/agents/tools.py` + `mcp_server/client.py` 有 8 个写工具与 1 个只读工具
+   `trade_refund_verify_token`；五方对账 `reconcile_lead.py` 必须 `RECON OK`。
 
 ## 5. 测试
 
@@ -157,7 +159,57 @@ data 形状同 §2.7；`kind` 不在上表 → `invalid_fields`，不发平台�
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\test_trade_write_api.py"
 ```
 
-33 个用例，覆盖：8 条路由的未确认闸门（且断言 0 次平台调用）、各接口 data 形状与版本、
+44 个用例，覆盖：8 条路由的未确认闸门（且断言 0 次平台调用）、各接口 data 形状与版本、
 元→分换算、空 proof/negotiation 不传键、业务级失败、平台失败信封透出 + 登录态不变、
-缺字段/缺 Cookie/掉线/账号不存在、平台没返回的计数是 `None`。
+缺字段/缺 Cookie/掉线/账号不存在、平台没返回的计数是 `None`；
+外加 §7 退款凭证的 11 条（形状、没有闸门、空串→`None`、无权限是 502 且不改登录态、
+无 Cookie 零平台请求、404/401、路由是 GET、只读接口不在写黑名单、解析器不编 token）。
 **全部用假协议层（`install_fake_protocol`），不打真实闲鱼平台。**
+
+## 7. 退款凭证（**只读**）`refund_verify_token`
+
+```
+GET /api/trade/{account_id}/refunds/{refund_id}/verify-token
+-> {verify_url, token, scene, refund_id, api, platform_success, platform_message}
+```
+
+**为什么要有它**：同意退款的 `auth_token` 不在退款列表帧里 —— 真机
+`rightVO.btnList[].clickEvent.data.url` 是空串，用户在我们界面上无处可抄（写面板只能报
+「还缺必填项：平台操作令牌 auth_token」）。官方前端（bundle 偏移 **2801524** 同意退款弹窗、
+**2804850** 拒绝退款弹窗，参数逐字相同）在弹窗打开时先查一次：
+
+```js
+{api:'mtop.idle.alipay.verify.url.query', v:'1.0', data:{
+  bizId: refundId, scene:'REFUND_PC',
+  callBackUrl:'https://seller.goofish.com/?site=COMMONPRO#/seller-trade/refund-manage'}}
+```
+
+响应读 `data.module.verifyUrl`（官方塞进 150px 高 iframe 让用户完成支付宝身份验证）与
+`data.module.token`（原样传给 `refund.agree.refund` 的 `authToken`）。该查询在官方**只在
+`window.__PC_SELLER_WORKBENCH__.userInfo.isAdmin` 为真时**才发，非管理员态用空 token 提交。
+
+**口径**：
+
+- **只查不改 ⇒ GET、故意没有 `confirm`**（判据一句话：confirm 只钉有副作用的那一步）；
+- 协议层登记在 `trade_write.READ_APIS`，**故意不进 `WRITE_APIS`**（否则会被只读层写黑名单
+  与写闸门误伤），`verify_url_request()` 的签名里根本没有 `confirm` 参数；
+- 平台回空串时 `token`/`verify_url` 一律 `null`（不拿 `''` 冒充可用凭证），
+  **不生成、不缓存、不落库**；
+- 平台拒绝 → `protocol_error`/502 原样透出，**不碰 `login_state`**（无权限 ≠ 掉线）；
+- UI：`frontend/src/pages/Orders.tsx` 的「交易写操作 · 同意退款」面板里多一块「退款凭证」，
+  按钮「获取凭证」把 token 填进 `auth_token`、把 `verifyUrl` 显示成「打开验证页」链接；
+  平台没给 token 时明说「平台这次没有返回凭证（官方只在管理员态才下发）」；
+- AI 侧：只读工具 `trade_refund_verify_token`（无 `confirm`），MCP 路由
+  `GET /api/trade/{account_id}/refunds/{refund_id}/verify-token`。
+
+**顺带取证的邻居（**未实现**，别当成已做）**：偏移 **2838769** 的 `compensate.service.pay`
+（补偿服务费支付，`scene:'DEPOSIT_PC'`）**钱相关，明确不做**；退货地址确实有官方写接口
+（`...merchant.delivery.address.{add,update,delete,detail.query,set.default}`，偏移
+3143576~3144501）与买家改地址审批流（`mtop.idle.merchant.order.address.modify.{agree,refuse}`）
+—— 都还没做。
+
+**离线取证方式**：`C:\Users\Administrator\.dsh-tmp\verify_token_probe.py` 用 Playwright 把
+退款列表与凭证接口换成桩，断言「给了 token → 框里就是它 + 链接可见」「回空串 → 不填框 +
+显示提示」，两种场景都断言 `non_get=[]`（整轮一个非 GET 的 `/api/` 请求都没发）。
+结果：`VERIFY TOKEN ALL OK (2/2)`，截图 `logs/verify_token/`。
+
