@@ -1,7 +1,7 @@
-# 运费模版（官方 `post-temple` 页）只读契约
+# 运费模版（官方 `post-temple` 页）契约：读 + 写
 
 > 本文件是 `backend/app/xianyu/item_templates.py` / `backend/app/services/item_templates.py` /
-> `backend/app/api/item_templates.py` 的对外契约，**只覆盖只读能力**。
+> `backend/app/api/item_templates.py` 的对外契约，覆盖**读 + 写**。
 >
 > 证据来源（全部是 2026-10-10 的真机/源码证据，不是推测）：
 > - 真机抓包（headless 打开 `https://seller.goofish.com/?site=COMMONPRO#/seller-item/post-temple`，
@@ -25,7 +25,7 @@
 
 → 所以本模块只做运费模版的**读**；「发布模板」如果产品侧确实要，需要另立需求（平台当前不提供）。
 
-## 1. 已实现（只读）
+## 1. 已实现（读 + 写）
 
 ### 1.1 HTTP
 
@@ -38,7 +38,7 @@
   `GET /api/items/{account_id}/{item_id}`，同前缀会把 `templates` 当成 `item_id` 吞掉。
 - 两个端点都要求登录（`Depends(current_user)`），响应走全局信封 `{success, data}` / `{success:false, message, code}`，
   状态码由 `common.FAIL_STATUS` 决定：`invalid_fields`→400、`not_found`→404、`verification_required`→409、
-  `protocol_error`→502。**没有任何写方法**（POST/PUT/PATCH/DELETE 一律 405）。
+  `protocol_error`→502。写方法见 §1.3（只读路径上的 PUT/PATCH/DELETE 仍然 405）。
 
 列表 `data`：
 
@@ -102,18 +102,78 @@
 HTTP 端点不会出现在应用里；`backend/tests/test_item_templates_api.py` 因此自己 `include_router` 到独立
 `FastAPI()`，不依赖挂载状态。
 
-## 2. 未实现（写能力，平台有、我们故意不做）
+## 2. 写能力（已实现）
 
-`backend/app/xianyu/item_templates.py: WRITE_APIS` 里只登记了名字与参数形状，**没有任何实现**：
+### 2.1 HTTP
 
-| api | 请求 data | 证据 |
+| 方法 | 路径 | body | 说明 |
+| --- | --- | --- | --- |
+| POST | `/api/item-templates/{account_id}/create` | `{confirm, template_name, item_prov?, item_city?, valuation?, is_default?, details?, template_details?}` | 新建模版 |
+| POST | `/api/item-templates/{account_id}/{template_id}/modify` | 同 create，另可带 `version` | 修改模版 |
+| POST | `/api/item-templates/{account_id}/{template_id}/delete` | `{confirm}` | 删除模版（**不可撤销**） |
+| POST | `/api/item-templates/{account_id}/unbind` | `{confirm, item_ids, mode, template_id?, post_price?}` | 给商品设置运费 |
+
+- **`confirm` 必须显式为真**：`services/item_templates.py::_truthy` 只认 `True` / `'true'` / `1`，
+  其余（`False`/`'false'`/`'yes'`/`0`/`None`/缺省）一律 400 `confirmation_required`，**且一次平台请求都不发**
+  （`_write_facade` 先判确认、**再**建客户端）。
+- **扁平命名参数**：四个服务函数的签名是 `create_template(account_id, template_name, item_prov, item_city,
+  valuation, is_default, details, template_details, confirm)` 这种**逐字段**形式，不是 `body: dict`。
+  原因：AI/MCP 路径的 `agents/tools.py::_filter_args` **只传目标函数签名里有的键** ——
+  收 `body` 会让 AI 侧除 `account_id`/`confirm` 之外的字段全被静默丢掉。
+- `unbind` 的 `mode` 三选一：`free_ship`（包邮）/ `template`（要 `template_id`）/ `fixed`（要 `post_price`，**单位元**，必须 >0）。
+  `item_ids` 收数组或逗号串（`proto.normalize_item_ids`）。
+- 校验失败（名称空 / >30 字 / 缺 id / mode 非法 / post_price 非正数）→ 400 `invalid_fields`，同样零平台请求。
+- **成功判据是平台业务码**：`res.data.code === 'success'`（bundle 原文）。
+  顶层成功但业务码不是 `success`（或压根没有 `code`）→ **502 `protocol_error`**，message 带平台原文 `msg`，
+  绝不伪装成成功。回执 `data` 里 `template_id` 拿不到就是 `null`。
+- 无权限 / 掉线的口径与只读侧一致：`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 家族走 502 且**不改 `login_state`**；
+  真过期走 409 `verification_required`。
+
+### 2.2 平台 mtop 接口（`backend/app/xianyu/item_templates.py`）
+
+| 常量 | api | 请求 data | 证据 |
+| --- | --- | --- | --- |
+| `CREATE_API` | `mtop.alibaba.idle.seller.platform.pro.freight.template.create` | `{templateName, itemProv, itemCity, valuation, isDefault, templateDetails}` | 声明 `@2204883`、调用点 `@2211045` |
+| `MODIFY_API` | `…pro.freight.template.modify` | create 全部字段 + `templateId` + `version` | 声明 `@2204655`、调用点 `@2244766` |
+| `DELETE_API` | `…pro.freight.template.del` | `{templateId}` | 声明 `@2203984`、调用点 `@4129523` |
+| `UNBIND_API` | `mtop.alibaba.idle.seller.platform.freight.template.pc.item.unbind` | 见下 | 调用点 `@4114059` |
+
+`templateDetails` 是 **JSON 字符串**，元素形如：
+
+```json
+{"isDefault": false, "receiveDivisionName": "全国", "firstPrice": "8",
+ "excessPrice": "3", "first": "1", "excess": "1", "operate": "add"}
+```
+
+协议层 `build_detail_entry()` 负责 snake→camel（`receive_division_name` → `receiveDivisionName` …），
+`operate` 缺省补 `add`，**未知键原样透传**（平台以后加字段我们不会丢）。
+
+`UNBIND_API` 的三分支（bundle 原文，初始 `{itemIds, supportFreight:true, onlyTakeSelf:false, needAutoFreight:false}`）：
+
+| mode | 提交的差异字段 |
+| --- | --- |
+| `free_ship` | `isFreeShip: true`（`supportFreight` 保持 true） |
+| `template` | `isFreeShip: false`, `idleTemplateId: <template_id>`, `supportFreight: false` |
+| `fixed` | `isFreeShip: false`, `postPriceInCent: 100 * post_price`（`supportFreight` 保持 true） |
+
+空的选填字段**不发**（官方是 `undefined` 而不是空串），例如没填 `item_prov` 时请求里就没有这个键。
+
+### 2.3 站点 CODE 头
+
+写请求与只读侧走同一条路径：`item_templates.site_headers(client)`（内部复用
+`client.py::_security_headers()`），发 `idle_site_biz_code: COMMONPRO` + `idle_user_group_member_id: ''`。
+不带这个头，平台一律回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问`。
+
+### 2.4 AI 侧
+
+4 个写工具（`agents/tools.py` + `mcp_server/client.py::TOOL_ROUTES`），`required` 都含 `confirm`：
+
+| 工具 | 服务层 | HTTP |
 | --- | --- | --- |
-| `…pro.freight.template.create` | `{templateName, isDefault, …运费规则}`（`templateName` ≤30 字符、禁 emoji） | bundle `@2204849` / `@2209672` |
-| `…pro.freight.template.modify` | 同 create 的字段 + `templateId` | bundle `@2204655` |
-| `…pro.freight.template.del` | `{templateId}` | bundle `@2203984` |
-| `mtop.alibaba.idle.seller.platform.freight.template.pc.item.unbind` | `{templateId, itemId?}` | bundle `@2205322` |
-
-要做写能力时另开任务（需要：写前确认、结果如实回执、失败不静默）。
+| `item_templates_create` | `item_templates.create_template` | `POST /api/item-templates/{account_id}/create` |
+| `item_templates_modify` | `item_templates.modify_template` | `POST /api/item-templates/{account_id}/{template_id}/modify` |
+| `item_templates_delete` | `item_templates.delete_template` | `POST /api/item-templates/{account_id}/{template_id}/delete` |
+| `item_templates_unbind` | `item_templates.unbind_items` | `POST /api/item-templates/{account_id}/unbind` |
 
 ## 3. 平台无此数据
 

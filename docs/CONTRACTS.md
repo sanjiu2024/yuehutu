@@ -661,11 +661,21 @@ GET /api/datacenter/{account_id}/overview?start=YYYYMMDD&end=YYYYMMDD
 GET /api/datacenter/{account_id}/fans?start=&end=
 GET /api/datacenter/{account_id}/customer-service?start=&end=
 
-【只读 · 运费模版】`docs/contracts/item_templates.md`
-GET /api/item-templates/{account_id}?page=&size=&template_name=
-GET /api/item-templates/{account_id}/{template_id}
+【读 + 写 · 运费模版】`docs/contracts/item_templates.md`
+GET  /api/item-templates/{account_id}?page=&size=&template_name=
+GET  /api/item-templates/{account_id}/{template_id}
+POST /api/item-templates/{account_id}/create                {template_name,item_prov,item_city,valuation,is_default,details,template_details,confirm}
+POST /api/item-templates/{account_id}/{template_id}/modify  {同上 + version,confirm}
+POST /api/item-templates/{account_id}/{template_id}/delete  {confirm}
+POST /api/item-templates/{account_id}/unbind                {item_ids,mode:free_ship|template|fixed,template_id,post_price,confirm}
        -- ⚠ 官方 `post-temple` 是**运费模版**，不是「发布模板」；前缀特意避开 /api/items/，
        --   否则会被 `GET /api/items/{account_id}/{item_id}` 把 `templates` 当成 item_id 吞掉。
+       -- `details[]` 元素 = {receive_division_name,first_price,excess_price,first,excess,is_default?,operate?}，
+       --   协议层 `build_detail_entry` 转成官方 camelCase（`operate` 缺省 `add`），未知键原样透传。
+       -- 成功判据是**平台业务码** `res.data.code === 'success'`（bundle 原文），不是 HTTP 200。
+       -- `post_price` 单位**元**，协议层乘 100 成 `postPriceInCent`。
+       -- 写函数一律**扁平命名参数**（与 trade_write 同族），因为 AI/MCP 的 `_filter_args`
+       --   只传目标函数签名里有的键 —— 收 `body: dict` 会让 AI 侧字段全被丢掉。
 
 【只读 · 营销】`docs/contracts/marketing.md`
 GET /api/marketing/{account_id}/items?item_id=&date_type=&date_range=
@@ -716,9 +726,10 @@ POST /api/security-center/{account_id}/appeal/urge       {punish_id,confirm}
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】22 个复刻只读工具 + 12 个写工具已进 `TOOL_SPECS` 与 MCP `TOOL_ROUTES`
-（写工具 `required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`MASTER_TOOLS` = `TOOL_SPECS` 去掉 `master_chat`（防递归）。
+【AI 侧】`TOOL_SPECS` 62 条 / `MASTER_TOOLS` 61 条（去掉 `master_chat` 防递归），
+其中 **15 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
+`mcp_server/client.py::TOOL_ROUTES` 63 条。五方对账（specs / master / routes / service targets / handlers）
++ 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 `reconcile_lead.py` 一键跑，必须 `RECON OK`。
 
 --------------------------------------------------------------------------
 错误响应统一：`{"success":false,"message":"...","code":"..."}`，HTTP 用语义状态码（4xx 业务、5xx 内部）。成功统一 `{"success":true,"data":{...}}`。

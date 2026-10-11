@@ -301,5 +301,302 @@ class ItemTemplatesApiTest(unittest.TestCase):
         self.assertEqual(self.fake.calls, [])
 
 
+class ItemTemplatesWriteTest(unittest.TestCase):
+    """写接口（新建 / 修改 / 删除 / 设置运费）。
+
+    红线只有一条：**未确认时一个平台请求都不发**。所以几乎每个用例都断言 `self.fake.calls`。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        use_temp_app_dir(cls.tmp.name)
+
+    @classmethod
+    def tearDownClass(cls):
+        remove_fake_protocol()
+        db.reset_connection()
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        db.reset_connection()
+        remove_fake_protocol()
+        for table in ('accounts', 'account_credentials', 'operation_logs'):
+            db.execute(f'DELETE FROM {table}')
+        self.fake = FakeTemplatesClient(
+            payloads={
+                proto.LIST_API: TEMPLE_LIST_EMPTY,
+                proto.CREATE_API: {'code': 'success', 'msg': '', 'data': {'templateId': 111222}},
+                proto.MODIFY_API: {'code': 'success', 'msg': ''},
+                proto.DELETE_API: {'code': 'success', 'msg': ''},
+                proto.UNBIND_API: {'code': 'success', 'msg': ''},
+            },
+            headers={'idle_site_biz_code': 'COMMONPRO'},
+        )
+        install_fake_protocol(self.fake)
+        app = FastAPI()
+        app.include_router(item_templates_api.router)
+        self.app_ctx = TestClient(app)
+        self.client = self.app_ctx.__enter__()
+        self.user_id = int(db.execute(
+            "INSERT INTO users(username, password_hash, is_admin) VALUES('tplwrite','x',1)"))
+        self.headers = {'Authorization': 'Bearer ' + security.issue_token(self.user_id)}
+
+    def tearDown(self):
+        db.execute('DELETE FROM users')
+        self.app_ctx.__exit__(None, None, None)
+
+    # -- 小工具 ----------------------------------------------------------
+
+    def post(self, path: str, body: Any):
+        return self.client.post(path, json=body, headers=self.headers)
+
+    def ok(self, path: str, body: Any) -> Dict[str, Any]:
+        resp = self.post(path, body)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        payload = resp.json()
+        self.assertTrue(payload.get('success'), payload)
+        return payload['data']
+
+    def failed(self, path: str, body: Any, status: int, code: str) -> Dict[str, Any]:
+        resp = self.post(path, body)
+        self.assertEqual(resp.status_code, status, resp.text)
+        payload = resp.json()
+        self.assertFalse(payload.get('success'), payload)
+        self.assertEqual(payload.get('code'), code, payload)
+        return payload
+
+    def last_payload(self) -> Any:
+        self.assertTrue(self.fake.calls, '一个平台请求都没发')
+        return self.fake.calls[-1]['data']
+
+    def write_paths(self) -> List[str]:
+        return [
+            f'{BASE}/{ACC}/create',
+            f'{BASE}/{ACC}/unbind',
+            f'{BASE}/{ACC}/tpl-1/modify',
+            f'{BASE}/{ACC}/tpl-1/delete',
+        ]
+
+    # -- 闸门（最重要） --------------------------------------------------
+
+    def test_every_write_without_confirm_is_400_and_never_calls_platform(self):
+        """四个写接口：没带 confirm 一律 400，且**零平台请求**。"""
+        seed_account()
+        for path in self.write_paths():
+            self.failed(path, {}, 400, 'confirmation_required')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_confirm_false_is_not_confirmation(self):
+        """`confirm: false` / `'false'` / `'yes'` 都不是确认。"""
+        seed_account()
+        for value in (False, 'false', 'yes', 0, None):
+            self.failed(f'{BASE}/{ACC}/create', {'confirm': value, 'template_name': '模版'},
+                        400, 'confirmation_required')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_gate_runs_before_field_validation(self):
+        """先看确认、再看字段：没确认时连「名称不能为空」都不该先报。"""
+        seed_account()
+        body = self.failed(f'{BASE}/{ACC}/create', {}, 400, 'confirmation_required')
+        self.assertNotIn('不能为空', body['message'])
+        self.assertEqual(self.fake.calls, [])
+
+    # -- 新建 ------------------------------------------------------------
+
+    def test_create_requires_name_and_bounds_it(self):
+        seed_account()
+        self.failed(f'{BASE}/{ACC}/create', {'confirm': True}, 400, 'invalid_fields')
+        self.failed(f'{BASE}/{ACC}/create', {'confirm': True, 'template_name': '   '},
+                    400, 'invalid_fields')
+        self.failed(f'{BASE}/{ACC}/create', {'confirm': True, 'template_name': 'x' * 31},
+                    400, 'invalid_fields')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_create_builds_the_official_payload(self):
+        """字段名逐字照官方 bundle @2211045：camelCase + templateDetails 是 JSON 字符串。"""
+        seed_account()
+        data = self.ok(f'{BASE}/{ACC}/create', {
+            'confirm': True,
+            'template_name': '默认运费模版',
+            'item_prov': '浙江省',
+            'item_city': '杭州市',
+            'is_default': True,
+            'details': [
+                {'receive_division_name': '全国', 'first_price': '8', 'excess_price': '3',
+                 'first': '1', 'excess': '1'},
+            ],
+        })
+        call = self.fake.calls[-1]
+        self.assertEqual(call['api'], proto.CREATE_API)
+        payload = call['data']
+        self.assertEqual(payload['templateName'], '默认运费模版')
+        self.assertIs(payload['isDefault'], True)
+        self.assertEqual(payload['itemProv'], '浙江省')
+        self.assertEqual(payload['itemCity'], '杭州市')
+        # 明细：snake_case → 官方字段名，operate 默认 add
+        import json as _json
+        details = _json.loads(payload['templateDetails'])
+        self.assertEqual(details, [{'receiveDivisionName': '全国', 'firstPrice': '8',
+                                    'excessPrice': '3', 'first': '1', 'excess': '1',
+                                    'operate': 'add'}])
+        # 新建**不该**带 templateId / version
+        self.assertNotIn('templateId', payload)
+        self.assertNotIn('version', payload)
+        # 站点 CODE 头照旧透传
+        self.assertEqual(call['extra_headers'], {'idle_site_biz_code': 'COMMONPRO'})
+        # 回包里带平台给的 templateId
+        self.assertEqual(data['template_id'], 111222)
+        self.assertEqual(data['action'], '新建')
+        self.assertEqual(data['source'], 'platform')
+
+    def test_create_omits_blank_optional_fields(self):
+        """空的选填字段**不发**（官方是 undefined，不是空串）。"""
+        seed_account()
+        self.ok(f'{BASE}/{ACC}/create', {'confirm': True, 'template_name': '只填名字'})
+        payload = self.last_payload()
+        self.assertEqual(payload['templateName'], '只填名字')
+        self.assertEqual(payload['templateDetails'], '[]')
+        for key in ('itemProv', 'itemCity', 'valuation', 'templateId', 'version'):
+            self.assertNotIn(key, payload)
+
+    def test_platform_business_code_decides_success(self):
+        """传输层 success:true 不算成功：业务码不是 success 就是 502，并把平台原文交出去。"""
+        seed_account()
+        self.fake.payloads[proto.CREATE_API] = {'code': 'fail', 'msg': '模版名称已存在'}
+        body = self.failed(f'{BASE}/{ACC}/create', {'confirm': True, 'template_name': '重名'},
+                           502, 'protocol_error')
+        self.assertIn('模版名称已存在', body['message'])
+        self.assertEqual(body['platform_errors']['code'], 'fail')
+
+    def test_missing_business_code_is_502_not_fake_success(self):
+        """平台没回业务码 → 502（不假装成功）。"""
+        seed_account()
+        self.fake.payloads[proto.CREATE_API] = None
+        body = self.failed(f'{BASE}/{ACC}/create', {'confirm': True, 'template_name': '模版'},
+                           502, 'protocol_error')
+        self.assertIn('业务码', body['message'])
+
+    # -- 修改 / 删除 -----------------------------------------------------
+
+    def test_modify_sends_template_id_and_version(self):
+        """修改要比新建多 templateId 与 version（官方 bundle @2244766）。"""
+        seed_account()
+        self.ok(f'{BASE}/{ACC}/tpl-9/modify', {
+            'confirm': True, 'template_name': '改名了', 'version': 7,
+            'details': [{'receive_division_name': '全国', 'first_price': 8,
+                         'excess_price': 3, 'first': 1, 'excess': 1}],
+        })
+        call = self.fake.calls[-1]
+        self.assertEqual(call['api'], proto.MODIFY_API)
+        self.assertEqual(call['data']['templateId'], 'tpl-9')
+        self.assertEqual(call['data']['version'], 7)
+        self.assertEqual(call['data']['templateName'], '改名了')
+
+    def test_modify_still_requires_a_name(self):
+        seed_account()
+        self.failed(f'{BASE}/{ACC}/tpl-9/modify', {'confirm': True}, 400, 'invalid_fields')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_delete_sends_only_template_id(self):
+        seed_account()
+        data = self.ok(f'{BASE}/{ACC}/tpl-9/delete', {'confirm': True})
+        call = self.fake.calls[-1]
+        self.assertEqual(call['api'], proto.DELETE_API)
+        self.assertEqual(call['data'], {'templateId': 'tpl-9'})
+        self.assertEqual(data['template_id'], 'tpl-9')
+        self.assertEqual(data['action'], '删除')
+
+    # -- 设置运费（三种模式） --------------------------------------------
+
+    def test_unbind_free_ship(self):
+        seed_account()
+        self.ok(f'{BASE}/{ACC}/unbind', {'confirm': True, 'item_ids': '1,2', 'mode': 'free_ship'})
+        self.assertEqual(self.last_payload(), {
+            'itemIds': '1,2', 'supportFreight': True, 'onlyTakeSelf': False,
+            'needAutoFreight': False, 'isFreeShip': True,
+        })
+
+    def test_unbind_template_turns_support_freight_off(self):
+        seed_account()
+        self.ok(f'{BASE}/{ACC}/unbind', {'confirm': True, 'item_ids': ['1', '2'],
+                                         'mode': 'template', 'template_id': 'tpl-9'})
+        self.assertEqual(self.last_payload(), {
+            'itemIds': '1,2', 'supportFreight': False, 'onlyTakeSelf': False,
+            'needAutoFreight': False, 'isFreeShip': False, 'idleTemplateId': 'tpl-9',
+        })
+
+    def test_unbind_fixed_price_converts_yuan_to_cent(self):
+        seed_account()
+        self.ok(f'{BASE}/{ACC}/unbind', {'confirm': True, 'item_ids': '1',
+                                         'mode': 'fixed', 'post_price': 8.8})
+        payload = self.last_payload()
+        self.assertEqual(payload['postPriceInCent'], 880)
+        self.assertIs(payload['isFreeShip'], False)
+        self.assertIs(payload['supportFreight'], True)
+
+    def test_unbind_validation(self):
+        seed_account()
+        bad = [
+            {'confirm': True, 'item_ids': '1', 'mode': 'nope'},
+            {'confirm': True, 'item_ids': '', 'mode': 'free_ship'},
+            {'confirm': True, 'item_ids': '1', 'mode': 'template'},
+            {'confirm': True, 'item_ids': '1', 'mode': 'fixed'},
+            {'confirm': True, 'item_ids': '1', 'mode': 'fixed', 'post_price': 'abc'},
+            {'confirm': True, 'item_ids': '1', 'mode': 'fixed', 'post_price': 0},
+            {'confirm': True, 'item_ids': '1', 'mode': 'fixed', 'post_price': -1},
+        ]
+        for body in bad:
+            self.failed(f'{BASE}/{ACC}/unbind', body, 400, 'invalid_fields')
+        self.assertEqual(self.fake.calls, [])
+
+    # -- 账号与协议层异常 ------------------------------------------------
+
+    def test_expired_account_is_409_and_never_calls_platform(self):
+        seed_account(login_state='need_relogin')
+        body = self.failed(f'{BASE}/{ACC}/create', {'confirm': True, 'template_name': '模版'},
+                           409, 'verification_required')
+        self.assertEqual(body.get('login_state'), 'need_relogin')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_no_cookie_is_409_and_never_calls_platform(self):
+        seed_account(cookie='')
+        self.failed(f'{BASE}/{ACC}/create', {'confirm': True, 'template_name': '模版'},
+                    409, 'verification_required')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_platform_exception_is_502_with_platform_text(self):
+        seed_account()
+        self.fake.errors[proto.DELETE_API] = XianyuError(UNAUTHORIZED_MESSAGE)
+        body = self.failed(f'{BASE}/{ACC}/tpl-9/delete', {'confirm': True}, 502, 'protocol_error')
+        self.assertIn('FAIL_BIZ_IDLE_USER_UNAUTHORIZED', body['message'])
+
+    def test_write_never_calls_a_read_api(self):
+        """写路径不许手滑打到只读接口上。"""
+        seed_account()
+        self.ok(f'{BASE}/{ACC}/create', {'confirm': True, 'template_name': '模版'})
+        self.ok(f'{BASE}/{ACC}/tpl-1/modify', {'confirm': True, 'template_name': '模版'})
+        self.ok(f'{BASE}/{ACC}/tpl-1/delete', {'confirm': True})
+        self.ok(f'{BASE}/{ACC}/unbind', {'confirm': True, 'item_ids': '1', 'mode': 'free_ship'})
+        self.assertEqual(self.fake.apis(), [proto.CREATE_API, proto.MODIFY_API,
+                                            proto.DELETE_API, proto.UNBIND_API])
+        for api in self.fake.apis():
+            self.assertNotIn(api, proto.READ_METHODS)
+
+    def test_write_registry_matches_the_four_actions(self):
+        """`WRITE_APIS` 登记的名字必须和协议层常量一致（防止改名后测试还在看旧表）。"""
+        self.assertEqual(sorted(proto.WRITE_APIS), ['create', 'delete', 'modify', 'unbind'])
+        self.assertEqual(proto.WRITE_APIS['create']['api'], proto.CREATE_API)
+        self.assertEqual(proto.WRITE_APIS['modify']['api'], proto.MODIFY_API)
+        self.assertEqual(proto.WRITE_APIS['delete']['api'], proto.DELETE_API)
+        self.assertEqual(proto.WRITE_APIS['unbind']['api'], proto.UNBIND_API)
+        for action, spec in proto.WRITE_APIS.items():
+            self.assertIn('bundle @', spec['evidence'], action)
+        self.assertEqual(proto.WRITE_METHODS, {
+            'create': 'create_temple', 'modify': 'modify_temple',
+            'delete': 'del_temple', 'unbind': 'unbind_item',
+        })
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
