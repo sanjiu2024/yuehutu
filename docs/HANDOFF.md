@@ -75,7 +75,7 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 87 modules transformed.
-   frontend/dist/assets/index-DIIUhmey.js (499.66 kB, gzip 156.26 kB)
+   frontend/dist/assets/index-3Hwhy2kM.js (500.43 kB, gzip 156.60 kB)
    frontend/dist/assets/index-wjPANuoK.css (130.52 kB, gzip 20.83 kB)
 ```
 
@@ -1533,12 +1533,27 @@ AI 侧 3 个写工具（`items_batch_offline` / `items_batch_delete` / `items_qu
 `9786045` 统一到 `client.py::_dispatch_route` 最前面那一条，所以这三个工具不带
 `confirm` 时连一个 HTTP 请求都不会发。
 
-**这一批自己审出来的 4 个真问题**（都不是「功能没做」，是「做了但会骗用户」）：
+**这一批自己审出来的 5 个真问题**（都不是「功能没做」，是「做了但会骗用户」）：
 ① `failed[]`/`warnings[]` 只显示第一条 message，N>1 时其余 id/code/原因全丢 ⇒ 逐条列；
 ② 选择被搜索/状态筛选滤掉时按钮可点却静默无反应 ⇒ 按钮 disabled + 明确提示
 「有 N 个已选商品不在当前筛选结果里」；③ 平台没回报的 id 被算成成功 ⇒ 改判失败；
 ④ 掉线账号的字段错误被凭据检查抢先 ⇒ 三步顺序固定，回归锁
-`test_field_validation_runs_before_credential_check`。
+`test_field_validation_runs_before_credential_check`；⑤ 同一个「删除」有两种语义（见 148）。
+
+**148（收尾自查：一个词两种语义）**：行内菜单的「删除」走
+`DELETE /api/items/{account_id}/{item_id}`（**只删本地**），而这一批新加的「批量删除」走
+`batch-delete`（**平台真删**）—— 同一个词，两个入口，用户没法预期点下去会发生什么；
+而且 `removeItem` 的注释还写着「平台侧没有删除接口」，这句在挖出
+`...pc.item.batch.delete` 之后就已经是假话了。现在：行内「删除」与「批量删除」**走同一条路径**
+（真删），旧的「只删本地」保留成单独菜单项「**只从本地列表移除**」（确认框写明
+「闲鱼上的商品不会被删除、也不会被下架，下次同步可能又拉回来」）；后端那条 DELETE 端点的
+docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口，这一条是**故意**保持
+『只动本地』的语义」。同一轮把四条 NAV `desc` 改准：商品页 →「商品列表、编辑、批量下架/删除
+与快捷改价改库存」；退款/评价/投诉三页**本身只读**，写能力都在「订单」页的
+`TradeWritePanel`（订单行末「发货」「改价」，`in_refund` 行多一个「退款」），所以文案改成
+指路（「处理入口在『订单』页…」），否则用户在只读页上找不到入口。
+**已知未修的 UX 缺口**（如实记下）：那三页自己没有写入口。彻底修法是把 `TradeWritePanel`
+引到三页并指定初始 tab（要动 3 个页面文件 + CSS），本轮选了「文案指路」这个最小改法。
 
 > **第二十二批证据链**：`backend/tests/test_item_write_api.py` → **`Ran 47 tests in 0.838s OK`**
 > （`XIANYU_APP_DIR=%TEMP%\xywb_item_write`；过程中修掉三处测试自身的错：
@@ -1554,7 +1569,10 @@ AI 侧 3 个写工具（`items_batch_offline` / `items_batch_delete` / `items_qu
 > `index-DIIUhmey.js 499.66 kB` / `index-wjPANuoK.css 130.52 kB`）；
 > `scripts/ui_smoke.py --port 18255` → **26/26 页通过**。
 > 提交：`a9fcc32`（后端三件套 + 47 条测试）、`fc205b0`（商品页三个写入口 + CSS）、
-> `a8cfb3b`（3 个 AI 写工具 + MCP 路由）。
+> `a8cfb3b`（3 个 AI 写工具 + MCP 路由）、`38680a4`（契约与本文档）、
+> `d34c915`（收尾：统一删除语义 + 四条 NAV desc 指路；改完 `npx tsc --noEmit` EXIT=0、
+> `npm run build` EXIT=0（87 modules，`index-3Hwhy2kM.js 500.43 kB`）、
+> `run_all.py` 仍 `TOTAL 47 PASS 47 FAIL 0 CASES 1429`）。
 > 诚实边界：三个接口的字段形状**全部来自官方 bundle 静态提取**，**一次真机写请求都没发过**
 > （红线：不许改真实平台数据）；本机两个账号都 `need_relogin`
 > （`FAIL_SYS_SESSION_EXPIRED::Session过期`，cookie 还在 486/492 字节），所以
@@ -1590,8 +1608,9 @@ AI 侧 3 个写工具（`items_batch_offline` / `items_batch_delete` / `items_qu
   packaged_ui_smoke.py`，复用 `scripts/ui_smoke.py::run_browser` 但不启后端、直接打
   `127.0.0.1:18400` 与**真实 `%APPDATA%` 数据目录**，截图 `logs/packaged_ui_smoke/`）。
   与上一条的区别：上一条跑的是源码 + 临时库，这一条跑的是**用户手上那个 exe**。
-- **打包版 confirm 闸门 19 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
-  （`confirmation_required` / `confirm_required`），`GATE FAILURES: 0 / 19`。
+- **打包版 confirm 闸门 22 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
+  （`confirmation_required` / `confirm_required`），`GATE FAILURES: 0 / 22`；带 `confirm:true`
+  后转 400 `invalid_fields`（证明字段校验排在凭据检查之前）。
 - **真实浏览器实时刷新 2/2 阶段通过**（`scripts/live_refresh_smoke.py`）：后端写账号
   备注 / 新增提示词后，页面在 0.21 秒内自己更新，且 `navigation` 计数不变。
 - **真后端 + 真 `XianyuClient` + `httpx.MockTransport` 逐条打商品接口**（不碰真平台）：

@@ -774,10 +774,12 @@ POST /api/security-center/{account_id}/appeal/urge       {punish_id,confirm}
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 62 条 / `MASTER_TOOLS` 61 条（去掉 `master_chat` 防递归），
-其中 **15 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 63 条。五方对账（specs / master / routes / service targets / handlers）
+【AI 侧】`TOOL_SPECS` 65 条 / `MASTER_TOOLS` 64 条（去掉 `master_chat` 防递归），
+其中 **18 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
+`mcp_server/client.py::TOOL_ROUTES` 66 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 `reconcile_lead.py` 一键跑，必须 `RECON OK`。
+> 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `reconcile_lead.py` 里的 `WRITE_PREFIX`
+> 元组；② `backend/tests/test_agents_cross.py` 的工具名清单与写工具 `confirm` 断言。
 
 --------------------------------------------------------------------------
 错误响应统一：`{"success":false,"message":"...","code":"..."}`，HTTP 用语义状态码（4xx 业务、5xx 内部）。成功统一 `{"success":true,"data":{...}}`。
