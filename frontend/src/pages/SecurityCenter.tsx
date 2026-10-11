@@ -86,7 +86,7 @@ export function SecurityCenterPage() {
 
   return <>
     <section className="page-head">
-      <div><h3><IconShield size={18} /> 安全中心</h3><p>闲气值与违规记录（只读，不会替你申诉）</p></div>
+      <div><h3><IconShield size={18} /> 安全中心</h3><p>闲气值与违规记录（本页只读；申诉提交要显式确认）</p></div>
       <button className="btn sm" onClick={data.reload} disabled={data.loading}><IconRefresh size={14} /> 刷新</button>
     </section>
 
@@ -130,7 +130,7 @@ export function SecurityCenterPage() {
         {rows.length === 0 && <div className="sc-empty">平台没有返回违规记录</div>}
       </div>
 
-      <Notice kind="info"><IconInfo size={15} /> 本页只读。要申诉请点「去申诉」到官方页面自己提交 —— 工作台不会替你提交任何申诉或上传材料。数据更新于 {formatTime(data.data?.fetched_at)}</Notice>
+      <Notice kind="info"><IconInfo size={15} /> 本页只读，页面上没有提交入口 —— 想自己在官方页面提交就点「去申诉」。申诉**也做成了接口**（<code>POST /api/security-center/&#123;account_id&#125;/appeal/submit</code> 等三条，AI 侧也能调），但它们**必须显式 `confirm`**：不确认一个平台请求都不会发。数据更新于 {formatTime(data.data?.fetched_at)}</Notice>
     </AsyncBox>
   </>
 }
