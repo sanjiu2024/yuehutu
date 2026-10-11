@@ -1188,3 +1188,122 @@ textarea.it-invalid:focus {
   color: var(--warn);
   cursor: help;
 }
+
+/* ---- 写操作二次确认：本次要动的商品 ID ---- */
+/* 批量下架 / 批量删除的确认框里把 ID 逐个列出来。
+   一行放不下就换行，不用省略号：ID 少一位用户就没法核对自己选中的是哪几件。 */
+.it-idlist {
+  margin-top: var(--sp-2);
+  padding: var(--sp-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  color: var(--text-dim);
+  font-size: var(--fs-12);
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+/* ---- 行内快捷改价 / 改库存：确认框里的「改前 → 改后」 ---- */
+.it-quick-diff {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin-top: var(--sp-2);
+  color: var(--text);
+  font-size: var(--fs-13);
+}
+
+/* ---- 行内快捷改价 / 改库存：字段填错时就地说明，不靠弹 toast ---- */
+.it-field-bad {
+  margin: calc(-1 * var(--sp-1)) 0 var(--sp-2);
+  color: var(--danger);
+  font-size: var(--fs-12);
+}
+
+/* ---- 写操作结果：逐条列出 warnings / failed ---- */
+/* toast 只说得下一句话（「N 个仅本地生效（第一条的原因）」），N>1 时剩下的原因就没地方看。
+   这块面板把每一条都列出来：商品 ID + 错误码 + 原文消息，一条都不合并。 */
+.it-result {
+  border-color: var(--warn);
+}
+
+.it-result-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+  color: var(--text);
+}
+
+.it-result-group + .it-result-group {
+  margin-top: var(--sp-2);
+}
+
+.it-result-title {
+  margin-bottom: var(--sp-1);
+  font-size: var(--fs-12);
+  font-weight: 600;
+}
+
+.it-result-title.warn {
+  color: var(--warn);
+}
+
+.it-result-title.danger {
+  color: var(--danger);
+}
+
+.it-result-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.it-result-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  font-size: var(--fs-12);
+}
+
+/* 商品 ID 不省略：ID 少一位用户就没法核对是哪一件。 */
+.it-result-id {
+  flex: none;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.it-result-code {
+  flex: none;
+  padding: 0 var(--sp-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-mute);
+  font-size: var(--fs-11);
+}
+
+.it-result-code.warn {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.it-result-code.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.it-result-msg {
+  flex: 1 1 240px;
+  color: var(--text-dim);
+  word-break: break-word;
+}
+

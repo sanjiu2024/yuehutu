@@ -92,7 +92,7 @@ function mergeBatch(): BatchResult & { warnings: NonNullable<BatchResult['warnin
  */
 function singleEditAsBatch(
   result:
-    | { item?: Item; synced?: boolean; warning?: string; updated_fields?: string[]; noop?: boolean }
+    | { item?: { item_id?: string }; synced?: boolean; warning?: string; updated_fields?: string[]; noop?: boolean }
     | undefined,
 ): BatchResult & { warnings: NonNullable<BatchResult['warnings']> } {
   const merged = mergeBatch()
@@ -115,6 +115,75 @@ function singleEditAsBatch(
   })
   merged.local_only = 1
   return merged
+}
+
+/**
+ * **唯一的写出口**：所有会真的改动闲鱼商品的操作（批量下架 / 批量删除 / 快捷改价改库存）都从这里发出。
+ *
+ * `confirm` 字段（值为布尔真）是后端要求的确认标记，缺了会 400 `confirmation_required`；它必须是**字面量**：
+ * 一旦从 state 透传，「用户点过二次确认」就变成了一个可以绕过的入参，二次确认等于没有。
+ * 所以本文件里这个字面量只允许出现在下面这一行。
+ */
+function postItemWrite<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  return api.post<T>(path, { ...body, confirm: true })
+}
+
+/**
+ * 写操作结果的**逐条**清单。
+ *
+ * toast 只能显示「N 个仅本地生效（第一条的原因）」，N>1 时剩下的 id 与原因就没地方看了 ——
+ * 而用户最需要的恰恰是「到底哪几件没成功」。所以除了 toast，这里再把 `warnings[]` /
+ * `failed[]` 每一条都列出来：商品 ID + 错误码 + 原文消息，一条都不合并。
+ *
+ * 没有任何需要处理的条目时返回 `null`（成功就是成功，不占屏幕）。
+ */
+function BatchResultList({
+  report,
+  onClose,
+}: {
+  report: { verb: string; result: BatchResult } | null
+  onClose: () => void
+}) {
+  if (!report) return null
+  const warnings = report.result.warnings ?? []
+  const failed = report.result.failed ?? []
+  if (warnings.length === 0 && failed.length === 0) return null
+  const groups: Array<{ key: string; title: string; tone: string; rows: NonNullable<BatchResult['warnings']> }> = [
+    { key: 'warn', title: '仅本地生效，没同步到闲鱼', tone: 'warn', rows: warnings },
+    { key: 'fail', title: '完全没改动（失败）', tone: 'danger', rows: failed },
+  ]
+  return (
+    <div className="card it-result">
+      <div className="it-result-head">
+        <strong>
+          商品{report.verb}：{warnings.length + failed.length} 条需要你处理
+        </strong>
+        <span className="it-spacer" />
+        <button className="btn sm ghost" onClick={onClose}>
+          关闭
+        </button>
+      </div>
+      {groups.map(
+        (group) =>
+          group.rows.length > 0 && (
+            <div key={group.key} className="it-result-group">
+              <div className={`it-result-title ${group.tone}`}>
+                {group.title}（{group.rows.length}）
+              </div>
+              <ul className="it-result-list">
+                {group.rows.map((entry, index) => (
+                  <li key={`${group.key}-${entry.id ?? ''}-${index}`}>
+                    <span className="mono it-result-id">{entry.id || '(没有返回商品 ID)'}</span>
+                    <span className={`it-result-code ${group.tone}`}>{entry.code || group.key}</span>
+                    <span className="it-result-msg">{entry.message || '后端没有给出原因'}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ),
+      )}
+    </div>
+  )
 }
 
 /* ---------------- 列表缩略图 / 大图查看 / 库存口径 ---------------- */
@@ -275,6 +344,8 @@ export function ItemsPage() {
   const [sortOrder, setSortOrder] = useState<SortOrder>('desc')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [editing, setEditing] = useState<Item | null>(null)
+  /** 行内「改价/库存」：只改这两个字段，不整份回提表单（见 `QuickEditModal` 的注释）。 */
+  const [quickEdit, setQuickEdit] = useState<Item | null>(null)
   const [publishOpen, setPublishOpen] = useState(false)
   const [batchOpen, setBatchOpen] = useState(false)
   const [logsOpen, setLogsOpen] = useState(false)
@@ -284,6 +355,8 @@ export function ItemsPage() {
   /** 大图查看：点缩略图后打开，多图可翻页。 */
   const [lightbox, setLightbox] = useState<{ urls: string[]; index: number; title: string } | null>(null)
   const [confirmAction, setConfirmAction] = useState<{ title: string; message: ReactNode; run: () => Promise<void> } | null>(null)
+  /** 最近一次写操作的逐条结果：toast 说不下全部，这里在页面上把每一条列出来。 */
+  const [writeReport, setWriteReport] = useState<{ verb: string; result: BatchResult } | null>(null)
 
   const accountList = accounts.data ?? []
 
@@ -329,6 +402,19 @@ export function ItemsPage() {
   const selectedItems = useMemo(() => list.filter((item) => selected.has(item.item_id)), [list, selected])
   const selectedAccounts = useMemo(() => new Set(selectedItems.map((item) => item.account_id)), [selectedItems])
   const mixedAccounts = selectedAccounts.size > 1
+  /**
+   * 批量写接口的路径里要带 account_id，所以只支持单选账号。
+   * 拿不到唯一账号时（跨账号 / 空选）下面的按钮一律 disabled，绝不用「第一个商品的账号」去猜。
+   */
+  const selectedAccount = selectedAccounts.size === 1 ? [...selectedAccounts][0] : ''
+  /**
+   * 勾选了、但不在当前筛选结果里的商品数。
+   *
+   * `selected` 只在**切换账号**时清空，搜索框和状态筛选都不清空 —— 于是会出现
+   * 「顶部写着已选 5 个，列表里一个都没勾」的状态。批量写操作只作用于看得见的商品，
+   * 这件事必须写在脸上，不能点下去什么都不发生。
+   */
+  const staleSelection = Math.max(0, selected.size - selectedItems.length)
 
   const allChecked = list.length > 0 && list.every((item) => selected.has(item.item_id))
 
@@ -385,18 +471,30 @@ export function ItemsPage() {
     })
   }
 
-  const batchShelf = (action: 'delist' | 'relist') => {
+  /**
+   * 写操作的结果既进 toast（一句话），也进页面上的逐条清单（`BatchResultList`）。
+   * 两个地方都要走这个函数：只弹 toast 会把 N>1 时其余条目的原因丢掉。
+   */
+  const reportWrite = (verb: string, result: BatchResult) => {
+    showBatchNotice(toast, result, verb)
+    setWriteReport({ verb, result })
+  }
+
+  /**
+   * 批量上架：后端只有**逐条**的单条上下架接口，没有批量端点，所以这里逐个请求再合并结果。
+   * （批量下架已经换成一次请求的 `batch-offline`，见下面 `batchOffline`。）
+   */
+  const batchRelist = () => {
     const targets = selectedItems
     setConfirmAction({
-      title: action === 'delist' ? '批量下架' : '批量上架',
+      title: '批量上架',
       message: (
         <>
-          将对 <strong>{targets.length}</strong> 个商品执行{action === 'delist' ? '下架' : '上架'}操作。
+          将对 <strong>{targets.length}</strong> 个商品执行上架操作。
           {targets.length > 5 && <div className="dim" style={{ marginTop: 6 }}>批量操作会逐个请求，可能需要几秒。</div>}
         </>
       ),
       run: async () => {
-        const verb = action === 'delist' ? '下架' : '上架'
         const merged = mergeBatch()
         for (const item of targets) {
           merged.total += 1
@@ -404,7 +502,7 @@ export function ItemsPage() {
             // 单条接口也返回逐条汇总（ok/warnings/failed）：协议层没推成功时 ok=0、
             // warning 在 warnings 里 —— HTTP 200 只代表请求到了，不代表真的推到闲鱼。
             const result = await api.post<BatchResult>(
-              `/api/items/${encodeURIComponent(item.account_id)}/${encodeURIComponent(item.item_id)}/${action}`,
+              `/api/items/${encodeURIComponent(item.account_id)}/${encodeURIComponent(item.item_id)}/relist`,
             )
             merged.ok += Number(result?.ok) || 0
             merged.warnings.push(...(result?.warnings ?? []))
@@ -415,7 +513,69 @@ export function ItemsPage() {
         }
         merged.synced = merged.ok
         merged.local_only = merged.warnings.length
-        showBatchNotice(toast, merged, verb)
+        reportWrite('上架', merged)
+        setSelected(new Set())
+        items.reload()
+      },
+    })
+  }
+
+  /**
+   * 批量写操作的二次确认文案。
+   *
+   * 必须写清三件事：**会真的改动闲鱼上的商品**、**不可撤销**、本次要动的**件数与商品 ID**。
+   * 只问一句「确定吗？」是不够的 —— 用户没法核对自己到底选中了哪几件。
+   */
+  const writeConfirmMessage = (verb: string, targets: Item[]) => (
+    <>
+      会把 <strong>{targets.length}</strong> 个商品在<strong>闲鱼上真的{verb}</strong>，<strong>不可撤销</strong>。
+      <div className="it-idlist mono">{targets.map((item) => item.item_id).join('、')}</div>
+    </>
+  )
+
+  /**
+   * 批量下架：一次请求打 `POST /api/items/{account_id}/batch-offline`。
+   *
+   * 与上面 `batchRelist` 的区别：`batchRelist` 是**逐条**打单条接口（N 个商品 N 次请求），
+   * 这里走的是后端新加的批量端点，一次请求、返回同一套逐条汇总。
+   */
+  const batchOffline = () => {
+    const targets = selectedItems
+    if (!selectedAccount || targets.length === 0) return
+    setConfirmAction({
+      title: '批量下架',
+      message: writeConfirmMessage('下架', targets),
+      run: async () => {
+        const result = await postItemWrite<BatchResult>(
+          `/api/items/${encodeURIComponent(selectedAccount)}/batch-offline`,
+          { item_ids: targets.map((item) => item.item_id) },
+        )
+        // HTTP 200 只代表请求到了：`ok=0` 就是一件都没推到闲鱼，`warnings` 必须显示出来。
+        reportWrite('下架', result)
+        setSelected(new Set())
+        items.reload()
+      },
+    })
+  }
+
+  /**
+   * 批量删除：一次请求打 `POST /api/items/{account_id}/batch-delete`。
+   *
+   * 注意与行内菜单的「删除」**不是一回事**：那个走 `DELETE /api/items/{account_id}/{item_id}`，
+   * 只删本地记录；这个删的是**闲鱼上**的商品，所以文案里写的是「真的删除、不可撤销」。
+   */
+  const batchDelete = () => {
+    const targets = selectedItems
+    if (!selectedAccount || targets.length === 0) return
+    setConfirmAction({
+      title: '批量删除',
+      message: writeConfirmMessage('删除', targets),
+      run: async () => {
+        const result = await postItemWrite<BatchResult>(
+          `/api/items/${encodeURIComponent(selectedAccount)}/batch-delete`,
+          { item_ids: targets.map((item) => item.item_id) },
+        )
+        reportWrite('删除', result)
         setSelected(new Set())
         items.reload()
       },
@@ -559,14 +719,35 @@ export function ItemsPage() {
             <button className="btn sm" onClick={() => setSelected(new Set())}>
               取消选择
             </button>
-            <button className="btn sm primary" disabled={mixedAccounts} onClick={() => setBatchOpen(true)} title="可批量改价格 / 标题 / 描述 / 库存">
+            <button className="btn sm primary" disabled={mixedAccounts || !selectedAccount} onClick={() => setBatchOpen(true)} title="可批量改价格 / 标题 / 描述 / 库存">
               批量修改
             </button>
-            <button className="btn sm" disabled={mixedAccounts} onClick={() => batchShelf('relist')}>
+            <button className="btn sm" disabled={mixedAccounts || !selectedAccount} onClick={batchRelist}>
               批量上架
             </button>
-            <button className="btn sm" disabled={mixedAccounts} onClick={() => batchShelf('delist')}>
+            <button
+              className="btn sm"
+              disabled={mixedAccounts || !selectedAccount}
+              onClick={batchOffline}
+              title={
+                selectedAccount
+                  ? '把选中的商品在闲鱼上真的下架（一次请求，不可撤销）'
+                  : '选中的商品不在当前筛选结果里，先清空筛选或重新勾选'
+              }
+            >
               批量下架
+            </button>
+            <button
+              className="btn sm danger"
+              disabled={mixedAccounts || !selectedAccount}
+              onClick={batchDelete}
+              title={
+                selectedAccount
+                  ? '把选中的商品在闲鱼上真的删除（不是只删本地记录，不可撤销）'
+                  : '选中的商品不在当前筛选结果里，先清空筛选或重新勾选'
+              }
+            >
+              批量删除
             </button>
           </div>
           {mixedAccounts && (
@@ -574,8 +755,16 @@ export function ItemsPage() {
               提示：批量接口路径含 account_id，一次只能对一个账号的商品批量操作。请先在左上角筛选到单个账号。
             </div>
           )}
+          {staleSelection > 0 && (
+            <div className="dim" style={{ fontSize: 12, marginTop: 8 }}>
+              有 {staleSelection} 个已选商品不在当前筛选结果里（搜索 / 状态筛选不会取消勾选）。
+              批量操作只作用于列表里看得见的 {selectedItems.length} 个商品；要改全部就先清空筛选。
+            </div>
+          )}
         </div>
       )}
+
+      <BatchResultList report={writeReport} onClose={() => setWriteReport(null)} />
 
       <div className="card">
         <h3>
@@ -667,7 +856,7 @@ export function ItemsPage() {
                       setSortOrder(next.order)
                     }}
                   />
-                  <th className="nowrap" style={{ width: 164 }}>
+                  <th className="nowrap" style={{ width: 236 }}>
                     操作
                   </th>
                 </tr>
@@ -735,6 +924,13 @@ export function ItemsPage() {
                             onClick={() => setEditing(item)}
                           >
                             编辑
+                          </button>
+                          <button
+                            className="btn sm ghost"
+                            title={`只改价格 / 库存：走官方 item.info.update，不整份回提表单，已卖出的商品也不会被重新上架（${item.title || item.item_id}）`}
+                            onClick={() => setQuickEdit(item)}
+                          >
+                            改价/库存
                           </button>
                           <button className="btn sm ghost" onClick={() => setShelf(item, onsale ? 'delist' : 'relist')}>
                             {onsale ? '下架' : '上架'}
@@ -804,6 +1000,18 @@ export function ItemsPage() {
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null)
+            items.reload()
+          }}
+        />
+      )}
+
+      {quickEdit && (
+        <QuickEditModal
+          item={quickEdit}
+          onReport={reportWrite}
+          onClose={() => setQuickEdit(null)}
+          onDone={() => {
+            setQuickEdit(null)
             items.reload()
           }}
         />
@@ -2580,12 +2788,207 @@ function BatchEditModal({
   )
 }
 
-/* ---------------- 发布商品 ---------------- */
+/* ---------------- 行内快捷改价 / 改库存 ---------------- */
 
-/** 发布校验上限：与平台实际会拒的量级对齐（超了平台只回一句 `发布失败`，用户看不出哪错了）。 */
+/** 价格 / 库存 / 标题的校验上限：与平台实际会拒的量级对齐（超了平台只回一句「失败」，用户看不出哪错了）。 */
 const TITLE_MAX = 60
 const PRICE_MAX = 999999
 const STOCK_MAX = 99999
+
+/**
+ * 行内「改价/库存」弹窗：只提交价格 / 库存两个字段，打
+ * `POST /api/items/{account_id}/{item_id}/quick-edit`。
+ *
+ * 与旁边「编辑」按钮的区别（弹窗里也写给用户看，两者必须能分得清）：
+ *   编辑       = 把整份商品表单回提（标题 / 描述 / 图片 / 价格 / 库存…），对**已卖出**的商品
+ *                会触发平台的「重新上架」副作用；
+ *   本弹窗     = 官方 `item.info.update` 的路子，**不整份回提表单**，所以对已卖出的商品
+ *                没有重新上架的副作用。
+ *
+ * 返回体是**单条形状** `{item_id, price, quantity, synced, warning?}`，必须经 `singleEditAsBatch`
+ * 折成批量形状再提示：直接当 `BatchResult` 读会把 `warning` 吞掉，错报「已提交」。
+ */
+function QuickEditModal({
+  item,
+  onReport,
+  onClose,
+  onDone,
+}: {
+  item: Item
+  /** 把逐条结果交给页面：toast 只说得下一句话，明细由 `BatchResultList` 列出来。 */
+  onReport: (verb: string, result: BatchResult) => void
+  onClose: () => void
+  onDone: () => void
+}) {
+  const toast = useToast()
+  // 库存未知（平台没返回，显示 -）时留空：让用户自己决定填多少，不要拿 0 去顶替「未知」。
+  const [price, setPrice] = useState(item.price !== undefined && item.price !== null ? String(item.price) : '')
+  const [quantity, setQuantity] = useState(
+    item.stock !== undefined && item.stock !== null && Number(item.stock) >= 0 ? String(item.stock) : '',
+  )
+  const [saving, setSaving] = useState(false)
+  /** 点「提交」先弹二次确认，确认后才真的发请求。 */
+  const [confirming, setConfirming] = useState(false)
+
+  const priceFilled = price.trim() !== ''
+  const quantityFilled = quantity.trim() !== ''
+  const priceValue = priceFilled ? Number(price) : undefined
+  const quantityValue = quantityFilled ? Number(quantity) : undefined
+  const priceBad =
+    priceFilled && (!Number.isFinite(priceValue) || (priceValue as number) < 0 || (priceValue as number) > PRICE_MAX)
+  const quantityBad =
+    quantityFilled &&
+    (!Number.isFinite(quantityValue) ||
+      !Number.isInteger(quantityValue) ||
+      (quantityValue as number) < 0 ||
+      (quantityValue as number) > STOCK_MAX)
+  // 后端约定：两个字段至少填一个，都不填会 400 `invalid_fields`；这里先挡住，不让用户白点一次。
+  const ready = (priceFilled || quantityFilled) && !priceBad && !quantityBad
+
+  const submit = async () => {
+    if (!ready) {
+      toast.info(priceFilled || quantityFilled ? '价格或库存填得不对' : '价格和库存至少填一个')
+      setConfirming(false)
+      return
+    }
+    setSaving(true)
+    try {
+      const body: Record<string, unknown> = {}
+      if (priceFilled) body.price = priceValue
+      if (quantityFilled) body.quantity = quantityValue
+      const result = await postItemWrite<{
+        item_id: string
+        price?: number
+        quantity?: number
+        synced?: boolean
+        warning?: string
+      }>(
+        `/api/items/${encodeURIComponent(item.account_id)}/${encodeURIComponent(item.item_id)}/quick-edit`,
+        body,
+      )
+      // `synced=false` 时后端把原因放在 `warning` 里（协议层没推成功 → 只改了本地），
+      // 折成批量形状后它会变成一条 `not_pushed` warning，提示里就能看到原因，而不是报成功。
+      const one = singleEditAsBatch({
+        item: { item_id: result?.item_id ?? item.item_id },
+        synced: result?.synced,
+        warning: result?.warning,
+      })
+      onReport('改价/改库存', one)
+      onDone()
+    } catch (err) {
+      toast.error(errorText(err))
+    } finally {
+      setSaving(false)
+      setConfirming(false)
+    }
+  }
+
+  return (
+    <>
+      <Modal
+        title={`改价 / 改库存 · ${truncate(item.title || item.item_id, 30)}`}
+        onClose={onClose}
+        footer={
+          <>
+            <span className="dim" style={{ fontSize: 12, marginRight: 'auto' }}>
+              价格和库存至少填一个；留空的那个不会被改动
+            </span>
+            <button className="btn ghost" onClick={onClose} disabled={saving}>
+              取消
+            </button>
+            <button
+              className="btn primary"
+              onClick={() => setConfirming(true)}
+              disabled={saving || !ready}
+              title={ready ? undefined : '价格和库存至少填一个（且要填对）'}
+            >
+              提交
+            </button>
+          </>
+        }
+      >
+        <Notice kind="info">
+          这里走官方 <span className="mono">item.info.update</span>，<b>只提交价格和库存</b>、
+          <b>不整份回提表单</b>，所以对<b>已经卖出</b>的商品也不会触发「重新上架」。
+          旁边的「编辑」按钮是整份回提，两者不一样。
+        </Notice>
+
+        <Field
+          label="价格（元）"
+          tip={
+            item.price !== undefined && item.price !== null
+              ? `当前 ${formatMoney(item.price)}；上限 ${PRICE_MAX}`
+              : `上限 ${PRICE_MAX}`
+          }
+        >
+          <input
+            type="number"
+            min={0}
+            step="0.01"
+            inputMode="decimal"
+            value={price}
+            onChange={(e) => setPrice(e.target.value)}
+            placeholder={item.price !== undefined && item.price !== null ? String(item.price) : '例如 99.00'}
+            autoFocus
+          />
+        </Field>
+        {priceBad && <div className="it-field-bad">价格要是 0 ~ {PRICE_MAX} 之间的数字。</div>}
+
+        <Field
+          label="库存（件）"
+          tip={
+            stockText(item.stock).unknown
+              ? '平台没返回过这个商品的库存，所以这里是空的；填了才会改库存。'
+              : `当前 ${stockText(item.stock).text}；上限 ${STOCK_MAX}，只能填整数`
+          }
+        >
+          <input
+            type="number"
+            min={0}
+            step="1"
+            inputMode="numeric"
+            value={quantity}
+            onChange={(e) => setQuantity(e.target.value)}
+            placeholder="留空 = 不改库存"
+          />
+        </Field>
+        {quantityBad && <div className="it-field-bad">库存要是 0 ~ {STOCK_MAX} 之间的整数。</div>}
+      </Modal>
+
+      {confirming && (
+        <ConfirmDialog
+          title="确认改价 / 改库存"
+          danger
+          confirmText="确认提交"
+          busy={saving}
+          message={
+            <>
+              会把 <strong>{truncate(item.title || item.item_id, 40)}</strong> 在
+              <strong>闲鱼上真的改掉</strong>，<strong>不可撤销</strong>。
+              <div className="it-quick-diff">
+                {priceFilled && (
+                  <span className="mono">
+                    价格 {formatMoney(item.price)} → {formatMoney(priceValue)}
+                  </span>
+                )}
+                {quantityFilled && (
+                  <span className="mono">
+                    库存 {stockText(item.stock).text} → {quantityValue}
+                  </span>
+                )}
+              </div>
+              <div className="it-idlist mono">商品 ID：{item.item_id}</div>
+            </>
+          }
+          onCancel={() => setConfirming(false)}
+          onConfirm={submit}
+        />
+      )}
+    </>
+  )
+}
+
+/* ---------------- 发布商品 ---------------- */
 
 function PublishItemModal({
   accountId,
