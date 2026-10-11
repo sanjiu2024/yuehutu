@@ -314,6 +314,31 @@ export function ItemTemplatesPage() {
 
   // -- 本地校验（能在本地拦住的就别发给后端） --------------------------
 
+  // 刚打开时表单是空的，这时不该先跳一句「模版名称不能为空」——那像是在骂用户。
+  // 只有用户真填过东西（dirty）才把问题说出来；按钮该灰还是灰。
+  // 注意不能拿 details 的 first/excess 判断：它们默认就是 '1'。
+  const formDirty =
+    Boolean(form) &&
+    (form!.kind === 'modify' ||
+      form!.fields.template_name.trim() !== '' ||
+      form!.fields.item_prov.trim() !== '' ||
+      form!.fields.item_city.trim() !== '' ||
+      form!.fields.valuation.trim() !== '' ||
+      form!.fields.is_default ||
+      form!.fields.details.some(
+        (d) =>
+          d.receive_division_name.trim() !== '' ||
+          d.first_price.trim() !== '' ||
+          d.excess_price.trim() !== '',
+      ))
+
+  const unbindDirty =
+    Boolean(unbind) &&
+    (unbind!.itemIds.trim() !== '' ||
+      unbind!.mode !== 'free_ship' ||
+      unbind!.templateId.trim() !== '' ||
+      unbind!.postPrice.trim() !== '')
+
   const formProblem = (() => {
     if (!form) return ''
     const name = form.fields.template_name.trim()
@@ -614,7 +639,7 @@ export function ItemTemplatesPage() {
               </div>
             )}
 
-            {unbindProblem && <Notice kind="warn">{unbindProblem}</Notice>}
+            {unbindDirty && unbindProblem && <Notice kind="warn">{unbindProblem}</Notice>}
             {problem && <Notice kind="error">{problem}</Notice>}
 
             <div className="tpl-actions">
@@ -796,7 +821,7 @@ export function ItemTemplatesPage() {
               })}
             </div>
 
-            {formProblem && <Notice kind="warn">{formProblem}</Notice>}
+            {formDirty && formProblem && <Notice kind="warn">{formProblem}</Notice>}
             {problem && <Notice kind="error">{problem}</Notice>}
           </div>
         </Modal>
