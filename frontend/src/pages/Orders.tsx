@@ -686,10 +686,10 @@ const WRITE_SPECS: Record<WriteKind, WriteFormSpec> = {
   'refund-agree': {
     title: '同意退款',
     action: '同意退款',
-    desc: <>平台接口 <code>mtop.taobao.idle.merchant.refund.agree.refund</code>；<code>auth_token</code> 是平台下发的操作令牌，必须原样回传。</>,
+    desc: <>平台接口 <code>mtop.taobao.idle.merchant.refund.agree.refund</code>；<code>auth_token</code> 是平台下发的操作令牌，必须原样回传。退款列表里没有这个字段 —— 用下面的「获取凭证」向平台要一次（只读，不会改动任何东西）。</>,
     fields: [
       { name: 'refund_id', label: '退款单号', required: true, placeholder: '退款单号（退款列表里给）' },
-      { name: 'auth_token', label: '平台操作令牌 auth_token', required: true, placeholder: '退款详情里平台下发的令牌' },
+      { name: 'auth_token', label: '平台操作令牌 auth_token', required: true, placeholder: '点下面的「获取凭证」自动填，也可以自己粘贴' },
     ],
     path: (accountId, value) => idPath(accountId, value, 'refund_id', 'refunds/{id}/agree'),
     body: (value) => ({ auth_token: value('auth_token') }),
@@ -824,6 +824,10 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
   const [asking, setAsking] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  // 退款凭证（只读）：`auth_token` 不在退款列表帧里，只能向平台现问一次。
+  const [verifyBusy, setVerifyBusy] = useState(false)
+  const [verifyError, setVerifyError] = useState('')
+  const [verifyInfo, setVerifyInfo] = useState<{ token: string; url: string } | null>(null)
 
   const spec = WRITE_SPECS[kind]
   const group = groupOf(kind)
@@ -839,6 +843,41 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
   function switchTo(next: WriteKind) {
     setKind(next)
     setError('')
+  }
+
+  /**
+   * 向平台要一次退款凭证（`GET …/refunds/{id}/verify-token`，**只读**）。
+   *
+   * 官方前端在同意 / 拒绝退款弹窗打开时就查一次 `mtop.idle.alipay.verify.url.query`：
+   * `data.module.token` 填进 `authToken`、`data.module.verifyUrl` 塞进 iframe 让用户过支付宝身份验证。
+   * 这里照做，但把 iframe 换成一个链接（我们不嵌第三方页面）。
+   * **不假装成功**：平台没给 token 就明说，不编一个。
+   */
+  async function fetchVerify() {
+    const refundId = value('refund_id').trim()
+    if (!refundId) {
+      setVerifyError('先填「退款单号」，凭证是按单号问的。')
+      return
+    }
+    setVerifyBusy(true)
+    setVerifyError('')
+    try {
+      const data = await api.get<Record<string, unknown>>(
+        `/api/trade/${encodeURIComponent(accountId)}/refunds/${encodeURIComponent(refundId)}/verify-token`,
+      )
+      const token = typeof data?.token === 'string' ? data.token : ''
+      const url = typeof data?.verify_url === 'string' ? data.verify_url : ''
+      setVerifyInfo({ token, url })
+      if (token) {
+        setValue('auth_token', token)
+      } else {
+        setVerifyError('平台这次没有返回凭证（官方只在管理员态才下发）。可以留空直接试，平台拒绝时会把原因写在错误里。')
+      }
+    } catch (err) {
+      setVerifyInfo(null)
+      setVerifyError(errorText(err) || '获取凭证失败，后端没有给出原因')
+    }
+    setVerifyBusy(false)
   }
 
   async function submit() {
@@ -942,6 +981,35 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
                 {field.hint ? <span className="tr-sub">{field.hint}</span> : null}
               </label>
             ))}
+
+            {kind === 'refund-agree' && (
+              <div className="tr-field tr-write-verify">
+                <span>
+                  退款凭证
+                  <code className="tr-write-name">verify-token</code>
+                </span>
+                <span className="tr-write-inline">
+                  <button className="btn ghost sm" onClick={fetchVerify} disabled={verifyBusy || busy}>
+                    <IconRefresh size={14} /> {verifyBusy ? '正在获取…' : '获取凭证'}
+                  </button>
+                  <span className="tr-sub">
+                    只读接口 <code>mtop.idle.alipay.verify.url.query</code>，不会改动任何东西。
+                  </span>
+                </span>
+                {verifyInfo?.token ? (
+                  <span className="tr-sub">
+                    已填入令牌（{verifyInfo.token.slice(0, 4)}…，共 {verifyInfo.token.length} 字符）。
+                  </span>
+                ) : null}
+                {verifyInfo?.url ? (
+                  <span className="tr-sub">
+                    平台要求先完成支付宝身份验证：
+                    <a href={verifyInfo.url} target="_blank" rel="noreferrer">打开验证页</a>
+                  </span>
+                ) : null}
+                {verifyError ? <Notice kind="warn">{verifyError}</Notice> : null}
+              </div>
+            )}
 
             {spec.extras === 'rate' && (
               <>

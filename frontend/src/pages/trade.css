@@ -475,6 +475,17 @@ tbody tr.tr-detail-row {
   font-size: var(--fs-11);
 }
 
+/* 退款凭证（只读）：占满整行，因为里面除了按钮还有平台提示与错误。 */
+.tr-write-verify {
+  grid-column: 1 / -1;
+  gap: var(--sp-2);
+}
+
+.tr-write-verify .tr-sub code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--fs-11);
+}
+
 @media (max-width: 820px) {
   .tr-head {
     flex-direction: column;
