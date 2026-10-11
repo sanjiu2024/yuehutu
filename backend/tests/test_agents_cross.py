@@ -518,6 +518,8 @@ class MasterChatTest(unittest.TestCase):
             'promotion_write_actions', 'promotion_write_execute',
             # ---- 资质写 ----
             'qualification_submit_packages', 'qualification_oss_credential',
+            # ---- 商品写（会真的改平台数据，required 必含 confirm）----
+            'items_batch_offline', 'items_batch_delete', 'items_quick_edit',
             'master_chat',
         ]
         self.assertEqual(tools.TOOL_NAMES, expected)
@@ -531,6 +533,7 @@ class MasterChatTest(unittest.TestCase):
             'qualification_submit_packages', 'qualification_oss_credential',
             'item_templates_create', 'item_templates_modify', 'item_templates_delete',
             'item_templates_unbind',
+            'items_batch_offline', 'items_batch_delete', 'items_quick_edit',
         ]
         for name in write_tools:
             spec = tools.get_tool(name)

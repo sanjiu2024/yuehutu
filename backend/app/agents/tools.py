@@ -1189,6 +1189,67 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---------------- 商品写（会真的改平台数据；required 必含 confirm） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'items_batch_offline',
+            'description': '批量下架商品（商品从「在售」变成「已下架」，买家就搜不到、也买不了了；'
+                           '可以再上架，不是删除）。卖家说「把这几件先下掉/停卖」时用。'
+                           + _WRITE_HINT + 'account_id 与 item_ids 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'item_ids': {'type': 'string', 'description': '多个商品 ID 用逗号分隔'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'item_ids', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'items_batch_delete',
+            'description': '批量删除商品（**不可逆**，商品会被真的删掉，想再卖只能重新发布一遍；'
+                           '只想暂时不卖请改用 items_batch_offline）。卖家明确说「删掉这几件」时才用。'
+                           + _WRITE_HINT + 'account_id 与 item_ids 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'item_ids': {'type': 'string', 'description': '多个商品 ID 用逗号分隔'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'item_ids', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'items_quick_edit',
+            'description': '快速改一件商品的售价/库存。price 与 quantity 至少给一个；'
+                           '走官方 info.update，只提交价格和数量，不像「编辑」那样整份回提表单，'
+                           '所以对已卖出商品没有重新上架的副作用。'
+                           + _WRITE_HINT + 'account_id 与 item_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'item_id': {'type': 'string', 'description': '要改的商品 ID'},
+                    'price': {'type': 'number', 'description': '新售价（元）；不给就不改价'},
+                    'quantity': {'type': 'integer', 'description': '新库存数量；不给就不改库存'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'item_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 主管 AI（只给 MCP 侧） ----------------
     {
         'type': 'function',
@@ -1476,6 +1537,10 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     # ---- 资质写 ----
     'qualification_submit_packages': ['qualification', 'submit_packages'],
     'qualification_oss_credential': ['qualification', 'oss_credential'],
+    # ---- 商品写（会真的改平台数据）----
+    'items_batch_offline': ['items', 'batch_offline'],
+    'items_batch_delete': ['items', 'batch_delete'],
+    'items_quick_edit': ['items', 'quick_edit'],
 }
 
 # 有额外位置参数（不是直接透传 args 的）在这里补上固定值
@@ -1643,6 +1708,10 @@ _HANDLERS = {
     'promotion_write_execute': lambda a: _dispatch_service('promotion_write_execute', a),
     'qualification_submit_packages': lambda a: _dispatch_service('qualification_submit_packages', a),
     'qualification_oss_credential': lambda a: _dispatch_service('qualification_oss_credential', a),
+    # ---- 商品写 ----
+    'items_batch_offline': lambda a: _dispatch_service('items_batch_offline', a),
+    'items_batch_delete': lambda a: _dispatch_service('items_batch_delete', a),
+    'items_quick_edit': lambda a: _dispatch_service('items_quick_edit', a),
 }
 
 

@@ -429,6 +429,22 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'path_params': ['account_id'],
         'body': ['confirm', 'request'],
     },
+    # ---------------- 商品写（POST；confirm 是必填）----------------
+    'items_batch_offline': {
+        'method': 'POST', 'path': '/api/items/{account_id}/batch-offline',
+        'path_params': ['account_id'],
+        'body': ['item_ids', 'confirm'],
+    },
+    'items_batch_delete': {
+        'method': 'POST', 'path': '/api/items/{account_id}/batch-delete',
+        'path_params': ['account_id'],
+        'body': ['item_ids', 'confirm'],
+    },
+    'items_quick_edit': {
+        'method': 'POST', 'path': '/api/items/{account_id}/{item_id}/quick-edit',
+        'path_params': ['account_id', 'item_id'],
+        'body': ['price', 'quantity', 'confirm'],
+    },
 }
 
 # 动词式别名（task-6 任务卡里的写法）→ 规范名

@@ -269,6 +269,16 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
     'promotion_write_actions': {
         'module': 'ad_write', 'fn': 'actions_catalog', 'confirm': False,
         'method': 'GET', 'path': '/api/promotion/write/actions'},
+    # ---- task-73：3 个商品写能力 ----
+    'items_batch_offline': {
+        'module': 'items', 'fn': 'batch_offline', 'confirm': True,
+        'method': 'POST', 'path': '/api/items/{account_id}/batch-offline'},
+    'items_batch_delete': {
+        'module': 'items', 'fn': 'batch_delete', 'confirm': True,
+        'method': 'POST', 'path': '/api/items/{account_id}/batch-delete'},
+    'items_quick_edit': {
+        'module': 'items', 'fn': 'quick_edit', 'confirm': True,
+        'method': 'POST', 'path': '/api/items/{account_id}/{item_id}/quick-edit'},
 }
 
 WRITE_TOOL_NAMES = list(WRITE_TOOLS)
@@ -308,6 +318,14 @@ _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
         'account_id': 'acc-x', 'template_id': 'tpl-1', 'confirm': False},
     'item_templates_unbind': {
         'account_id': 'acc-x', 'item_ids': 'i1', 'mode': 'free_ship', 'confirm': False},
+    # ---- task-73：3 个商品写能力 ----
+    'items_batch_offline': {
+        'account_id': 'acc-x', 'item_ids': 'i1,i2', 'confirm': False},
+    'items_batch_delete': {
+        'account_id': 'acc-x', 'item_ids': 'i1,i2', 'confirm': False},
+    'items_quick_edit': {
+        'account_id': 'acc-x', 'item_id': 'i1', 'price': 9.9, 'quantity': 3,
+        'confirm': False},
 }
 
 
