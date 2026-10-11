@@ -75,8 +75,8 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 87 modules transformed.
-   frontend/dist/assets/index-3Hwhy2kM.js (500.43 kB, gzip 156.60 kB)
-   frontend/dist/assets/index-wjPANuoK.css (130.52 kB, gzip 20.83 kB)
+   frontend/dist/assets/index-CVDVd1au.js (501.19 kB, gzip 156.83 kB)
+   frontend/dist/assets/index-Dvie3-t8.css (130.80 kB, gzip 20.85 kB)
 ```
 
 ```text
@@ -1554,6 +1554,27 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 指路（「处理入口在『订单』页…」），否则用户在只读页上找不到入口。
 **已知未修的 UX 缺口**（如实记下）：那三页自己没有写入口。彻底修法是把 `TradeWritePanel`
 引到三页并指定初始 tab（要动 3 个页面文件 + CSS），本轮选了「文案指路」这个最小改法。
+
+**149（打包版截图自检抓出的第 6 个真问题：一个「只改价」会顺手改库存）**：
+快捷改价/库存弹窗的两个输入框都**预填了当前值**，而提交逻辑是「填了哪个就发哪个」，
+于是「只想改价」必然把库存也写回平台。本地库存一旦比平台旧（同步不到、或平台被别人
+买走几件），这一下就把平台库存改回旧值 —— 确认框里显示的还是「库存 100 → 100」，
+用户完全看不出来；弹窗自己那句「留空的那个不会被改动」在预填的前提下也从没生效过。
+改成按「**和当前值是否不同**」判断：`priceChanged`/`quantityChanged` 只在值真的与
+`item.price`/`item.stock` 不同（或当前值未知）时为真，请求体只放改动过的键；两个都没
+改动时按钮 `disabled`；弹窗新增「本次会提交：价格 ¥49.90 → ¥123.00」一行，没改动时明说
+「还没改动 —— 把要改的数字改成别的，另一个保持原样就不会被提交」并分别标注
+「价格没改动，不提交」「库存没改动，不提交」；二次确认框的「改前 → 改后」也只列会提交的
+字段 + 一句「没列出来的保持闲鱼上的原值」。
+**取证方式值得抄**：`C:\Users\Administrator\.dsh-tmp\item_write_shots.py` 打开写界面、
+**不点最终确认**，并在 `page.on('request')` 里记录所有非 GET 的 `/api/` 请求 ——
+最后一行 `non-GET api requests (should be none): []` 就是「整轮一个写请求都没发」的证据，
+比「我保证没点」强。截图在 `logs/item_write_shots/`（`04-quick-modal` 显示未改动状态、
+`06-quick-confirm-over-modal` 只列价格那一行、`07-back-to-modal-after-cancel` 取消后回到弹窗）。
+**脚本踩坑**：确认框的「取消」在 DOM 里排在 Modal 的「取消」**之后**，用
+`.first` 会点到被 `.modal-mask` 遮住的那个，Playwright 报
+`<div class="modal-mask"> intercepts pointer events` —— 那是脚本选错元素，不是层级 bug；
+确认框的按钮 `.last` 能正常点到，说明层级是对的。
 
 > **第二十二批证据链**：`backend/tests/test_item_write_api.py` → **`Ran 47 tests in 0.838s OK`**
 > （`XIANYU_APP_DIR=%TEMP%\xywb_item_write`；过程中修掉三处测试自身的错：
