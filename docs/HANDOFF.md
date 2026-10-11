@@ -22,7 +22,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_tpl_flat3&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 46  PASS 46  FAIL 0  CASES 1376  SKIPPED 2
+-> TOTAL 46  PASS 46  FAIL 0  CASES 1377  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -1369,6 +1369,13 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
      `success`（或压根没有 `code`）→ **502 `protocol_error`**，绝不伪装成功。
      `unbind` 三分支：`free_ship` → `isFreeShip:true`；`template` → `isFreeShip:false,
      idleTemplateId:<id>, supportFreight:false`；`fixed` → `isFreeShip:false, postPriceInCent:100*元`。
+     **三步顺序是「确认 → 字段校验 → 建客户端」**，而且是被打包版真机探针抓出来的：初版把
+     「确认 + 建客户端」写成一个 `_write_facade`，于是 `confirm:true` + 空 body 在掉线账号上
+     返回 **409 `verification_required`**（先去查凭据了），而交易/推广那批同场景返回 400
+     `invalid_fields`。两个后果：①用户填错一个字要先被赶去扫码，扫完才被告知字段错；
+     ②同一批写接口的报错顺序不一致。已拆成 `_confirm_gate(action, confirm)`（纯本地）
+     + `_write_facade(account_id)`（建客户端），并加
+     `test_field_validation_runs_before_credential_check` 把顺序钉死。
 
 139. **运费模版页从只读改成可写**（`frontend/src/pages/ItemTemplates.tsx` 整体重写 + 新增
      `itemtemplates.css`）。唯一写出口是一个 `post(path, body)`，里面 `confirm: true` 是**字面量**
@@ -1379,14 +1386,23 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
      `styles.css` 任何既有选择器；刻意避开 `color-mix()`（老 WebView2 不支持），选中态用
      `box-shadow: inset 0 0 0 1px var(--accent)`。
 
-> **第二十一批证据链**：`backend/tests/test_item_templates_api.py` → **`Ran 33 tests ... OK`**
-> （`XIANYU_APP_DIR=%TEMP%\xywb_tpl_write`）；`backend/tests/run_all.py` → **`TOTAL 46  PASS 46
-> FAIL 0  CASES 1376  SKIPPED 2`**（第二十批 1356 + 20）；改扁平签名后复跑
-> `test_agents_cross` + `test_agents_tools_workbench` + `test_mcp_server` + `test_item_templates_api`
-> → **`Ran 158 tests ... OK`**；独立五方对账 `reconcile_lead.py` → `specs=62 master=61 routes=63
-> targets=42 handlers=62 write_tools=15 route_checked=63`、**`RECON OK`**（它同时校验每条路由的
-> path/query/body 与真实 FastAPI 端点签名一致）；前端 `npx tsc --noEmit` EXIT=0、
-> `npm run build` EXIT=0（87 modules，`index-gVPWSzu6.js 493.69 kB` + `index-Ckuj6T5I.css 128.94 kB`）。
+> **第二十一批证据链**：`backend/tests/test_item_templates_api.py` → **`Ran 34 tests ... OK`**
+> （`XIANYU_APP_DIR=%TEMP%\xywb_tpl_order`；原 13 → 33 → 34）；`backend/tests/run_all.py`
+> → **`TOTAL 46  PASS 46  FAIL 0  CASES 1377  SKIPPED 2`**（第二十批 1356 → 1376 → 1377）；
+> 改扁平签名后复跑 `test_agents_cross` + `test_agents_tools_workbench` + `test_mcp_server`
+> + `test_item_templates_api` → **`Ran 158 tests ... OK`**；独立五方对账 `reconcile_lead.py`
+> → `specs=62 master=61 routes=63 targets=42 handlers=62 write_tools=15 route_checked=63`、
+> **`RECON OK`**（它同时校验每条路由的 path/query/body 与真实 FastAPI 端点签名一致）；
+> 前端 `npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0（87 modules，
+> `index-gVPWSzu6.js 493.69 kB` + `index-Ckuj6T5I.css 128.94 kB`）；
+> `scripts/ui_smoke.py --port 18233` → **26/26 页通过**；
+> **打包版 confirm 闸门真机探针**（`probe_write_gate.py` 对 `127.0.0.1:18400`，19 个写端点
+> × `{}` / `{confirm:false}` / `{confirm:true}`）→ **`GATE FAILURES: 0 / 19`**：未确认一律
+> 400（`confirmation_required` / `confirm_required`），确认后无一再被 confirm 类拒绝
+> （转 `invalid_fields` 或 409 `verification_required`）；语义只读、故意无闸门的
+> `POST …/appeal/form` 仍是 400 `invalid_fields`（证明它没被闸门挡）。
+> 提交：`e3cba28`（写接口三件套 + 契约）、`4c5c8ef`（4 个 AI 写工具 + MCP 路由）、
+> `bfe6bff`（运费模版页可写 + CSS）。
 > 诚实边界：`create`/`modify`/`delete`/`unbind` 的字段形状全部来自**官方 bundle 静态提取**，
 > **一次真机写请求都没发过**（红线：不许改真实平台数据）；本机两个账号都 `need_relogin`，
 > 写端点的真机响应（尤其是 `templateDetails` 平台是否接受字符串、`unbind` 的 `itemIds` 分隔符）
@@ -1395,7 +1411,7 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**46 个测试文件、1376 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**46 个测试文件、1377 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
