@@ -1,5 +1,6 @@
 /**
- * 交易 → **投诉**（只读）。契约 `docs/contracts/trade.md` §2.5。
+ * 交易 → **投诉**（列表只读；驳回 / 举证在页内做，要二次确认）。
+ * 契约 `docs/contracts/trade.md` §2.5、写接口 `docs/contracts/trade_write.md`。
  *
  * 这一页和前面几页有个本质区别，先写清楚免得后面踩坑：
  *  1. **没有真机样本** —— 真机上平台回 `NO_PERMISSION::用户没有权限` → 后端 502 `protocol_error`。
@@ -17,6 +18,7 @@ import {
   AccountBar,
   TradeHead,
   TradeListView,
+  TradeWritePanel,
   dayOf,
   ellipsis,
   isNeedRelogin,
@@ -27,6 +29,7 @@ import {
   when,
   type TradeColumn,
   type TradeEnvelope,
+  type WriteDraft,
 } from './Orders'
 
 /**
@@ -59,6 +62,7 @@ function toneForStatus(status: string): 'ok' | 'warn' | 'danger' | 'muted' {
 export function ComplaintsPage() {
   const { accounts, picked, setPicked, accountId } = useTradeAccounts()
   const [page, setPage] = useState(1)
+  const [write, setWrite] = useState<WriteDraft | null>(null)
   const pageSize = 10
 
   const state = useAsync<ComplaintsResult>(
@@ -155,6 +159,27 @@ export function ComplaintsPage() {
       },
       render: (row) => <span>{when(read(row, 'gmt_create', 'create_time', 'gmt_modified', 'apply_time'))}</span>,
     },
+    {
+      key: 'write',
+      label: '处理',
+      render: (row) => {
+        const complainId = String(read(row, 'complaint_id', 'complain_id', 'id') ?? '')
+        return (
+          <span className="tr-writes" onClick={(event) => event.stopPropagation()}>
+            <button
+              className="btn sm danger"
+              disabled={!accountId || !complainId}
+              title={complainId
+                ? '驳回 / 举证：会真的改动平台数据，要二次确认'
+                : '这一行没有投诉单号，处理不了'}
+              onClick={() => setWrite({ kind: 'complain-refuse', complainId })}
+            >
+              处理投诉
+            </button>
+          </span>
+        )
+      },
+    },
   ]
 
   return (
@@ -164,7 +189,7 @@ export function ComplaintsPage() {
         title="投诉"
         desc={
           <>
-            买家投诉工单 · 只读，处理投诉在平台操作
+            买家投诉工单 · 列表只读；驳回 / 举证在每行的「处理投诉」里做，要二次确认
             {data?.fetched_at ? ` · 更新于 ${when(data.fetched_at)}` : ''}
             {data?.api ? ` · 平台接口 ${data.api}` : ''}
           </>
@@ -233,6 +258,15 @@ export function ComplaintsPage() {
         hasNext={Number(data?.paging?.next_page ?? 0) > page}
         onPage={setPage}
       />
+
+      {write && (
+        <TradeWritePanel
+          accountId={accountId}
+          draft={write}
+          onClose={() => setWrite(null)}
+          onChanged={state.reload}
+        />
+      )}
     </>
   )
 }

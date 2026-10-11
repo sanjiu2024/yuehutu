@@ -1,9 +1,13 @@
 /**
- * 交易 → **退款**（只读）。契约 `docs/contracts/trade.md` §2.3。
+ * 交易 → **退款**（列表只读；同意 / 拒绝退款在页内做，要二次确认）。
+ * 契约 `docs/contracts/trade.md` §2.3、写接口 `docs/contracts/trade_write.md`。
  *
  * 退款帧和订单帧有两个不一样的地方，写的时候别照抄订单页：
  *  1. 平台在退款帧里**根本不给** `name` / `phone` / `address`，一律显示 `-`（是实情，不是丢数据）。
  *  2. 顶层有 `total_refund_fee`（真机 `"468.90"`，**字符串**），是本页的汇总数字。
+ *
+ * 写入口复用订单页的 `TradeWritePanel`（`refund-agree` / `refund-refuse` 两个端点），
+ * 每行的 `refund_id` 直接预填进去 —— 用户不用自己抄单号。
  *
  * 公共外壳与工具函数都在 `./Orders` —— 本次写范围里没有独立的公共文件可放。
  */
@@ -17,6 +21,7 @@ import {
   AccountBar,
   TradeHead,
   TradeListView,
+  TradeWritePanel,
   buttonsOf,
   dayOf,
   ellipsis,
@@ -30,6 +35,7 @@ import {
   when,
   type TradeColumn,
   type TradeEnvelope,
+  type WriteDraft,
 } from './Orders'
 
 interface RefundBuyer {
@@ -77,6 +83,7 @@ interface RefundsResult extends TradeEnvelope<TradeRefund> {
 export function RefundsPage() {
   const { accounts, picked, setPicked, accountId } = useTradeAccounts()
   const [page, setPage] = useState(1)
+  const [write, setWrite] = useState<WriteDraft | null>(null)
   const pageSize = 10
 
   const state = useAsync<RefundsResult>(
@@ -186,6 +193,27 @@ export function RefundsPage() {
       },
       render: (row) => <span>{when(row.refund_time ?? row.times?.create_time)}</span>,
     },
+    {
+      key: 'write',
+      label: '处理',
+      render: (row) => {
+        const refundId = String(row.refund_id ?? '')
+        return (
+          <span className="tr-writes" onClick={(event) => event.stopPropagation()}>
+            <button
+              className="btn sm danger"
+              disabled={!accountId || !refundId}
+              title={refundId
+                ? '同意 / 拒绝退款：会真的改动平台数据，要二次确认'
+                : '这一行没有退款单号，处理不了'}
+              onClick={() => setWrite({ kind: 'refund-agree', refundId })}
+            >
+              处理退款
+            </button>
+          </span>
+        )
+      },
+    },
   ]
 
   return (
@@ -195,7 +223,7 @@ export function RefundsPage() {
         title="退款"
         desc={
           <>
-            售后退款单 · 只读，同意 / 拒绝退款一律在平台操作
+            售后退款单 · 列表只读；同意 / 拒绝退款在每行的「处理退款」里做，要二次确认
             {data?.fetched_at ? ` · 更新于 ${when(data.fetched_at)}` : ''}
             {data?.api ? ` · 平台接口 ${data.api}` : ''}
           </>
@@ -256,6 +284,15 @@ export function RefundsPage() {
         hasNext={Number(data?.paging?.next_page ?? 0) > page}
         onPage={setPage}
       />
+
+      {write && (
+        <TradeWritePanel
+          accountId={accountId}
+          draft={write}
+          onClose={() => setWrite(null)}
+          onChanged={state.reload}
+        />
+      )}
     </>
   )
 }
@@ -304,7 +341,8 @@ function RefundDetail({ row }: { row: TradeRefund }) {
             {names.map((name) => <Badge key={name} tone="muted">{name}</Badge>)}
           </span>
           <span className="tr-sub">
-            只显示文案、点不动 —— 同意 / 拒绝退款是写接口，本项目一律 405。
+            这些是平台在这条退款单上给出的操作文案。要真处理，用列表里的「处理退款」按钮
+            （同意 / 拒绝都走平台写接口，会先弹一次确认）。
           </span>
         </Field>
       )}

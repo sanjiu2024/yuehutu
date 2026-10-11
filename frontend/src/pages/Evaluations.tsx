@@ -1,5 +1,9 @@
 /**
- * 交易 → **评价**（只读）。契约 `docs/contracts/trade.md` §2.4。
+ * 交易 → **评价**（列表只读；评价买家在页内做，要二次确认）。
+ * 契约 `docs/contracts/trade.md` §2.4、写接口 `docs/contracts/trade_write.md`。
+ *
+ * ⚠️ 平台在卖家侧只有**一个**评价写接口 `mtop.taobao.idle.merchant.rate.create`（卖家评价买家），
+ * **没有**「回复买家评价」这种接口 —— 页面不能承诺「回复」，只能说清这件事。
  *
  * 两条容易写错的地方：
  *  1. 列表项本身是**订单**，评价挂在 `has_rate` + `rates[]` 上，不是列表项就是一条评价。
@@ -19,6 +23,7 @@ import {
   AccountBar,
   TradeHead,
   TradeListView,
+  TradeWritePanel,
   dayOf,
   ellipsis,
   isNeedRelogin,
@@ -29,6 +34,7 @@ import {
   when,
   type TradeColumn,
   type TradeEnvelope,
+  type WriteDraft,
 } from './Orders'
 
 interface RateItem {
@@ -115,6 +121,7 @@ function tagList(value: unknown): string[] {
 export function EvaluationsPage() {
   const { accounts, picked, setPicked, accountId } = useTradeAccounts()
   const [page, setPage] = useState(1)
+  const [write, setWrite] = useState<WriteDraft | null>(null)
   const pageSize = 10
 
   const state = useAsync<EvaluationsResult>(
@@ -222,6 +229,27 @@ export function EvaluationsPage() {
       },
       render: (row) => <span>{when(row.times?.finish_time)}</span>,
     },
+    {
+      key: 'write',
+      label: '写操作',
+      render: (row) => {
+        const orderId = String(row.order_id ?? '')
+        return (
+          <span className="tr-writes" onClick={(event) => event.stopPropagation()}>
+            <button
+              className="btn sm danger"
+              disabled={!accountId || !orderId}
+              title={orderId
+                ? '评价买家：会真的改动平台数据，要二次确认'
+                : '这一行没有订单号，评价不了'}
+              onClick={() => setWrite({ kind: 'rate', orderId })}
+            >
+              评价买家
+            </button>
+          </span>
+        )
+      },
+    },
   ]
 
   return (
@@ -231,7 +259,8 @@ export function EvaluationsPage() {
         title="评价"
         desc={
           <>
-            买家对已完成订单的评价 · 只读，回复评价在平台操作
+            买家对已完成订单的评价 · 列表只读；「评价买家」在每行的写操作里做（要二次确认）。
+            平台卖家侧没有「回复买家评价」接口，回复只能去官方卖家工作台
             {data?.fetched_at ? ` · 更新于 ${when(data.fetched_at)}` : ''}
             {data?.api ? ` · 平台接口 ${data.api}` : ''}
           </>
@@ -285,6 +314,15 @@ export function EvaluationsPage() {
         hasNext={Number(data?.paging?.next_page ?? 0) > page}
         onPage={setPage}
       />
+
+      {write && (
+        <TradeWritePanel
+          accountId={accountId}
+          draft={write}
+          onClose={() => setWrite(null)}
+          onChanged={state.reload}
+        />
+      )}
     </>
   )
 }
