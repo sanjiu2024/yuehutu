@@ -275,11 +275,13 @@ GET    /api/items/{account_id}/{item_id}       -> 单条商品（MCP 的 items_g
       --   它与账号列表路径形状完全相同、被 FastAPI 按声明顺序吃掉，已删除：同一个
       --   单段路径不可能既是「账号列表」又是「商品详情」，只能保留一个。
 DELETE /api/items/{account_id}/{item_id}       -> {deleted:true,account_id,item_id}
-      -- **只删本地记录**：平台侧没有「删除商品」接口，闲鱼上架着的商品不受影响，下次
-      --   「同步商品」若平台仍返回它就会被写回（前端文案必须这么告诉用户）。会话/消息/
-      --   订单**都不删** —— 它们是聊天与交易历史。严格配对 `(account_id,item_id)`，
-      --   跨账号或不存在一律 404 `not_found`；成功写 operation_logs action='delete_item'
-      --   并发 `items.updated`（payload.action='delete'）。
+      -- **只删本地记录**：闲鱼上架着的商品不受影响，下次「同步商品」若平台仍返回它就会被
+      --   写回（前端文案必须这么告诉用户）。会话/消息/订单**都不删** —— 它们是聊天与交易
+      --   历史。严格配对 `(account_id,item_id)`，跨账号或不存在一律 404 `not_found`；
+      --   成功写 operation_logs action='delete_item' 并发 `items.updated`（payload.action='delete'）。
+      --   平台侧**有**删除接口（`...pc.item.batch.delete`，见下面的 `POST …/batch-delete`），
+      --   这一条故意保持「只动本地」的语义；UI 上是两个菜单项：行内「删除」走 batch-delete
+      --   （真删）、「只从本地列表移除」走这一条。
 GET    /api/items/{account_id}/stats?item_id=&source=cache|auto|local|platform
       -> {success:true,data:{items:[{item_id,title,images,price,status,
              exposure,visits,visitors,wants,orders,buyers,paid_orders,

@@ -74,7 +74,7 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
     title: '运营',
     items: [
       { key: 'accounts', label: '账号', icon: 'user', desc: '扫码登录、账号状态与手动验证', ownHeader: true },
-      { key: 'items', label: '商品', icon: 'box', desc: '商品列表、编辑、批量改价与上下架' },
+      { key: 'items', label: '商品', icon: 'box', desc: '商品列表、编辑、批量下架/删除与快捷改价改库存' },
       { key: 'chats', label: '会话', icon: 'chat', desc: '买家会话与人工接管' },
     ],
   },
@@ -88,9 +88,9 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
     title: '交易',
     items: [
       { key: 'orders', label: '订单', icon: 'tag', desc: '买家订单、发货、改价与退款（写操作要二次确认）' },
-      { key: 'refunds', label: '退款', icon: 'refresh', desc: '退款申请与处理进度' },
-      { key: 'evaluations', label: '评价', icon: 'checkCircle', desc: '买家评价与回复' },
-      { key: 'complaints', label: '投诉', icon: 'warn', desc: '平台投诉与处理状态' },
+      { key: 'refunds', label: '退款', icon: 'refresh', desc: '退款申请与进度（处理入口在「订单」页：退款中的订单行有「退款」按钮）' },
+      { key: 'evaluations', label: '评价', icon: 'checkCircle', desc: '买家评价（回复入口在「订单」页的交易写操作面板）' },
+      { key: 'complaints', label: '投诉', icon: 'warn', desc: '平台投诉与处理状态（驳回/举证入口在「订单」页的交易写操作面板）' },
       { key: 'return-addresses', label: '退货地址', icon: 'link', desc: '退货收货地址管理' },
     ],
   },

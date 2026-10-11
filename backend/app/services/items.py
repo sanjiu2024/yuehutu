@@ -306,12 +306,13 @@ def get_item_by_account(account_id: str, item_id: Any) -> Any:
 
 
 def delete_item(account_id: str, item_id: Any) -> Any:
-    """**只删本地记录**：闲鱼上架着的商品不会被动，平台侧没有删除接口。
+    """**只删本地记录**：闲鱼上架着的商品不会被动。
 
-    用途是清掉本地残留（平台已下架/已删除、或同步前手动加的记录）。下次「同步商品」
-    如果平台还返回它，会被重新写回 —— 前端文案已经这么告诉用户了，不要在这里假装
-    「已从闲鱼删除」。会话/消息/订单都不删：它们是聊天与交易历史，删了就查不到
-    「这个买家当初问的是哪件商品」。
+    平台侧**有**删除接口（`...pc.item.batch.delete`，见本模块的 `batch_delete`），
+    这一条故意保持「只动本地」的语义：用途是清掉本地残留（平台已下架/已删除、
+    或同步前手动加的记录）。下次「同步商品」如果平台还返回它，会被重新写回 ——
+    前端文案已经这么告诉用户了，不要在这里假装「已从闲鱼删除」。会话/消息/订单都不删：
+    它们是聊天与交易历史，删了就查不到「这个买家当初问的是哪件商品」。
     """
     row = _find_row_for_account(account_id, item_id)
     if row is None:
@@ -1077,8 +1078,8 @@ def batch_offline(account_id: str, item_ids: Any, confirm: Any = None) -> Dict[s
 def batch_delete(account_id: str, item_ids: Any, confirm: Any = None) -> Dict[str, Any]:
     """批量删除：**平台侧真删除**（`...pc.item.batch.delete`），成功后再删本地记录。
 
-    与老 `delete_item` 的区别：那个只删本地（平台侧当时没有接口），这个真的会把商品
-    从闲鱼上删掉，**不可撤销**。
+    与老 `delete_item` 的区别：那个只删本地（它的语义就是「清本地残留」，现在也仍然是），
+    这个真的会把商品从闲鱼上删掉，**不可撤销**。
     """
     return _batch_write(account_id, item_ids, action='batch_delete',
                         api_action='batch_delete', confirm=confirm, status='deleted',

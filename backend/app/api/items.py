@@ -197,7 +197,13 @@ def get_item_for_account(account_id: str, item_id: str, user=Depends(current_use
 
 @router.delete('/{account_id}/{item_id}')
 def delete_item_for_account(account_id: str, item_id: str, user=Depends(current_user)):
-    """只删本地记录（平台侧没有删除接口，闲鱼上的商品不受影响）。"""
+    """**只删本地记录**，闲鱼上的商品不受影响。
+
+    平台侧**有**删除接口（`mtop.alibaba.idle.seller.pc.item.batch.delete`，见
+    `POST /{account_id}/batch-delete`），这一条故意保持「只动本地」的语义，
+    给「只想把列表清干净」用；两个入口的区别在 UI 上是两个菜单项
+    （「删除」= 真删 / 「只从本地列表移除」= 这一条）。
+    """
     return _envelope(items.delete_item(account_id, item_id))
 
 

@@ -561,8 +561,8 @@ export function ItemsPage() {
   /**
    * 批量删除：一次请求打 `POST /api/items/{account_id}/batch-delete`。
    *
-   * 注意与行内菜单的「删除」**不是一回事**：那个走 `DELETE /api/items/{account_id}/{item_id}`，
-   * 只删本地记录；这个删的是**闲鱼上**的商品，所以文案里写的是「真的删除、不可撤销」。
+   * 与行内菜单的「删除」**是同一条路径**（单个就是 `itemIds` 里一个 id），
+   * 所以两处语义一致；「只删本地、不动闲鱼」单独是 `removeLocalItem`。
    */
   const batchDelete = () => {
     const targets = selectedItems
@@ -593,11 +593,16 @@ export function ItemsPage() {
   }
 
   /**
-   * 删除商品记录。
+   * 删除商品（**闲鱼上真的删掉**）。
    *
-   * `DELETE /api/items/{account_id}/{item_id}` **只删本地记录**（平台侧没有删除接口），
-   * 文案必须讲明白：闲鱼上架着的商品不会被自动下架，下次「同步商品」可能又拉回来。
-   * 会话与消息不受影响 —— 买家当初问的是哪件商品，历史里还得查得到。
+   * 与「批量删除」走**同一条** `POST /api/items/{account_id}/batch-delete`（官方
+   * `…pc.item.batch.delete`，`itemIds` 是逗号串，单个商品就是 `'i1'`）。
+   *
+   * 这里以前是 `DELETE /api/items/{account_id}/{item_id}`（**只删本地记录**），注释还写着
+   * 「平台侧没有删除接口」—— 那句话在第二十二批之后就不成立了：官方商品管理页的删除
+   * 走的就是 batch.delete。留着旧行为会让同一个「删除」在两个入口里有两种语义
+   * （批量真删、单个只删本地），用户没法预期哪个是哪个。所以单个也改成真删，
+   * 「只删本地」单独留一个入口（`removeLocalItem`），谁也不丢。
    */
   const removeItem = (item: Item) => {
     setConfirmAction({
@@ -606,14 +611,50 @@ export function ItemsPage() {
         <>
           确定要删除 <strong>{truncate(item.title || item.item_id, 40)}</strong> 吗？
           <div className="dim" style={{ marginTop: 6 }}>
-            只删本地记录：闲鱼上架着的商品不会被自动下架，下次「同步商品」可能又拉回来。
+            会把这件商品在<strong>闲鱼上真的删掉</strong>，<strong>不可撤销</strong>。
+            只想让它从这个列表里消失、不动闲鱼上的数据，请改用「只从本地列表移除」。
+          </div>
+        </>
+      ),
+      run: async () => {
+        const result = await postItemWrite<BatchResult>(
+          `/api/items/${encodeURIComponent(item.account_id)}/batch-delete`,
+          { item_ids: [item.item_id] },
+        )
+        reportWrite('删除', result)
+        setSelected((prev) => {
+          const next = new Set(prev)
+          next.delete(item.item_id)
+          return next
+        })
+        items.reload()
+      },
+    })
+  }
+
+  /**
+   * 只从本地列表移除（**不碰闲鱼**）。
+   *
+   * `DELETE /api/items/{account_id}/{item_id}` 只删本地那一行：闲鱼上架着的商品不会被
+   * 自动下架，下次「同步商品」可能又拉回来。会话与消息不受影响 —— 买家当初问的是哪件
+   * 商品，历史里还得查得到。
+   */
+  const removeLocalItem = (item: Item) => {
+    setConfirmAction({
+      title: '只从本地列表移除',
+      message: (
+        <>
+          确定要把 <strong>{truncate(item.title || item.item_id, 40)}</strong> 只从本地列表移除吗？
+          <div className="dim" style={{ marginTop: 6 }}>
+            <strong>闲鱼上的商品不会被删除、也不会被下架</strong>，下次「同步商品」可能又拉回来。
+            要真删请改用「删除」。
           </div>
         </>
       ),
       run: async () => {
         try {
           await api.del(`/api/items/${encodeURIComponent(item.account_id)}/${encodeURIComponent(item.item_id)}`)
-          toast.success('已删除本地记录')
+          toast.success('已从本地列表移除')
           setSelected((prev) => {
             const next = new Set(prev)
             next.delete(item.item_id)
@@ -976,6 +1017,15 @@ export function ItemsPage() {
                               }}
                             >
                               <IconTrash size={13} /> 删除
+                            </button>
+                            <button
+                              title="只删本地这一行，不动闲鱼上的商品"
+                              onClick={() => {
+                                setMenuFor(null)
+                                removeLocalItem(item)
+                              }}
+                            >
+                              <IconTrash size={13} /> 只从本地列表移除
                             </button>
                           </div>
                         )}
