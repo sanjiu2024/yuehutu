@@ -114,8 +114,11 @@ HTTP 端点不会出现在应用里；`backend/tests/test_item_templates_api.py`
 | POST | `/api/item-templates/{account_id}/unbind` | `{confirm, item_ids, mode, template_id?, post_price?}` | 给商品设置运费 |
 
 - **`confirm` 必须显式为真**：`services/item_templates.py::_truthy` 只认 `True` / `'true'` / `1`，
-  其余（`False`/`'false'`/`'yes'`/`0`/`None`/缺省）一律 400 `confirmation_required`，**且一次平台请求都不发**
-  （`_write_facade` 先判确认、**再**建客户端）。
+  其余（`False`/`'false'`/`'yes'`/`0`/`None`/缺省）一律 400 `confirmation_required`，**且一次平台请求都不发**。
+- **三步顺序：确认 → 字段校验 → 建客户端**（`_confirm_gate()` → `_check_*()` → `_write_facade()`）。
+  确认在最前（未确认时连字段错都不该先报，否则误导用户「填对了就能发」）；字段校验在建客户端之前
+  （纯本地、免费，账号掉线时也该先说「名称没填」而不是「去重新登录」）。顺序由
+  `test_gate_runs_before_field_validation` 与 `test_field_validation_runs_before_credential_check` 钉住。
 - **扁平命名参数**：四个服务函数的签名是 `create_template(account_id, template_name, item_prov, item_city,
   valuation, is_default, details, template_details, confirm)` 这种**逐字段**形式，不是 `body: dict`。
   原因：AI/MCP 路径的 `agents/tools.py::_filter_args` **只传目标函数签名里有的键** ——

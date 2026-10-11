@@ -402,6 +402,20 @@ class ItemTemplatesWriteTest(unittest.TestCase):
         self.assertNotIn('不能为空', body['message'])
         self.assertEqual(self.fake.calls, [])
 
+    def test_field_validation_runs_before_credential_check(self):
+        """字段校验在建客户端之前：账号掉线时也该先说「名称没填」，而不是「去重新登录」。
+
+        纯本地校验免费，先做；否则用户填错一个字要先去扫码，扫完再被告知字段错。
+        """
+        seed_account(login_state='need_relogin')
+        body = self.failed(f'{BASE}/{ACC}/create', {'confirm': True}, 400, 'invalid_fields')
+        self.assertIn('不能为空', body['message'])
+        self.assertEqual(self.fake.calls, [])
+        # 字段齐了才轮到凭据检查。
+        self.failed(f'{BASE}/{ACC}/create', {'confirm': True, 'template_name': '模版'},
+                    409, 'verification_required')
+        self.assertEqual(self.fake.calls, [])
+
     # -- 新建 ------------------------------------------------------------
 
     def test_create_requires_name_and_bounds_it(self):

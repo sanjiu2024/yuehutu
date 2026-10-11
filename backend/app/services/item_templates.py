@@ -239,14 +239,23 @@ def _write_result(account_id: str, action: str, outcome: Dict[str, Any],
     }
 
 
-def _write_facade(account_id: str, action: str, confirm: Any):
-    """写路径的公共前置：**先确认**、再建客户端。未确认时一次平台请求都不发。
+def _confirm_gate(action: str, confirm: Any) -> Optional[Dict[str, Any]]:
+    """写路径的第一道闸门：**只判确认**，不碰账号、不碰平台。
 
     `confirm` 走显式关键字：HTTP 端点把 `body.confirm` 取出来传进来，AI / MCP 工具路径
     直接按服务函数签名传 —— 两条路都用同一个参数，不会一条能确认、另一条永远确认不了。
+
+    三步顺序是 **确认 → 字段校验 → 建客户端**：确认在最前（未确认时连字段错都不该报，
+    否则会误导用户以为「填对了就能发」）；字段校验在建客户端之前（纯本地、免费，
+    账号掉线时也该先告诉他「名称没填」而不是「去重新登录」）。
     """
     if not _truthy(confirm):
-        return None, _confirm_required(f'运费模版{action}')
+        return _confirm_required(f'运费模版{action}')
+    return None
+
+
+def _write_facade(account_id: str):
+    """写路径的最后一步前置：建客户端（会触发凭据检查，可能 409 / 502）。"""
     facade, failure = _facade(account_id)
     if failure:
         return None, failure
@@ -293,12 +302,15 @@ def create_template(account_id: str = '', template_name: Any = '', item_prov: An
                     details: Any = None, template_details: Any = '',
                     confirm: Any = None) -> Dict[str, Any]:
     """新建运费模版。"""
-    facade, failure = _write_facade(account_id, '新建', confirm)
-    if failure:
-        return failure
+    problem = _confirm_gate('新建', confirm)
+    if problem:
+        return problem
     problem = _check_template_fields(template_name, details)
     if problem:
         return problem
+    facade, failure = _write_facade(account_id)
+    if failure:
+        return failure
     result, failure = _write_call(
         facade, proto.WRITE_METHODS['create'],
         _template_payload(template_name=template_name, item_prov=item_prov,
@@ -314,12 +326,15 @@ def modify_template(account_id: str = '', template_id: str = '', template_name: 
                     is_default: Any = False, details: Any = None, template_details: Any = '',
                     version: Any = None, confirm: Any = None) -> Dict[str, Any]:
     """修改运费模版（官方修改时会带上 `version`，列表里查得到就一起传）。"""
-    facade, failure = _write_facade(account_id, '修改', confirm)
-    if failure:
-        return failure
+    problem = _confirm_gate('修改', confirm)
+    if problem:
+        return problem
     problem = _check_template_fields(template_name, details, template_id=template_id, need_id=True)
     if problem:
         return problem
+    facade, failure = _write_facade(account_id)
+    if failure:
+        return failure
     result, failure = _write_call(
         facade, proto.WRITE_METHODS['modify'],
         _template_payload(template_name=template_name, item_prov=item_prov,
@@ -334,12 +349,15 @@ def modify_template(account_id: str = '', template_id: str = '', template_name: 
 def delete_template(account_id: str = '', template_id: str = '',
                     confirm: Any = None) -> Dict[str, Any]:
     """删除运费模版。不可撤销，所以同样要 `confirm`。"""
-    facade, failure = _write_facade(account_id, '删除', confirm)
-    if failure:
-        return failure
+    problem = _confirm_gate('删除', confirm)
+    if problem:
+        return problem
     problem = _missing('模版 id', template_id)
     if problem:
         return problem
+    facade, failure = _write_facade(account_id)
+    if failure:
+        return failure
     result, failure = _write_call(facade, proto.WRITE_METHODS['delete'], template_id)
     if failure:
         return failure
@@ -350,9 +368,9 @@ def unbind_items(account_id: str = '', item_ids: Any = None, mode: Any = '',
                  template_id: Any = '', post_price: Any = None,
                  confirm: Any = None) -> Dict[str, Any]:
     """给商品设置运费：包邮 / 用模版 / 固定运费（官方页面同一入口）。"""
-    facade, failure = _write_facade(account_id, '设置运费', confirm)
-    if failure:
-        return failure
+    problem = _confirm_gate('设置运费', confirm)
+    if problem:
+        return problem
 
     mode = _text(mode).strip()
     if mode not in proto.UNBIND_MODES:
@@ -376,6 +394,10 @@ def unbind_items(account_id: str = '', item_ids: Any = None, mode: Any = '',
         if amount <= 0:
             return common.fail('固定运费（post_price）必须大于 0', 'invalid_fields')
         post_price = amount
+
+    facade, failure = _write_facade(account_id)
+    if failure:
+        return failure
 
     payload = proto.build_unbind_payload(item_ids=ids, mode=mode,
                                          template_id=template_id, post_price=post_price)
