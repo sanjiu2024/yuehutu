@@ -498,6 +498,9 @@ class MasterChatTest(unittest.TestCase):
             'notifications_list',
             # ---- 运费模版 ----
             'item_templates_list', 'item_templates_get',
+            # ---- 运费模版写（会真的改平台数据，required 必含 confirm）----
+            'item_templates_create', 'item_templates_modify', 'item_templates_delete',
+            'item_templates_unbind',
             # ---- 财务 ----
             'finance_income', 'finance_expense', 'finance_invoices', 'finance_purchaser',
             # ---- 推广 ----
@@ -526,6 +529,8 @@ class MasterChatTest(unittest.TestCase):
             'trade_write_complain_refuse', 'trade_write_complain_proof',
             'promotion_write_execute',
             'qualification_submit_packages', 'qualification_oss_credential',
+            'item_templates_create', 'item_templates_modify', 'item_templates_delete',
+            'item_templates_unbind',
         ]
         for name in write_tools:
             spec = tools.get_tool(name)

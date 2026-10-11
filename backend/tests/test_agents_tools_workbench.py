@@ -253,6 +253,18 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
     'qualification_oss_credential': {
         'module': 'qualification', 'fn': 'oss_credential', 'confirm': True,
         'method': 'POST', 'path': '/api/qualification/{account_id}/oss-credential'},
+    'item_templates_create': {
+        'module': 'item_templates', 'fn': 'create_template', 'confirm': True,
+        'method': 'POST', 'path': '/api/item-templates/{account_id}/create'},
+    'item_templates_modify': {
+        'module': 'item_templates', 'fn': 'modify_template', 'confirm': True,
+        'method': 'POST', 'path': '/api/item-templates/{account_id}/{template_id}/modify'},
+    'item_templates_delete': {
+        'module': 'item_templates', 'fn': 'delete_template', 'confirm': True,
+        'method': 'POST', 'path': '/api/item-templates/{account_id}/{template_id}/delete'},
+    'item_templates_unbind': {
+        'module': 'item_templates', 'fn': 'unbind_items', 'confirm': True,
+        'method': 'POST', 'path': '/api/item-templates/{account_id}/unbind'},
     # 只读：列推广写动作目录，故意不要 confirm。
     'promotion_write_actions': {
         'module': 'ad_write', 'fn': 'actions_catalog', 'confirm': False,
@@ -287,6 +299,15 @@ _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
         'account_id': 'acc-x', 'action': 'campaign_pause', 'confirm': False},
     'qualification_submit_packages': {'account_id': 'acc-x', 'confirm': False},
     'qualification_oss_credential': {'account_id': 'acc-x', 'confirm': False},
+    'item_templates_create': {
+        'account_id': 'acc-x', 'template_name': '模版', 'confirm': False},
+    'item_templates_modify': {
+        'account_id': 'acc-x', 'template_id': 'tpl-1', 'template_name': '模版',
+        'confirm': False},
+    'item_templates_delete': {
+        'account_id': 'acc-x', 'template_id': 'tpl-1', 'confirm': False},
+    'item_templates_unbind': {
+        'account_id': 'acc-x', 'item_ids': 'i1', 'mode': 'free_ship', 'confirm': False},
 }
 
 

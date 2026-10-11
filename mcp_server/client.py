@@ -260,6 +260,29 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'method': 'GET', 'path': '/api/item-templates/{account_id}/{template_id}',
         'path_params': ['account_id', 'template_id'],
     },
+    # ---------------- 运费模版写（POST；confirm 是必填）----------------
+    'item_templates_create': {
+        'method': 'POST', 'path': '/api/item-templates/{account_id}/create',
+        'path_params': ['account_id'],
+        'body': ['confirm', 'template_name', 'item_prov', 'item_city', 'valuation',
+                 'is_default', 'details', 'template_details'],
+    },
+    'item_templates_modify': {
+        'method': 'POST', 'path': '/api/item-templates/{account_id}/{template_id}/modify',
+        'path_params': ['account_id', 'template_id'],
+        'body': ['confirm', 'template_name', 'item_prov', 'item_city', 'valuation',
+                 'is_default', 'details', 'template_details', 'version'],
+    },
+    'item_templates_delete': {
+        'method': 'POST', 'path': '/api/item-templates/{account_id}/{template_id}/delete',
+        'path_params': ['account_id', 'template_id'],
+        'body': ['confirm'],
+    },
+    'item_templates_unbind': {
+        'method': 'POST', 'path': '/api/item-templates/{account_id}/unbind',
+        'path_params': ['account_id'],
+        'body': ['confirm', 'item_ids', 'mode', 'template_id', 'post_price'],
+    },
     # ---------------- 财务（只读）----------------
     # 注意 query_rename：工具参数叫 cycle_from/cycle_to（= 服务层 `finance.account_bills`
     # 的签名），但 HTTP 端点的线上名是 `from`/`to`（`backend/app/api/finance.py:44,60`

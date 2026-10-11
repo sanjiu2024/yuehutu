@@ -592,6 +592,112 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---------------- 运费模版写（会真的改平台数据；required 必含 confirm） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'item_templates_create',
+            'description': '新建一个运费模版（真实写平台）。details 是运费明细数组，'
+                           '元素形如 {"receive_division_name":"全国","first":"1","first_price":"8",'
+                           '"excess":"1","excess_price":"3"}；空字符串字段不会提交。'
+                           + _WRITE_HINT + 'account_id 与 template_name 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'template_name': {'type': 'string', 'description': '模版名称，必填，最多 30 个字'},
+                    'item_prov': {'type': 'string', 'description': '发货省，例如 浙江省；可空'},
+                    'item_city': {'type': 'string', 'description': '发货市，例如 杭州市；可空'},
+                    'valuation': {'type': 'string', 'description': '计价方式，可空'},
+                    'is_default': {'type': 'boolean', 'description': '是否设为默认模版'},
+                    'details': {
+                        'type': 'array',
+                        'description': '运费明细数组；可空',
+                        'items': {'type': 'object'},
+                    },
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'template_name', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'item_templates_modify',
+            'description': '修改一个运费模版（真实写平台）。官方修改时会带上 version，'
+                           'item_templates_list / item_templates_get 里能查到就一起传。'
+                           + _WRITE_HINT + 'account_id、template_id 与 template_name 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'template_id': {'type': 'string', 'description': '要改的模版 id'},
+                    'template_name': {'type': 'string', 'description': '模版名称，必填，最多 30 个字'},
+                    'item_prov': {'type': 'string', 'description': '发货省；可空'},
+                    'item_city': {'type': 'string', 'description': '发货市；可空'},
+                    'valuation': {'type': 'string', 'description': '计价方式；可空'},
+                    'is_default': {'type': 'boolean', 'description': '是否设为默认模版'},
+                    'details': {
+                        'type': 'array',
+                        'description': '运费明细数组；可空',
+                        'items': {'type': 'object'},
+                    },
+                    'version': {'type': 'string', 'description': '平台返回的 version；查不到就留空'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'template_id', 'template_name', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'item_templates_delete',
+            'description': '删除一个运费模版（真实写平台，**不可撤销**）。'
+                           '正在用这个模版的商品可能受影响，删之前先确认。'
+                           + _WRITE_HINT + 'account_id 与 template_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'template_id': {'type': 'string', 'description': '要删的模版 id'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'template_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'item_templates_unbind',
+            'description': '给商品设置运费（真实写平台）。mode 三选一：free_ship（包邮）、'
+                           'template（用模版，要 template_id）、fixed（固定运费，要 post_price，单位元）。'
+                           'item_ids 是商品 id 数组或逗号串。'
+                           + _WRITE_HINT + 'account_id、item_ids 与 mode 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'item_ids': {
+                        'type': 'string',
+                        'description': '商品 id，多个用逗号分隔，例如 "1085757639387,108581070822"',
+                    },
+                    'mode': {'type': 'string', 'enum': ['free_ship', 'template', 'fixed'],
+                             'description': '运费方式'},
+                    'template_id': {'type': 'string', 'description': 'mode=template 时必填'},
+                    'post_price': {'type': 'number', 'description': 'mode=fixed 时的固定运费，单位元'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'item_ids', 'mode', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 财务（只读） ----------------
     {
         'type': 'function',
@@ -1332,6 +1438,10 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     # ---- 运费模版 ----
     'item_templates_list': ['item_templates', 'list_templates'],
     'item_templates_get': ['item_templates', 'template_detail'],
+    'item_templates_create': ['item_templates', 'create_template'],
+    'item_templates_modify': ['item_templates', 'modify_template'],
+    'item_templates_delete': ['item_templates', 'delete_template'],
+    'item_templates_unbind': ['item_templates', 'unbind_items'],
     # ---- 财务 ----
     'finance_income': ['finance', 'account_bills'],
     'finance_expense': ['finance', 'account_bills'],
@@ -1501,6 +1611,10 @@ _HANDLERS = {
     'notifications_list': lambda a: _dispatch_service('notifications_list', a),
     'item_templates_list': lambda a: _dispatch_service('item_templates_list', a),
     'item_templates_get': lambda a: _dispatch_service('item_templates_get', a),
+    'item_templates_create': lambda a: _dispatch_service('item_templates_create', a),
+    'item_templates_modify': lambda a: _dispatch_service('item_templates_modify', a),
+    'item_templates_delete': lambda a: _dispatch_service('item_templates_delete', a),
+    'item_templates_unbind': lambda a: _dispatch_service('item_templates_unbind', a),
     'finance_income': lambda a: _dispatch_service('finance_income', a),
     'finance_expense': lambda a: _dispatch_service('finance_expense', a),
     'finance_invoices': lambda a: _dispatch_service('finance_invoices', a),
