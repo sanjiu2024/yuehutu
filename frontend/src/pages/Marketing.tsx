@@ -507,7 +507,14 @@ function ListPanel({
         <RefreshButton onClick={state.reload} disabled={state.loading || !ready} />
       </div>
 
-      {requestLine && <p className="mk-request dim mono">本次请求：{requestLine}</p>}
+      {requestLine && (
+        <p className="mk-request dim mono">
+          {/* 必填没填齐时这一行只是「拼出来的地址」，一个请求都没发 —— 不能写成「本次请求」，
+              否则用户会以为后端已经返回了 400 */}
+          {ready ? '本次请求：' : '将要请求（必填没填齐，还没发）：'}
+          {requestLine}
+        </p>
+      )}
 
       {children}
 
