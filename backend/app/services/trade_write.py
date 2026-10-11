@@ -277,6 +277,59 @@ def complain_proof(account_id: str, complain_id: Any, proof_desc: Any, proof_url
         proto.COMPLAIN_PROOF_VERSION, confirm)
 
 
+# --------------------------------------------------------------------------- 退款凭证（只读）
+
+
+def refund_verify_token(account_id: str, refund_id: Any) -> Dict[str, Any]:
+    """拿退款凭证（`verifyUrl` + `token`）—— **只读**，所以没有 `confirm`。
+
+    为什么需要它：同意退款的 `authToken` 不是退款列表帧里的字段（真机
+    `rightVO.btnList[].clickEvent.data.url` 是空串），用户在我们页面上根本无处可抄。
+    官方前端的做法是打开弹窗时先查一次 `mtop.idle.alipay.verify.url.query`，
+    把 `data.module.token` 填进 `authToken`、把 `data.module.verifyUrl` 塞进 iframe 让用户
+    完成支付宝身份验证。我们照这条路走（证据见 `xianyu/trade_write.py` 的常量注释）。
+
+    **不假装成功**：平台没给 `token` 就是 `None`（上层照实提示），不生成、不缓存、不落库。
+    """
+    failure = _missing(('退款单号', refund_id))
+    if failure:
+        return failure
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+
+    api, data = proto.verify_url_request(refund_id)
+    status, value = common.call_method(client, ('mtop',), api, data, v=proto.VERIFY_URL_VERSION)
+    if status != common.CALL_OK:
+        failure = common.call_failed(status, value) or common.fail('协议层调用失败', 'protocol_error')
+        failure.setdefault('platform_errors', {
+            'api': api,
+            'explain': _text(value) or '协议层未提供该方法',
+        })
+        return failure
+
+    explain = proto.envelope_error(value)
+    if explain:
+        # 官方这条只在 `userInfo.isAdmin` 为真时走；非管理员态平台很可能直接拒绝。
+        # 照实透出原文（不引导用户重新扫码 —— 这不是掉线）。
+        logger.warning(f'[trade_write] 平台拒绝 {api}: {explain}')
+        return common.fail(
+            f'平台接口失败: {explain}',
+            'protocol_error',
+            platform_errors={
+                'api': api,
+                'explain': explain,
+                'message': proto.envelope_message(value),
+            },
+        )
+
+    payload = proto.parse_verify_result(value)
+    payload['account_id'] = account_id
+    payload['refund_id'] = _text(refund_id)
+    payload['api'] = api
+    return _stamp(payload)
+
+
 # --------------------------------------------------------------------------- 业务级失败
 
 

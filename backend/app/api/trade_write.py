@@ -82,6 +82,21 @@ def adjust_price(
     ))
 
 
+@router.get('/{account_id}/refunds/{refund_id}/verify-token')
+def refund_verify_token(
+    account_id: str,
+    refund_id: str,
+    user=Depends(current_user),
+):
+    """退款凭证（**只读**）：`mtop.idle.alipay.verify.url.query` → `{verify_url, token}`。
+
+    为什么是 GET：它只查不改（不改变任何平台状态、不动钱），所以**没有 `confirm` 闸门** ——
+    confirm 只钉有副作用的那一步。拿到的 `token` 是「同意退款」要回传的 `auth_token`，
+    `verify_url` 是官方让用户完成支付宝身份验证的页面地址。
+    """
+    return _envelope(trade_write.refund_verify_token(account_id, refund_id))
+
+
 @router.post('/{account_id}/refunds/{refund_id}/agree')
 def refund_agree(
     account_id: str,

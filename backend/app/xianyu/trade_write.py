@@ -74,6 +74,22 @@ COMPLAIN_PROOF_APIS: Dict[str, str] = {
 }
 COMPLAIN_PROOF_VERSION = '1.0'
 
+#: 退款凭证（支付宝身份验证的 verifyUrl + token）。bundle 偏移 **2801524**（同意退款弹窗）
+#: 与 **2804850**（拒绝退款弹窗），两处参数逐字相同：
+#: `{api:"mtop.idle.alipay.verify.url.query",v:"1.0",data:{bizId:refundId,scene:"REFUND_PC",
+#: callBackUrl:"https://seller.goofish.com/?site=COMMONPRO#/seller-trade/refund-manage"}}`；
+#: 响应读 `data.module.verifyUrl`（官方把它塞进 150px 高的 iframe）与 `data.module.token`
+#: （原样传给 `refund.agree.refund` 的 `authToken`）。
+#:
+#: **它本身只查不写**（不改任何平台状态），所以**故意不放进 `WRITE_APIS`**、也不要 confirm；
+#: 但它是「同意退款」的前置步骤，所以留在本模块。官方只在
+#: `window.__PC_SELLER_WORKBENCH__.userInfo.isAdmin` 为真时走这条，非管理员态直接用空 token
+#: 提交 —— 我们照实把平台的返回/报错透出来，不猜、不伪造 token。
+VERIFY_URL_API = 'mtop.idle.alipay.verify.url.query'
+VERIFY_URL_VERSION = '1.0'
+VERIFY_SCENE_REFUND = 'REFUND_PC'
+VERIFY_CALLBACK_URL = 'https://seller.goofish.com/?site=COMMONPRO#/seller-trade/refund-manage'
+
 #: 本模块声明的全部写接口（用于自检与文档；`trade.py` 的黑名单是它的超集）。
 WRITE_APIS: Tuple[str, ...] = (
     SHIP_OFFLINE_API,
@@ -84,6 +100,10 @@ WRITE_APIS: Tuple[str, ...] = (
     RATE_CREATE_API,
     COMPLAIN_REFUSE_API,
 ) + tuple(COMPLAIN_PROOF_APIS.values())
+
+#: 本模块里**只读**的接口（查退款凭证）。单独列出来，免得被误当成写接口加进黑名单，
+#: 也免得有人给它加 confirm 闸门 —— 它不改变任何平台状态。
+READ_APIS: Tuple[str, ...] = (VERIFY_URL_API,)
 
 
 class WriteNotConfirmed(RuntimeError):
@@ -227,6 +247,19 @@ def refund_refuse_request(refund_id: Any, order_id: Any, refuse_reason_id: Any,
     return REFUND_REFUSE_API, data
 
 
+def verify_url_request(refund_id: Any) -> Tuple[str, Dict[str, Any]]:
+    """退款凭证（**只读**）：拿 `verifyUrl` + `token`。
+
+    刻意**没有 `confirm` 参数** —— 它只查不改，给只读接口加确认闸门只会稀释真正危险
+    操作的信号（判据：confirm 只钉有副作用的那一步）。服务层同理不做确认检查。
+    """
+    return VERIFY_URL_API, {
+        'bizId': _text(refund_id),
+        'scene': VERIFY_SCENE_REFUND,
+        'callBackUrl': VERIFY_CALLBACK_URL,
+    }
+
+
 def rate_create_request(trade_ids: Any, feedback: Any, rate: Any = -1, image_urls: Any = (),
                         anonymous: bool = False,
                         *, confirm: bool = False) -> Tuple[str, Dict[str, Any]]:
@@ -304,6 +337,24 @@ def parse_rate_result(raw: Any) -> Dict[str, Any]:
         'rate_success': success if isinstance(success, bool) else None,
         'success_order_ids': _or_none(module.get('successOrderIds')) if isinstance(module, dict) else None,
         'fail_order_infos': _or_none(module.get('failOrderInfos')) if isinstance(module, dict) else None,
+    })
+    return payload
+
+
+def parse_verify_result(raw: Any) -> Dict[str, Any]:
+    """退款凭证（只读）的响应：`data.module.{verifyUrl, token}`。
+
+    两处都**可能是空串**（平台对某些账号直接回空）—— 空串一律给 `None`，
+    让上层显示「平台没给」，而不是拿 `''` 冒充一个能用的凭证。
+    """
+    payload = parse_write_result(raw)
+    body = payload['platform_body'] if isinstance(payload['platform_body'], dict) else {}
+    module = body.get('module') if isinstance(body.get('module'), dict) else body
+    module = module if isinstance(module, dict) else {}
+    payload.update({
+        'verify_url': _text(module.get('verifyUrl')) or None,
+        'token': _text(module.get('token')) or None,
+        'scene': _text(module.get('scene')) or VERIFY_SCENE_REFUND,
     })
     return payload
 

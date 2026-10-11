@@ -84,6 +84,15 @@ COMPLAIN_OK = {'success': True, 'data': {'success': True}, 'message': 'SUCCESS::
 COMPLAIN_BIZ_FAIL = {'success': True, 'data': {'success': False, 'failReason': '凭证不足，请补充'},
                      'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功']}
 
+#: 假响应：退款凭证（只读，bundle 读 `data.module.{verifyUrl,token}`）
+VERIFY_OK = {'success': True, 'data': {'module': {
+    'verifyUrl': 'https://verify.alipay.example/refund?x=1', 'token': 'VTOKEN-ABC'}},
+    'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功']}
+
+#: 假响应：平台把凭证字段回了空串（非管理员态官方就是这样，不能拿 `''` 当可用凭证）
+VERIFY_EMPTY = {'success': True, 'data': {'module': {'verifyUrl': '', 'token': ''}},
+                'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功']}
+
 #: 假响应：无权限（真机 `complain.list` / `address.list.query` 就是这个形状）
 NO_PERMISSION = {'success': False, 'message': 'NO_PERMISSION::用户没有权限',
                  'ret': ['NO_PERMISSION::用户没有权限']}
@@ -162,6 +171,7 @@ def full_client(**overrides: Any) -> FakeTradeClient:
         proto.COMPLAIN_PROOF_APIS['sellerSubmitProof']: COMPLAIN_OK,
         proto.COMPLAIN_PROOF_APIS['submitActiveProof']: COMPLAIN_OK,
         proto.COMPLAIN_PROOF_APIS['submitPassiveProof']: COMPLAIN_OK,
+        proto.VERIFY_URL_API: VERIFY_OK,
     }
     payloads.update(overrides)
     return FakeTradeClient(payloads)
@@ -207,6 +217,9 @@ class TradeWritePageTest(unittest.TestCase):
              headers: Optional[Dict[str, str]] = None):
         return self.client.post(path, json=body or {},
                                 headers=self.headers if headers is None else headers)
+
+    def get(self, path: str, headers: Optional[Dict[str, str]] = None):
+        return self.client.get(path, headers=self.headers if headers is None else headers)
 
     def ok_data(self, path: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         resp = self.post(path, body)
@@ -518,6 +531,107 @@ class WriteCredentialTest(TradeWritePageTest):
             with self.subTest(path=path):
                 resp = self.post(path, {'confirm': True}, headers={})
                 self.assertEqual(resp.status_code, 401, resp.text)
+
+
+class RefundVerifyTokenTest(TradeWritePageTest):
+    """退款凭证（只读）：`GET …/refunds/{refund_id}/verify-token`。
+
+    它解决的问题：同意退款的 `auth_token` **不在退款列表帧里**（真机 `btnList[].clickEvent.data.url`
+    是空串），用户在我们界面上无处可抄。官方前端的做法是先查 `mtop.idle.alipay.verify.url.query`
+    拿 `data.module.token`。这条**只查不改**，所以**故意没有 confirm 闸门**。
+    """
+
+    def path(self, refund_id: str = 'R1') -> str:
+        return f'{BASE}/{ACC}/refunds/{refund_id}/verify-token'
+
+    def test_shape_matches_the_bundle(self):
+        resp = self.get(self.path())
+        self.assertEqual(resp.status_code, 200, resp.text)
+        payload = resp.json()
+        self.assertTrue(payload.get('success'), payload)
+        data = payload['data']
+        self.assertEqual(data.get('verify_url'), 'https://verify.alipay.example/refund?x=1')
+        self.assertEqual(data.get('token'), 'VTOKEN-ABC')
+        self.assertEqual(data.get('scene'), 'REFUND_PC')
+        self.assertEqual(data.get('refund_id'), 'R1')
+        self.assertEqual(data.get('api'), proto.VERIFY_URL_API)
+        call = self.fake.call_of(proto.VERIFY_URL_API)
+        self.assertEqual(call['v'], proto.VERIFY_URL_VERSION)
+        self.assertEqual(call['data'], {
+            'bizId': 'R1',
+            'scene': proto.VERIFY_SCENE_REFUND,
+            'callBackUrl': proto.VERIFY_CALLBACK_URL,
+        })
+
+    def test_has_no_confirm_gate(self):
+        """只读接口不该有确认闸门：不带任何 body 也能拿到结果，且**确实打了平台**。"""
+        resp = self.get(self.path())
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(self.fake.apis(), [proto.VERIFY_URL_API])
+
+    def test_empty_strings_are_none_not_an_usable_token(self):
+        self.fake.payloads[proto.VERIFY_URL_API] = VERIFY_EMPTY
+        payload = self.get(self.path()).json()
+        self.assertTrue(payload.get('success'), payload)
+        self.assertIsNone(payload['data'].get('token'), '空串不许当成可用凭证')
+        self.assertIsNone(payload['data'].get('verify_url'))
+
+    def test_platform_failure_is_a_protocol_error_and_not_a_logout(self):
+        self.fake.payloads[proto.VERIFY_URL_API] = NO_PERMISSION
+        resp = self.get(self.path())
+        self.assertEqual(resp.status_code, 502, resp.text)
+        payload = resp.json()
+        self.assertFalse(payload.get('success'))
+        self.assertEqual(payload.get('code'), 'protocol_error')
+        self.assertIn('NO_PERMISSION', payload.get('message', ''))
+        self.assertEqual(payload.get('platform_errors', {}).get('api'), proto.VERIFY_URL_API)
+        self.assertEqual(self.login_state(), 'active', '无权限 ≠ 掉线')
+
+    def test_missing_cookie_is_409_and_never_calls_platform(self):
+        seed_account(cookie='')
+        resp = self.get(self.path())
+        self.assertEqual(resp.status_code, 409, resp.text)
+        self.assertEqual(resp.json().get('code'), 'verification_required')
+        self.assertEqual(self.fake.apis(), [])
+
+    def test_unknown_account_is_404(self):
+        resp = self.get(f'{BASE}/nope/refunds/R1/verify-token')
+        self.assertEqual(resp.status_code, 404, resp.text)
+        self.assertEqual(resp.json().get('code'), 'not_found')
+
+    def test_requires_login(self):
+        resp = self.get(self.path(), headers={})
+        self.assertEqual(resp.status_code, 401, resp.text)
+
+    def test_route_is_registered_as_get(self):
+        methods = {route.path: sorted(route.methods) for route in trade_write_api.router.routes}
+        self.assertEqual(methods.get('/api/trade/{account_id}/refunds/{refund_id}/verify-token'),
+                         ['GET'])
+
+
+class VerifyTokenProtocolTest(unittest.TestCase):
+    """协议层：只读接口的签名与登记位置。"""
+
+    def test_request_builder_has_no_confirm_parameter(self):
+        import inspect
+        self.assertNotIn('confirm', inspect.signature(proto.verify_url_request).parameters)
+
+    def test_api_is_registered_as_read_not_write(self):
+        self.assertIn(proto.VERIFY_URL_API, proto.READ_APIS)
+        self.assertNotIn(proto.VERIFY_URL_API, proto.WRITE_APIS)
+        self.assertNotIn(proto.VERIFY_URL_API, trade_proto.WRITE_APIS,
+                         '只读接口不该进只读层的写黑名单')
+        trade_proto.assert_read_only(proto.VERIFY_URL_API)  # 不抛异常即为通过
+
+    def test_parser_never_invents_a_token(self):
+        for raw in ({'success': True, 'data': {}},
+                    {'success': True, 'data': {'module': {}}},
+                    {'success': True, 'data': {'module': {'verifyUrl': '', 'token': ''}}}):
+            with self.subTest(raw=raw):
+                parsed = proto.parse_verify_result(raw)
+                self.assertIsNone(parsed['token'])
+                self.assertIsNone(parsed['verify_url'])
+                self.assertEqual(parsed['scene'], proto.VERIFY_SCENE_REFUND)
 
 
 class WriteContractTest(TradeWritePageTest):
