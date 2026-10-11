@@ -18,6 +18,39 @@
 | 8 | 不能老登录、风控要做好 | `xianyu/risk.py` 熔断 + `xianyu/login.py` 人工验证 | `test_xianyu_cookies.py` 37 项 |
 | 9 | 集成闲鱼客服 / 网页版功能 | `services/cs.py` 意图分类 + 快捷回复；**官方卖家工作台逐页复刻**：财务四页、超级擦亮、安全中心、交易五页、小铺两页、数据三页、通知、营销、资质、运费模版（含写） | `test_services_cs.py` 20 项；`test_finance_api.py`、`test_promotion_api.py`、`test_security_write_api.py`、`test_trade_api.py`、`test_shop_api.py`、`test_notify_api.py`、`test_datacenter_api.py`、`test_marketing_api.py`、`test_item_templates_api.py`；真机探针见第十七~二十一批 |
 
+### 官方卖家工作台菜单树 → 我们的页面（逐叶对照）
+
+来源：`logs/seller_discover/menu.json`（`mtop.alibaba.idle.seller.platform.sys.menu.query` 的真机
+响应，`siteName=idleFishSellerSite`、`bizCode=professionalSeller`），用
+`C:\Users\Administrator\.dsh-tmp\menu_tree.py` 打出来；官方一共 **7 个一级组、19 个二级页**。
+
+| 官方一级 | 官方二级（title） | 官方 path | 我们的位置 |
+| --- | --- | --- | --- |
+| 数据 `jylp` | 数据总览 | `/seller-data/data` | 侧栏「数据总览」`data-overview` |
+| | 商品数据 | `/seller-data/commodity` | **商品页的「商品数据」tab**（用户 m06014 明确要求「商品页里面再加一页」，所以刻意不做成独立一级页） |
+| | 粉丝数据 | `/seller-data/fanData` | 「粉丝数据」`fans` |
+| | 客服数据 | `/seller-data/customerService` | 「客服数据」`cs-data` |
+| 小铺 `shop` | 子账号管理 | `/seller-account/sub-account` | 「子账号」`sub-accounts` |
+| | 客服分流 | `/im-cs-dispatch/customer-routing-service` | 「客服分流」`cs-routing` |
+| | 安全中心 | `/seller-sc/home` | 「安全中心」`security-center` |
+| 商品 `item` | 商品发布 | `/seller-item/publish` | 商品页的「发布商品」弹窗 |
+| | 商品管理 | `/seller-item/goods-manage` | 「商品」`items` |
+| | 运费模版 | `/seller-item/post-temple` | 「运费模版」`item-templates`（含增删改） |
+| 交易 `trade` | 订单管理 | `/seller-trade/order-manage` | 「订单」`orders` |
+| | 退款管理 | `/seller-trade/refund-manage` | 「退款」`refunds` |
+| | 评价管理 | `/seller-trade/evaluation-manage` | 「评价」`evaluations` |
+| | 投诉管理 | `/seller-trade/complaint-manage` | 「投诉」`complaints` |
+| | 退货地址 | `/seller-trade/refund-address` | 「退货地址」`return-addresses` |
+| 推广 `marketing` | 超强擦亮 | `/seller-ad/home` | 「超级擦亮」`promotion` |
+| 财务 `finance` | 收入账单 / 支出账单 / 申请发票 / 开票信息 | `/seller-finance/*` | 「财务」`finance` 四个 tab |
+| 通用 `common` | 通知 | `/notification-center` | 「通知中心」`notifications` |
+| | 消息 | `/im` | 「会话」`chats` |
+
+**官方菜单里没有、我们额外做的**：`marketing`（营销，来自 `seller-marketing` 微应用，官方把它
+当成推广组本身而不是一页）、`qualification`（资质管理，官方放在擦亮账户设置里、不在工作台
+菜单）、以及 `overview`/`accounts`/`agents`/`master`/`providers`/`prompts`/`risk`（AI 与风控
+是我们自己的能力，官方没有）。⇒ **官方 19 个二级页全部有对应落地位置**。
+
 ## 二、验收基线（真实命令与输出）
 
 ```text
