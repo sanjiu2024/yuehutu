@@ -382,6 +382,52 @@ POST   /api/items/publish ; POST /api/items/batch ; POST /api/items/downshelf ; 
 POST   /api/items/sync ; GET /api/items/stats ; GET /api/items/operation-logs
       -- 上面这一组是**不带账号上下文**的扁平入口，保留给 UI 的「全部商品」视图
 
+POST   /api/items/{account_id}/batch-offline          {item_ids, confirm}
+POST   /api/items/{account_id}/batch-delete           {item_ids, confirm}
+POST   /api/items/{account_id}/{item_id}/quick-edit   {price?, quantity?, confirm}
+      -- 第二十二批新增。走**官方商品管理页**的接口，不是旧的「整份原表单回提 / 逐件循环 /
+      -- 只删本地」：
+      --   `batch-offline` -> `mtop.alibaba.idle.seller.pc.item.batch.offline`
+      --   `batch-delete`  -> `mtop.alibaba.idle.seller.pc.item.batch.delete`
+      --   `quick-edit`    -> `mtop.alibaba.idle.seller.pc.item.info.update`
+      -- 证据来自官方微应用 bundle `idle-pc/seller-item/0.0.20`（单行压缩 JS 的**字符偏移**，
+      -- 行号无意义）；每条接口的证据串在 `backend/app/xianyu/item_write.py::WRITE_APIS[*].evidence`。
+      --   `itemIds` 官方发的是**逗号串**（调用点原文 `H0({itemIds: T.join(",")})`）不是数组；
+      --   `quick_update` 无 SKU 时是扁平 `{itemId, quantity, price}`，**没给的字段不放键**
+      --   （官方发的是 `undefined` 不是空串）。
+      -- 成功判据逐字照抄 bundle：`res.data.data` 为真（空 dict / 空 list / None 全算失败）。
+      --   批量响应里的逐条清单是 `res.data.data.itemProcessResultList`（元素含 `success`），
+      --   另有 `res.data.failCount`。**`ok` 只数平台明确回报成功的 id** —— 没回报的 id 一律算
+      --   失败（`code='no_per_item_report'`）；平台接受整批但没给清单时 `ok=total` 且
+      --   `per_item_report=false`（不假装逐条确认过）。拿不到 `failCount` 时回 `null`，不补 0。
+      -- 三步顺序**必须**是「确认 → 字段校验 → 建客户端」：未确认时一个平台请求都不发；
+      --   字段错时不建客户端（掉线账号 + 空 `item_ids` 也要先说「item_ids 不能为空」，
+      --   而不是「去重新登录」）。同口径见 `services/item_templates.py`，回归锁
+      --   `test_item_write_api.py::test_field_validation_runs_before_credential_check`。
+      -- `quick-edit` **不碰 `status`** —— 这正是旧的整份回提的缺陷（编辑已卖出商品会把它重新
+      --   上架）。它只改 `price`/`quantity`：价格必须 >0、库存必须 ≥0 整数，两者至少给一个。
+      -- `batch-delete` 平台成功后才删本地 `items` 行；本地没有该行时进 `warnings`
+      --   （`code='local_missing'`，不是 failed —— 平台侧确实删掉了）。
+      -- 返回：`{total, ok, failed:[{id,code,message}], warnings:[{id,code,message}], status}`
+      --   （`status` = `off_shelf` / `deleted`）；`quick-edit` 成功
+      --   `{item_id, price, quantity, synced, warning}`（`price`/`quantity` 优先用平台回读值
+      --   `res.data.data`，拿不到才用请求值）。
+      -- 错误码：未确认 400 `confirmation_required`；字段错 400 `invalid_fields`；
+      --   掉线 409 `verification_required`（并回写 `login_state='need_relogin'`）；
+      --   平台业务失败 / 无权限 502 `protocol_error`（message 带平台 `msg` 原文，
+      --   **无权限不改登录态** —— `FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 不是掉线）。
+      -- **`item_ids` 数组与逗号串两种入参都收**（UI 给数组、MCP 给逗号串），统一由
+      --   `xianyu/item_write.py::normalize_item_ids` 归一；上限 200 条（`BATCH_WRITE_LIMIT`）。
+      -- 协议层实现口径：`backend/app/xianyu/item_write.py` 是**纯函数**（构造 `(api, data)`
+      --   二元组 + 独立的响应解析函数），**不自己调客户端**；真正发请求统一走
+      --   `common.call_method(client, ('mtop',), api, data, v='1.0')`（与 `xianyu/trade.py`
+      --   同族）。这样纯函数能在无客户端、无网络下逐字测，也不重复实现 `common.call_method`。
+      --   解析函数收的是**客户端返回值** `{'success','data','message','ret'}`（业务信封
+      --   `{code,msg,data}` 在 `raw['data']`），与 `xianyu/trade.py::envelope_error` 同约定。
+      -- 4 条「bundle 里声明了但调用点 0」的接口登记在 `NOT_IMPLEMENTED` 里**故意不实现**：
+      --   `...pc.item.delete`（单个删除）、`...platform.item.operate.online`（上架）、
+      --   `...pc.item.price.update`、`...pc.item.quantity.update` —— 官方商品管理页自己都不用它们。
+
 GET    /api/chats/conversations?account_id=&mode=&limit=   （= GET /api/chats，两者等价）
 GET    /api/chats/{conversation_id}/messages?limit=&before_id=
       -- 每条消息除正文外带媒体与 AI 溯源字段：`images[]`（图片直链，保序）、`msg_type`

@@ -11,12 +11,12 @@
 | 1 | 能自己买一个商品、配一个 AI 回复 | `agents/roles.py` 角色 `item`；`ai_prompts` 三级覆盖 | `test_agents_prompts.py` 三级优先级 |
 | 2 | 同一商品里买家问别的商品时 AI 能互相沟通 / 主 AI 控制 | `agents/runtime.py::cross_ask`、`agent_messages` | `test_agents_cross.py` 断言 ask/answer 落库 |
 | 3 | 助词（提示词）自己填 | 「提示词」页 + `ai_prompts` 表 | 写接口冒烟 ⑧ |
-| 4 | 商品批量修改 | `services/items.py::batch_update` | `test_services_items.py` + 冒烟 ④ |
+| 4 | 商品批量修改 | `services/items.py::batch_update`（改价/标题/描述/库存）；**第二十二批追加官方写接口** `batch_offline` / `batch_delete` / `quick_edit`（批量下架、批量删除、快捷改价改库存） | `test_services_items.py` + 冒烟 ④；`test_item_write_api.py` 47 项 |
 | 5 | 统一 API Key 管理 | `providers` 表 + 「AI 配置」页 | 冒烟 ① |
 | 6 | 主 AI 对接我 / 插件让 DSH 控制 | `POST /api/agents/master/chat` + `mcp_server/` | 冒烟 ⑦；`test_mcp_server.py` 55 项；端口文件端到端 |
 | 7 | 除 AI 外我自己也能回消息 | `POST /api/chats/{id}/send` | 冒烟 ⑤（消息落库） |
 | 8 | 不能老登录、风控要做好 | `xianyu/risk.py` 熔断 + `xianyu/login.py` 人工验证 | `test_xianyu_cookies.py` 37 项 |
-| 9 | 集成闲鱼客服 / 网页版功能 | `services/cs.py` 意图分类 + 快捷回复；**官方卖家工作台逐页复刻**：财务四页、超级擦亮、安全中心、交易五页、小铺两页、数据三页、通知、营销、资质、运费模版（含写） | `test_services_cs.py` 20 项；`test_finance_api.py`、`test_promotion_api.py`、`test_security_write_api.py`、`test_trade_api.py`、`test_shop_api.py`、`test_notify_api.py`、`test_datacenter_api.py`、`test_marketing_api.py`、`test_item_templates_api.py`；真机探针见第十七~二十一批 |
+| 9 | 集成闲鱼客服 / 网页版功能 | `services/cs.py` 意图分类 + 快捷回复；**官方卖家工作台逐页复刻**：财务四页、超级擦亮、安全中心、交易五页、小铺两页、数据三页、通知、营销、资质、运费模版（含写）、商品管理（含批量下架/删除/快捷改价改库存） | `test_services_cs.py` 20 项；`test_finance_api.py`、`test_promotion_api.py`、`test_security_write_api.py`、`test_trade_api.py`、`test_shop_api.py`、`test_notify_api.py`、`test_datacenter_api.py`、`test_marketing_api.py`、`test_item_templates_api.py`、`test_item_write_api.py`；真机探针见第十七~二十二批 |
 
 ### 官方卖家工作台菜单树 → 我们的页面（逐叶对照）
 
@@ -54,8 +54,8 @@
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_tpl_flat3&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 46  PASS 46  FAIL 0  CASES 1377  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_item_write_full&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 47  PASS 47  FAIL 0  CASES 1429  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -66,7 +66,8 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_xianyu_log
 
 ```text
 cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_mcp_server.py"
--> Ran 60 tests ... OK        （含 RouteParamAlignmentTest：MCP 路由参数 ↔ 真实端点签名）
+-> Ran 65 tests ... OK        （含 RouteParamAlignmentTest：MCP 路由参数 ↔ 真实端点签名、
+                                WriteToolConfirmGateTest：15 条写路由不带 confirm 一律零 HTTP 请求）
 ```
 
 ```text
@@ -74,12 +75,12 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 87 modules transformed.
-   frontend/dist/assets/index-BOItszoH.js (494.17 kB, gzip 154.43 kB)
-   frontend/dist/assets/index-Ckuj6T5I.css (128.94 kB, gzip 20.63 kB)
+   frontend/dist/assets/index-DIIUhmey.js (499.66 kB, gzip 156.26 kB)
+   frontend/dist/assets/index-wjPANuoK.css (130.52 kB, gzip 20.83 kB)
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18233"
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18255"
 -> UI SMOKE ALL OK  (26/26 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
    截图目录：logs/ui_smoke
 ```
@@ -1464,10 +1465,107 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 > 仍未被真机验证。140/141 的界面改动只在**打包版**上用 Playwright 点开截图看过，
 > **没点过提交**（确认框之后的真实提交路径仍未被任何一次点击走到）。
 
+### 第二十二批：商品写接口（官方批量下架 / 批量删除 / 快捷改价改库存）（142~147）
+
+用户授权写接口（m11617）后，商品页那三个写操作终于换成官方接口。**这一批的价值不在
+「多了三个按钮」，在于替掉了三种会改坏真实数据的做法**：
+
+| 操作 | 旧做法 | 旧做法的真实危害 | 新做法（官方接口） |
+| --- | --- | --- | --- |
+| 批量下架 | 前端逐件循环 `POST …/delist` | N 件 = N 个平台请求，更容易撞风控 | `…pc.item.batch.offline`，**一个请求** |
+| 批量删除 | `DELETE /api/items/{acc}/{item_id}` | **只删本地**，平台商品还在 —— 本地记录一删就成了幽灵 | `…pc.item.batch.delete`，平台删成功后才删本地行 |
+| 快捷改价 / 改库存 | 整份原表单回提（`edit_item`） | **副作用：编辑已卖出商品会把它重新上架** | `…pc.item.info.update`，只改这两个字段、**不碰 `status`** |
+
+**142（证据）**：四条接口名与参数形状全部来自官方微应用 bundle
+`idle-pc/seller-item/0.0.20`（4,402,065 字符**单行**压缩 JS ⇒ 只有字符偏移，行号无意义；
+本地副本 `C:\Users\Administrator\.dsh-tmp\adapp\item-main.js`，提取脚本
+`item_write_params.py` / `item_write_callsites.py`，报告
+`C:\Users\Administrator\.dsh-tmp\adapp\item_write_evidence.md`）。**零平台请求**。
+包装统一是 `gC({api, v:'1.0', data, showErrorToast:true, needLoginPC:true})`，业务字段
+**直接放 `data`**（不是 `idle.ad.*` 那套 `requestJson`）。关键调用点原文：
+
+- `offline` @3078164 / 调用点 @4084449 → `z0({itemId: r})`，确认框「是否确定停止售卖，下架商品」
+- `batch.offline` @3078561 / @4097558 → `H0({itemIds: T.join(",")})` —— **逗号串不是数组**
+- `batch.delete` @3079755 / @4099090 → `W0({itemIds: T.join(",")})`
+- `info.update` @3076546 / @4100255 → 无 SKU `N0({itemId, quantity, price})`（扁平三字段）；
+  有 SKU `N0({itemId, itemSkuListStr: JSON.stringify(skuList)})`
+- 成功判据逐字照抄：`res.data.data` 为真；批量逐条清单 `res.data.data.itemProcessResultList`
+  （元素含 `success`），另有 `res.data.failCount`
+
+**143（4 条死代码登记但不实现）**：`…pc.item.delete`（单个删除 @3078964）、
+`…platform.item.operate.online`（上架 @3077754）、`…pc.item.price.update` @3077352、
+`…pc.item.quantity.update` @3076947 —— bundle 里**声明了但调用点 0**，官方商品管理页
+自己都不用它们。登记进 `item_write.py::NOT_IMPLEMENTED` 是为了下次有人扫到这些名字时
+知道「已经查过了、是死代码」，而不是又去猜参数。
+
+**144（协议层）**：新建 `backend/app/xianyu/item_write.py`。**实现口径与任务卡原文有一处
+偏离，这里如实记下**：任务卡写的是 `offline_item(client, item_id)` 这类**自己调客户端**的
+函数，实际落成**纯函数**（构造 `(api, data)` 二元组 + 独立的响应解析函数），发请求统一走
+`common.call_method(client, ('mtop',), api, data, v='1.0')`。理由：①与 `xianyu/trade.py`
+同族，服务层不用为商品单独写一套调用姿势；②纯函数能在**无客户端、无网络**下逐字测
+（协议层 15 条用例没有一个是 mock 客户端换来的）；③协议层再实现一遍 `call_method`
+只会多一条会漂移的路径。**HTTP 契约与服务层签名与任务卡逐字一致**，偏离只在这一层。
+
+**145（服务层，三步顺序）**：`backend/app/services/items.py` 追加 `batch_offline` /
+`batch_delete` / `quick_edit`，三步顺序固定 **确认 → 字段校验 → 建客户端**：
+
+- 未确认 → 400 `confirmation_required`，**零平台请求**
+- 字段错（空 `item_ids` / 价格库存都没给 / 价格 ≤0 / 库存非整数）→ 400 `invalid_fields`，
+  **不建客户端**。这条不是洁癖：掉线账号 + 空 `item_ids` 时若先建客户端，用户看到的是
+  「去重新登录」，等他真去扫了码回来才发现真正的问题是「你没选商品」
+- `ok` **跟平台走**：平台逐条回报成功才算 ok；**没回报的 id 一律算失败**
+  （`code='no_per_item_report'`）—— 平台没提这条，就不能替它说成功
+- 平台接受整批但没给逐条清单时 `ok=total` 且 `per_item_report=false`，**不假装逐条确认过**
+- `batch_delete` 平台成功后才删本地 `items` 行；本地缺行进 `warnings`（`code='local_missing'`）
+  而不是 `failed` —— 平台侧确实删掉了，本地没这行只是数据本来就不全
+- `quick_edit` 优先用平台回读值（`updated_values`），**不碰 `status`**
+- 拿不到 `failCount` 回 `null`，**不补 0**（0 与「平台没给」是两回事）
+
+**146（HTTP 与测试）**：`backend/app/api/items.py` 追加三条 `POST`（全 `Body(default={})`），
+路由顺序照 `:219-227` 的注释踩过的坑排（`/batch-offline`、`/batch-delete` 必须在
+`/{account_id}/{item_id}` **之前**，否则会被当成 `item_id` 吞掉）。新建
+`backend/tests/test_item_write_api.py` **47 条**（协议层 15 + API 层 32）。
+
+**147（UI 与 AI 两侧）**：商品页三个写入口（`Items.tsx` +429/-13、`items.css` +119，
+唯一写出口 `postItemWrite` 把 `confirm: true` 写在 `...body` 之后，调用方无法覆盖）；
+AI 侧 3 个写工具（`items_batch_offline` / `items_batch_delete` / `items_quick_edit`，
+`required` 带 `confirm`、description 带中文警示）。MCP 的确认闸门复用在
+`9786045` 统一到 `client.py::_dispatch_route` 最前面那一条，所以这三个工具不带
+`confirm` 时连一个 HTTP 请求都不会发。
+
+**这一批自己审出来的 4 个真问题**（都不是「功能没做」，是「做了但会骗用户」）：
+① `failed[]`/`warnings[]` 只显示第一条 message，N>1 时其余 id/code/原因全丢 ⇒ 逐条列；
+② 选择被搜索/状态筛选滤掉时按钮可点却静默无反应 ⇒ 按钮 disabled + 明确提示
+「有 N 个已选商品不在当前筛选结果里」；③ 平台没回报的 id 被算成成功 ⇒ 改判失败；
+④ 掉线账号的字段错误被凭据检查抢先 ⇒ 三步顺序固定，回归锁
+`test_field_validation_runs_before_credential_check`。
+
+> **第二十二批证据链**：`backend/tests/test_item_write_api.py` → **`Ran 47 tests in 0.838s OK`**
+> （`XIANYU_APP_DIR=%TEMP%\xywb_item_write`；过程中修掉三处测试自身的错：
+> ①解析函数收的是**客户端返回值** `{'success','data',…}`，测试要先 `wrap(payload)` 包一层；
+> ②`install_fake_client(client, with_factory=True)` 注入的 `client.py::get_client` 工厂会
+> **绕过 Cookie 检查**，要测凭据检查必须 `with_factory=False`；③`events.subscribe()` 不收
+> 回调参数（它是 `async def subscribe() -> asyncio.Queue`），断言事件要用 `events.recent()`）；
+> `backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_item_write_full`）→
+> **`TOTAL 47  PASS 47  FAIL 0  CASES 1429  SKIPPED 2`**（第二十一批 1382 → 1429）；
+> 独立五方对账 `reconcile_lead.py` → `specs=65 master=64 routes=66 targets=45 handlers=65
+> write_tools=18 route_checked=66`、**`RECON OK`**；
+> 前端 `npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0（87 modules，
+> `index-DIIUhmey.js 499.66 kB` / `index-wjPANuoK.css 130.52 kB`）；
+> `scripts/ui_smoke.py --port 18255` → **26/26 页通过**。
+> 提交：`a9fcc32`（后端三件套 + 47 条测试）、`fc205b0`（商品页三个写入口 + CSS）、
+> `a8cfb3b`（3 个 AI 写工具 + MCP 路由）。
+> 诚实边界：三个接口的字段形状**全部来自官方 bundle 静态提取**，**一次真机写请求都没发过**
+> （红线：不许改真实平台数据）；本机两个账号都 `need_relogin`
+> （`FAIL_SYS_SESSION_EXPIRED::Session过期`，cookie 还在 486/492 字节），所以
+> **平台对这三个请求的真实响应、`itemProcessResultList` 的真实字段名、
+> `info.update` 在真实 SKU 商品上的行为，全部未被真机验证**；UI 那三处也没在浏览器里
+> 手动点过（只跑过逐页冒烟，冒烟不点写按钮）。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**46 个测试文件、1377 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**47 个测试文件、1429 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -1600,12 +1698,21 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
   控制台报错），页面内部的交互细节没有自动化覆盖。
 - **MCP 注册要重启 DSH 宿主才生效**：配置已写、预检已过，但本会话是改配置前启动的，
   宿主级生效与否要重启后才能确认（留给机器主人决定时机）。
-- **推广 / 安全中心只做了「读」的四个视图，官方还有 6 块没做**（第十八批）：
-  充值页、账户明细流水、活动奖励、资质管理、新建/编辑擦亮计划、申诉入口 ——
-  其中**充值/提现/申诉/上传资质/新建或修改计划是本项目明确不做**（写平台、涉钱、不可逆），
-  账户流水/活动奖励/资质列表属「可做但本轮没做」。已做的四个视图（余额与首页、
-  擦亮计划表、计划+商品报表、结算）都在真机取到真值，但**没有在打包版上复验过**
-  （第十七批那样重打包后复验的动作，本轮见提交记录）。
+- **商品页三个写接口（批量下架 / 批量删除 / 快捷改价改库存）一次真机请求都没发过**
+  （第二十二批）：四条 mtop 名与参数形状全部来自官方 bundle 静态提取，`itemIds` 的
+  逗号串形态、`itemProcessResultList` 的真实字段名、`info.update` 在**真实 SKU 商品**上的
+  行为（无 SKU 分支是扁平三字段、有 SKU 分支要 `itemSkuListStr`）都没被平台确认过。
+  本机两个账号都 `need_relogin`（`FAIL_SYS_SESSION_EXPIRED`，cookie 还在 486/492 字节），
+  重新扫码后第一次真机点击要重点看这三件事：①批量下架是不是真的一个请求就全下架了；
+  ②批量删除后平台侧商品是否真的消失（旧实现只删本地）；③改价/改库存后商品**没有被
+  重新上架**（旧实现整份回提会把已卖出商品重新上架，这是新接口要解决的正是这个问题）。
+- **推广 / 安全中心只做了「读」的四个视图，官方还有 6 块没做**（第十八批当时的边界）：
+  充值页、账户明细流水、活动奖励、资质管理、新建/编辑擦亮计划、申诉入口。
+  **第十九/二十批之后这条已经过时**：写接口（擦亮计划暂停/删除、申诉提交/催办、
+  资质提交/OSS 凭据、充值/提现明确标记为「平台没有网页版下单接口」）与资质管理页都已落地，
+  逐条口径见 `docs/CONTRACTS.md` 与 `docs/contracts/*.md`；**但那些写接口同样只有
+  静态提取 + 闸门探针，没有一次真机提交**。已做的四个只读视图（余额与首页、擦亮计划表、
+  计划+商品报表、结算）在真机取到真值。
 - **推广与安全中心没有任何缓存**：每次打开页面都实打实打平台（`idle.ad.*` 与
   `idle.pc.security.*` 各 2~4 次），刷新频繁时会不会触发平台限流**没测过**；
   商品数据那套「后台 worker 慢慢拉 + 本地缓存」的降级策略**没有**用在这两页。
@@ -1619,7 +1726,9 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 2. 用户在「AI 配置」页填一个真实 API Key 并设为默认 → 主管 AI 与商品 AI 才能真回话。
 3. 真机实测「写」的一半：在已登录的真账号上发布一件商品 / 改一次价 / 上架下架各一次
    （读的一半——拉商品、IM 入站挂载——已在真机验证）。发布失败时注意看新加的人话解释
-   （`platform_errors.py`）。
+   （`platform_errors.py`）。**优先先点第二十二批那三个（商品页的批量下架 / 批量删除 /
+   行内改价改库存）**：它们是唯一「旧做法会改坏真实数据」的三个口子，而且一次请求就能
+   验完（不像发布要填一整个表单）。
 4. 重启 DSH 宿主让 MCP 插件 `xianyu` 生效，再用主管 AI 直接操作工作台。
 5. 风控冷却过后，真机点一次「同步历史会话」（会话页工具栏）：应看到
    `success=true` 且 `conversations_new > 0`，会话页出现真实买家会话 —— 这是第八批
