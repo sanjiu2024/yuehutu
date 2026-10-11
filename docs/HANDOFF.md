@@ -16,13 +16,13 @@
 | 6 | 主 AI 对接我 / 插件让 DSH 控制 | `POST /api/agents/master/chat` + `mcp_server/` | 冒烟 ⑦；`test_mcp_server.py` 55 项；端口文件端到端 |
 | 7 | 除 AI 外我自己也能回消息 | `POST /api/chats/{id}/send` | 冒烟 ⑤（消息落库） |
 | 8 | 不能老登录、风控要做好 | `xianyu/risk.py` 熔断 + `xianyu/login.py` 人工验证 | `test_xianyu_cookies.py` 37 项 |
-| 9 | 集成闲鱼客服 / 网页版功能 | `services/cs.py` 意图分类 + 快捷回复；**官方卖家工作台「财务」四页**（`services/finance.py` + `/api/finance/*` + 「财务」页） | `test_services_cs.py` 20 项；`test_finance_api.py` 29 项 + 真机 `finance_min_probe.py`（第十七批） |
+| 9 | 集成闲鱼客服 / 网页版功能 | `services/cs.py` 意图分类 + 快捷回复；**官方卖家工作台逐页复刻**：财务四页、超级擦亮、安全中心、交易五页、小铺两页、数据三页、通知、营销、资质、运费模版（含写） | `test_services_cs.py` 20 项；`test_finance_api.py`、`test_promotion_api.py`、`test_security_write_api.py`、`test_trade_api.py`、`test_shop_api.py`、`test_notify_api.py`、`test_datacenter_api.py`、`test_marketing_api.py`、`test_item_templates_api.py`；真机探针见第十七~二十一批 |
 
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_r3_full_final&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 46  PASS 46  FAIL 0  CASES 1356  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_tpl_flat3&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 46  PASS 46  FAIL 0  CASES 1376  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -40,13 +40,13 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_mcp_server
 cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
--> BUILD_EXIT=0   ✓ 86 modules transformed.
-   frontend/dist/assets/index-DCPlrc-0.js (481.76 kB, gzip 150.53 kB)
-   frontend/dist/assets/index-RSxYiLGu.css (127.22 kB, gzip 20.33 kB)
+-> BUILD_EXIT=0   ✓ 87 modules transformed.
+   frontend/dist/assets/index-gVPWSzu6.js (493.69 kB, gzip 154.32 kB)
+   frontend/dist/assets/index-Ckuj6T5I.css (128.94 kB, gzip 20.63 kB)
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_ui_final&& C:\Python310\python.exe scripts\ui_smoke.py --port 18211"
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18233"
 -> UI SMOKE ALL OK  (26/26 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
    截图目录：logs/ui_smoke
 ```
@@ -1333,10 +1333,69 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 > （红线：不许改真实平台数据）；`trade_write` 的 8 个端点、`ad_write` 的 10 个动作、
 > `qualification` 的 `request` 字段名、`security_write` 的 `parameter` 形状都还没被真机响应验证过。
 
+### 第二十一批：运费模版写能力（136~139）
+
+136. **官方 `seller-item` bundle 首次拿到，运费模版的写接口入参从「猜」变成「逐字有据」**。
+      `https://g.alicdn.com/idle-pc/seller-item/0.0.20/` 的 `js/main.js` 是 4,402,065 字节单行压缩 JS
+     （落盘 `C:\Users\Administrator\.dsh-tmp\adapp\item-main.js`，79 个 mtop 名）。四条写接口的
+     请求体与调用点偏移（bundle 是单行，**行号无意义，只有字符偏移可复核**）：
+     `create` `@2204883` 声明 / `@2211045` 调用 → `{templateName, itemProv, itemCity, valuation,
+     isDefault, templateDetails}`；`modify` `@2204655` / `@2244766` → 同上 + `templateId` + `version`；
+     `del` `@2203984` / `@4129523` → `{templateId}`；`unbind` `@4114059` → `{itemIds, supportFreight,
+     onlyTakeSelf, needAutoFreight, isFreeShip, idleTemplateId?, postPriceInCent?}`。
+     **`templateDetails` 是 JSON 字符串**，元素 `{isDefault, receiveDivisionName, firstPrice,
+     excessPrice, first, excess, operate:'add'}`；**成功判据是平台业务码 `res.data.code === 'success'`**
+     （失败取 `res.data.msg`）—— 不是 HTTP 200，也不看顶层 `code`。
+     顺带发现我们**完全没有**的商品写接口族（本批未做，登记备查）：
+     `mtop.alibaba.idle.seller.pc.item.{batch.delete,batch.offline,delete,offline,info.update,
+     price.update,quantity.update}`、`...platform.item.operate.online`、草稿族 `draft.{get,search,
+     update,delete}`。注意 `quantity.update`/`price.update` 在本 bundle 里**调用点 0**（死代码），不值得跟。
+
+137. **AI 路径会静默丢掉所有业务字段**（真 bug，本批最值钱的一条）。四个写服务函数原来签名是
+     `create_template(account_id, body=None, confirm=None)`，而 `agents/tools.py::_filter_args`
+     **只把「目标函数签名里存在的键」传给服务层** ⇒ 走主管 AI / MCP 时 `template_name`、`item_ids`
+     这些**全被丢弃**，只剩 `account_id` 与 `confirm`，表现为「AI 说它填了，服务层收到空」。
+     **修法**：四个函数改成与 `trade_write.py` 同族的**扁平命名参数**
+     （`create_template(account_id, template_name, item_prov, item_city, valuation, is_default,
+     details, template_details, confirm)` 等），HTTP 层也改成逐字段 `body.get('x')` 再扁平传参。
+     这是**第二次**踩同一族坑（第二十批是 `cycle_from`/`cycle_to` 的 query 漂移），已写进
+     `docs/CONTRACTS.md` 的硬口径：**写函数的参数必须逐字段展开，不许收 `body: dict`**。
+
+138. **运费模版写接口落地**（`backend/app/xianyu/item_templates.py` 重写 + 服务层写段 + 4 条 POST
+     + 4 个 AI 工具 + MCP 路由 + 20 条新用例，`ItemTemplatesWriteTest` 让总数 13 → 33）。
+     口径：`confirm` 只认 `True`/`'true'`/`1`；`_write_facade` **先判确认、再建客户端**（未确认
+     零平台请求，测试里每个用例都断言 `fake.calls == []`）；`post_price` 单位**元**、协议层乘 100
+     成 `postPriceInCent`；空的选填字段**不发**（官方是 `undefined` 而不是空串）；平台业务码不是
+     `success`（或压根没有 `code`）→ **502 `protocol_error`**，绝不伪装成功。
+     `unbind` 三分支：`free_ship` → `isFreeShip:true`；`template` → `isFreeShip:false,
+     idleTemplateId:<id>, supportFreight:false`；`fixed` → `isFreeShip:false, postPriceInCent:100*元`。
+
+139. **运费模版页从只读改成可写**（`frontend/src/pages/ItemTemplates.tsx` 整体重写 + 新增
+     `itemtemplates.css`）。唯一写出口是一个 `post(path, body)`，里面 `confirm: true` 是**字面量**
+     （不在 UI 里拼），失败把后端 message 原样 toast 并留在面板里；四种危险动作都过
+     `ConfirmDialog danger` 且文案写明「这会**真的**…」+ 本次实际提交的字段值；
+     新建/编辑弹窗的运费明细表可增删行，本地校验（名称非空且 ≤30 字、valuation 必须是数字、
+     `fixed` 模式金额必须 >0）不通过就 `disabled` 按钮。样式只用既有 CSS 令牌、不改
+     `styles.css` 任何既有选择器；刻意避开 `color-mix()`（老 WebView2 不支持），选中态用
+     `box-shadow: inset 0 0 0 1px var(--accent)`。
+
+> **第二十一批证据链**：`backend/tests/test_item_templates_api.py` → **`Ran 33 tests ... OK`**
+> （`XIANYU_APP_DIR=%TEMP%\xywb_tpl_write`）；`backend/tests/run_all.py` → **`TOTAL 46  PASS 46
+> FAIL 0  CASES 1376  SKIPPED 2`**（第二十批 1356 + 20）；改扁平签名后复跑
+> `test_agents_cross` + `test_agents_tools_workbench` + `test_mcp_server` + `test_item_templates_api`
+> → **`Ran 158 tests ... OK`**；独立五方对账 `reconcile_lead.py` → `specs=62 master=61 routes=63
+> targets=42 handlers=62 write_tools=15 route_checked=63`、**`RECON OK`**（它同时校验每条路由的
+> path/query/body 与真实 FastAPI 端点签名一致）；前端 `npx tsc --noEmit` EXIT=0、
+> `npm run build` EXIT=0（87 modules，`index-gVPWSzu6.js 493.69 kB` + `index-Ckuj6T5I.css 128.94 kB`）。
+> 诚实边界：`create`/`modify`/`delete`/`unbind` 的字段形状全部来自**官方 bundle 静态提取**，
+> **一次真机写请求都没发过**（红线：不许改真实平台数据）；本机两个账号都 `need_relogin`，
+> 写端点的真机响应（尤其是 `templateDetails` 平台是否接受字符串、`unbind` 的 `itemIds` 分隔符）
+> 仍未被真机验证。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**35 个测试文件、1028 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**46 个测试文件、1376 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -1354,7 +1413,7 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
   从 `共 95 条` 变成 `共 56 条`（= 两个在售账号的 45 + 11），页面里再也搜不到 `3998190171`，
   只读探针（真 Edge）`has_deleted_account: false`、`page_errors: []`。
 - 真实 HTTP：只读 17 条 + 写路径 11 条，均结构化信封、无 500。
-- **真实浏览器逐页冒烟 10/10 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
+- **真实浏览器逐页冒烟 26/26 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
   临时数据目录，逐页断言未白屏、未掉回登录页、无 JS 报错，截图在 `logs/ui_smoke/`）。
   它抓到了后端全绿时仍然「UI 完全不可用」的登录死循环。
 - **真实浏览器实时刷新 2/2 阶段通过**（`scripts/live_refresh_smoke.py`）：后端写账号
