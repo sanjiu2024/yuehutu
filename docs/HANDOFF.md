@@ -41,7 +41,7 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 87 modules transformed.
-   frontend/dist/assets/index-gVPWSzu6.js (493.69 kB, gzip 154.32 kB)
+   frontend/dist/assets/index-BOItszoH.js (494.17 kB, gzip 154.43 kB)
    frontend/dist/assets/index-Ckuj6T5I.css (128.94 kB, gzip 20.63 kB)
 ```
 
@@ -1386,27 +1386,50 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
      `styles.css` 任何既有选择器；刻意避开 `color-mix()`（老 WebView2 不支持），选中态用
      `box-shadow: inset 0 0 0 1px var(--accent)`。
 
+140. **打包版截图审出：侧栏副标题在谎称运费模版页「只读」**。`frontend/src/App.tsx` 的
+     NAV `desc` 还是老文案「运费模版列表与明细（只读）」，而页面正文已经写着「可以新建 /
+     修改 / 删除模版……每个写操作都会先弹一次确认」——标题栏与正文互相打脸。改准三条：
+     运费模版 →「运费模版增删改与给商品设置运费（写操作要二次确认）」、订单 →「买家订单、
+     发货、改价与退款（写操作要二次确认）」、安全中心 →「闲气值、违规记录与申诉入口
+     （提交申诉要二次确认）」。只动三个 desc 字符串，不动 key（`PAGE_TITLES` 由 `NAV` 派生，
+     key 不进 `NAV` 会被 `readHash()` 静默回落 overview）。
+
+141. **打包版截图审出：表单刚打开就先骂用户**。新建模版弹窗一个字都没填，底下已经挂着
+     黄条「模版名称不能为空」；「给商品设置运费」一展开就写「至少要填一个商品 ID」。
+     改成只有用户真填过东西（dirty）才把问题说出来，按钮该灰还是灰：`formDirty`（编辑态恒
+     true；新建态看名称/发货省/发货市/计价方式/设为默认/明细里的收货地区与首费续费；**刻意
+     不看 `details` 的 `first`/`excess`**，它们默认就是 `'1'`，拿它们判断会永远 dirty）与
+     `unbindDirty`（商品 ID/运费方式/模版/固定运费金额）。校验规则本身与 `disabled` 逻辑一字未动。
+
 > **第二十一批证据链**：`backend/tests/test_item_templates_api.py` → **`Ran 34 tests ... OK`**
 > （`XIANYU_APP_DIR=%TEMP%\xywb_tpl_order`；原 13 → 33 → 34）；`backend/tests/run_all.py`
-> → **`TOTAL 46  PASS 46  FAIL 0  CASES 1377  SKIPPED 2`**（第二十批 1356 → 1376 → 1377）；
+> → **`TOTAL 46  PASS 46  FAIL 0  CASES 1377  SKIPPED 2`**（第二十批 1356 → 1376 → 1377；
+> 140/141 落盘后再跑一次仍是 `TOTAL 46  PASS 46  FAIL 0  CASES 1377  SKIPPED 2`）；
 > 改扁平签名后复跑 `test_agents_cross` + `test_agents_tools_workbench` + `test_mcp_server`
 > + `test_item_templates_api` → **`Ran 158 tests ... OK`**；独立五方对账 `reconcile_lead.py`
 > → `specs=62 master=61 routes=63 targets=42 handlers=62 write_tools=15 route_checked=63`、
 > **`RECON OK`**（它同时校验每条路由的 path/query/body 与真实 FastAPI 端点签名一致）；
 > 前端 `npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0（87 modules，
-> `index-gVPWSzu6.js 493.69 kB` + `index-Ckuj6T5I.css 128.94 kB`）；
+> `index-gVPWSzu6.js 493.69 kB` → 140/141 后 `index-BOItszoH.js 494.17 kB`，
+> `index-Ckuj6T5I.css 128.94 kB` 未变）；
 > `scripts/ui_smoke.py --port 18233` → **26/26 页通过**；
 > **打包版 confirm 闸门真机探针**（`probe_write_gate.py` 对 `127.0.0.1:18400`，19 个写端点
 > × `{}` / `{confirm:false}` / `{confirm:true}`）→ **`GATE FAILURES: 0 / 19`**：未确认一律
 > 400（`confirmation_required` / `confirm_required`），确认后无一再被 confirm 类拒绝
 > （转 `invalid_fields` 或 409 `verification_required`）；语义只读、故意无闸门的
 > `POST …/appeal/form` 仍是 400 `invalid_fields`（证明它没被闸门挡）。
+> **打包版逐页冒烟**（`packaged_ui_smoke.py` 复用 `scripts/ui_smoke.py::run_browser`，不启后端、
+> 直接打真实数据目录）→ **`PACKAGED UI SMOKE 26/26 页通过`**，截图 `logs/packaged_ui_smoke/`；
+> 写界面视觉自检 `tpl_shots.py` → `logs/tpl_shots/{01-list,02-create-modal,03-create-filled,
+> 04-unbind-panel,05-unbind-fixed}.png`，`page_errors: []`、`PROBLEMS: []`。
 > 提交：`e3cba28`（写接口三件套 + 契约）、`4c5c8ef`（4 个 AI 写工具 + MCP 路由）、
-> `bfe6bff`（运费模版页可写 + CSS）。
+> `bfe6bff`（运费模版页可写 + CSS）、`ebe9312` + `032721e`（文档）、
+> `c39557d`（报错顺序）、`c40de47` + `53503de`（140/141 两处 UI 修正）。
 > 诚实边界：`create`/`modify`/`delete`/`unbind` 的字段形状全部来自**官方 bundle 静态提取**，
 > **一次真机写请求都没发过**（红线：不许改真实平台数据）；本机两个账号都 `need_relogin`，
 > 写端点的真机响应（尤其是 `templateDetails` 平台是否接受字符串、`unbind` 的 `itemIds` 分隔符）
-> 仍未被真机验证。
+> 仍未被真机验证。140/141 的界面改动只在**打包版**上用 Playwright 点开截图看过，
+> **没点过提交**（确认框之后的真实提交路径仍未被任何一次点击走到）。
 
 ## 四、已验证 / 未验证（诚实边界）
 
@@ -1432,6 +1455,12 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
 - **真实浏览器逐页冒烟 26/26 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
   临时数据目录，逐页断言未白屏、未掉回登录页、无 JS 报错，截图在 `logs/ui_smoke/`）。
   它抓到了后端全绿时仍然「UI 完全不可用」的登录死循环。
+- **打包版（frozen exe）逐页冒烟 26/26 页通过**（`C:\Users\Administrator\.dsh-tmp\
+  packaged_ui_smoke.py`，复用 `scripts/ui_smoke.py::run_browser` 但不启后端、直接打
+  `127.0.0.1:18400` 与**真实 `%APPDATA%` 数据目录**，截图 `logs/packaged_ui_smoke/`）。
+  与上一条的区别：上一条跑的是源码 + 临时库，这一条跑的是**用户手上那个 exe**。
+- **打包版 confirm 闸门 19 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
+  （`confirmation_required` / `confirm_required`），`GATE FAILURES: 0 / 19`。
 - **真实浏览器实时刷新 2/2 阶段通过**（`scripts/live_refresh_smoke.py`）：后端写账号
   备注 / 新增提示词后，页面在 0.21 秒内自己更新，且 `navigation` 计数不变。
 - **真后端 + 真 `XianyuClient` + `httpx.MockTransport` 逐条打商品接口**（不碰真平台）：
@@ -1481,6 +1510,13 @@ cookie 留空 → 全程不打真实闲鱼平台、不花真实 API 费用。
   `D31F09CA6B20` / `F16E87DA0462`；`build_exe.ps1` 自报「打包内前端: …（与快照逐文件一致）」）；
   `--port 18400` 上 `/api/health` 200 `frozen:true`。第十三批那次（9608365 字节 /
   `index-CxlIsVf9.js`）同样是历史记录。
+  **第二十一批（运费模版写能力 + 两处 UI 修正之后）重新打包的最新值**：产物
+  **9976391 字节**（`2026-10-11 12:12:17`）、`GET /` 里是 `index-BOItszoH.js`（494.17 kB）
+  + `index-Ckuj6T5I.css`（128.94 kB），与 `frontend/dist/assets` **逐字节一致**（两边 SHA256
+  都是 `3432e2ade61a…` / `c4b85d1302c9…`，用 `C:\Users\Administrator\.dsh-tmp\check_assets.py`
+  对 `http://127.0.0.1:18400/assets/*` 与磁盘各算一次比对，`ASSETS_MATCH=True`）；
+  `--port 18400` 上 `/api/health` 200 `frozen:true`。第十四批那次（9609153 字节 /
+  `index-kmUrJvdH.js`）同样是历史记录。
 - **扫码登录真的通了**（唯一一处真打闲鱼平台的路径，且不涉及任何账号凭据）：
   - 源码直调：`_get_login_params` 拿到完整 `loginFormData`（`_csrf_token`/`umidToken`/
     `hsiz`/`bizParams=taobaoBizLoginFrom=web` 等），`_generate_qr` 拿到
