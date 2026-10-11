@@ -216,6 +216,45 @@ def relist_item(account_id: str, item_id: str, user=Depends(current_user)):
     return _envelope(items.reshelf([item_id], account_id=account_id))
 
 
+# --------------------------------------------------------------------------- 商品写接口
+#
+# 三条都走官方 `mtop.alibaba.idle.seller.pc.item.*` 族（证据见
+# `backend/app/xianyu/item_write.py`），与上面的 `delist` / `relist` / `edit` 并存：
+# 老的仍在（批量上架、整份编辑还用它们），新的是官方商品管理页的做法。
+#
+# 全部是 `Body(default={})` 自由 dict —— 字段校验在服务层，路由层只做转发。
+# **`confirm` 必须由调用方显式给 true**，服务层第一道闸门就是它。
+
+@router.post('/{account_id}/batch-offline')
+def batch_offline_items(account_id: str, payload: Dict[str, Any] = Body(default={}),
+                        user=Depends(current_user)):
+    """批量下架：一次请求停售一批（`item_ids` 收数组或逗号串）。"""
+    return _envelope(items.batch_offline(account_id, payload.get('item_ids'),
+                                         confirm=payload.get('confirm')))
+
+
+@router.post('/{account_id}/batch-delete')
+def batch_delete_items(account_id: str, payload: Dict[str, Any] = Body(default={}),
+                       user=Depends(current_user)):
+    """批量删除：**平台侧真删除**，不可撤销。"""
+    return _envelope(items.batch_delete(account_id, payload.get('item_ids'),
+                                        confirm=payload.get('confirm')))
+
+
+@router.post('/{account_id}/{item_id}/quick-edit')
+def quick_edit_item(account_id: str, item_id: str, payload: Dict[str, Any] = Body(default={}),
+                    user=Depends(current_user)):
+    """快捷改价 / 改库存：只发 `{itemId, price, quantity}`，不整份回提表单。
+
+    与 `/edit` 的区别写在 `services.items.quick_edit` 的 docstring：整份回提会把
+    `itemStatus` 一起写回去，对已卖出商品等于顺手重新上架。
+    """
+    return _envelope(items.quick_edit(account_id, item_id,
+                                      price=payload.get('price'),
+                                      quantity=payload.get('quantity'),
+                                      confirm=payload.get('confirm')))
+
+
 # --------------------------------------------------------------------------- 通用单条（放最后）
 #
 # **这里曾经是 `GET /api/items/{item_id}`，已删除。** 它与上面的

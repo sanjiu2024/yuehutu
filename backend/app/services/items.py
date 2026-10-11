@@ -28,6 +28,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from loguru import logger
 
 from ..core import db
+from ..xianyu import item_write as proto
 from . import common, platform_errors
 
 # 中文/别名 -> items 表列名（用户口径「价格/标题/描述/库存」都要认）
@@ -890,6 +891,297 @@ def downshelf(item_ids: Sequence[Any], account_id: Optional[str] = None) -> Dict
 
 def reshelf(item_ids: Sequence[Any], account_id: Optional[str] = None) -> Dict[str, Any]:
     return _set_status(item_ids, 'on_sale', 'reshelf', account_id)
+
+
+# --------------------------------------------------------------------------- 商品写接口
+#
+# 上面 `downshelf` / `reshelf` 走的是**老族**（`mtop.taobao.idle.item.downshelf` v2.0，
+# 上架干脆没有独立接口、靠整份原表单回提）。官方卖家工作台「商品管理」页用的是
+# `mtop.alibaba.idle.seller.pc.item.*` 这一族，能力更全，见 `xianyu/item_write.py` 的
+# 模块 docstring。这里补三个：
+#
+# - `batch_offline`：一次请求下架一批（老路子是 N 次 `downshelf`，N 次风控面）
+# - `batch_delete`：**平台侧真删除**（老 `delete_item` 只删本地记录）
+# - `quick_edit`：直接改价 / 改库存，**不整份回提表单** ⇒ 对已卖出商品也没有
+#   「被重新上架」的副作用
+#
+# 三个都是写操作，三步顺序统一为 **确认 → 字段校验 → 建客户端**（与
+# `services/item_templates.py` 同口径）：确认在最前，否则会误导用户「填对了就能发」；
+# 字段校验在建客户端之前，因为纯本地、免费，账号掉线时也该先说「item_ids 不能为空」
+# 而不是「去重新登录」。
+
+#: 未确认时返回的业务码（`common.FAIL_STATUS` 里没有它 ⇒ 默认 400）。
+CONFIRM_CODE = 'confirmation_required'
+
+#: 单次批量写请求的 id 上限。官方页面一次选几十个没问题，但请求体是逗号串，
+#: 给个上限挡住「把整个店铺塞进一次请求」这种误用（真实账号 45 件远在限内）。
+BATCH_WRITE_LIMIT = 200
+
+
+def _truthy(value: Any) -> bool:
+    """只有字面量 `True` / `'true'` / `1` 才算确认，别的（含 `'false'`、`'yes'`）都不算。
+
+    与 `services/item_templates.py::_truthy`、`mcp_server/client.py::_truthy` 同一口径 ——
+    三条路（HTTP / 主管 AI / MCP）必须对「什么算点头」有完全一样的判断。
+    """
+    if value is True:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() == 'true'
+    return value == 1
+
+
+def _confirm_gate(action: str, confirm: Any) -> Optional[Dict[str, Any]]:
+    """写路径第一道闸门：**只判确认**，不碰账号、不碰平台。"""
+    if _truthy(confirm):
+        return None
+    return common.fail(
+        f'{action} 是写操作，需要显式确认（confirm=true）后才会提交到闲鱼',
+        CONFIRM_CODE,
+    )
+
+
+def _clean_ids(item_ids: Any) -> List[str]:
+    """两种入参都收：UI 给数组、MCP 给逗号串（`proto.normalize_item_ids` 统一）。"""
+    return proto.item_id_list(item_ids)
+
+
+def _write_call_failure(call_status: str, value: Any, api: str) -> Dict[str, Any]:
+    """协议层没调通（方法缺失 / 抛异常 / 登录态过期）时的失败信封。"""
+    failure = common.call_failed(call_status, value) or common.fail('协议层调用失败', 'protocol_error')
+    failure.setdefault('platform_errors', {
+        'api': api,
+        'explain': str(value) or '协议层未提供该方法',
+    })
+    return failure
+
+
+def _platform_failure(value: Any, api: str) -> Dict[str, Any]:
+    """平台回了信封但业务体是空的 ⇒ 502，把平台原文透出去。
+
+    **不判登录态**：无权限 / 参数不对都不等于掉线，别让用户白扫一次码。
+    """
+    reason = proto.failure_reason(value) or '平台没有返回成功'
+    logger.warning(f'[items] 平台拒绝 {api}: {reason}')
+    return common.fail(
+        f'平台接口失败: {reason}',
+        'protocol_error',
+        platform_errors={
+            'api': api,
+            'code': proto.code_of(value),
+            'message': proto.message_of(value),
+        },
+    )
+
+
+def _batch_write(
+    account_id: str,
+    item_ids: Any,
+    *,
+    action: str,
+    api_action: str,
+    confirm: Any,
+    status: str,
+    delete_local: bool = False,
+) -> Dict[str, Any]:
+    """批量下架 / 批量删除的公共实现（差别只有本地怎么落库）。
+
+    `ok` 的口径跟着**平台**走（平台逐条回报成功才算 ok）—— 这三个接口的权威在平台，
+    本地只是镜像。平台没回报的 id 一律算失败，**绝不默认成功**。
+    """
+    problem = _confirm_gate(action, confirm)
+    if problem is not None:
+        return problem
+
+    ids = _clean_ids(item_ids)
+    if not ids:
+        return common.fail('item_ids 不能为空', 'invalid_fields')
+    if len(ids) > BATCH_WRITE_LIMIT:
+        return common.fail(f'一次最多处理 {BATCH_WRITE_LIMIT} 个商品（收到 {len(ids)} 个）',
+                           'invalid_fields')
+
+    client, failure = common.get_client(account_id)
+    if client is None:
+        return failure
+
+    api, data = proto.request_of(api_action, item_ids=ids)
+    call_status, value = common.call_method(client, ('mtop',), api, data, v=proto.DEFAULT_VERSION)
+    if call_status != common.CALL_OK:
+        return _write_call_failure(call_status, value, api)
+    if not proto.is_success(value):
+        return _platform_failure(value, api)
+
+    results = proto.process_results(value)
+    warnings: List[Dict[str, Any]] = []
+    if results:
+        ok_ids = [str(r.get('itemId') or '') for r in results if r.get('success')]
+        ok_ids = [x for x in ok_ids if x]
+        failed = proto.process_failures(value)
+        reported = {str(f.get('id') or '') for f in failed} | set(ok_ids)
+        for item_id in ids:
+            if item_id not in reported:
+                failed.append({
+                    'id': item_id,
+                    'code': 'no_per_item_report',
+                    'message': '平台没有回报这条商品的结果',
+                })
+    else:
+        # 平台接受了整批但没给逐条清单：整体按成功处理，同时在返回里如实标注
+        # `per_item_report: False` —— 不假装「逐条都确认过了」。
+        ok_ids = list(ids)
+        failed = []
+
+    for item_id in ok_ids:
+        row = _find_row_for_account(account_id, item_id)
+        if row is None:
+            warnings.append({
+                'id': item_id,
+                'code': 'local_missing',
+                'message': '平台已处理，但本地没有这条商品记录',
+            })
+            continue
+        item = _row_to_item(row)
+        if delete_local:
+            db.execute('DELETE FROM items WHERE id = ?', (item['id'],))
+        else:
+            db.execute(
+                'UPDATE items SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                (status, item['id']),
+            )
+        common.log_operation(account_id, action, item['item_id'], True,
+                             {'status': status, 'platform': True})
+
+    if ok_ids:
+        _publish_updated(account_id, ok_ids, 'status')
+    common.publish('items.status_changed', {
+        'status': status, 'action': action, 'ok': len(ok_ids), 'total': len(ids),
+    })
+
+    summary = _batch_summary(len(ids), len(ok_ids), warnings, failed, {'status': status})
+    summary['per_item_report'] = bool(results)
+    fail_count = proto.failure_count(value)
+    if fail_count is not None:
+        summary['platform_fail_count'] = fail_count
+    return summary
+
+
+def batch_offline(account_id: str, item_ids: Any, confirm: Any = None) -> Dict[str, Any]:
+    """批量下架：一次请求停售一批（`mtop.alibaba.idle.seller.pc.item.batch.offline`）。
+
+    比逐条 `downshelf` 少 N-1 次平台请求 —— 真机风控对连续请求很敏感，这是实打实的收益。
+    """
+    return _batch_write(account_id, item_ids, action='batch_offline',
+                        api_action='batch_offline', confirm=confirm, status='off_shelf')
+
+
+def batch_delete(account_id: str, item_ids: Any, confirm: Any = None) -> Dict[str, Any]:
+    """批量删除：**平台侧真删除**（`...pc.item.batch.delete`），成功后再删本地记录。
+
+    与老 `delete_item` 的区别：那个只删本地（平台侧当时没有接口），这个真的会把商品
+    从闲鱼上删掉，**不可撤销**。
+    """
+    return _batch_write(account_id, item_ids, action='batch_delete',
+                        api_action='batch_delete', confirm=confirm, status='deleted',
+                        delete_local=True)
+
+
+def quick_edit(
+    account_id: str,
+    item_id: Any,
+    price: Any = None,
+    quantity: Any = None,
+    confirm: Any = None,
+) -> Dict[str, Any]:
+    """快捷改价 / 改库存（`...pc.item.info.update`），**不整份回提表单**。
+
+    与 `update_item` 的关键差别：`update_item` 是把原表单整份回提（`edit_item`），
+    对**已卖出**商品会把 `itemStatus` 一起写回去 ⇒ 顺手把它重新上架（这是真机踩过的
+    缺陷）。这个接口只发 `{itemId, price, quantity}`，没有 itemStatus 字段，所以没有
+    那个副作用。
+
+    价格 / 库存至少要给一个；给了就校验（价格 > 0、库存 ≥ 0 的整数）。
+    """
+    action = 'quick_edit'
+    problem = _confirm_gate(action, confirm)
+    if problem is not None:
+        return problem
+
+    clean_id = str(item_id or '').strip()
+    if not clean_id:
+        return common.fail('商品 ID 不能为空', 'invalid_fields')
+
+    has_price = price is not None and price != ''
+    has_quantity = quantity is not None and quantity != ''
+    if not has_price and not has_quantity:
+        return common.fail('价格和库存至少要填一个', 'invalid_fields')
+
+    price_value: Optional[float] = None
+    if has_price:
+        try:
+            price_value = float(price)
+        except (TypeError, ValueError):
+            return common.fail('价格必须是数字', 'invalid_fields')
+        if price_value <= 0:
+            return common.fail('价格必须大于 0', 'invalid_fields')
+
+    quantity_value: Optional[int] = None
+    if has_quantity:
+        try:
+            quantity_value = int(str(quantity).strip())
+        except (TypeError, ValueError):
+            return common.fail('库存必须是整数', 'invalid_fields')
+        if quantity_value < 0:
+            return common.fail('库存不能为负', 'invalid_fields')
+
+    client, failure = common.get_client(account_id)
+    if client is None:
+        return failure
+
+    api, data = proto.request_of('quick_update', item_id=clean_id,
+                                 price=price_value, quantity=quantity_value)
+    call_status, value = common.call_method(client, ('mtop',), api, data, v=proto.DEFAULT_VERSION)
+    if call_status != common.CALL_OK:
+        return _write_call_failure(call_status, value, api)
+    if not proto.is_success(value):
+        return _platform_failure(value, api)
+
+    # 平台回读优先（它可能把价格四舍五入），拿不到就用我们发出去的值 —— 不造 0。
+    echoed = proto.updated_values(value)
+    applied_price = echoed.get('price', price_value)
+    applied_quantity = echoed.get('quantity', echoed.get('stock', quantity_value))
+
+    warning: Optional[str] = None
+    row = _find_row_for_account(account_id, clean_id)
+    if row is None:
+        warning = '平台已改，但本地没有这条商品记录'
+    else:
+        item = _row_to_item(row)
+        sets: List[str] = []
+        params: List[Any] = []
+        if price_value is not None:
+            sets.append('price = ?')
+            params.append(price_value)
+        if quantity_value is not None:
+            sets.append('stock = ?')
+            params.append(quantity_value)
+        sets.append('updated_at = CURRENT_TIMESTAMP')
+        params.append(item['id'])
+        db.execute(f"UPDATE items SET {', '.join(sets)} WHERE id = ?", tuple(params))
+        _publish_updated(account_id, [item['item_id']], 'edit')
+
+    common.log_operation(account_id, action, clean_id, True,
+                         {'price': price_value, 'quantity': quantity_value,
+                          'platform': True, 'warning': warning})
+    common.publish('items.updated', {'account_id': account_id, 'item_ids': [clean_id],
+                                     'action': action})
+
+    return {
+        'item_id': clean_id,
+        'price': applied_price,
+        'quantity': applied_quantity,
+        'synced': True,
+        'warning': warning,
+    }
 
 
 #: 逐件补详情（拿真库存）的限速与上限。真机 0.6s × 60 件 ≈ 36s 是最坏情况，
