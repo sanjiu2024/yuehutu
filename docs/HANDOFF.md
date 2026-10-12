@@ -83,7 +83,7 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 89 modules transformed.
-   frontend/dist/assets/index-C_tiY-6h.js (529.29 kB, gzip 166.4 kB)
+   frontend/dist/assets/index-C1ns98T1.js (529.44 kB, gzip 166.4 kB)
    frontend/dist/assets/index-BZVYw-fj.css (136.44 kB, gzip 21.7 kB)
 ```
 
@@ -2037,9 +2037,45 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `drafts.batch_delete` 400 `invalid_fields`；语义只读的 `sec.appeal_form` 仍 400 `invalid_fields`）；
 > `packaged_ui_smoke.py` → **26/26 页通过**；`check_assets.py` → `ASSETS_MATCH=True`
 > （`index-BZVYw-fj.css` = `03f2288946a9`、`index-C_tiY-6h.js` = `87f233ebab08`，remote=local）；
-> 真机只读探针 `drafts_read_probe.py` → 列表 502 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（账号无权限）。
+> 真机只读探针 `drafts_read_probe.py` → 列表 502 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（账号无权限）；
+> 草稿箱 tab 截图复核 `drafts_tab_shots.py` → `PROBLEMS: []`（见第三十批 179：那一轮抓到页面上
+> 真的显示出了字面 `**`）。
 > 诚实边界：**一次写请求都没发过**（本机账号缺平台业务权限，且删草稿不可撤销）；上面所有形状
 > 都是 bundle 反推 + 假协议层测试；草稿详情的 `fields` 键名未钉住，所以前端摊平成「字段 / 值」两列。
+
+### 第三十批：草稿箱 tab 视觉复核抓到的「字面 markdown 星号」（179）
+
+179. **页面上真的显示出了两个星号**。草稿箱 tab 的截图复核（新探针
+    `drafts_tab_shots.py`：选中账号 → 点「草稿箱」→ 截图，并断言整轮
+    `non-GET api requests: []`）把平台的拒绝提示原样打出来时，看到的是
+    「……。**不是登录掉线**，重新扫码不会变好……」。原因是这些文案里写了 markdown 强调，
+    而界面上是**当纯文本渲染**的（不解析 markdown）⇒ 用户看到字面 `**`。
+    全仓扫了一遍（`scan_markdown2.py`：只取**非 docstring 的字符串常量**）：
+    - 会显示给用户的 6 处：`services/platform_errors.py` 的
+      `FAIL_BIZ_IDLE_USER_UNAUTHORIZED` / `NO_PERMISSION` 两条人话；
+      `services/drafts.py` 的 `list_key_missing` 与 `no_per_item_report` 两条 warning；
+      `frontend/src/pages/ItemTemplates.tsx`（删除模版 / 设置运费两个确认框）、
+      `frontend/src/pages/Orders.tsx`（改地址 404 提示）、
+      `frontend/src/pages/SecurityCenter.tsx`（申诉说明，那里还写了字面反引号 `` `confirm` ``）。
+    - 故意**不动**的：`agents/tools.py` 的工具 description 与 `agents/defaults.py` 的
+      主管提示词 —— 那是给**模型**看的，markdown 强调在那里是有效的，而且有测试逐字钉着。
+    改法：用户侧一律改写成 `<b>`（前端）或直接去掉星号（后端文案），并在
+    `platform_errors.py` 的注释里写明「hint 会原样出现在界面上，不能写 `**加粗**`」。
+
+> **第三十批证据链**：`backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_md_fix`）→
+> **`TOTAL 50  PASS 50  FAIL 0  CASES 1588  SKIPPED 2`**；
+> `backend/tests/test_platform_errors.py` → `Ran 32 tests in 0.002s OK`；
+> 前端 `cd frontend && npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0（89 modules，
+> `index-BZVYw-fj.css 136.44 kB` / `index-C1ns98T1.js 529.44 kB`）。
+> 打包版复验（exe `10,028,158` 字节 / 2026-10-13 05:09:47，`--port 18400` `/api/health` 200
+> `frozen:true`）：`drafts_tab_shots.py` → **`PROBLEMS: []`**、`page_errors: []`、
+> `non-GET api requests: []`，截图 `logs/drafts_tab_shots/02-drafts-tab.png` 里那句已是
+> 「这不是登录掉线」；`probe_write_gate.py` → **`GATE FAILURES: 0 / 30`**；
+> `packaged_ui_smoke.py` → **26/26 页通过**；`check_assets.py` → `ASSETS_MATCH=True`
+> （`index-BZVYw-fj.css` + `index-C1ns98T1.js`，remote=local）。
+> 诚实边界：这一批只修「看得见的字面 markdown」，**没有**做全面文案润色；
+> 草稿箱 tab 的截图复核是在**本机账号无草稿权限**的状态下做的（列表显示的是平台的拒绝提示，
+> 有草稿时的表格 / 批量选择 / 删除确认框仍只经过类型检查与页面级冒烟）。
 
 ## 四、已验证 / 未验证（诚实边界）
 
@@ -2051,6 +2087,9 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 - **UI 细节有两个可重跑的审计脚本**（`scripts/contrast_audit.py`、`scripts/a11y_audit.py`）：
   26 页 × 深/浅两套主题的文字对比度全部 ≥4.0:1；无可访问名字的按钮 0、没有标签的
   输入框 0、无 alt 的图片 0、焦点环全部可见；两者整轮都是 `NON_GET_API_REQUESTS=[]`。
+  另有第三十批那个一次性扫描（`C:\Users\Administrator\.dsh-tmp\scan_markdown2.py`：
+  按 tokenize 取非 docstring 字符串，找用户可见的字面 `**` 与反引号）—— 它抓到 6 处并已修，
+  但**没入仓**（一次性核对用，重跑价值低）。
 - **商品数据真的从平台拉回来了**（2026-10-08，打包版 + 真账号 `2221063792739`）：
   `app.log` 一轮 `{'2221063792739': {'pulled': 5, 'failed': 0, 'stopped': None}}`，
   `item_stats_cache` 出现 5 行 `source='platform'` 真值（曝光/浏览/想要分别
