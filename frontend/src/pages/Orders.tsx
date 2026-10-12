@@ -1370,7 +1370,7 @@ export function ModifyAddressModal({ accountId, orderId, onClose, onChanged }: {
         {state.notReady ? (
           <Notice kind="warn">
             「改地址」这条只读接口还没就绪（后端还没注册路由，暂时 404）。
-            这**不是**平台问题，等后端上线再回来看。
+            这<b>不是</b>平台问题，等后端上线再回来看。
           </Notice>
         ) : null}
 

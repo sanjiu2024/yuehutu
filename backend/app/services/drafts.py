@@ -157,7 +157,7 @@ def list_drafts(account_id: str, page: Any = 1, size: Any = DEFAULT_PAGE_SIZE) -
         warnings.append({
             'code': 'list_key_missing',
             'message': '平台这一次没有返回草稿列表字段（itemSearchResponseList），'
-                       '下面的空列表**不等于**「一件草稿都没有」，别当成 0 条。',
+                       '下面的空列表不等于「一件草稿都没有」，别当成 0 条。',
         })
     page_size = data['pageSize']
     return _stamp({
@@ -278,7 +278,7 @@ def batch_delete_drafts(account_id: str, draft_ids: Any, confirm: Any = None) ->
     if fail_count:
         warnings.append({
             'code': 'no_per_item_report',
-            'message': f'平台报 {fail_count} 条删除失败，但**没有说明是哪几条**；'
+            'message': f'平台报 {fail_count} 条删除失败，但没有说明是哪几条；'
                        '请刷新草稿箱核对，剩下的草稿还在。',
         })
     if suc_count is None and fail_count is None:

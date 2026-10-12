@@ -130,7 +130,7 @@ export function SecurityCenterPage() {
         {rows.length === 0 && <div className="sc-empty">平台没有返回违规记录</div>}
       </div>
 
-      <Notice kind="info"><IconInfo size={15} /> 本页只读，页面上没有提交入口 —— 想自己在官方页面提交就点「去申诉」。申诉**也做成了接口**（<code>POST /api/security-center/&#123;account_id&#125;/appeal/submit</code> 等三条，AI 侧也能调），但它们**必须显式 `confirm`**：不确认一个平台请求都不会发。数据更新于 {formatTime(data.data?.fetched_at)}</Notice>
+      <Notice kind="info"><IconInfo size={15} /> 本页只读，页面上没有提交入口 —— 想自己在官方页面提交就点「去申诉」。申诉<b>也做成了接口</b>（<code>POST /api/security-center/&#123;account_id&#125;/appeal/submit</code> 等三条，AI 侧也能调），但它们<b>必须显式 <code>confirm</code></b>：不确认一个平台请求都不会发。数据更新于 {formatTime(data.data?.fetched_at)}</Notice>
     </AsyncBox>
   </>
 }

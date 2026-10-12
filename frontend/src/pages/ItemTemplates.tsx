@@ -889,7 +889,7 @@ export function ItemTemplatesPage() {
           message={
             <>
               <p>
-                这会**真的**从闲鱼上删掉模版{' '}
+                这会<b>真的</b>从闲鱼上删掉模版{' '}
                 <b>{pending.row.template_name || text(pending.row.template_id)}</b>
                 （{text(pending.row.template_id)}）。<b>删除不可撤销。</b>
               </p>
@@ -910,7 +910,7 @@ export function ItemTemplatesPage() {
           message={
             <>
               <p>
-                这会**真的**改动闲鱼上这些商品的运费设置，账号 <b>{accountId}</b>。
+                这会<b>真的</b>改动闲鱼上这些商品的运费设置，账号 <b>{accountId}</b>。
               </p>
               <p>
                 商品：{splitItemIds(unbind.itemIds).join('、')}
