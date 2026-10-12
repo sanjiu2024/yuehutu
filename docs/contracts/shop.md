@@ -1,7 +1,8 @@
-# 小铺组（子账号管理 / 客服分流）只读契约
+# 小铺组（子账号管理 / 客服分流）契约（读 + 写）
 
-> 本文件是 `backend/app/xianyu/shop.py` / `backend/app/services/shop.py` /
-> `backend/app/api/shop.py` 的对外契约，**只覆盖只读能力**。
+> 本文件是 `backend/app/xianyu/shop.py` / `backend/app/xianyu/shop_write.py` /
+> `backend/app/services/shop.py` / `backend/app/api/shop.py` 的对外契约。
+> §0~§3 是**只读**能力，**§4 是写能力**（客服分流规则保存 + 客服分组增删，2026-10-13 落地）。
 >
 > 证据来源（2026-10-10，账号 `2217970177348`，全部可复核）：
 > - **真机只读探针**：`logs/seller_discover/shop.json`（子代理跑的原文 body/响应）、
@@ -85,9 +86,13 @@
 `backend/app/xianyu/shop.py` 里 `READ_APIS` 是白名单、`WRITE_APIS` 是同一批 bundle
 里的**写接口**（注册/删除子账号、改手机号/密码/角色、改分流规则、改客服分组、
 图片上传/OSS 签名、店铺验证、短信、退款管理 —— 名单来自
-`logs/seller_discover/shop_bundles_main.json`）。写接口**故意不实现**，列出来是为了让
-「只读」可被断言：`test_no_write_api_is_ever_called` 跑完两个页面后，逐个检查假客户端
-记录的 mtop 调用必须落在 `READ_APIS` 里。
+`logs/seller_discover/shop_bundles_main.json`）。**只读路径**一条都不许碰写接口：
+`test_no_write_api_is_ever_called` 跑完两个页面后，逐个检查假客户端记录的 mtop 调用
+必须落在 `READ_APIS` 里。
+
+其中最后两条（`customer.routing.rule.operate`、`customer.group.operate`）**已经实现**
+（见 §5），但**故意继续留在 `WRITE_APIS` 黑名单里** —— 黑名单管的是「只读路径」，
+写路径走 `xianyu/shop_write.py` 自己的白名单（`ALL_APIS` 只有这两个接口名）。
 
 ## 3. 挂载
 
@@ -95,3 +100,86 @@
 `test_real_app_mounts_shop_router` 会断言真实 app 里两条路径都在：
 `/api/shop/{account_id}/sub-accounts`、`/api/shop/{account_id}/cs-routing`
 （**不做 skip**：谁把 `'shop'` 从 `ROUTE_MODULES` 里删掉，该用例直接变红）。
+写侧三条 POST 由 `test_shop_write_api.py::ShopWriteRouteTest` 钉住。
+
+## 4. 写能力（已实现，2026-10-13）
+
+证据来源（**零平台请求**）：官方客服分流微应用 bundle
+`C:\Users\Administrator\.dsh-tmp\csdispatch\main.js`（1,168,301 字符单行压缩 JS，
+所以只有**字符偏移**、行号无意义）；取证脚本 `cs_enums.py` / `cs_logic.py` /
+`cs_enums2.py`（输出 `logs/cs_enums.log`、`logs/cs_logic.log`、`logs/cs_enums2.log`）。
+
+### 4.1 两条 mtop
+
+| 动作 | mtop | v | 参数 | bundle 偏移 |
+| --- | --- | --- | --- | --- |
+| `routing_rule` | `mtop.taobao.idlemessage.customer.routing.rule.operate` | `1.0` | `{routingRules: <JSON 字符串>}` | 声明 @571596；保存调用点 @1151612 |
+| `group_save` / `group_delete` | `mtop.taobao.idlemessage.customer.group.operate` | `1.0` | `{operateType, groupId?, groupName?, serviceRange: <JSON 串>, customers: <JSON 串>}` | 声明 @572287；保存 @1129731；删除 @1149031 |
+
+`routingRules` 的字段名逐字照官方：`distributionMethod`、`repeatCustomer`、
+`offlineMessage`、`specifiedAccountId`（**数字**，官方写的是 `Number(_)`）、
+`specifiedAccountNick`、`serviceTime`。后两个只在 `offlineMessage ===
+'SPECIFIED_ACCOUNT'` 时出现，且官方**两者都必填**（校验原文「请选择指定的客服账号」）。
+
+分组保存里 `serviceRange` 是 `{mode, specifiedConfig?}`，`specifiedConfig` 只在
+`mode` 为 specified 时出现（`{type, typeName, typeData}`，官方 `type` 缺省 `'ORDER'`，
+`typeData` 空数组时官方**不放这个键**）；`customers` 是 `[{customerUid: <数字>}]`。
+删除**只有两个键**：`{operateType:'delete', groupId}`。
+
+### 4.2 枚举（官方 `Iy` / `Dj`，中文标签逐字来自 bundle）
+
+| 值 | 中文 |
+| --- | --- |
+| `LOW_SATURATION_FIRST` | 优先分配给当前饱和度低的客服 |
+| `LOW_DAILY_COUNT_FIRST` | 优先分配给当日接待量少的客服 |
+| `LAST_SERVED_AGENT` | 最近联系客服优先 |
+| `COMBINED_LOW_LOAD` | 正常分流 |
+| `MAIN_ACCOUNT` | 离线消息发给主账号 |
+| `SPECIFIED_ACCOUNT` | 离线消息发送给指定账号 |
+
+- **`repeatCustomer` 是枚举字符串，不是布尔**：官方加载路径是
+  `Ay[c.repeatCustomer]`，而 `Ay` 只登记了上面 4 个分配方式值 ⇒ 与
+  `distributionMethod` 共用同一套值。官方表单可能只给子集，但 bundle 里**没有**
+  可引用的子集定义 ⇒ 我们不缩窄，非法值由平台拒。
+- **分组 `mode` 两侧大小写不一致**：官方写侧枚举是**小写**
+  （`UNSPECIFIED="unspecified"` / `SPECIFIED="specified"`），渲染判定却用大写
+  （`"SPECIFIED"===t.mode` / `"DEFAULT"===t.mode`）。我们没有平台侧证据判断哪个对，
+  ⇒ **原样透传调用方给的值、不做大小写转换**（`GROUP_MODES` 同时接受两种写法）。
+
+### 4.3 HTTP
+
+| 方法 | 路径 | body | 说明 |
+| --- | --- | --- | --- |
+| POST | `/api/shop/{account_id}/cs-routing/rule` | `{distribution_method, repeat_customer, offline_message, specified_account_id?, specified_account_nick?, service_time?, confirm}` | `service_time` 形如 `{start_time:'08:00', end_time:'23:00'}` |
+| POST | `/api/shop/{account_id}/cs-groups` | `{operate_type:'create'\|'update', group_id?, group_name, mode, specified_type?, specified_type_name?, type_data?, customer_uids?, confirm}` | `update` 必须带 `group_id`；`customer_uids` 是字符串数组（后端转 int） |
+| POST | `/api/shop/{account_id}/cs-groups/delete` | `{group_id, confirm}` | |
+
+- 返回：规则 `{account_id, action, api, saved, submitted, rule, warnings[], fetched_at, source}`；
+  分组 `{…, operate_type, group_id, saved, submitted, warnings[], …}`；删除
+  `{…, operate_type:'delete', group_id, deleted, …}`。`rule` / `group_id` 是平台回显，
+  **平台没回显就是 `null` + 中文 warning**（不造值）。
+- `confirm` **原样交服务层判**（HTTP 层不做 `bool()`）—— `bool('false')` 是 `True`，
+  会把用户明确的拒绝当成同意。服务层用 `_truthy`（只有 `True`/`'true'`/`1` 算点头）。
+- 三步顺序固定：**确认 → 字段校验（协议层构造）→ 建客户端**。字段校验在建客户端之前，
+  所以掉线账号 + 空分组名会先得到 400 `invalid_fields`（而不是「去重新登录」）。
+- 错误码：400 `confirmation_required` / 400 `invalid_fields` / 409 `verification_required` /
+  404 `not_found` / 502 `protocol_error`（平台拒绝，**不改登录态**，附 `platform_errors`）/ 503。
+- **成功判据两层都看**：`shop_write.envelope_error()` 先看客户端层 `success is False`，
+  再看业务信封 `data.code`（只认 `success`）。只看外层会把「外层成功、内层失败」的
+  双层信封判成保存成功 —— 这是最危险的一类假成功（只读侧同款证据见
+  `services/shop.py::_unwrap` 与 `test_shop_api.py::test_sub_accounts_business_error_inside_envelope_is_502`）。
+
+### 4.4 测试
+
+`backend/tests/test_shop_write_api.py`（60 用例）：协议层 27 条纯函数、
+确认闸门 5 条、字段校验 7 条、happy path 11 条、失败路径 7 条、路由 2 条，
+外加 `test_shop_api.py::test_shop_read_routes_are_get_and_write_routes_are_post`
+（读两条 GET + 写三条 POST 逐条钉住）。
+
+### 4.5 未验证
+
+- **一次真机写请求都没发过**：客服分流写接口在真机上的权限与响应形状未知
+  （只读侧 `quota.query` / `user.role.list` 对该账号就是 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`）。
+- 官方的 `routingRules` / `csGroupInfos` **回显形状**没有真机样例，所以 `rule` /
+  `group_id` 拿不到时一律 `null` + warning，不做猜测。
+

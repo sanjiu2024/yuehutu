@@ -706,10 +706,22 @@ GET /api/trade/{account_id}/addresses
           → `contact_id/contact_name/mobile_phone/province_name/city_name/district_name/detail_address`，
           **平台给了才出现**（空值不出现，绝不凭空造字段）。
 
-【只读 · 小铺与通知】`docs/contracts/shop.md`、`docs/contracts/notify.md`
+【读 + 写 · 小铺与通知】`docs/contracts/shop.md`、`docs/contracts/notify.md`
 GET /api/shop/{account_id}/sub-accounts?page=&size=
 GET /api/shop/{account_id}/cs-routing
 GET /api/notifications/{account_id}        -- ⚠ 前缀是 /api/notifications（不是 /api/notify）
+POST /api/shop/{account_id}/cs-routing/rule   {distribution_method,repeat_customer,offline_message,specified_account_id?,specified_account_nick?,service_time?,confirm}
+POST /api/shop/{account_id}/cs-groups         {operate_type:create|update,group_id?,group_name,mode,specified_type?,specified_type_name?,type_data?,customer_uids?,confirm}
+POST /api/shop/{account_id}/cs-groups/delete  {group_id,confirm}
+       -- 两条 mtop：`...customer.routing.rule.operate`、`...customer.group.operate`（v1.0，
+          `routingRules` / `serviceRange` / `customers` 都是 **JSON 字符串**）；
+          `repeat_customer` 是**枚举字符串**（与 distribution_method 同一套 4 值，不是布尔）；
+          分组 `mode` 官方写侧小写、读侧大写 ⇒ **原样透传不转换**；
+          `confirm` 原样交服务层判（HTTP 层不做 bool()，`bool('false')` 是 True）；
+          成功判据**两层都看**（外层 success + 内层 data.code 只认 success），
+          只看外层会把「外层成功、内层失败」判成保存成功；
+          平台没回显 rule/group_id → null + 中文 warning（不造值）；
+          这两条 mtop **继续留在 `xianyu/shop.py::WRITE_APIS` 黑名单**（只读路径仍一条不许碰）。
 
 【只读 · 数据】`docs/contracts/datacenter.md`
 GET /api/datacenter/{account_id}/overview?start=YYYYMMDD&end=YYYYMMDD
@@ -865,13 +877,13 @@ POST /api/drafts/{account_id}/batch-delete           {draft_ids,confirm}
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 81 条 / `MASTER_TOOLS` 80 条（去掉 `master_chat` 防递归），
-其中 **29 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 82 条。五方对账（specs / master / routes / service targets / handlers）
+【AI 侧】`TOOL_SPECS` 84 条 / `MASTER_TOOLS` 83 条（去掉 `master_chat` 防递归），
+其中 **32 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
+`mcp_server/client.py::TOOL_ROUTES` 85 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=81 master=80 routes=82 targets=61 handlers=81 / write_tools=29 / route_checked=82 / RECON OK
+-> specs=84 master=83 routes=85 targets=64 handlers=84 / write_tools=32 / route_checked=85 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`
