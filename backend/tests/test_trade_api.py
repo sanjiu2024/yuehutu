@@ -604,5 +604,95 @@ class TradePagingTest(TradePageTest):
                          {'pageNumber': 1, 'rowsPerPage': 50})
 
 
+class AddressNormalizeTest(unittest.TestCase):
+    """`normalize_address` 的字段口径（bundle 两处读法都要认，但绝不造字段）。
+
+    **为什么单独钉**：官方 bundle 里退货地址有**两套键名** —— 只读页的 `formatter` 用
+    `{addressId, name, phoneNum, address(拼好的整串), defaultAddr}`，写页的编辑弹窗按
+    `{contactId, contactName, mobilePhone, provinceName, cityName, districtName,
+    detailAddress, defaultAddr}` 逐字段读。真机 `address.list.query` 对我们无权限、
+    拿不到样本，所以**不能判定哪一套是真的** ⇒ 两套都认，但平台没给的字段一个都不许出现。
+    """
+
+    MERGED = {
+        'addressId': '123456789',
+        'name': '张三',
+        'phoneNum': '13800138000',
+        'address': '浙江省 杭州市 西湖区 文一西路 1 号',
+        'defaultAddr': True,
+    }
+    PER_FIELD = {
+        'contactId': 987654321,
+        'contactName': '李四',
+        'mobilePhone': '13900139000',
+        'provinceName': '浙江省',
+        'cityName': '杭州市',
+        'districtName': '西湖区',
+        'detailAddress': '文一西路 2 号',
+        'defaultAddr': False,
+    }
+
+    def test_read_page_shape_keeps_the_five_legacy_keys(self):
+        out = trade_proto.normalize_address(self.MERGED)
+        self.assertEqual(out['address_id'], '123456789')
+        self.assertEqual(out['name'], '张三')
+        self.assertEqual(out['phone'], '13800138000')
+        self.assertEqual(out['address'], '浙江省 杭州市 西湖区 文一西路 1 号')
+        self.assertIs(out['is_default'], True)
+
+    def test_read_page_shape_does_not_invent_per_field_keys(self):
+        out = trade_proto.normalize_address(self.MERGED)
+        for key in ('contact_id', 'contact_name', 'mobile_phone', 'province_name',
+                    'city_name', 'district_name', 'detail_address'):
+            self.assertNotIn(key, out, f'{key} 平台没给，不许造')
+
+    def test_write_page_shape_passes_every_field_through(self):
+        out = trade_proto.normalize_address(self.PER_FIELD)
+        self.assertEqual(out['address_id'], '987654321')  # contactId 兜底，且整数保精度
+        self.assertEqual(out['name'], '李四')
+        self.assertEqual(out['phone'], '13900139000')
+        self.assertEqual(out['contact_id'], '987654321')
+        self.assertEqual(out['contact_name'], '李四')
+        self.assertEqual(out['mobile_phone'], '13900139000')
+        self.assertEqual(out['province_name'], '浙江省')
+        self.assertEqual(out['city_name'], '杭州市')
+        self.assertEqual(out['district_name'], '西湖区')
+        self.assertEqual(out['detail_address'], '文一西路 2 号')
+        self.assertIs(out['is_default'], False)
+
+    def test_write_page_shape_without_merged_address_is_not_guessed(self):
+        # 逐字段那套没有 `address` 整串 —— 不许自己拼一个出来冒充平台数据。
+        out = trade_proto.normalize_address(self.PER_FIELD)
+        self.assertIsNone(out['address'])
+
+    def test_empty_payload_gives_five_none_keys_and_nothing_else(self):
+        out = trade_proto.normalize_address({})
+        self.assertEqual(set(out), {'address_id', 'name', 'phone', 'address', 'is_default'})
+        for key in ('address_id', 'name', 'phone', 'address'):
+            self.assertIsNone(out[key], key)
+        self.assertIsNone(out['is_default'])
+
+    def test_blank_strings_do_not_become_fields(self):
+        out = trade_proto.normalize_address({
+            'contactId': '',
+            'contactName': '   ',
+            'mobilePhone': '',
+            'provinceName': '   ',
+            'detailAddress': None,
+        })
+        self.assertIsNone(out['address_id'])
+        self.assertEqual(set(out), {'address_id', 'name', 'phone', 'address', 'is_default'})
+
+    def test_non_dict_is_tolerated(self):
+        for bad in (None, 'x', [], 3):
+            out = trade_proto.normalize_address(bad)
+            self.assertEqual(set(out), {'address_id', 'name', 'phone', 'address', 'is_default'}, bad)
+
+    def test_default_flag_must_be_a_real_bool(self):
+        # 真机可能给字符串 'true'；不是 bool 就给 None，不猜。
+        self.assertIsNone(trade_proto.normalize_address({'defaultAddr': 'true'})['is_default'])
+        self.assertIsNone(trade_proto.normalize_address({'defaultAddr': 1})['is_default'])
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

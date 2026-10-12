@@ -510,16 +510,44 @@ def normalize_evaluation(item: Any) -> Dict[str, Any]:
 
 
 def normalize_address(item: Any) -> Dict[str, Any]:
-    """退货地址。样本来自 bundle 的 `formatter`（真机接口无权限）：
-    `{addressId, name, phoneNum, address, defaultAddr}`。"""
+    """退货地址。
+
+    **bundle 里有两处读法，所以这里两套键都认**（真机 `address.list.query` 对我们无权限、
+    拿不到样本，因此不猜哪一套是真的）：
+
+    - 只读页的 `formatter`：`{addressId, name, phoneNum, address, defaultAddr}`
+      —— `address` 是省市区+详细地址拼好的一整串；
+    - 写页的编辑弹窗（偏移 3780900~3782550）：`editForm.setValues({...e,
+      division:[e.provinceName, e.cityName, e.districtName], defaultAddr:…})`，即按
+      `contactId` / `contactName` / `mobilePhone` / `provinceName` / `cityName` /
+      `districtName` / `detailAddress` / `defaultAddr` **逐个字段**读
+      （`address-add-modal` 的 schema 也是这几个名字）。
+
+    前 5 个键永远存在（缺失给 `None`）；后一套**平台给了才出现**，空值不出现 ——
+    绝不凭空造字段。UI 有就能预填编辑表单，没有就照旧让用户重填。
+    """
     item = item if isinstance(item, dict) else {}
-    return {
-        'address_id': _text(_first(item, 'addressId', 'id')) or None,
-        'name': _text(item.get('name')) or None,
-        'phone': _text(_first(item, 'phoneNum', 'phone')) or None,
+    out: Dict[str, Any] = {
+        'address_id': _text(_first(item, 'addressId', 'contactId', 'id')) or None,
+        'name': _text(_first(item, 'name', 'contactName')) or None,
+        'phone': _text(_first(item, 'phoneNum', 'phone', 'mobilePhone')) or None,
         'address': _text(item.get('address')) or None,
         'is_default': item.get('defaultAddr') if isinstance(item.get('defaultAddr'), bool) else None,
     }
+    per_field = {
+        'contact_id': _first(item, 'contactId'),
+        'contact_name': _first(item, 'contactName'),
+        'mobile_phone': _first(item, 'mobilePhone'),
+        'province_name': _first(item, 'provinceName'),
+        'city_name': _first(item, 'cityName'),
+        'district_name': _first(item, 'districtName'),
+        'detail_address': _first(item, 'detailAddress'),
+    }
+    for key, value in per_field.items():
+        text = _text(value).strip()
+        if text:
+            out[key] = text
+    return out
 
 
 def normalize_complaint(item: Any) -> Dict[str, Any]:
