@@ -27,6 +27,8 @@ from loguru import logger
 
 from ..xianyu import draft as proto
 from . import common
+# 账号/凭据检查只有一份，直接复用只读服务里的私有助手（同包内，避免两套判定漂移）
+from .trade import _client
 
 #: 未确认时返回的业务码（`common.FAIL_STATUS` 里没有它 ⇒ 默认 400）。
 CONFIRM_CODE = 'confirmation_required'
@@ -111,8 +113,14 @@ def _platform_failure(value: Any, api: str, fallback: str) -> Dict[str, Any]:
 
 
 def _call(account_id: str, api: str, data: Dict[str, Any]) -> Tuple[Any, Optional[Dict[str, Any]]]:
-    """发一次 mtop 调用，返回 `(客户端返回值, 失败信封)`；成功时第二个是 `None`。"""
-    client, failure = common.get_client(account_id)
+    """发一次 mtop 调用，返回 `(客户端返回值, 失败信封)`；成功时第二个是 `None`。
+
+    账号/凭据检查只有一份：复用只读交易服务里的 `_client`（同包内私有助手），
+    口径与 `services/items.py` / `services/item_templates.py` / `services/trade_write.py` 一致 ——
+    **账号不存在 → 404 `not_found`**、**没有 Cookie 或已判定要重登 → 409 `verification_required`**，
+    两种都是本地判定，**一个平台请求都不发**。
+    """
+    client, failure = _client(account_id)
     if client is None:
         return None, failure
     status, value = common.call_method(client, ('mtop',), api, data, v=proto.DEFAULT_VERSION)

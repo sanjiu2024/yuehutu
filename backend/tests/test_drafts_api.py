@@ -457,11 +457,17 @@ class DraftApiTest(unittest.TestCase):
         self.get(f'{BASE}/{ACC}/d1')
         self.assertEqual(set(self.fake.apis()), {proto.SEARCH_API, proto.GET_API})
 
-    def test_missing_cookie_is_not_ready_and_sends_nothing(self):
+    def test_missing_cookie_is_409_and_sends_nothing(self):
+        """没有 Cookie ⇒ 409 `verification_required`（与 items / item_templates 同口径），零平台调用。"""
         seed_account(cookie='')
         install_fake_client(self.fake, with_factory=False)
-        body = self.fail_body(self.get(f'{BASE}/{ACC}'), status=503)
-        self.assertEqual(body['code'], 'xianyu_not_ready')
+        body = self.fail_body(self.get(f'{BASE}/{ACC}'), status=409)
+        self.assertEqual(body['code'], 'verification_required')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_unknown_account_is_404_and_sends_nothing(self):
+        body = self.fail_body(self.get(f'{BASE}/nosuch'), status=404)
+        self.assertEqual(body['code'], 'not_found')
         self.assertEqual(self.fake.calls, [])
 
     # -- 确认闸门（红线）------------------------------------------------
@@ -515,8 +521,8 @@ class DraftApiTest(unittest.TestCase):
         self.assertEqual(self.fake.calls, [])
         # 字段齐了才轮到凭据检查
         body = self.fail_body(self.post(f'{BASE}/{ACC}/batch-delete',
-                                        {'draft_ids': ['d1'], 'confirm': True}), status=503)
-        self.assertEqual(body['code'], 'xianyu_not_ready')
+                                        {'draft_ids': ['d1'], 'confirm': True}), status=409)
+        self.assertEqual(body['code'], 'verification_required')
         self.assertEqual(self.fake.calls, [])
 
     def test_batch_delete_over_the_limit_is_rejected_locally(self):
@@ -615,12 +621,12 @@ class DraftApiTest(unittest.TestCase):
         self.assertEqual(body['code'], 'verification_required')
         self.assertEqual(login_state(), 'need_relogin')
 
-    def test_missing_cookie_on_write_is_not_ready_and_sends_nothing(self):
+    def test_missing_cookie_on_write_is_409_and_sends_nothing(self):
         seed_account(cookie='')
         install_fake_client(self.fake, with_factory=False)
         body = self.fail_body(self.post(f'{BASE}/{ACC}/d1/delete', {'confirm': True}),
-                              status=503)
-        self.assertEqual(body['code'], 'xianyu_not_ready')
+                              status=409)
+        self.assertEqual(body['code'], 'verification_required')
         self.assertEqual(self.fake.calls, [])
 
     def test_missing_draft_id_on_single_delete_is_400(self):
