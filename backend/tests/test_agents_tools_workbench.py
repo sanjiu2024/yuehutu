@@ -292,6 +292,20 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
     'items_quick_edit': {
         'module': 'items', 'fn': 'quick_edit', 'confirm': True,
         'method': 'POST', 'path': '/api/items/{account_id}/{item_id}/quick-edit'},
+    # ---- task-78：改收货地址审批（1 读 + 2 写）----
+    # 读那条故意不是写名字的前缀；它没有 confirm，也不该被 confirm 闸门拦。
+    'trade_order_address_request': {
+        'module': 'trade_write', 'fn': 'order_address_info', 'confirm': False,
+        'method': 'GET',
+        'path': '/api/trade/{account_id}/orders/{order_id}/modify-address'},
+    'trade_order_address_agree': {
+        'module': 'trade_write', 'fn': 'order_address_agree', 'confirm': True,
+        'method': 'POST',
+        'path': '/api/trade/{account_id}/orders/{order_id}/modify-address/agree'},
+    'trade_order_address_refuse': {
+        'module': 'trade_write', 'fn': 'order_address_refuse', 'confirm': True,
+        'method': 'POST',
+        'path': '/api/trade/{account_id}/orders/{order_id}/modify-address/refuse'},
     # ---- 安全中心申诉：1 个只读表单 + 3 个会真的提交 ----
     'security_appeal_form': {
         'module': 'security_write', 'fn': 'appeal_form', 'confirm': False,
@@ -365,6 +379,11 @@ _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
     'items_quick_edit': {
         'account_id': 'acc-x', 'item_id': 'i1', 'price': 9.9, 'quantity': 3,
         'confirm': False},
+    # ---- task-78：改收货地址审批的 2 条写（只读那条故意不在，它没有 confirm 判定可测）----
+    'trade_order_address_agree': {
+        'account_id': 'acc-x', 'order_id': 'o1', 'deliver_id': 'd1', 'confirm': False},
+    'trade_order_address_refuse': {
+        'account_id': 'acc-x', 'order_id': 'o1', 'deliver_id': 'd1', 'confirm': False},
     # ---- 安全中心申诉：只读那个**故意不在**这里（它没有 confirm 判定可测） ----
     'security_appeal_submit': {
         'account_id': 'acc-x', 'parameter': {'reason': '我没违规'}, 'confirm': False},

@@ -491,6 +491,26 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'path_params': ['account_id', 'item_id'],
         'body': ['price', 'quantity', 'confirm'],
     },
+    # ---------------- 改收货地址审批（1 读 + 2 写）----------------
+    # 读那条**不能**带 confirm：带了就会被 confirm 闸门拦下，只读工具不该要点头。
+    'trade_order_address_request': {
+        'method': 'GET',
+        'path': '/api/trade/{account_id}/orders/{order_id}/modify-address',
+        'path_params': ['account_id', 'order_id'],
+        'query': [],
+    },
+    'trade_order_address_agree': {
+        'method': 'POST',
+        'path': '/api/trade/{account_id}/orders/{order_id}/modify-address/agree',
+        'path_params': ['account_id', 'order_id'],
+        'body': ['deliver_id', 'confirm'],
+    },
+    'trade_order_address_refuse': {
+        'method': 'POST',
+        'path': '/api/trade/{account_id}/orders/{order_id}/modify-address/refuse',
+        'path_params': ['account_id', 'order_id'],
+        'body': ['deliver_id', 'confirm'],
+    },
 }
 
 # 动词式别名（task-6 任务卡里的写法）→ 规范名

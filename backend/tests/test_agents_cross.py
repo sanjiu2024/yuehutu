@@ -529,6 +529,9 @@ class MasterChatTest(unittest.TestCase):
             'qualification_submit_packages', 'qualification_oss_credential',
             # ---- 商品写（会真的改平台数据，required 必含 confirm）----
             'items_batch_offline', 'items_batch_delete', 'items_quick_edit',
+            # ---- 改收货地址审批（1 读 + 2 写；读那条故意不是写名字的前缀）----
+            'trade_order_address_request',
+            'trade_order_address_agree', 'trade_order_address_refuse',
             'master_chat',
         ]
         self.assertEqual(tools.TOOL_NAMES, expected)
@@ -546,6 +549,7 @@ class MasterChatTest(unittest.TestCase):
             'item_templates_create', 'item_templates_modify', 'item_templates_delete',
             'item_templates_unbind',
             'items_batch_offline', 'items_batch_delete', 'items_quick_edit',
+            'trade_order_address_agree', 'trade_order_address_refuse',
             'security_appeal_submit', 'security_appeal_submit_cro', 'security_appeal_urge',
         ]
         for name in write_tools:

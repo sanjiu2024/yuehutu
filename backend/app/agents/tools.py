@@ -1445,6 +1445,68 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---------------- 改收货地址审批（1 读 + 2 写） ----------------
+    # 读工具名故意**不是**写工具名的前缀（`trade_order_address_request` vs
+    # `trade_order_address_agree`），否则加前缀的写工具名单会把它误判成写工具。
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_order_address_request',
+            'description': '只读：问平台这个订单有没有待处理的「买家申请修改收货地址」。'
+                           '卖家问「他改地址了吗 / 有没有人申请改地址 / 能不能让他改」时用。'
+                           '平台上没有申请时 status 是 NONE（这是正常的，不是报错）。'
+                           'account_id 与 order_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '订单 id'},
+                },
+                'required': ['account_id', 'order_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_order_address_agree',
+            'description': '同意买家修改收货地址。同意后这个订单就按买家的**新地址**发货了，'
+                           '发出去就撤不回来。卖家说「同意改地址 / 让他改吧」时用。'
+                           + _WRITE_HINT + 'account_id、order_id、deliver_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '订单 id'},
+                    'deliver_id': {'type': 'string', 'description': '这条改地址申请的单据 id（从只读工具拿）'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'order_id', 'deliver_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_order_address_refuse',
+            'description': '拒绝买家修改收货地址。拒绝后订单仍按**原来**的地址发货。'
+                           '卖家说「不同意改地址 / 还是寄原来那个」时用。'
+                           + _WRITE_HINT + 'account_id、order_id、deliver_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '订单 id'},
+                    'deliver_id': {'type': 'string', 'description': '这条改地址申请的单据 id（从只读工具拿）'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'order_id', 'deliver_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 主管 AI（只给 MCP 侧） ----------------
     {
         'type': 'function',
@@ -1747,6 +1809,10 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'items_batch_offline': ['items', 'batch_offline'],
     'items_batch_delete': ['items', 'batch_delete'],
     'items_quick_edit': ['items', 'quick_edit'],
+    # ---- 改收货地址审批（1 读 + 2 写）----
+    'trade_order_address_request': ['trade_write', 'order_address_info'],
+    'trade_order_address_agree': ['trade_write', 'order_address_agree'],
+    'trade_order_address_refuse': ['trade_write', 'order_address_refuse'],
 }
 
 # 有额外位置参数（不是直接透传 args 的）在这里补上固定值
@@ -1927,6 +1993,10 @@ _HANDLERS = {
     'items_batch_offline': lambda a: _dispatch_service('items_batch_offline', a),
     'items_batch_delete': lambda a: _dispatch_service('items_batch_delete', a),
     'items_quick_edit': lambda a: _dispatch_service('items_quick_edit', a),
+    # ---- 改收货地址审批（读那条也走 services，工具层同样不做 confirm 判定）----
+    'trade_order_address_request': lambda a: _dispatch_service('trade_order_address_request', a),
+    'trade_order_address_agree': lambda a: _dispatch_service('trade_order_address_agree', a),
+    'trade_order_address_refuse': lambda a: _dispatch_service('trade_order_address_refuse', a),
 }
 
 
