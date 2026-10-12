@@ -1894,6 +1894,12 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 诚实边界：**同意/拒绝一次真机请求都没发过** —— 改地址审批要买家先发起申请，不能为了验证
 > 去改用户真实订单的收货地址；隐私号解密也没有真机样本（本机账号的订单都没有 `privacyFlag`），
 > 「平台接受我们的 payload」仍未验证。UI 侧只做了离线探针/冒烟，没有真机实跑。
+>
+> 打包版复验（exe `10,010,659` 字节 / 2026-10-12 09:52:14，`--port 18400` `/api/health` 200
+> `frozen:true`）：`/openapi.json` = **142 条路径 / 155 个操作**（新增三条改地址审批已挂载）；
+> `probe_write_gate.py` → **`GATE FAILURES: 0 / 28`**；`packaged_ui_smoke.py` → **26/26 页通过**；
+> `check_assets.py` → `GET /` 引用 `['index-DQjHBzUp.js','index-F91U0U67.css']`，remote/local
+> SHA256 相同（`d1dc70905cde` / `b177818cc5d0`），**`ASSETS_MATCH=True`**。
 
 ## 四、已验证 / 未验证（诚实边界）
 
@@ -1929,10 +1935,12 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   packaged_ui_smoke.py`，复用 `scripts/ui_smoke.py::run_browser` 但不启后端、直接打
   `127.0.0.1:18400` 与**真实 `%APPDATA%` 数据目录**，截图 `logs/packaged_ui_smoke/`）。
   与上一条的区别：上一条跑的是源码 + 临时库，这一条跑的是**用户手上那个 exe**。
-- **打包版 confirm 闸门 26 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
-  （`confirmation_required` / `confirm_required`），`GATE FAILURES: 0 / 26`；确认那一腿**故意换成不存在的
+- **打包版 confirm 闸门 28 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
+  （`confirmation_required` / `confirm_required`），`GATE FAILURES: 0 / 28`；确认那一腿**故意换成不存在的
   账号**（`SAFE_ACC`），闸门放行后本地查库直接 404 `not_found` / 400 `invalid_fields` —— 既证明闸门放行，
   又保证**零平台请求**（2026-10-12 00:35 之前那版拿真账号打过，三条写请求真到了闲鱼，见第二十五批 161）。
+  本批新增两条（`order_address.agree`/`order_address.refuse`）确认腿都是 400 `invalid_fields`
+  （字段校验在建客户端之前，所以拿不到空 `deliver_id` 就本地拒了）。
 - **真实浏览器实时刷新 2/2 阶段通过**（`scripts/live_refresh_smoke.py`）：后端写账号
   备注 / 新增提示词后，页面在 0.21 秒内自己更新，且 `navigation` 计数不变。
 - **真后端 + 真 `XianyuClient` + `httpx.MockTransport` 逐条打商品接口**（不碰真平台）：
