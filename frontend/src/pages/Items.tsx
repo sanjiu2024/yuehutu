@@ -37,6 +37,7 @@ import {
   IconWarn,
 } from '../icons'
 import { useAsync } from '../hooks/useAsync'
+import { DraftBox } from './DraftBox'
 import { bool, formatMoney, formatTime, itemStatusLabel, parseImages, truncate } from '../format'
 import type { Account, BatchResult, Item, ItemListResult, OperationLog } from '../types'
 import './items.css'
@@ -334,7 +335,7 @@ export function ItemsPage() {
   const toast = useToast()
   const accounts = useAsync<Account[]>(() => api.get<Account[]>('/api/accounts'), [], true, ['accounts.changed'])
   /** 页内两个视图：商品列表 / 商品数据。用全局已有的 `.tabs/.tab` 样式，不引第三方 tab 组件。 */
-  const [tab, setTab] = useState<'list' | 'data'>('list')
+  const [tab, setTab] = useState<'list' | 'data' | 'drafts'>('list')
   const [accountId, setAccountId] = useState('')
   const [status, setStatus] = useState('')
   const [queryInput, setQueryInput] = useState('')
@@ -747,9 +748,17 @@ export function ItemsPage() {
           </span>
           商品数据
         </button>
+        <button className={`tab${tab === 'drafts' ? ' active' : ''}`} onClick={() => setTab('drafts')} title="官方草稿箱：只读列表 + 详情 + 删除（删除会真的删掉闲鱼上的草稿）">
+          <span className="it-ico">
+            <IconEdit size={14} />
+          </span>
+          草稿箱
+        </button>
       </div>
 
       {tab === 'data' && <ItemDataView accountId={accountId} />}
+
+      {tab === 'drafts' && <DraftBox accountId={accountId} />}
 
       {tab === 'list' && (<>
 
