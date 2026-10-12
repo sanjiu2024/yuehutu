@@ -317,7 +317,8 @@ class XianyuClient:
 
     async def mtop(self, api: str, data: Any = None, v: str = '1.0',
                    spm_cnt: str = mtop.DEFAULT_SPM_CNT,
-                   extra_headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+                   extra_headers: Optional[Dict[str, str]] = None,
+                   value_type: Optional[str] = None) -> Dict[str, Any]:
         """调一次 MTOP，返回 ``{"success", "data", "message", "ret", "cookies_str"}``。
 
         与旧实现的差别：**成功才 reset 熔断计数**。旧实现只在调用方显式
@@ -343,7 +344,8 @@ class XianyuClient:
         for attempt in (1, 2):
             t = str(int(time.time() * 1000))
             used_token = mtop.token_from_cookies(self.cookie_str)
-            params = mtop.call_params(api, v, data_str, used_token, t, spm_cnt)
+            params = mtop.call_params(
+                api, v, data_str, used_token, t, spm_cnt, value_type=value_type)
             headers = fingerprint.headers({
                 'accept': 'application/json',
                 'content-type': 'application/x-www-form-urlencoded',

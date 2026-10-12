@@ -276,3 +276,43 @@ def address_set_default(
     """设为默认退货地址：`…delivery.address.set.default`。"""
     return _envelope(trade_write.address_set_default(
         account_id, contact_id, confirm=body.get('confirm')))
+
+
+@router.get('/{account_id}/orders/{order_id}/modify-address')
+def order_modify_address(
+    account_id: str,
+    order_id: str,
+    user=Depends(current_user),
+):
+    """买家改地址申请（**只读**）：`mtop.idle.merchant.order.get.modify.address.info`。
+
+    为什么是 GET：只查不改，所以**没有 `confirm` 闸门**。返回里 `can_operate` 是服务层
+    算好的（`status == 'WAITING'` 且平台给了 `deliver_id`），同意/拒绝都要先看它。
+    隐私号订单会额外调一次 `mtop.idle.trade.order.detail.privacy.address` 换明文，
+    解不开就是 `decrypted: null` + 一条 warning，**不编明文**。
+    """
+    return _envelope(trade_write.order_address_info(account_id, order_id))
+
+
+@router.post('/{account_id}/orders/{order_id}/modify-address/agree')
+def order_modify_address_agree(
+    account_id: str,
+    order_id: str,
+    body: Dict[str, Any] = Body(default={}, description='{deliver_id, confirm}'),
+    user=Depends(current_user),
+):
+    """同意买家改地址：`…merchant.order.address.modify.agree`。**会真的改订单收货地址**。"""
+    return _envelope(trade_write.order_address_agree(
+        account_id, order_id, body.get('deliver_id'), confirm=body.get('confirm')))
+
+
+@router.post('/{account_id}/orders/{order_id}/modify-address/refuse')
+def order_modify_address_refuse(
+    account_id: str,
+    order_id: str,
+    body: Dict[str, Any] = Body(default={}, description='{deliver_id, confirm}'),
+    user=Depends(current_user),
+):
+    """拒绝买家改地址：`…merchant.order.address.modify.refuse`。"""
+    return _envelope(trade_write.order_address_refuse(
+        account_id, order_id, body.get('deliver_id'), confirm=body.get('confirm')))

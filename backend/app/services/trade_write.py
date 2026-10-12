@@ -21,6 +21,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 from loguru import logger
 
 from ..xianyu import address_write as addr_proto
+from ..xianyu import order_address as order_addr_proto
 from ..xianyu import trade_write as proto
 from . import common
 # 账号/凭据检查只有一份，直接复用只读服务里的私有助手（同包内，避免两套判定漂移）
@@ -61,9 +62,17 @@ def _amount(label: str, value: Any, *, positive: bool = False) -> Optional[Dict[
     return None
 
 
-def _call_write(client: Any, api: str, data: Any, version: str) -> Tuple[Any, Optional[Dict[str, Any]]]:
-    """调一次写接口。与只读层的 `_call` 的区别：**不做** `assert_read_only`（这里本来就是写）。"""
-    status, value = common.call_method(client, ('mtop',), api, data, v=version)
+def _call_api(client: Any, api: str, data: Any, version: str,
+              value_type: Optional[str] = None) -> Tuple[Any, Optional[Dict[str, Any]]]:
+    """调一次 mtop（写接口与「改地址」那条只读查询共用）。
+
+    `value_type` **只有传了才加**：官方 `valueType:"string"` 只出现在隐私地址解密那一个接口，
+    给别的请求塞上会改变它们的响应形状。
+    """
+    kwargs: Dict[str, Any] = {'v': version}
+    if value_type:
+        kwargs['value_type'] = value_type
+    status, value = common.call_method(client, ('mtop',), api, data, **kwargs)
     if status != common.CALL_OK:
         failure = common.call_failed(status, value) or common.fail('协议层调用失败', 'protocol_error')
         failure.setdefault('platform_errors', {
@@ -87,6 +96,11 @@ def _call_write(client: Any, api: str, data: Any, version: str) -> Tuple[Any, Op
             },
         )
     return value, None
+
+
+def _call_write(client: Any, api: str, data: Any, version: str) -> Tuple[Any, Optional[Dict[str, Any]]]:
+    """调一次写接口。与只读层的 `_call` 的区别：**不做** `assert_read_only`（这里本来就是写）。"""
+    return _call_api(client, api, data, version)
 
 
 def _submit(account_id: str, action: str, item_id: str, builder, parse, version: str,
@@ -515,3 +529,113 @@ def address_set_default(account_id: str, contact_id: Any, *,
     if failure:
         return failure
     return _address_submit(account_id, 'set_default', {'contact_id': contact_id})
+
+
+# --------------------------------------------------------------------------- 改地址申请（读 + 同意/拒绝）
+
+
+def order_address_info(account_id: str, order_id: Any) -> Dict[str, Any]:
+    """查这个订单上的改地址申请 —— **只读**，所以没有 `confirm`。
+
+    `mtop.idle.merchant.order.get.modify.address.info`，`data.module` 里给
+    `{modifyStatus, modifyAddressInfoVO, nowAddressInfoVO, modifyDeliverId}`。
+    只有 `modifyStatus === 'WAITING'` 才算「有申请待处理」，也只有那一档平台才给 `modifyDeliverId`。
+
+    **隐私号订单**（`nowAddressInfoVO.privacyFlag` 为真）平台给的是打码字段，官方会再调一次
+    `mtop.idle.trade.order.detail.privacy.address`（带 `valueType:'string'`）换明文。
+    我们也调，但**解不开就如实说**：`decrypted` 给 `None` + 一条中文 warning，
+    `now_address` 仍是平台原样透传的打码字段 —— 不编明文、不把打码字段当明文展示。
+    """
+    failure = _missing(('订单号', order_id))
+    if failure:
+        return failure
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+
+    api, data = order_addr_proto.info_request(order_id)
+    raw, failure = _call_api(client, api, data, order_addr_proto.DEFAULT_VERSION)
+    if failure:
+        return failure
+
+    payload = order_addr_proto.parse_info(raw)
+    payload['account_id'] = account_id
+    payload['order_id'] = _text(order_id)
+    payload['api'] = api
+
+    warnings = []
+    decrypted = None
+    if payload.get('privacy_flagged'):
+        warnings.append({
+            'code': 'privacy_flagged',
+            'message': '这个订单被平台标了隐私（隐私号），平台给的姓名/电话/地址是打码的；'
+                       '我们试过解密接口，但解不开就照原样显示，不会替你编明文。',
+        })
+        papi, pdata = order_addr_proto.privacy_request(order_id)
+        # 解密是**尽力而为**：解不开就 decrypted=None + warning，绝不因此把整个只读页判成失败
+        # （用户至少还能看到平台原样给的打码字段）。
+        pvalue, pfailure = _call_api(client, papi, pdata, order_addr_proto.DEFAULT_VERSION,
+                                     order_addr_proto.PRIVACY_VALUE_TYPE)
+        if pfailure is None:
+            decrypted = order_addr_proto.parse_privacy(pvalue)
+        if decrypted is None:
+            warnings.append({
+                'code': 'privacy_decrypt_failed',
+                'message': '隐私地址解密没有拿到明文（平台没给或拒绝），上面显示的是平台原样给的字段。',
+            })
+    payload['decrypted'] = decrypted
+    payload['warnings'] = warnings
+    return _stamp(payload)
+
+
+def _order_address_write(account_id: str, action: str, order_id: Any, deliver_id: Any,
+                         confirm: Any) -> Dict[str, Any]:
+    """同意 / 拒绝的公共骨架。三步顺序：**确认 → 字段校验 → 建客户端**。"""
+    if action == 'agree':
+        problem = None if _truthy(confirm) else _confirm_required('同意修改收货地址')
+    else:
+        problem = None if _truthy(confirm) else _confirm_required('拒绝修改收货地址')
+    if problem:
+        return problem
+    failure = _missing(('订单号', order_id), ('改地址申请 ID（deliver_id）', deliver_id))
+    if failure:
+        return failure
+
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+    api, data = order_addr_proto.request_of(action, order_id=order_id,
+                                            deliver_id=deliver_id, confirm=True)
+    raw, failure = _call_write(client, api, data, order_addr_proto.DEFAULT_VERSION)
+    if failure:
+        common.log_operation(account_id, f'order_address_{action}', _text(order_id), False,
+                             failure.get('message') or '')
+        return failure
+
+    payload = order_addr_proto.parse_write(raw)
+    payload.update({
+        'account_id': account_id,
+        'order_id': _text(order_id),
+        'deliver_id': _text(deliver_id),
+        'action': action,
+        'api': api,
+    })
+    common.log_operation(account_id, f'order_address_{action}', _text(order_id), True, data)
+    common.publish('trade.changed', {'account_id': account_id, 'order_id': _text(order_id)})
+    return _stamp(payload)
+
+
+def order_address_agree(account_id: str, order_id: Any, deliver_id: Any, *,
+                        confirm: Any = False) -> Dict[str, Any]:
+    """同意买家修改收货地址（`mtop.idle.merchant.order.address.modify.agree`）。
+
+    **这是会真的改订单收货地址的写操作**：`deliver_id` 必须来自同一条订单的
+    `order_address_info()`（只有 `status == 'WAITING'` 时平台才给）。
+    """
+    return _order_address_write(account_id, 'agree', order_id, deliver_id, confirm)
+
+
+def order_address_refuse(account_id: str, order_id: Any, deliver_id: Any, *,
+                         confirm: Any = False) -> Dict[str, Any]:
+    """拒绝买家修改收货地址（`mtop.idle.merchant.order.address.modify.refuse`）。"""
+    return _order_address_write(account_id, 'refuse', order_id, deliver_id, confirm)

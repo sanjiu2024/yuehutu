@@ -82,8 +82,14 @@ def token_from_cookies(cookies_str: str) -> str:
 
 
 def call_params(api: str, version: str, data: str, token: str, t: str,
-                spm_cnt: str = DEFAULT_SPM_CNT) -> Dict[str, str]:
-    """拼好一份完整的 MTOP query 参数（含 sign）。"""
+                spm_cnt: str = DEFAULT_SPM_CNT,
+                value_type: Optional[str] = None) -> Dict[str, str]:
+    """拼好一份完整的 MTOP query 参数（含 sign）。
+
+    `value_type` 只有极少数接口需要（官方 bundle 里 `mtop.idle.trade.order.detail.
+    privacy.address` 明确写了 `valueType:'string'`），**默认 None 表示一个字节都不加** ——
+    绝不能给所有请求都塞上，那会改变其它接口的响应形状。
+    """
     params = {
         'jsv': JSV_VERSION,
         'appKey': APP_KEY,
@@ -98,6 +104,8 @@ def call_params(api: str, version: str, data: str, token: str, t: str,
         'sessionOption': 'AutoLoginOnly',
         'spm_cnt': spm_cnt,
     }
+    if value_type:
+        params['valueType'] = str(value_type)
     return params
 
 
