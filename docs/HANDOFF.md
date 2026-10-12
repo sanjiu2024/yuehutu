@@ -1919,28 +1919,50 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `check_assets.py` → `GET /` 引用 `['index-DQjHBzUp.js','index-F91U0U67.css']`，remote/local
 > SHA256 相同（`d1dc70905cde` / `b177818cc5d0`），**`ASSETS_MATCH=True`**。
 
-### 第二十七批：UI 细节自查 —— 对比度、可访问性、表单标签关联（167~170）
+### 第二十七批：只读路径的平台拒绝补人话（167）
 
-167. **深色主题的次要文字太灰**：`--text-mute` 深色 `#6b7a99` 在 panel 上只有 3.96:1
+167. **用户会被平台原文骗去白扫一次码**（真机巡检发现）：只读接口把平台的拒绝原样甩出来
+   （`NO_PERMISSION::用户没有权限`、`FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问`），
+   看起来跟「登录过期」一模一样 —— 用户会去重新扫码，扫完照样无权限。
+   人话映射（`backend/app/services/platform_errors.py` 的 `PLATFORM_ERROR_HINTS`，每条都带
+   真机证据注释）新增 5 条：`FAIL_BIZ_IDLE_USER_UNAUTHORIZED`、`NO_PERMISSION`、
+   `E_AD_BP_COMMON_SYSTEM_EXCEPTION`、`COMMON_SERVER_ERROR`、`ORDER_STATUS_ERROR`。
+   前两条都明写「**不是登录掉线**，重新扫码不会变好」；`ORDER_STATUS_ERROR` 的措辞必须
+   通用（这码在发货/改价/同意退款都会回，写成「不允许发货」就讲错了）。
+   **一处收口**：`backend/app/services/common.py` 的 `respond()`（全项目唯一的响应序列化出口）
+   在失败分支调 `platform_errors.decorate(result)` —— 平台拒绝会从二十几个服务各自的 `_call`
+   里冒出来，逐处补必然漏；`decorate` **不改 `code`**，状态码不受影响。
+   新增 `ReadPathRefusalTest` 6 条（含词边界：`FAIL_SYS_NO_PERMISSION` 不该命中裸码
+   `NO_PERMISSION` 的解释）+ `test_order_status_error_stays_generic`。
+
+> **第二十七批证据链**：`backend/tests/test_platform_errors.py` → **`Ran 32 tests ... OK`**；
+> `backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_hints_full2`）→
+> **`TOTAL 49  PASS 49  FAIL 0  CASES 1541  SKIPPED 2`**（既有断言都是 `assertIn` 风格，
+> 追加人话没打破任何测试）；提交 `701a7f5`。
+> 诚实边界：只覆盖**真机见过**的 5 个码，其它平台码仍然原样透出（宁可原样，也不猜意思）。
+
+### 第二十八批：UI 细节自查 —— 对比度、可访问性、表单标签关联（168~171）
+
+168. **深色主题的次要文字太灰**：`--text-mute` 深色 `#6b7a99` 在 panel 上只有 3.96:1
    （panel-2 上 3.4:1）、浅色 `#78849d` 在白底上 3.76:1 —— 品牌副标题、导航分组标题、
    页头描述、字段提示、表格里的次要行都是这个色（11~12px 的小字最吃亏）。改成深色
    `#828fa8`（5.25 / 4.53）、浅色 `#667290`（4.80 / 4.51）：**只改值，令牌名与其余令牌不动**。
-168. **深色 `--accent` 两头不讨好**：白字压在 `#3b82f6` 上只有 3.68:1（主按钮、分段按钮
+169. **深色 `--accent` 两头不讨好**：白字压在 `#3b82f6` 上只有 3.68:1（主按钮、分段按钮
    选中态），而它当**文字**放在淡蓝 chip 上更低（3.65 / 3.28）—— 一个变量救不了两头。
    深色另加一段专用覆盖（放在浅色主题块之后，浅色完全不受影响）：主按钮 `#2563eb`
    （白字 5.17:1，**含禁用态** —— 禁用只是压暗 opacity，底色仍是 accent）、hover
    `#1d4ed8`、分段按钮选中态同色、`.ac-inline-link` 与 `.pv-default-chip` 改用 `--ask`。
-169. **`Field` 的 `<label>` 与控件是兄弟节点**（真缺陷）：点标签不会聚焦输入框，读屏只说
+170. **`Field` 的 `<label>` 与控件是兄弟节点**（真缺陷）：点标签不会聚焦输入框，读屏只说
    「组合框」而说不出这个框是干什么的（`<select>` 没有 placeholder 可退，最明显）。
    `children` 是**单个**元素且自己还没 `id` 时，用 `useId()` 给它补 `id`、给 `<label>`
    补 `htmlFor`；其余形状行为不变。另给「商品」页的账号/状态筛选与「会话」页的账号/模式
    筛选补 `aria-label`，商品列表的全选与逐行复选框补上名字。
-170. **两个审计脚本入仓**（原来躺在临时目录，各查出一个真问题）：`scripts/contrast_audit.py`
+171. **两个审计脚本入仓**（原来躺在临时目录，各查出一个真问题）：`scripts/contrast_audit.py`
    （26 页 × 深/浅两套主题，背景沿父链逐层 alpha 合成，否则半透明 badge 会被当实色）、
    `scripts/a11y_audit.py`（无可访问名字的按钮 / 没有标签的输入框 / 无 alt 图片 / 焦点环）。
    两者都只读，并断言整轮没有非 GET 的 `/api/` 请求；不给 `--port` 就打打包版。
 
-> **第二十七批证据链**：`scripts/contrast_audit.py --port 18393 --threshold 4.0` →
+> **第二十八批证据链**：`scripts/contrast_audit.py --port 18393 --threshold 4.0` →
 > `[dark] BAD_PAGES 0/26: []`、`[light] BAD_PAGES 0/26: []`、`NON_GET_API_REQUESTS=[]`；
 > `scripts/a11y_audit.py --port 18395` → 「无可访问名字的按钮 0 类、没有标签的输入框 0 类、
 > 焦点不可见的页面 []」、`NON_GET_API_REQUESTS=[]`；
