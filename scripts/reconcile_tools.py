@@ -121,7 +121,7 @@ for name in sorted(routes):
 
 # 4) 写工具的硬要求：method=POST、required 含 confirm、description 有中文警示
 #    ⚠️ 新增写工具必须把名字前缀加进来，否则第 5 步会把它当只读工具误报。
-WRITE_PREFIX = ('trade_write_', 'promotion_write_', 'qualification_submit',
+WRITE_PREFIX = ('trade_write_', 'trade_address_', 'promotion_write_', 'qualification_submit',
                 'qualification_oss', 'item_templates_create', 'item_templates_modify',
                 'item_templates_delete', 'item_templates_unbind',
                 'items_batch_offline', 'items_batch_delete', 'items_quick_edit',

@@ -1137,6 +1137,106 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---------------- 退货地址写（会真的改平台上的退货地址；required 必含 confirm） ----------------
+    # 顺序是硬约束：这 4 条必须夹在 trade_write_complain_proof 与 security_appeal_form 之间，
+    # 三份硬编码清单（tools.TOOL_NAMES / MCP TOOL_ROUTES / 对账脚本）都按这个顺序对齐。
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_address_add',
+            'description': '新增退货地址（**写操作，会真的在闲鱼上新增一条退货地址**）。'
+                           + _WRITE_HINT + 'account_id 与联系人信息必填。'
+                           '我们没有区域码来源：area_id 拿不到就不要传，不要自己编一个。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'contact_name': {'type': 'string', 'description': '联系人姓名'},
+                    'mobile_phone': {'type': 'string', 'description': '联系电话'},
+                    'province_name': {'type': 'string', 'description': '省'},
+                    'city_name': {'type': 'string', 'description': '市'},
+                    'district_name': {'type': 'string', 'description': '区/县'},
+                    'detail_address': {'type': 'string', 'description': '详细地址'},
+                    'area_id': {'type': 'string',
+                                'description': '区域码；我们没有区域码来源，拿不到就不传，别编'},
+                    'default_addr': {'type': 'boolean',
+                                     'description': '是否设为默认地址；不传就按平台默认'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'contact_name', 'mobile_phone', 'province_name',
+                             'city_name', 'district_name', 'detail_address', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_address_update',
+            'description': '修改退货地址（**写操作，会真的改动闲鱼上的退货地址**）。'
+                           + _WRITE_HINT + 'account_id、contact_id 与联系人信息必填。'
+                           '我们没有区域码来源：area_id 拿不到就不要传，不要自己编一个。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'contact_id': {'type': 'string', 'description': '退货地址 id（从 trade_addresses 拿）'},
+                    'contact_name': {'type': 'string', 'description': '联系人姓名'},
+                    'mobile_phone': {'type': 'string', 'description': '联系电话'},
+                    'province_name': {'type': 'string', 'description': '省'},
+                    'city_name': {'type': 'string', 'description': '市'},
+                    'district_name': {'type': 'string', 'description': '区/县'},
+                    'detail_address': {'type': 'string', 'description': '详细地址'},
+                    'area_id': {'type': 'string',
+                                'description': '区域码；我们没有区域码来源，拿不到就不传，别编'},
+                    'default_addr': {'type': 'boolean',
+                                     'description': '是否设为默认地址；不传就按平台默认'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'contact_id', 'contact_name', 'mobile_phone',
+                             'province_name', 'city_name', 'district_name', 'detail_address',
+                             'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_address_delete',
+            'description': '删除退货地址（**写操作且不可撤销**，删掉之后平台上的这条地址就没了）。'
+                           + _WRITE_HINT + 'account_id 与 contact_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'contact_id': {'type': 'string', 'description': '退货地址 id（从 trade_addresses 拿）'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'contact_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_address_set_default',
+            'description': '把某条退货地址设为默认（**写操作**，会顶掉当前的默认地址；'
+                           '想改回来只能再调一次，别当成可撤销的开关）。'
+                           + _WRITE_HINT + 'account_id 与 contact_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'contact_id': {'type': 'string', 'description': '退货地址 id（从 trade_addresses 拿）'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'contact_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 安全中心申诉（提交会真的提交到平台；required 必含 confirm） ----------------
     {
         'type': 'function',
@@ -1627,6 +1727,11 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'trade_write_rate_create': ['trade_write', 'rate_create'],
     'trade_write_complain_refuse': ['trade_write', 'complain_refuse'],
     'trade_write_complain_proof': ['trade_write', 'complain_proof'],
+    # ---- 退货地址写（会真的改平台上的退货地址）----
+    'trade_address_add': ['trade_write', 'address_add'],
+    'trade_address_update': ['trade_write', 'address_update'],
+    'trade_address_delete': ['trade_write', 'address_delete'],
+    'trade_address_set_default': ['trade_write', 'address_set_default'],
     # ---- 安全中心申诉 ----
     'security_appeal_form': ['security_write', 'appeal_form'],
     'security_appeal_submit': ['security_write', 'appeal_submit'],
@@ -1806,6 +1911,10 @@ _HANDLERS = {
     'trade_write_rate_create': lambda a: _dispatch_service('trade_write_rate_create', a),
     'trade_write_complain_refuse': lambda a: _dispatch_service('trade_write_complain_refuse', a),
     'trade_write_complain_proof': lambda a: _dispatch_service('trade_write_complain_proof', a),
+    'trade_address_add': lambda a: _dispatch_service('trade_address_add', a),
+    'trade_address_update': lambda a: _dispatch_service('trade_address_update', a),
+    'trade_address_delete': lambda a: _dispatch_service('trade_address_delete', a),
+    'trade_address_set_default': lambda a: _dispatch_service('trade_address_set_default', a),
     'security_appeal_form': lambda a: _dispatch_service('security_appeal_form', a),
     'security_appeal_submit': lambda a: _dispatch_service('security_appeal_submit', a),
     'security_appeal_submit_cro': lambda a: _dispatch_service('security_appeal_submit_cro', a),

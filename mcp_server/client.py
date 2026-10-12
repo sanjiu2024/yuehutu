@@ -431,6 +431,29 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'path_params': ['account_id', 'complain_id'],
         'body': ['proof_desc', 'proof_urls', 'kind', 'confirm'],
     },
+    # ---------------- 退货地址写（POST；confirm 是必填）----------------
+    'trade_address_add': {
+        'method': 'POST', 'path': '/api/trade/{account_id}/addresses',
+        'path_params': ['account_id'],
+        'body': ['contact_name', 'mobile_phone', 'province_name', 'city_name',
+                 'district_name', 'detail_address', 'area_id', 'default_addr', 'confirm'],
+    },
+    'trade_address_update': {
+        'method': 'POST', 'path': '/api/trade/{account_id}/addresses/{contact_id}/update',
+        'path_params': ['account_id', 'contact_id'],
+        'body': ['contact_name', 'mobile_phone', 'province_name', 'city_name',
+                 'district_name', 'detail_address', 'area_id', 'default_addr', 'confirm'],
+    },
+    'trade_address_delete': {
+        'method': 'POST', 'path': '/api/trade/{account_id}/addresses/{contact_id}/delete',
+        'path_params': ['account_id', 'contact_id'],
+        'body': ['confirm'],
+    },
+    'trade_address_set_default': {
+        'method': 'POST', 'path': '/api/trade/{account_id}/addresses/{contact_id}/default',
+        'path_params': ['account_id', 'contact_id'],
+        'body': ['confirm'],
+    },
     # ---------------- 推广写（POST；目录是只读 GET）----------------
     'promotion_write_actions': {
         'method': 'GET', 'path': '/api/promotion/write/actions',

@@ -244,6 +244,19 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
     'trade_write_complain_proof': {
         'module': 'trade_write', 'fn': 'complain_proof', 'confirm': True,
         'method': 'POST', 'path': '/api/trade/{account_id}/complaints/{complain_id}/proof'},
+    # ---- 退货地址写（4 条都会真的改平台数据）----
+    'trade_address_add': {
+        'module': 'trade_write', 'fn': 'address_add', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/addresses'},
+    'trade_address_update': {
+        'module': 'trade_write', 'fn': 'address_update', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/addresses/{contact_id}/update'},
+    'trade_address_delete': {
+        'module': 'trade_write', 'fn': 'address_delete', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/addresses/{contact_id}/delete'},
+    'trade_address_set_default': {
+        'module': 'trade_write', 'fn': 'address_set_default', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/addresses/{contact_id}/default'},
     'promotion_write_execute': {
         'module': 'ad_write', 'fn': 'execute', 'confirm': True,
         'method': 'POST', 'path': '/api/promotion/write/{account_id}/{action}'},
@@ -318,6 +331,19 @@ _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
     'trade_write_complain_proof': {
         'account_id': 'acc-x', 'complain_id': 'c1', 'proof_desc': 'd',
         'proof_urls': ['http://x/1.png'], 'confirm': False},
+    # ---- 退货地址写：4 条都带全必填字段但 confirm=False ----
+    'trade_address_add': {
+        'account_id': 'acc-x', 'contact_name': '张三', 'mobile_phone': '13800000000',
+        'province_name': '浙江省', 'city_name': '杭州市', 'district_name': '西湖区',
+        'detail_address': '文一西路 1 号', 'confirm': False},
+    'trade_address_update': {
+        'account_id': 'acc-x', 'contact_id': 'addr-1', 'contact_name': '张三',
+        'mobile_phone': '13800000000', 'province_name': '浙江省', 'city_name': '杭州市',
+        'district_name': '西湖区', 'detail_address': '文一西路 1 号', 'confirm': False},
+    'trade_address_delete': {
+        'account_id': 'acc-x', 'contact_id': 'addr-1', 'confirm': False},
+    'trade_address_set_default': {
+        'account_id': 'acc-x', 'contact_id': 'addr-1', 'confirm': False},
     'promotion_write_execute': {
         'account_id': 'acc-x', 'action': 'campaign_pause', 'confirm': False},
     'qualification_submit_packages': {'account_id': 'acc-x', 'confirm': False},

@@ -517,6 +517,9 @@ class MasterChatTest(unittest.TestCase):
             'trade_refund_verify_token',
             'trade_write_refund_refuse', 'trade_write_rate_create',
             'trade_write_complain_refuse', 'trade_write_complain_proof',
+            # ---- 退货地址写（会真的改平台上的退货地址，required 必含 confirm）----
+            'trade_address_add', 'trade_address_update',
+            'trade_address_delete', 'trade_address_set_default',
             # ---- 安全中心申诉（form 只读；其余三条会真的提交，required 必含 confirm）----
             'security_appeal_form',
             'security_appeal_submit', 'security_appeal_submit_cro', 'security_appeal_urge',
@@ -536,6 +539,8 @@ class MasterChatTest(unittest.TestCase):
             'trade_write_ship_offline', 'trade_write_ship_dummy', 'trade_write_adjust_price',
             'trade_write_refund_agree', 'trade_write_refund_refuse', 'trade_write_rate_create',
             'trade_write_complain_refuse', 'trade_write_complain_proof',
+            'trade_address_add', 'trade_address_update',
+            'trade_address_delete', 'trade_address_set_default',
             'promotion_write_execute',
             'qualification_submit_packages', 'qualification_oss_credential',
             'item_templates_create', 'item_templates_modify', 'item_templates_delete',
