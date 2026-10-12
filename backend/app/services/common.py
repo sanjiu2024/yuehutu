@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from loguru import logger
 
 from ..core import db, events
+from . import platform_errors
 
 NOT_READY_CODE = 'xianyu_not_ready'
 NOT_READY_MESSAGE = '协议层尚未就绪'
@@ -76,9 +77,15 @@ def respond(result: Any) -> Tuple[int, Any]:
 
     - 失败信封原样透出，状态码按 code 映射
     - 其它一律套 `{"success": true, "data": ...}`
+
+    失败信封在这里补一次人话（`platform_errors.decorate`，只给**真机见过的**
+    平台错误码加解释，认不出就不动）。放在这个唯一的出口上，是因为平台拒绝会
+    从二十几个服务各自的 `_call` 里冒出来：逐处补必然漏，漏掉的那处用户就只能
+    看到「用户没有权限」然后白扫一次码。`decorate` **不改 `code`**，所以
+    HTTP 状态码不受影响。
     """
     if is_failure(result):
-        return FAIL_STATUS.get(str(result.get('code')), 400), result
+        return FAIL_STATUS.get(str(result.get('code')), 400), platform_errors.decorate(result)
     return 200, {'success': True, 'data': result}
 
 

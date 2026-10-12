@@ -23,6 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from backend.app.services import common  # noqa: E402
 from backend.app.services import items as items_service  # noqa: E402
 from backend.app.services import platform_errors as pe  # noqa: E402
 
@@ -194,6 +195,80 @@ class ItemsIntegrationTest(unittest.TestCase):
         self.assertEqual(
             items_service._platform_error_hint('FAIL_SYS_SOMETHING_NEW::没见过的错误'), ''
         )
+
+
+class ReadPathRefusalTest(unittest.TestCase):
+    """只读接口的平台拒绝也要说人话（2026-10-12 真机 35 条 GET 巡检见过的码）。
+
+    用户看到「用户没有权限」的第一反应是「我是不是掉线了」→ 去重新扫码 → 白扫一次，
+    问题还在。所以「这个账号没开这个功能」必须与「登录态过期」在文案上分开。
+    """
+
+    def test_no_permission_says_it_is_not_a_logout(self):
+        hint = pe.explain(
+            '协议层调用失败: MTOP 调用失败 [mtop.taobao.idle.cco.shop.complain.list]: '
+            'NO_PERMISSION::用户没有权限')
+        self.assertIn('权限', hint)
+        self.assertIn('不是登录掉线', hint)
+        self.assertNotIn('重新扫码登录', hint)
+
+    def test_bare_no_permission_does_not_match_the_prefixed_code(self):
+        """`FAIL_SYS_NO_PERMISSION` 是另一个码，不该套裸码 `NO_PERMISSION` 的解释。"""
+        self.assertEqual(pe.find_code('FAIL_SYS_NO_PERMISSION::无权限操作'), '')
+        self.assertEqual(pe.explain('FAIL_SYS_NO_PERMISSION::无权限操作'), '')
+
+    def test_user_unauthorized_matches(self):
+        hint = pe.explain(
+            '协议层调用失败: MTOP 调用失败 '
+            '[mtop.alibaba.idle.seller.common.sub.account.info.list]: '
+            'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问')
+        self.assertIn('没有开通', hint)
+        self.assertIn('不是登录掉线', hint)
+
+    def test_qualification_system_errors_are_not_blamed_on_the_user(self):
+        busy = pe.explain(
+            '协议层调用失败: MTOP 调用失败 '
+            '[mtop.taobao.idle.ad.qualification.templates.queryv2]: '
+            'E_AD_BP_COMMON_SYSTEM_EXCEPTION::闲鱼太累了，请稍后再试～')
+        self.assertIn('平台', busy)
+        self.assertIn('重试', busy)
+        other = pe.explain(
+            '协议层调用失败: MTOP 调用失败 '
+            '[mtop.taobao.idle.ad.qualification.detail.query]: '
+            'COMMON_SERVER_ERROR::服务繁忙,请稍后再试~')
+        self.assertIn('服务繁忙', other)
+        # 两个码各归各的，不互相串味
+        self.assertNotEqual(busy, other)
+
+    def test_respond_decorates_failures_without_touching_the_status_code(self):
+        """唯一的出口 `common.respond` 会补人话，但**不改** `code`/状态码。"""
+        status, body = common.respond({
+            'success': False,
+            'message': '协议层调用失败: MTOP 调用失败 [x]: NO_PERMISSION::用户没有权限',
+            'code': 'protocol_error',
+        })
+        self.assertEqual(status, 502)
+        self.assertEqual(body['code'], 'protocol_error')
+        self.assertEqual(body['platform_code'], 'NO_PERMISSION')
+        self.assertIn('不是登录掉线', body['message'])
+
+    def test_respond_leaves_unknown_codes_and_success_alone(self):
+        _, body = common.respond({
+            'success': False, 'message': 'FAIL_SYS_SOMETHING_NEW::没见过的错误',
+            'code': 'protocol_error',
+        })
+        self.assertEqual(body['message'], 'FAIL_SYS_SOMETHING_NEW::没见过的错误')
+        self.assertNotIn('platform_code', body)
+        _, ok = common.respond({'items': []})
+        self.assertEqual(ok, {'success': True, 'data': {'items': []}})
+
+
+    def test_order_status_error_stays_generic(self):
+        """这个码不只在发货出现，措辞不许绑死某个动作。"""
+        hint = pe.explain('协议层调用失败: ORDER_STATUS_ERROR::订单状态不正确')
+        self.assertIn('状态', hint)
+        self.assertIn('刷新', hint)
+        self.assertNotIn('不允许发货', hint)
 
 
 if __name__ == '__main__':
