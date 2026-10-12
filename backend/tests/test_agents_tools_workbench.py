@@ -326,6 +326,16 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
     'drafts_batch_delete': {
         'module': 'drafts', 'fn': 'batch_delete_drafts', 'confirm': True,
         'method': 'POST', 'path': '/api/drafts/{account_id}/batch-delete'},
+    # ---- task-83：客服分流写 3 条（会真的改平台数据，required 必含 confirm）----
+    'shop_cs_routing_rule_save': {
+        'module': 'shop', 'fn': 'save_routing_rule', 'confirm': True,
+        'method': 'POST', 'path': '/api/shop/{account_id}/cs-routing/rule'},
+    'shop_cs_group_save': {
+        'module': 'shop', 'fn': 'save_cs_group', 'confirm': True,
+        'method': 'POST', 'path': '/api/shop/{account_id}/cs-groups'},
+    'shop_cs_group_delete': {
+        'module': 'shop', 'fn': 'delete_cs_group', 'confirm': True,
+        'method': 'POST', 'path': '/api/shop/{account_id}/cs-groups/delete'},
 }
 
 WRITE_TOOL_NAMES = list(WRITE_TOOLS)
@@ -404,6 +414,16 @@ _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
         'account_id': 'acc-x', 'draft_id': 'd1', 'confirm': False},
     'drafts_batch_delete': {
         'account_id': 'acc-x', 'draft_ids': 'd1,d2', 'confirm': False},
+    # ---- task-83：客服分流写 3 条，带全必填字段但 confirm=False ----
+    'shop_cs_routing_rule_save': {
+        'account_id': 'acc-x', 'distribution_method': 'COMBINED_LOW_LOAD',
+        'repeat_customer': 'COMBINED_LOW_LOAD', 'offline_message': 'MAIN_ACCOUNT',
+        'confirm': False},
+    'shop_cs_group_save': {
+        'account_id': 'acc-x', 'group_name': '测试分组', 'mode': 'unspecified',
+        'confirm': False},
+    'shop_cs_group_delete': {
+        'account_id': 'acc-x', 'group_id': 'g1', 'confirm': False},
 }
 
 

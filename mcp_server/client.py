@@ -266,6 +266,24 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'method': 'GET', 'path': '/api/shop/{account_id}/cs-routing',
         'path_params': ['account_id'], 'query': ['page', 'size'],
     },
+    # ---------------- 客服分流写（POST；confirm 必须在 body 里，否则 MCP 写闸门不生效）----------------
+    'shop_cs_routing_rule_save': {
+        'method': 'POST', 'path': '/api/shop/{account_id}/cs-routing/rule',
+        'path_params': ['account_id'],
+        'body': ['distribution_method', 'repeat_customer', 'offline_message',
+                 'specified_account_id', 'specified_account_nick', 'service_time', 'confirm'],
+    },
+    'shop_cs_group_save': {
+        'method': 'POST', 'path': '/api/shop/{account_id}/cs-groups',
+        'path_params': ['account_id'],
+        'body': ['group_name', 'mode', 'operate_type', 'group_id', 'specified_type',
+                 'specified_type_name', 'type_data', 'customer_uids', 'confirm'],
+    },
+    'shop_cs_group_delete': {
+        'method': 'POST', 'path': '/api/shop/{account_id}/cs-groups/delete',
+        'path_params': ['account_id'],
+        'body': ['group_id', 'confirm'],
+    },
     # ---------------- 数据中心（只读）----------------
     'datacenter_overview': {
         'method': 'GET', 'path': '/api/datacenter/{account_id}/overview',

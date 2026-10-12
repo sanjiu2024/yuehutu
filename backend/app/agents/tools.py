@@ -555,6 +555,127 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---------------- 客服分流写（会真的改动闲鱼上的客服分流配置；required 必含 confirm） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'shop_cs_routing_rule_save',
+            'description': '保存小铺的客服分流规则（会真的改动闲鱼上的客服分流配置）。'
+                           'distribution_method / repeat_customer 取值：LOW_SATURATION_FIRST（优先分给当前饱和度低的客服）、'
+                           'LOW_DAILY_COUNT_FIRST（优先分给当日接待量少的）、LAST_SERVED_AGENT（最近联系过的优先）、'
+                           'COMBINED_LOW_LOAD（正常分流）。offline_message 取 MAIN_ACCOUNT（离线消息发主账号）或 '
+                           'SPECIFIED_ACCOUNT（发给指定账号，此时 specified_account_id 与 specified_account_nick 都必须给）。'
+                           'service_time 是 {"start_time": "HH:MM", "end_time": "HH:MM"}，不给就不设服务时段。'
+                           '卖家说「把客服分单规则改成…」时用。'
+                           + _WRITE_HINT + 'account_id、distribution_method、repeat_customer、offline_message 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'distribution_method': {
+                        'type': 'string',
+                        'enum': ['LOW_SATURATION_FIRST', 'LOW_DAILY_COUNT_FIRST',
+                                 'LAST_SERVED_AGENT', 'COMBINED_LOW_LOAD'],
+                        'description': '分配方式'},
+                    'repeat_customer': {
+                        'type': 'string',
+                        'enum': ['LOW_SATURATION_FIRST', 'LOW_DAILY_COUNT_FIRST',
+                                 'LAST_SERVED_AGENT', 'COMBINED_LOW_LOAD'],
+                        'description': '消费者重复进线策略（与分配方式同一套取值）'},
+                    'offline_message': {
+                        'type': 'string',
+                        'enum': ['MAIN_ACCOUNT', 'SPECIFIED_ACCOUNT'],
+                        'description': '离线消息处理方式'},
+                    'specified_account_id': {
+                        'type': 'string',
+                        'description': '只在 offline_message=SPECIFIED_ACCOUNT 时需要：指定的客服账号 id'},
+                    'specified_account_nick': {
+                        'type': 'string',
+                        'description': '只在 offline_message=SPECIFIED_ACCOUNT 时需要：指定的客服昵称'},
+                    'service_time': {
+                        'type': 'object',
+                        'description': '可选服务时段 {"start_time": "HH:MM", "end_time": "HH:MM"}；不给就不设',
+                        'properties': {
+                            'start_time': {'type': 'string', 'description': '开始时间 HH:MM'},
+                            'end_time': {'type': 'string', 'description': '结束时间 HH:MM'},
+                        },
+                    },
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'distribution_method', 'repeat_customer',
+                             'offline_message', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'shop_cs_group_save',
+            'description': '新建或修改小铺的客服分组（会真的改动闲鱼上的客服分流配置）。'
+                           'operate_type=create 是新建（不要给 group_id），operate_type=update 是修改（**必须**给 group_id）。'
+                           'mode 是服务范围，常见取值 unspecified / specified / DEFAULT；'
+                           'mode 是 specified 时可再给 specified_type、specified_type_name 与 type_data。'
+                           'customer_uids 是要放进这个分组的客服 uid 列表。group_name 最多 30 个字。'
+                           '卖家说「新建一个客服分组 / 把这个分组改名」时用。'
+                           + _WRITE_HINT + 'account_id、group_name、mode 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'group_name': {'type': 'string', 'description': '分组名称，最多 30 个字'},
+                    'mode': {
+                        'type': 'string',
+                        'enum': ['unspecified', 'specified', 'UNSPECIFIED', 'SPECIFIED', 'DEFAULT'],
+                        'description': '服务范围（大小写原样透传给平台，不做转换）'},
+                    'operate_type': {
+                        'type': 'string',
+                        'enum': ['create', 'update'],
+                        'description': 'create=新建（缺省），update=修改'},
+                    'group_id': {
+                        'type': 'string',
+                        'description': '分组 id；operate_type=update 时必填'},
+                    'specified_type': {
+                        'type': 'string',
+                        'description': 'mode=specified 时的类型，缺省 ORDER'},
+                    'specified_type_name': {
+                        'type': 'string',
+                        'description': 'mode=specified 时的类型名称'},
+                    'type_data': {
+                        'type': 'array',
+                        'items': {'type': 'object'},
+                        'description': 'mode=specified 时的明细项；空数组等于不传'},
+                    'customer_uids': {
+                        'type': 'array',
+                        'items': {'type': 'string'},
+                        'description': '要放进该分组的客服 uid 列表'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'group_name', 'mode', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'shop_cs_group_delete',
+            'description': '删除小铺的一个客服分组（会真的改动闲鱼上的客服分流配置，**删掉就没了、不可撤销**）。'
+                           'group_id 从只读的 shop_cs_routing 或 shop_cs_group_save 的返回里拿。'
+                           '卖家明确说「把某个客服分组删掉」时才用。'
+                           + _WRITE_HINT + 'account_id 与 group_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'group_id': {'type': 'string', 'description': '要删除的分组 id'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'group_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 数据中心（只读） ----------------
     {
         'type': 'function',
@@ -1822,6 +1943,10 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     # ---- 小铺 ----
     'shop_sub_accounts': ['shop', 'sub_accounts'],
     'shop_cs_routing': ['shop', 'cs_routing'],
+    # ---- 客服分流写（会真的改动闲鱼上的客服分流配置）----
+    'shop_cs_routing_rule_save': ['shop', 'save_routing_rule'],
+    'shop_cs_group_save': ['shop', 'save_cs_group'],
+    'shop_cs_group_delete': ['shop', 'delete_cs_group'],
     # ---- 数据中心 ----
     'datacenter_overview': ['datacenter', 'overview'],
     'datacenter_fans': ['datacenter', 'fans'],
@@ -2022,6 +2147,10 @@ _HANDLERS = {
     'trade_addresses': lambda a: _dispatch_service('trade_addresses', a),
     'shop_sub_accounts': lambda a: _dispatch_service('shop_sub_accounts', a),
     'shop_cs_routing': lambda a: _dispatch_service('shop_cs_routing', a),
+    # ---- 客服分流写（工具层同样不做 confirm 判定，原样透传给服务层）----
+    'shop_cs_routing_rule_save': lambda a: _dispatch_service('shop_cs_routing_rule_save', a),
+    'shop_cs_group_save': lambda a: _dispatch_service('shop_cs_group_save', a),
+    'shop_cs_group_delete': lambda a: _dispatch_service('shop_cs_group_delete', a),
     'datacenter_overview': lambda a: _dispatch_service('datacenter_overview', a),
     'datacenter_fans': lambda a: _dispatch_service('datacenter_fans', a),
     'datacenter_customer_service': lambda a: _dispatch_service('datacenter_customer_service', a),

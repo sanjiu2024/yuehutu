@@ -494,6 +494,8 @@ class MasterChatTest(unittest.TestCase):
             'trade_orders', 'trade_refunds', 'trade_evaluations', 'trade_complaints', 'trade_addresses',
             # ---- 小铺 ----
             'shop_sub_accounts', 'shop_cs_routing',
+            # ---- 客服分流写（会真的改平台数据，required 必含 confirm）----
+            'shop_cs_routing_rule_save', 'shop_cs_group_save', 'shop_cs_group_delete',
             # ---- 数据中心 ----
             'datacenter_overview', 'datacenter_fans', 'datacenter_customer_service',
             # ---- 通知 ----
@@ -552,6 +554,7 @@ class MasterChatTest(unittest.TestCase):
             'item_templates_unbind',
             'items_batch_offline', 'items_batch_delete', 'items_quick_edit',
             'trade_order_address_agree', 'trade_order_address_refuse',
+            'shop_cs_routing_rule_save', 'shop_cs_group_save', 'shop_cs_group_delete',
             'drafts_delete', 'drafts_batch_delete',
             'security_appeal_submit', 'security_appeal_submit_cro', 'security_appeal_urge',
         ]

@@ -128,6 +128,9 @@ WRITE_PREFIX = ('trade_write_', 'trade_address_', 'promotion_write_', 'qualifica
                 # 改地址审批：只加这两条**完整写工具名**。故意不加 'trade_order_address_'，
                 # 那会把只读的 trade_order_address_request 一起误判成写工具。
                 'trade_order_address_agree', 'trade_order_address_refuse',
+                # 客服分流写：同样只加完整工具名。故意不加 'shop_cs' 宽前缀，
+                # 那会把只读的 shop_cs_routing 一起误判成写工具。
+                'shop_cs_routing_rule_save', 'shop_cs_group_save', 'shop_cs_group_delete',
                 'security_appeal_submit', 'security_appeal_urge',
                 # 草稿箱：只加两条**完整写工具名**。故意不加 'drafts_'，
                 # 那会把只读的 drafts_list / drafts_get 一起误判成写工具。
