@@ -698,6 +698,13 @@ GET /api/trade/{account_id}/refunds?page=&size=
 GET /api/trade/{account_id}/evaluations?page=&size=
 GET /api/trade/{account_id}/complaints?page=&size=
 GET /api/trade/{account_id}/addresses
+       -- 退货地址字段：bundle 里**有两套读法，后端两套都认**（真机这条对我们无权限，
+          拿不到样本，所以不判定哪一套是真的）—— 只读页那套
+          `{addressId,name,phoneNum,address(拼好的整串),defaultAddr}` →
+          `address_id/name/phone/address/is_default`；写页编辑弹窗那套
+          `{contactId,contactName,mobilePhone,provinceName,cityName,districtName,detailAddress}`
+          → `contact_id/contact_name/mobile_phone/province_name/city_name/district_name/detail_address`，
+          **平台给了才出现**（空值不出现，绝不凭空造字段）。
 
 【只读 · 小铺与通知】`docs/contracts/shop.md`、`docs/contracts/notify.md`
 GET /api/shop/{account_id}/sub-accounts?page=&size=
@@ -748,6 +755,23 @@ POST /api/trade/{account_id}/evaluations                     {trade_ids,feedback
 POST /api/trade/{account_id}/complaints/{complain_id}/refuse {proof_desc,proof_urls,confirm}
 POST /api/trade/{account_id}/complaints/{complain_id}/proof  {proof_desc,proof_urls,kind,confirm}
 
+【写 · 退货地址】`docs/contracts/trade_write.md` §8
+POST /api/trade/{account_id}/addresses                        {contact_name,mobile_phone,province_name,city_name,district_name,detail_address,area_id?,default_addr?,confirm}
+POST /api/trade/{account_id}/addresses/{contact_id}/update     {同上}
+POST /api/trade/{account_id}/addresses/{contact_id}/delete     {confirm}
+POST /api/trade/{account_id}/addresses/{contact_id}/default    {confirm}
+       -- 四条 mtop（bundle 偏移 3143703 / 3143951 / 3144220 / 3144501）：
+          `…merchant.delivery.address.{add,update,delete,set.default}`。
+       -- 官方表单里还有 `division`（级联 `{label,value}` 数组）与隐藏 `areaId`（区级区域码）；
+          **我们没有区域码来源**（`mtop.taobao.idle.division.all.get` 对本机账号无权限），
+          所以不伪造：只发省 / 市 / 区三个**名字**，`area_id` 留空就**根本不发这个键**。
+       -- 官方这四个接口**根本没读响应体**（只给了 toast 文案），所以成功判据是
+          「客户端没报错 **且** 平台 `code == 'success'`」；拿不到 contact_id 时给 `null`
+          + warning `no_contact_id`，**不造**假 ID。
+       -- `confirm` 只认 `True`/`'true'`/`1`（服务层 `_truthy`，与 items / item_templates /
+          MCP 同口径）；HTTP 层把 body 里的 `confirm` **原样**交服务层，不做 `bool(...)` ——
+          `bool('false')` 是 True，会把用户明确的拒绝当成同意。
+
 【读 · 退款凭证】`docs/contracts/trade_write.md` §7
 GET  /api/trade/{account_id}/refunds/{refund_id}/verify-token
        -> {verify_url, token, scene, refund_id, api}
@@ -789,13 +813,13 @@ POST /api/security-center/{account_id}/appeal/urge       {punish_id,confirm}
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 70 条 / `MASTER_TOOLS` 69 条（去掉 `master_chat` 防递归），
-其中 **21 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 71 条。五方对账（specs / master / routes / service targets / handlers）
+【AI 侧】`TOOL_SPECS` 74 条 / `MASTER_TOOLS` 73 条（去掉 `master_chat` 防递归），
+其中 **25 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
+`mcp_server/client.py::TOOL_ROUTES` 75 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=70 master=69 routes=71 targets=50 handlers=70 / write_tools=21 / route_checked=71 / RECON OK
+-> specs=74 master=73 routes=75 targets=54 handlers=74 / write_tools=25 / route_checked=75 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`

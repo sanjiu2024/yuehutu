@@ -148,9 +148,19 @@
 ### 2.6 退货地址 `addresses[]` ← `mtop.alibaba.idle.seller.platform.merchant.delivery.address.list.query` v1.0
 
 **无真机样本**（真机返回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问`）。
-请求**不传 data**（bundle 原文 `hO({api:"...",v:"1.0"})`）。字段名按 bundle 读法
-`e.data[]` 元素 `{addressId, name, phoneNum, address, defaultAddr}` 映射为
-`address_id / name / phone / address / is_default`（`is_default` 只在平台给 bool 时才给值，否则 null）。
+请求**不传 data**（bundle 原文 `hO({api:"...",v:"1.0"})`）。bundle 里有**两套读法，这里两套都认**
+（拿不到样本 ⇒ 不判定哪一套是真的）：
+
+- 只读页的 `formatter`：`e.data[]` 元素 `{addressId, name, phoneNum, address, defaultAddr}`
+  → `address_id / name / phone / address / is_default`（`is_default` 只在平台给 bool 时才给值，否则 null）；
+- 写页编辑弹窗（偏移 3780900~3782550）：按 `contactId` / `contactName` / `mobilePhone` /
+  `provinceName` / `cityName` / `districtName` / `detailAddress` **逐个字段**读 → 追加
+  `contact_id / contact_name / mobile_phone / province_name / city_name / district_name /
+  detail_address`，**平台给了才出现**（空值不出现，绝不凭空造字段）。
+
+`address_id` 的回退键是 `addressId → contactId → id`，`name` 是 `name → contactName`，
+`phone` 是 `phoneNum → phone → mobilePhone` —— 两套键名指的是同一个实体。
+写接口见 `docs/contracts/trade_write.md` §8。
 
 ## 3. 只读边界（硬约束）
 

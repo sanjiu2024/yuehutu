@@ -16,7 +16,7 @@
 | 6 | 主 AI 对接我 / 插件让 DSH 控制 | `POST /api/agents/master/chat` + `mcp_server/` | 冒烟 ⑦；`test_mcp_server.py` 55 项；端口文件端到端 |
 | 7 | 除 AI 外我自己也能回消息 | `POST /api/chats/{id}/send` | 冒烟 ⑤（消息落库） |
 | 8 | 不能老登录、风控要做好 | `xianyu/risk.py` 熔断 + `xianyu/login.py` 人工验证 | `test_xianyu_cookies.py` 37 项 |
-| 9 | 集成闲鱼客服 / 网页版功能 | `services/cs.py` 意图分类 + 快捷回复；**官方卖家工作台逐页复刻**：财务四页、超级擦亮、安全中心、交易五页、小铺两页、数据三页、通知、营销、资质、运费模版（含写）、商品管理（含批量下架/删除/快捷改价改库存） | `test_services_cs.py` 20 项；`test_finance_api.py`、`test_promotion_api.py`、`test_security_write_api.py`、`test_trade_api.py`、`test_shop_api.py`、`test_notify_api.py`、`test_datacenter_api.py`、`test_marketing_api.py`、`test_item_templates_api.py`、`test_item_write_api.py`；真机探针见第十七~二十二批 |
+| 9 | 集成闲鱼客服 / 网页版功能 | `services/cs.py` 意图分类 + 快捷回复；**官方卖家工作台逐页复刻**：财务四页、超级擦亮、安全中心（含申诉写）、交易五页（订单/退款/评价/投诉页内直接处理）、小铺两页、数据三页、通知、营销、资质、运费模版（含写）、退货地址（含写）、商品管理（含批量下架/删除/快捷改价改库存） | `test_services_cs.py` 20 项；`test_finance_api.py`、`test_promotion_api.py`、`test_security_write_api.py`、`test_trade_api.py`、`test_trade_write_api.py`、`test_address_write_api.py`、`test_shop_api.py`、`test_notify_api.py`、`test_datacenter_api.py`、`test_marketing_api.py`、`test_item_templates_api.py`、`test_item_write_api.py`；真机探针见第十七~二十五批 |
 
 ### 官方卖家工作台菜单树 → 我们的页面（逐叶对照）
 
@@ -61,8 +61,8 @@
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_verify_full2&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 47  PASS 47  FAIL 0  CASES 1440  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_addr_full&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 48  PASS 48  FAIL 0  CASES 1487  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -82,20 +82,20 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 87 modules transformed.
-   frontend/dist/assets/index-DHN0PnNK.js (504.15 kB, gzip 157.80 kB)
-   frontend/dist/assets/index-mh5rQzhQ.css (130.97 kB, gzip 20.88 kB)
+   frontend/dist/assets/index-B0lhDz8I.js (511.47 kB, gzip 160.46 kB)
+   frontend/dist/assets/index-DKqV08Ps.css (131.84 kB, gzip 20.98 kB)
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon6&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=70 master=69 routes=71 targets=50 handlers=70
-   write_tools=21  route_checked=71
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon_t76&& C:\Python310\python.exe scripts\reconcile_tools.py"
+-> specs=74 master=73 routes=75 targets=54 handlers=74
+   write_tools=25  route_checked=75
    RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
    （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18299"
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18311"
 -> UI SMOKE ALL OK  (26/26 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
    截图目录：logs/ui_smoke
 ```
@@ -1763,10 +1763,86 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 两边相同（`5f02a124d717` / `ce9323192809`）、**`ASSETS_MATCH=True`**；
 > `scripts/ui_smoke.py --port 18299` → **26/26 页通过**。
 
+### 第二十五批：退货地址写接口 + 只读解析认两套键名 + 探针不再打真平台（157~161）
+
+157. **退货地址是「只读」这句话本身是错的**。`frontend/src/pages/ReturnAddresses.tsx` 的文件头写着
+     「新增 / 编辑 / 删除退货地址是写接口，本项目一律 405」—— 写接口不是不存在，是我们没做。
+     去官方交易 bundle（本地副本 `C:\Users\Administrator\.dsh-tmp\trade_bundle\main.js`，3,879,584 字符
+     **单行**压缩 JS，只有字符偏移、行号无意义）取证，拿到完整一族：
+     `mtop.alibaba.idle.seller.platform.merchant.delivery.address.{list.query,detail.query,add,update,delete,set.default}`
+     （偏移 3142733 / 3143576 / 3143703 / 3143951 / 3144220 / 3144501）。声明原文：
+     `add`/`update` 带 `callbackOptions.successText:'退货地址新增/更新成功'`、`delete` 是 `{contactId}`、
+     `set.default` **只有 `errorText`**（成功靠重拉列表确认）、`detail.query` 是 `{contactId}`。
+     编辑弹窗（偏移 3780900~3782550）的 `onModalShow(e)` 直接把列表行摊进表单
+     （`division:[e.provinceName,e.cityName,e.districtName]`），提交时把级联结果摊成
+     `{...values, areaId, provinceName, cityName, districtName}`。
+
+158. **诚实偏离：区域码不伪造**。官方 payload 里还有 `division`（三元素 `{label,value}` 级联数组）与隐藏的
+     `areaId`（区级区域码）。我们没有码源 —— `mtop.taobao.idle.division.all.get` 对本机账号回
+     `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`。所以**只发省 / 市 / 区三个名字**，`areaId` 只在调用方真的给了才发，
+     `division` 一个字节都不发（宁可平台明确拒绝，也不发一个形状不对的级联数组去赌）。
+     平台拒绝的原因原样透出（`platform_errors.api/code/message`）。
+
+159. **`confirm` 一律原样交服务层判，路由层不做 `bool()`**。四条 address 路由原来写
+     `confirm=bool(body.get('confirm'))` —— 而 `bool('false')` 是 `True`，用户明确写 `"confirm": "false"`
+     会被当成同意。改成 `confirm=body.get('confirm')`，服务层用统一口径 `_truthy`（只有 `True`/`'true'`/`1`
+     算点头，与 `services/items.py`、`services/item_templates.py`、`mcp_server/client.py` 同口径）。
+     旧 8 条 trade 写端点这次**没动**（一次提交只做一件事）。
+
+160. **只读解析把逐字段全丢了（真缺陷）**。`backend/app/xianyu/trade.py::normalize_address` 只映射
+     `{address_id,name,phone,address,is_default}`（= bundle **只读页**那套 `{addressId,name,phoneNum,address,defaultAddr}`），
+     而**写页编辑弹窗**按 `contactId/contactName/mobilePhone/provinceName/cityName/districtName/detailAddress/defaultAddr`
+     逐个字段读。两处读法冲突、真机 `list.query` 又无权限（拿不到样本），所以**不猜哪一套是真的**：
+     前 5 键的回退键扩成 `_first(item,'addressId','contactId','id')` 等，再**仅当平台真的给了**才追加
+     `contact_id`/`contact_name`/`mobile_phone`/`province_name`/`city_name`/`district_name`/`detail_address`
+     （空白字符串不出现，**绝不凭空造字段、也不自己拼地址串**）。前端 `openEdit` 同步：能预填就预填，
+     预填不了才让用户重填，两种情况的说明文案不同。
+
+161. **探针自己变成了写请求的来源（流程缺陷，最该记的一条）**。`probe_write_gate.py` 扩到 26 个写端点后，
+     `confirm:true` 那一腿是拿**真账号**打的 —— 而账号 `2217970177348` 已在 2026-10-11 23:03 重新扫码
+     （`operation_logs` id 191~194 `relogin`/`qr_login`/`refresh_profile`），登录态是 `active`，
+     于是它**真的把三条写请求打到了闲鱼**：id 196 `ship_dummy` → `订单状态不正确::ORDER_STATUS_ERROR`，
+     id 197/198 `address.delete`/`address.set_default` → `FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问`。
+     **没有造成任何改动**（平台全拒），但「验证闸门」的探针不该是写请求的来源。修法：确认那一腿把路径里的
+     真账号换成 `SAFE_ACC='9999999999999'` ⇒ 闸门放行后本地查库直接 404 `not_found`，**零平台请求**。
+     重跑 `GATE FAILURES: 0 / 26`。顺带确认一个真事实：退货地址的写接口对这个**已登录**账号也回
+     `FAIL_BIZ_IDLE_USER_UNAUTHORIZED` —— 与只读 `list.query` 同一个权限问题，**不是代码 bug**。
+
+> **第二十五批证据链**：`backend/tests/test_address_write_api.py` →
+> **`Ran 39 tests in 0.521s OK`**（`EXIT=0`）；`backend/tests/test_trade_api.py` →
+> **`Ran 34 tests in 0.418s OK`**（原 26 + 新增 `AddressNormalizeTest` 8 条）；
+> `backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_addr_full`）→
+> **`TOTAL 48  PASS 48  FAIL 0  CASES 1487  SKIPPED 2`**（第 24 批 47/1440 → +39 +8）；
+> `python -m unittest backend.tests.test_agents_cross backend.tests.test_mcp_server
+> backend.tests.test_agents_tools_workbench` → **`UNITTEST_EXIT=0`**（task-76 先前那 13 条 failure 全转绿）；
+> `scripts/reconcile_tools.py`（`XIANYU_APP_DIR=%TEMP%\xywb_recon_t76`）→
+> `specs=74 master=73 routes=75 targets=54 handlers=74` / `write_tools=25` / `route_checked=75` /
+> **`RECON OK`**；
+> 前端 `npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0（87 modules，
+> `index-B0lhDz8I.js 511.47 kB` / `index-DKqV08Ps.css 131.84 kB`）；
+> 提交：`86c5491`（退货地址写接口三件套 + 39 条测试）、`f015490`（只读解析认两套键名）、
+> `aec7a9c`（退货地址页四个写入口）、`445440f`（4 个写工具接进 AI 与 MCP）。
+> 诚实边界：**退货地址的写接口一次都没真机成功过** —— 本机这个账号对它没有权限
+> （`FAIL_BIZ_IDLE_USER_UNAUTHORIZED`，与只读同一个问题），所以「平台接受了我们的 payload」
+> 这件事仍未验证；区域码 `areaId` 也没有码源（`division.all.get` 无权限）。UI 侧未做浏览器实跑。
+> 踩坑：① `npx tsc --noEmit` **必须在 `frontend/` 目录里跑** —— 在仓库根跑会解析到另一个 tsc
+> （`Version 7.0.2`）并打印帮助文本、`TSC_EXIT=1`（假失败）；② 改文件前必须用 `read` **工具**读过
+> （用 `pwsh` + python 读不算），否则 `edit` 报 `file changed since it was read`；
+> ③ 假客户端注入异常要用 `fake.errors[api] = SessionExpiredError(...)`，塞进 payloads 会被当成响应体、
+> 测试假绿。
+>
+> 打包版复验（`dist\闲鱼AI工作台\闲鱼AI工作台.exe` = **10001391 字节 / 2026-10-12 08:34:30**，
+> `--port 18400` → `/api/health` 200 `frozen:true`）：
+> `probe_write_gate.py`（26 个写端点，确认腿换假账号）→ **`GATE FAILURES: 0 / 26`**；
+> `packaged_ui_smoke.py` → **`PACKAGED UI SMOKE 26/26 页通过`**；
+> `check_assets.py` → `GET /` 引用 `['index-B0lhDz8I.js','index-DKqV08Ps.css']`、remote/local SHA256
+> 两边相同（`073172fe4946` / `d1e8d5b13265`）、**`ASSETS_MATCH=True`**；
+> `scripts/ui_smoke.py --port 18311` → **26/26 页通过**。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**47 个测试文件、1440 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**48 个测试文件、1487 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -1784,11 +1860,12 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   从 `共 95 条` 变成 `共 56 条`（= 两个在售账号的 45 + 11），页面里再也搜不到 `3998190171`，
   只读探针（真 Edge）`has_deleted_account: false`、`page_errors: []`。
 - 真实 HTTP：只读 17 条 + 写路径 11 条（早期探针）；打包版接口面现在
-  `/openapi.json` = **136 条路径 / 148 个操作**（第 20 批 128/140），均结构化信封、无 500。
-- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 70 / `MASTER_TOOLS` 69 /
-  `TOOL_ROUTES` 71，其中 **21 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
+  `/openapi.json` = **139 条路径 / 152 个操作**（第 24 批 136/148，本批 +4 条退货地址写），
+  均结构化信封、无 500。
+- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 74 / `MASTER_TOOLS` 73 /
+  `TOOL_ROUTES` 75，其中 **25 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
   FastAPI 端点接受 → `RECON OK`。MCP 端到端冒烟（真起 `mcp_server/server.py` 子进程打打包版）
-  `tools/list` 返回 63 个工具（该数字早于本批新增的 4 个申诉工具）。
+  `tools/list` 返回 63 个工具（该数字早于本批新增的 4 个申诉工具与 4 个退货地址工具）。
 - **真实浏览器逐页冒烟 26/26 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
   临时数据目录，逐页断言未白屏、未掉回登录页、无 JS 报错，截图在 `logs/ui_smoke/`）。
   它抓到了后端全绿时仍然「UI 完全不可用」的登录死循环。
@@ -1796,9 +1873,10 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   packaged_ui_smoke.py`，复用 `scripts/ui_smoke.py::run_browser` 但不启后端、直接打
   `127.0.0.1:18400` 与**真实 `%APPDATA%` 数据目录**，截图 `logs/packaged_ui_smoke/`）。
   与上一条的区别：上一条跑的是源码 + 临时库，这一条跑的是**用户手上那个 exe**。
-- **打包版 confirm 闸门 22 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
-  （`confirmation_required` / `confirm_required`），`GATE FAILURES: 0 / 22`；带 `confirm:true`
-  后转 400 `invalid_fields`（证明字段校验排在凭据检查之前）。
+- **打包版 confirm 闸门 26 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
+  （`confirmation_required` / `confirm_required`），`GATE FAILURES: 0 / 26`；确认那一腿**故意换成不存在的
+  账号**（`SAFE_ACC`），闸门放行后本地查库直接 404 `not_found` / 400 `invalid_fields` —— 既证明闸门放行，
+  又保证**零平台请求**（2026-10-12 00:35 之前那版拿真账号打过，三条写请求真到了闲鱼，见第二十五批 161）。
 - **真实浏览器实时刷新 2/2 阶段通过**（`scripts/live_refresh_smoke.py`）：后端写账号
   备注 / 新增提示词后，页面在 0.21 秒内自己更新，且 `navigation` 计数不变。
 - **真后端 + 真 `XianyuClient` + `httpx.MockTransport` 逐条打商品接口**（不碰真平台）：
@@ -1909,10 +1987,21 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   （第二十二批）：四条 mtop 名与参数形状全部来自官方 bundle 静态提取，`itemIds` 的
   逗号串形态、`itemProcessResultList` 的真实字段名、`info.update` 在**真实 SKU 商品**上的
   行为（无 SKU 分支是扁平三字段、有 SKU 分支要 `itemSkuListStr`）都没被平台确认过。
-  本机两个账号都 `need_relogin`（`FAIL_SYS_SESSION_EXPIRED`，cookie 还在 486/492 字节），
-  重新扫码后第一次真机点击要重点看这三件事：①批量下架是不是真的一个请求就全下架了；
+  **账号现状（2026-10-12 读真实库）**：只剩一个账号 `2217970177348`（月狐兔_），
+  `login_state='active'`、cookie 在、`last_login_at='2026-10-11 23:03:37'`；
+  另一个账号 `3998190171`（卒奥aa）已被用户删除，其残留本地数据由 `purge_orphans` 清掉。
+  真机点击这三个时要重点看：①批量下架是不是真的一个请求就全下架了；
   ②批量删除后平台侧商品是否真的消失（旧实现只删本地）；③改价/改库存后商品**没有被
   重新上架**（旧实现整份回提会把已卖出商品重新上架，这是新接口要解决的正是这个问题）。
+- **退货地址的写接口对这个账号没有权限**（第二十五批，真机取证）：`…delivery.address.delete` /
+  `set.default` 在**已登录**状态下回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问`，
+  与只读 `list.query` 是同一个权限问题 —— 实现正确，账号没有这个权限。所以「平台接受了我们的
+  payload」这件事仍未验证；`areaId` 也没有码源（`division.all.get` 同样无权限）。
+- **「验证闸门」的探针一度是写请求的来源**（第二十五批 161，已修）：2026-10-12 00:35 那版
+  `probe_write_gate.py` 拿真账号 + `confirm:true` 打过去，三条写请求真的到了闲鱼
+  （`ship_dummy` → `ORDER_STATUS_ERROR`；`address.delete`/`set.default` → 无权限），
+  **平台全拒、零改动**，但流程本身是缺陷。现在确认腿换成不存在的账号（`SAFE_ACC`），
+  闸门放行后本地 404，零平台请求。以后写任何「验证写接口」的探针都必须遵守这条。
 - **推广 / 安全中心只做了「读」的四个视图，官方还有 6 块没做**（第十八批当时的边界）：
   充值页、账户明细流水、活动奖励、资质管理、新建/编辑擦亮计划、申诉入口。
   **第十九/二十批之后这条已经过时**：写接口（擦亮计划暂停/删除、申诉提交/催办、
@@ -1926,16 +2015,18 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 
 ## 五、下一步（按优先级）
 
-1. **先重新扫码一次**：真机账号 `2217970177348` 的 Cookie 在 `2026-10-07 04:47:16`
-   被平台判过期（`FAIL_SYS_SESSION_EXPIRED::Session过期`，日志与
-   `account_credentials.relogin_reason` 两边对得上），之后所有需要登录态的接口都会
-   如实回「需要重新扫码登录」。这不是程序误判 —— 重新扫一次就恢复。
+1. **登录态已经是好的**：真机账号 `2217970177348`（月狐兔_）在 `2026-10-11 23:03:37`
+   重新扫码成功，`login_state='active'`、cookie 在库、`refresh_profile` 拿到 `nickname='月狐兔_'`。
+   原先那条「Cookie 在 2026-10-07 被判过期、要先重新扫码」**已经过时**（另注：账号
+   `3998190171`（卒奥aa）已被用户删除）。仍然需要登录态的功能现在可以直接验。
 2. 用户在「AI 配置」页填一个真实 API Key 并设为默认 → 主管 AI 与商品 AI 才能真回话。
 3. 真机实测「写」的一半：在已登录的真账号上发布一件商品 / 改一次价 / 上架下架各一次
    （读的一半——拉商品、IM 入站挂载——已在真机验证）。发布失败时注意看新加的人话解释
    （`platform_errors.py`）。**优先先点第二十二批那三个（商品页的批量下架 / 批量删除 /
    行内改价改库存）**：它们是唯一「旧做法会改坏真实数据」的三个口子，而且一次请求就能
-   验完（不像发布要填一整个表单）。
+   验完（不像发布要填一整个表单）。**别拿退货地址当第一批试写**：这个账号对
+   `…delivery.address.*` 没有权限（真机回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`），
+   试了也只会得到「无权限」，验不出 payload 对不对。
 4. 重启 DSH 宿主让 MCP 插件 `xianyu` 生效，再用主管 AI 直接操作工作台。
 5. 风控冷却过后，真机点一次「同步历史会话」（会话页工具栏）：应看到
    `success=true` 且 `conversations_new > 0`，会话页出现真实买家会话 —— 这是第八批

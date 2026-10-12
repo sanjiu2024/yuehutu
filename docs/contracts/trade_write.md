@@ -25,7 +25,7 @@
    `platform_errors.explain`，**不会**把账号写成 `need_relogin`。只有平台真的回
    `SESSION_EXPIRED`（`common._is_session_expired` 按类名/文案认）才会标掉线。
 
-## 1. HTTP（8 个 POST + 1 个只读 GET，全部要求登录）
+## 1. HTTP（12 个 POST + 1 个只读 GET，全部要求登录）
 
 | 方法 | 路径 | body | 说明 |
 | --- | --- | --- | --- |
@@ -37,6 +37,10 @@
 | POST | `/api/trade/{account_id}/evaluations` | `{trade_ids, feedback, rate, image_urls, anonymous, confirm}` | 卖家评价（回评走同一个接口） |
 | POST | `/api/trade/{account_id}/complaints/{complain_id}/refuse` | `{proof_desc, proof_urls, confirm}` | 投诉拒绝（举证反驳） |
 | POST | `/api/trade/{account_id}/complaints/{complain_id}/proof` | `{proof_desc, proof_urls, kind, confirm}` | 投诉举证，`kind` 见 §3 |
+| POST | `/api/trade/{account_id}/addresses` | `{contact_name, mobile_phone, province_name, city_name, district_name, detail_address, area_id?, default_addr?, confirm}` | 退货地址新增（见 §8） |
+| POST | `/api/trade/{account_id}/addresses/{contact_id}/update` | 同上 | 退货地址编辑（见 §8） |
+| POST | `/api/trade/{account_id}/addresses/{contact_id}/delete` | `{confirm}` | 退货地址删除，**不可撤销**（见 §8） |
+| POST | `/api/trade/{account_id}/addresses/{contact_id}/default` | `{confirm}` | 设为默认退货地址（见 §8） |
 | **GET** | `/api/trade/{account_id}/refunds/{refund_id}/verify-token` | —（无 body，**无 `confirm`**） | 退款凭证（只读，见 §7） |
 
 - body 用 `Dict[str, Any] = Body(default={})` 收，字段校验交给服务层 → 统一信封；
@@ -159,11 +163,17 @@ data 形状同 §2.7；`kind` 不在上表 → `invalid_fields`，不发平台�
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\test_trade_write_api.py"
 ```
 
-44 个用例，覆盖：8 条路由的未确认闸门（且断言 0 次平台调用）、各接口 data 形状与版本、
+44 个用例（`backend/tests/test_trade_write_api.py`），覆盖：8 条路由的未确认闸门（且断言 0 次平台调用）、各接口 data 形状与版本、
 元→分换算、空 proof/negotiation 不传键、业务级失败、平台失败信封透出 + 登录态不变、
 缺字段/缺 Cookie/掉线/账号不存在、平台没返回的计数是 `None`；
 外加 §7 退款凭证的 11 条（形状、没有闸门、空串→`None`、无权限是 502 且不改登录态、
 无 Cookie 零平台请求、404/401、路由是 GET、只读接口不在写黑名单、解析器不编 token）。
+**§8 退货地址另有 39 条**在 `backend/tests/test_address_write_api.py`：17 条纯协议函数
+（四条 API 名逐字、写白名单与只读黑名单互斥、四种非法 `confirm` 全抛、可选键只在给了才出现、
+`is_success` 五态、`contact_id_of` 不造 ID）、4 条未确认闸门（零平台调用）、7 条字段校验
+（含「校验先于凭据检查」）、8 条 happy path（手机号去空格横线、`areaId` 只在给了才发、
+无回显 → `no_contact_id`）、7 条平台失败（无权限 502 且不改登录态、掉线 409 并回写、
+无 Cookie 零调用、404/401）、4 条路由 method 全 POST。
 **全部用假协议层（`install_fake_protocol`），不打真实闲鱼平台。**
 
 ## 7. 退款凭证（**只读**）`refund_verify_token`
@@ -203,13 +213,60 @@ GET /api/trade/{account_id}/refunds/{refund_id}/verify-token
   `GET /api/trade/{account_id}/refunds/{refund_id}/verify-token`。
 
 **顺带取证的邻居（**未实现**，别当成已做）**：偏移 **2838769** 的 `compensate.service.pay`
-（补偿服务费支付，`scene:'DEPOSIT_PC'`）**钱相关，明确不做**；退货地址确实有官方写接口
-（`...merchant.delivery.address.{add,update,delete,detail.query,set.default}`，偏移
-3143576~3144501）与买家改地址审批流（`mtop.idle.merchant.order.address.modify.{agree,refuse}`）
-—— 都还没做。
+（补偿服务费支付，`scene:'DEPOSIT_PC'`）**钱相关，明确不做**；买家改地址审批流
+（`mtop.idle.merchant.order.address.modify.{agree,refuse}`）与发货地设置
+（`...delivery.place.{detail.query,info.set}`）—— 都还没做。退货地址的写接口**已经做了**，见 §8。
 
 **离线取证方式**：`C:\Users\Administrator\.dsh-tmp\verify_token_probe.py` 用 Playwright 把
 退款列表与凭证接口换成桩，断言「给了 token → 框里就是它 + 链接可见」「回空串 → 不填框 +
 显示提示」，两种场景都断言 `non_get=[]`（整轮一个非 GET 的 `/api/` 请求都没发）。
 结果：`VERIFY TOKEN ALL OK (2/2)`，截图 `logs/verify_token/`。
+
+## 8. 退货地址（**写**）`address_add` / `address_update` / `address_delete` / `address_set_default`
+
+```
+POST /api/trade/{account_id}/addresses                       -> {action, contact_id, api, warnings}
+POST /api/trade/{account_id}/addresses/{contact_id}/update
+POST /api/trade/{account_id}/addresses/{contact_id}/delete
+POST /api/trade/{account_id}/addresses/{contact_id}/default
+```
+
+**四条 mtop（bundle 偏移，声明原文照抄）**：
+
+| action | api | data |
+| --- | --- | --- |
+| `add`（偏移 3143703） | `mtop.alibaba.idle.seller.platform.merchant.delivery.address.add` | `{contactName, mobilePhone, provinceName, cityName, districtName, detailAddress, areaId?, defaultAddr?}` |
+| `update`（3143951） | `…address.update` | 同上 + `contactId` |
+| `delete`（3144220） | `…address.delete` | `{contactId}` |
+| `set_default`（3144501） | `…address.set.default` | `{contactId}` |
+
+官方声明里带 `callbackOptions:{successText:'退货地址新增成功', errorText:'退货地址新增异常'}`，
+`set.default` **只有 `errorText`**（成功靠重拉列表确认）—— 也就是说这四个接口官方**根本没读响应体**。
+
+**口径**：
+
+- **三步顺序**：确认 → 字段校验 → 建客户端（与 `services/item_templates.py` 同口径）。
+  理由：确认排最前，否则用户会以为「填对了就能发」；字段校验纯本地免费，掉线时也该先说
+  「收件人不能为空」而不是「去重新登录」。钉它的用例：
+  `AddressFieldValidationTest::test_validation_runs_before_credential_check`。
+- **`confirm` 只认 `True`/`'true'`/`1`**（服务层 `_truthy`）；HTTP 层把 body 的 `confirm`
+  **原样**交服务层，**不做 `bool(...)`** —— `bool('false')` 是 True，会把用户明确的拒绝当同意。
+- **成功判据**：客户端没报错 **且** 平台 `code == 'success'`；平台没给 `code` 时以客户端结论为准
+  （这四个接口不读响应体，`set.default` 成功可能是空对象）。
+- 拿不到 `contact_id` → `null` + warning `no_contact_id`（**不造**假 ID，让用户重拉列表）。
+- **诚实偏离（区域码）**：官方表单还有 `division`（级联 `{label,value}` 数组）与隐藏 `areaId`
+  （区级区域码）。我们没有码源（`mtop.taobao.idle.division.all.get` 对本机账号
+  `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`）⇒ **不伪造区域码、也不发形状不对的 `division`**：
+  只发省 / 市 / 区三个**名字**，`area_id` 留空就**根本不发这个键**。平台若因此拒绝，
+  错误原文原样显示，不会把失败说成成功。
+- **只读侧字段**：`normalize_address` 认**两套键**（bundle 里只读页与写页读法不同）——
+  只读页 `{addressId,name,phoneNum,address,defaultAddr}`，写页编辑弹窗
+  `{contactId,contactName,mobilePhone,provinceName,cityName,districtName,detailAddress}`；
+  后一套**平台给了才出现**（空值不出现），所以 UI 能预填就预填、不能就留空让用户重填，
+  绝不自己拼地址串。钉它的用例：`backend/tests/test_trade_api.py::AddressNormalizeTest`（8 条）。
+- **UI**：`frontend/src/pages/ReturnAddresses.tsx` 四个入口（新增 / 编辑 / 设为默认 / 删除），
+  唯一写出口 `postAddress()` 里 `confirm: true` 是字面量，调用方无法覆盖；提交前
+  `ConfirmDialog danger` 逐条列出最终 body。
+- **AI 侧**：`trade_address_add` / `trade_address_update` / `trade_address_delete` /
+  `trade_address_set_default`（四条都要求 `confirm`），MCP 路由与上表同路径、method 全 POST。
 
