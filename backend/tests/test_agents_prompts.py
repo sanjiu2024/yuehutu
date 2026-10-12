@@ -16,7 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.app.agents import prompts, roles  # noqa: E402
+from backend.app.agents import defaults, prompts, roles  # noqa: E402
 from backend.app.core import config, db, security  # noqa: E402
 
 
@@ -442,6 +442,52 @@ class AgentsPromptsApiTest(unittest.TestCase):
         # 旧实现（去重键不含 name）下第二条会把第一条顶掉，只剩余 '话术B' → 这里仍会挂。
         self.assertIn('话术A', names)
         self.assertIn('话术B', names)
+
+
+class MasterWriteDisciplineTest(unittest.TestCase):
+    """主管 AI 的默认提示词必须把「写操作的纪律」写清楚。
+
+    为什么值得钉：主管 AI 是唯一能调用写工具的角色的入口，而写工具只要 `confirm=true`
+    就会真的改平台数据。纪律只靠工具描述里那一句 `_WRITE_HINT` 不够 —— 模型在同一条
+    系统提示词里读到「什么时候才该传 true」才会稳定。这段文字被删掉/改写走样时，
+    这里的断言要挂，而不是等真机上被改坏一件商品才发现。
+
+    注意：用户可以在「AI 配置」里覆盖提示词（`ai_roles.system_prompt` 非空时以它为准），
+    所以这里断言的是**兜底默认值**，不是用户当前的生效文本。
+    """
+
+    def setUp(self):
+        self.prompt = defaults.DEFAULT_ROLE_PROMPTS['master']
+
+    def test_mentions_the_confirm_flag_and_its_meaning(self):
+        self.assertIn('confirm=true', self.prompt)
+        # 「确认要动平台数据」这层含义要写出来，否则模型会把它当成「跳过一步」
+        self.assertIn('确认', self.prompt)
+
+    def test_distinguishes_explicit_request_from_a_question(self):
+        # 明确要求 → 可以动；只是在问「能不能/有哪些」→ 先问清楚
+        self.assertIn('明确要求', self.prompt)
+        for word in ('能不能', '有哪些'):
+            self.assertIn(word, self.prompt)
+
+    def test_calls_out_irreversible_actions(self):
+        self.assertIn('不可撤销', self.prompt)
+        for word in ('删除', '发货', '退款', '申诉'):
+            self.assertIn(word, self.prompt)
+
+    def test_forbids_drive_by_edits_and_asks_for_honest_reporting(self):
+        # 与前端「只改价不会顺手改库存」同一口径
+        self.assertIn('顺手', self.prompt)
+        self.assertIn('平台原话', self.prompt)
+
+    def test_still_keeps_the_original_anti_hallucination_rules(self):
+        self.assertIn('不要编造', self.prompt)
+        self.assertIn('查不到就说查不到', self.prompt)
+
+    def test_other_roles_do_not_talk_about_tool_confirmation(self):
+        """只有主管 AI 有工具；其它角色不该出现 confirm 这种实现细节。"""
+        for role in ('item', 'cs', 'bargain', 'cross', 'vision'):
+            self.assertNotIn('confirm', defaults.DEFAULT_ROLE_PROMPTS[role])
 
 
 if __name__ == '__main__':
