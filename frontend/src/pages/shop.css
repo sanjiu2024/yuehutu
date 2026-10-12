@@ -196,3 +196,57 @@
 .sh-table tr:last-child td {
   border-bottom: none;
 }
+
+/* ---- 客服分流：写操作 ---- */
+
+.cs-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.cs-form textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.cs-actions {
+  white-space: nowrap;
+}
+
+.cs-writes {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cs-problems {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--warn);
+}
+
+.cs-section {
+  margin-top: 12px;
+}
+
+/* 写操作结果里的长串（接口名、JSON、平台报错）要能换行，不然会把卡片撑破。 */
+.cs-break {
+  word-break: break-all;
+  white-space: normal;
+}
+
+.cs-facts {
+  margin: 8px 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--text-dim);
+  word-break: break-all;
+}
+
+.cs-facts code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
