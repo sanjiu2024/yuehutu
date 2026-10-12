@@ -840,6 +840,24 @@ POST /api/security-center/{account_id}/appeal/urge       {punish_id,confirm}
        -- AI 侧 4 个工具同名：`security_appeal_form`（只读、无 `confirm`）+
          `security_appeal_submit` / `security_appeal_submit_cro` / `security_appeal_urge`（都要 `confirm`）。
 
+【读 + 写 · 草稿箱】`docs/contracts/drafts.md`   —— 官方 seller-item 的「草稿箱」tab
+GET  /api/drafts/{account_id}?page=&size=            -- 分页只允许 10 / 20 / 50
+GET  /api/drafts/{account_id}/{draft_id}             -- fields 是平台原样 payload，键名不翻译
+POST /api/drafts/{account_id}/{draft_id}/delete      {confirm}
+POST /api/drafts/{account_id}/batch-delete           {draft_ids,confirm}
+       -- `draft_ids` **两种入参都收**：UI 传数组、AI 传逗号串；到平台一律是逗号串
+       --   （bundle @4098620 原文 `q0({draftIds: T.join(",")})`）。
+       -- **空草稿箱算成功**（`items: []` / `total: 0` / 无 warning）—— 判据不是「业务体为真」，
+       --   而是「客户端没报错 + 平台 code=='success'」；官方对这两个删除接口根本没读响应体。
+       -- 平台只给 `sucCount`/`failCount`、不说是哪几条 ⇒ `failed[]` 恒为空 + warning
+       --   `no_per_item_report`；两个计数都没有 ⇒ `ok: null` + warning `no_counts`（不编 0）。
+       -- `draft.update` **故意不实现**（payload 是整份发布表单的 `inputJson`，形状无证据），
+       --   登记在 `xianyu/draft.py::NOT_IMPLEMENTED`，测试断言它既不在 READ_APIS 也不在 WRITE_API_SET。
+       -- 单开 `/api/drafts` 的原因与 `/api/item-templates` 相同：`/api/items/{account_id}/{item_id}`
+       --   会把 `drafts` 当 `item_id` 吃掉。
+       -- AI 侧 4 个工具：`drafts_list` / `drafts_get`（只读）+ `drafts_delete` /
+       --   `drafts_batch_delete`（要 `confirm`）。
+
 【写接口的三条硬口径（所有 *_write 一律遵守）】
 1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /
    `confirm_required`），**一次平台请求都不发**；
@@ -847,13 +865,13 @@ POST /api/security-center/{account_id}/appeal/urge       {punish_id,confirm}
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 77 条 / `MASTER_TOOLS` 76 条（去掉 `master_chat` 防递归），
-其中 **27 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 78 条。五方对账（specs / master / routes / service targets / handlers）
+【AI 侧】`TOOL_SPECS` 81 条 / `MASTER_TOOLS` 80 条（去掉 `master_chat` 防递归），
+其中 **29 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
+`mcp_server/client.py::TOOL_ROUTES` 82 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=77 master=76 routes=78 targets=57 handlers=77 / write_tools=27 / route_checked=78 / RECON OK
+-> specs=81 master=80 routes=82 targets=61 handlers=81 / write_tools=29 / route_checked=82 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`
