@@ -50,10 +50,15 @@ READ_APIS = (
     CS_AGENT_LIST_API,
 )
 
-#: 同一批 bundle 里的写接口 —— **故意不实现**，列在这里是为了让「只读」可被断言。
+#: 同一批 bundle 里的写接口 —— 列在这里是为了让「**只读路径**没有调写接口」可被断言。
 #: 来源：`logs/seller_discover/shop_bundles_main.json`（子账号 bundle 的 main.js）。
-#: 图片/OSS/验证/短信/退款一并列全：只要有人把这些名字写进调用清单，
+#: 图片/OSS/验证/短信/退款一并列全：只要有人把这些名字写进**只读**调用清单，
 #: `test_no_write_api_is_ever_called` 就会红。
+#:
+#: 注意：最后两条（客服分流的 `routing.rule.operate` / `customer.group.operate`）**已经实现**
+#: 了 —— 写协议在 `backend/app/xianyu/shop_write.py`、服务层在 `services/shop.py` 的
+#: 「写操作」段、HTTP 在 `api/shop.py` 的三条 POST（都要 `confirm=true`）。
+#: 它们**故意继续留在**这个黑名单里：只读路径依然一条都不许碰它们。
 WRITE_APIS = (
     'mtop.alibaba.idle.seller.platform.common.sub.account.register',
     'mtop.alibaba.idle.seller.platform.sub.account.delete',

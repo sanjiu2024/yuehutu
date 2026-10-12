@@ -20,11 +20,13 @@
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..core import db
 from ..xianyu import shop as shop_mod
+from ..xianyu import shop_write as shop_write_mod
 from . import common
 
 PAGE_SIZE_MAX = 100
@@ -313,6 +315,221 @@ def cs_routing(account_id: str, page: Any = '', size: Any = '') -> Dict[str, Any
         'groups_total': _number_or_none(group_inner.get('total')),
         'agents': agents,
         'warnings': warnings,
+        'fetched_at': _stamp(),
+        'source': 'platform',
+    }
+
+
+# --------------------------------------------------------------------------- 写操作
+#
+# 与只读段分开：只读走 `_call(client, 协议函数名, *args)`（协议函数自己收 client），
+# 写走 `common.call_method(client, ('mtop',), api, data, v='1.0')`（协议层只给
+# `(api, data)` 二元组）。
+#
+# **三步顺序固定：确认 → 字段校验 → 建客户端**（与 `items` / `item_templates` /
+# `trade_write` / `drafts` 同口径）：
+#
+# 1. 确认排在最前 —— 否则用户填对了字段也会被误导成「填对就能发」；
+# 2. 字段校验在建客户端之前 —— 它纯本地、免费，掉线时也该先说「名称没填」，
+#    而不是「去重新登录」。
+
+#: 未确认时的错误码（`common.FAIL_STATUS` 里没有它 ⇒ 默认 400）。
+CONFIRM_CODE = 'confirmation_required'
+
+WARN_NO_GROUP_ID = '平台没有回显新分组的 id，请重新拉一次分组列表确认'
+WARN_RULE_NOT_ECHOED = ('平台没有回显保存后的分流规则（官方前端也是重拉列表确认）——'
+                        '这次提交已经发出，配置是否生效请点「刷新」看平台当前值')
+
+
+def _truthy(value: Any) -> bool:
+    """只有 `True` / `'true'` / `1` 算点头（与 `items` / `item_templates` /
+    `trade_write` / `drafts` / `mcp_server.client` 同口径）。
+
+    `bool('false')` 是 `True` —— 对「会真的改动卖家客服分流配置」的写操作，
+    把用户明确的拒绝当成同意是危险的。
+    """
+    if value is True:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() == 'true'
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value == 1
+    return False
+
+
+def _confirm_gate(action: str, confirm: Any) -> Optional[Dict[str, Any]]:
+    if _truthy(confirm):
+        return None
+    return common.fail(
+        f'{action} 是写操作，必须显式确认（confirm=true）后才会提交到闲鱼', CONFIRM_CODE)
+
+
+def _build_write(action: str, kwargs: Dict[str, Any]
+                 ) -> Tuple[Optional[Tuple[str, Dict[str, Any]]], Optional[Dict[str, Any]]]:
+    """构造写请求；协议层的 `ValueError`（枚举不合法 / 必填缺失）翻成 400 `invalid_fields`。"""
+    try:
+        return shop_write_mod.request_of(action, confirm=True, **kwargs), None
+    except shop_write_mod.UnknownApi as exc:
+        return None, common.fail(f'未知的写动作：{exc}', 'invalid_fields')
+    except ValueError as exc:
+        return None, common.fail(_text(exc), 'invalid_fields')
+
+
+def _send_write(client: Any, api: str, data: Dict[str, Any], action: str,
+                account_id: str) -> Tuple[Optional[Any], Optional[Dict[str, Any]]]:
+    """发一个写请求并判成败；失败逐条落 operation_logs。"""
+    status, value = common.call_method(
+        client, ('mtop',), api, data, v=shop_write_mod.DEFAULT_VERSION)
+    failure = common.call_failed(status, value)
+    if failure:
+        common.log_operation(account_id, action, '', False, failure.get('message', ''))
+        return None, failure
+    problem = shop_write_mod.envelope_error(value)
+    if problem:
+        common.log_operation(account_id, action, '', False, problem)
+        return None, common.fail(
+            f'平台接口失败: {problem}', 'protocol_error',
+            platform_errors={'api': api, 'message': problem})
+    return value, None
+
+
+def save_routing_rule(account_id: str, distribution_method: Any = '', repeat_customer: Any = '',
+                      offline_message: Any = '', specified_account_id: Any = None,
+                      specified_account_nick: Any = None, service_time: Any = None,
+                      confirm: Any = False) -> Dict[str, Any]:
+    """保存客服分流规则（`mtop.taobao.idlemessage.customer.routing.rule.operate`）。
+
+    会**真的**改动这个账号的客服分流配置。成功判据只看「客户端没报错 且 平台没报错码」，
+    平台没回显规则时 `rule` 是 `None` + 一条 warning —— 不拿我们发出去的内容冒充平台回执。
+    """
+    failure = _confirm_gate('保存客服分流规则', confirm)
+    if failure:
+        return failure
+    built, failure = _build_write('routing_rule', {
+        'distribution_method': distribution_method,
+        'repeat_customer': repeat_customer,
+        'offline_message': offline_message,
+        'specified_account_id': specified_account_id,
+        'specified_account_nick': specified_account_nick,
+        'service_time': service_time,
+    })
+    if failure:
+        return failure
+    api, data = built
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+
+    value, failure = _send_write(client, api, data, 'cs_routing_rule_save', account_id)
+    if failure:
+        return failure
+
+    try:
+        submitted = json.loads(data.get('routingRules') or '{}')
+    except (TypeError, ValueError):  # pragma: no cover - 我们自己拼的 JSON，不该坏
+        submitted = None
+    echoed = shop_write_mod.saved_rule_of(value)
+    warnings: List[str] = [] if echoed is not None else [WARN_RULE_NOT_ECHOED]
+    common.log_operation(account_id, 'cs_routing_rule_save', '', True, submitted)
+    common.publish('shop.changed', {'account_id': account_id, 'action': 'routing_rule'})
+    return {
+        'account_id': account_id,
+        'action': 'routing_rule',
+        'api': api,
+        'saved': True,
+        'submitted': submitted,
+        'rule': echoed,
+        'warnings': warnings,
+        'fetched_at': _stamp(),
+        'source': 'platform',
+    }
+
+
+def save_cs_group(account_id: str, group_name: Any = '', mode: Any = '',
+                  operate_type: Any = 'create', group_id: Any = None,
+                  specified_type: Any = None, specified_type_name: Any = None,
+                  type_data: Any = None, customer_uids: Any = None,
+                  confirm: Any = False) -> Dict[str, Any]:
+    """新建 / 修改客服分组（`mtop.taobao.idlemessage.customer.group.operate`）。
+
+    `operate_type='update'` 必须给 `group_id`；新增时平台若没回显 id，`group_id` 是 `None`
+    + 一条 warning（官方前端也是重拉分组列表确认）。
+    """
+    failure = _confirm_gate('保存客服分组', confirm)
+    if failure:
+        return failure
+    built, failure = _build_write('group_save', {
+        'group_name': group_name,
+        'mode': mode,
+        'operate_type': operate_type,
+        'group_id': group_id,
+        'specified_type': specified_type,
+        'specified_type_name': specified_type_name,
+        'type_data': type_data,
+        'customer_uids': customer_uids,
+    })
+    if failure:
+        return failure
+    api, data = built
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+
+    value, failure = _send_write(client, api, data, 'cs_group_save', account_id)
+    if failure:
+        return failure
+
+    kind = _text(data.get('operateType'))
+    echoed = shop_write_mod.group_id_of(value)
+    resolved = echoed or (_text(group_id) or None)
+    warnings: List[str] = []
+    if kind == 'create' and not echoed:
+        warnings.append(WARN_NO_GROUP_ID)
+    detail = {'group_name': _text(data.get('groupName')), 'mode': mode, 'operate_type': kind}
+    common.log_operation(account_id, 'cs_group_save', resolved or '', True, detail)
+    common.publish('shop.changed', {'account_id': account_id, 'action': 'group_save'})
+    return {
+        'account_id': account_id,
+        'action': 'group_save',
+        'api': api,
+        'operate_type': kind,
+        'group_id': resolved,
+        'saved': True,
+        'submitted': detail,
+        'warnings': warnings,
+        'fetched_at': _stamp(),
+        'source': 'platform',
+    }
+
+
+def delete_cs_group(account_id: str, group_id: Any = '', confirm: Any = False) -> Dict[str, Any]:
+    """删除客服分组（同 `GROUP_API`，`operateType='delete'`）。**不可撤销。**"""
+    failure = _confirm_gate('删除客服分组', confirm)
+    if failure:
+        return failure
+    built, failure = _build_write('group_delete', {'group_id': group_id})
+    if failure:
+        return failure
+    api, data = built
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+
+    value, failure = _send_write(client, api, data, 'cs_group_delete', account_id)
+    if failure:
+        return failure
+
+    key = _text(data.get('groupId'))
+    common.log_operation(account_id, 'cs_group_delete', key, True, {'group_id': key})
+    common.publish('shop.changed', {'account_id': account_id, 'action': 'group_delete'})
+    return {
+        'account_id': account_id,
+        'action': 'group_delete',
+        'api': api,
+        'operate_type': 'delete',
+        'group_id': key,
+        'deleted': True,
+        'warnings': [],
         'fetched_at': _stamp(),
         'source': 'platform',
     }

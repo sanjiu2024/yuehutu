@@ -1,4 +1,4 @@
-"""小铺组（子账号管理 / 客服分流）只读接口的服务层 + HTTP 契约测试。
+"""小铺组（子账号管理 / 客服分流）接口的服务层 + HTTP 契约测试。
 
 **为什么单开一组**：这两个页面最容易犯三个错 ——
 
@@ -6,7 +6,9 @@
    回的是 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问`（账号对这个业务没权限），
    `customers.info.get` 回的是 `data: {}`（**连 `customers` 键都没有**）——
    都不等于「有 0 个」；
-2. 悄悄调**写接口**（注册/删除子账号、改分流规则、改客服分组），本项目绝对禁止；
+2. **只读路径**悄悄调写接口（注册/删除子账号、改分流规则、改客服分组）——
+   客服分流的三个写能力已单独实现，但只读路径一条都不许碰（`WRITE_APIS` 黑名单仍在
+   `backend/app/xianyu/shop.py`，写侧见 `test_shop_write_api.py`）；
 3. 拆错平台的**双层信封**：外层 `success` 为真、内层 `data.code` 却是失败；
    也有像 `customer.group.get` 那样**根本没有**业务信封、整段 `data` 就是载荷。
 
@@ -466,20 +468,33 @@ class ShopApiTest(unittest.TestCase):
 
     # -- 只读 ------------------------------------------------------------
 
-    def test_shop_routes_are_read_only(self):
-        paths = set()
-        methods = set()
+    def test_shop_read_routes_are_get_and_write_routes_are_post(self):
+        """只读两条是 GET、写三条是 POST，且方法集合里没有别的动词。
+
+        2026-10-13 之前这里是「本模块不提供任何写路由」—— 客服分流的三个写能力落地后
+        这句话不再成立，改成把两侧的路径与方法**逐条钉住**：既挡「悄悄加了个写路由」，
+        也挡「把只读路由改成 POST」。
+        """
+        by_method: Dict[str, set] = {}
         for route in shop_api.router.routes:
             path = getattr(route, 'path', '')
-            if path:
-                paths.add(path)
-                methods |= set(getattr(route, 'methods', set()) or set())
-        self.assertEqual(methods, {'GET'}, f'小铺接口出现了非 GET 方法: {methods}')
-        self.assertEqual(paths, {f'{BASE}/{{account_id}}/sub-accounts',
-                                 f'{BASE}/{{account_id}}/cs-routing'})
+            if not path:
+                continue
+            for method in (getattr(route, 'methods', set()) or set()):
+                by_method.setdefault(method, set()).add(path)
+        self.assertEqual(set(by_method), {'GET', 'POST'}, f'出现了预期外的方法: {set(by_method)}')
+        self.assertEqual(by_method['GET'], {f'{BASE}/{{account_id}}/sub-accounts',
+                                            f'{BASE}/{{account_id}}/cs-routing'})
+        self.assertEqual(by_method['POST'], {f'{BASE}/{{account_id}}/cs-routing/rule',
+                                             f'{BASE}/{{account_id}}/cs-groups',
+                                             f'{BASE}/{{account_id}}/cs-groups/delete'})
 
     def test_no_write_api_is_ever_called(self):
-        """两个页面跑一遍，所有 mtop 调用都必须落在只读清单里。"""
+        """两个**只读**页面跑一遍，所有 mtop 调用都必须落在只读清单里。
+
+        （写接口的调用在 `test_shop_write_api.py` 里单独验，那边断言的是
+        「未确认时零调用」。）
+        """
         seed_account()
         self.ok_data(f'{BASE}/{ACC}/sub-accounts')
         self.ok_data(f'{BASE}/{ACC}/cs-routing')
