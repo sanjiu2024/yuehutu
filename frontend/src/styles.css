@@ -22,7 +22,11 @@
   --border-soft: #1e2a44;
   --text: #e6ecf7;
   --text-dim: #9aa9c4;
-  --text-mute: #6b7a99;
+  /* 次要文字（标签、时间戳、提示语）。原来 #6b7a99 在 --panel 上只有 3.96:1、
+     在 --panel-2 上 3.4:1 —— 小字号（11~12px）下看着发灰难认。
+     提到 #828fa8：panel 5.25:1 / panel-2 4.53:1 / 选中行那种浅底 4.04:1，
+     与 --text-dim 的 7.2:1 仍保持层级（实测脚本 logs/contrast_audit）。 */
+  --text-mute: #828fa8;
   --accent: #3b82f6;
   --accent-hover: #2f6fdd;
   --ok: #34d399;
@@ -123,7 +127,9 @@ html[data-theme='light'] {
   --border-soft: #e6ebf4;
   --text: #16203a;
   --text-dim: #4a5878;
-  --text-mute: #78849d;
+  /* 浅色下同理：原 #78849d 在白底只有 3.76:1。提到 #667290 → 白底 4.80:1、
+     --panel-2 那种浅灰底 4.51:1，与 --text-dim 的 7.1:1 仍分层。 */
+  --text-mute: #667290;
   --accent: #2563eb;
   --accent-hover: #1d4ed8;
   --ok: #047857;
@@ -163,6 +169,29 @@ html[data-theme='light'] {
   --skeleton-2: rgba(24, 39, 75, 0.13);
   --focus: 0 0 0 3px rgba(37, 99, 235, 0.3);
   --focus-color: #2563eb;
+}
+
+/* 深色主题下几处对比度补正（浅色不需要：那边 --accent 本身就是 #2563eb）。
+   实测方式：`logs/contrast_audit` —— 26 页 × 两套主题，把低于 4.0:1 的文字列出来。
+
+   深色 `--accent`（#3b82f6）当**填充**时白字只有 3.68:1、当**文字**放在 accent 淡底
+   chip 上只有 3.65:1 —— 一个是填充太亮、一个是文字太暗，一个变量救不了两头，
+   所以：填充处用更深的蓝（#2563eb，白字 5.17:1），蓝色文字处用更亮的蓝（--ask，
+   #60a5fa，在淡蓝 chip 上 5.27:1）。两处都只覆盖深色，浅色维持原样。 */
+/* 禁用态也算上：`.btn.primary:disabled` 只是压暗（opacity），底色仍是 --accent，
+   白字照样只有 3.68:1。 */
+html[data-theme='dark'] .btn.primary {
+  background: #2563eb;
+}
+html[data-theme='dark'] .btn.primary:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+html[data-theme='dark'] .ch-seg-btn.active {
+  background: #2563eb;
+}
+html[data-theme='dark'] .ac-inline-link,
+html[data-theme='dark'] .pv-default-chip {
+  color: var(--ask);
 }
 
 
