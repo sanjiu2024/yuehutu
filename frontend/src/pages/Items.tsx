@@ -678,6 +678,7 @@ export function ItemsPage() {
             setSelected(new Set())
           }}
           style={{ width: 180 }}
+          aria-label="账号筛选"
           title="商品按账号隔离：批量操作一次只能作用在一个账号上"
         >
           <option value="">全部账号</option>
@@ -691,6 +692,7 @@ export function ItemsPage() {
           value={status}
           onChange={(e) => setStatus(e.target.value)}
           style={{ width: 210 }}
+          aria-label="状态筛选"
           title="售罄（库存 0）和已卖出的商品都归在「已下架」里：一件卖完的商品挂在「在售」里既卖不出也点不动"
         >
           <option value="">全部状态{counts ? `（${counts.all}）` : ''}</option>
@@ -834,7 +836,13 @@ export function ItemsPage() {
               <thead>
                 <tr>
                   <th style={{ width: 34 }}>
-                    <input type="checkbox" checked={allChecked} onChange={toggleAll} title="全选当前列表" />
+                    <input
+                      type="checkbox"
+                      checked={allChecked}
+                      onChange={toggleAll}
+                      aria-label="全选当前列表"
+                      title="全选当前列表"
+                    />
                   </th>
                   <SortableTh
                     label="商品"
@@ -916,7 +924,12 @@ export function ItemsPage() {
                   return (
                     <tr key={rowKey} className={`it-row${checked ? ' selected' : ''}`}>
                       <td>
-                        <input type="checkbox" checked={checked} onChange={() => toggleOne(item.item_id)} />
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleOne(item.item_id)}
+                          aria-label={`选择商品 ${item.item_id}`}
+                        />
                       </td>
                       <td className="it-cell-item">
                         <div className="it-item">

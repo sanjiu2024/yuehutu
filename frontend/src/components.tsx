@@ -5,8 +5,10 @@
  */
 
 import {
+  cloneElement,
   Component,
   createContext,
+  isValidElement,
   useCallback,
   useContext,
   useEffect,
@@ -16,6 +18,7 @@ import {
   useState,
   type CSSProperties,
   type ErrorInfo,
+  type ReactElement,
   type ReactNode,
 } from 'react'
 import {
@@ -474,10 +477,17 @@ export function Field({
   tip?: ReactNode
   children: ReactNode
 }) {
+  // 标签与控件关联：`<label>` 原来是**兄弟节点**，点标签不会聚焦输入框，
+  // 读屏也只会念「组合框」而不说这个框是干什么的（`<select>` 没有 placeholder
+  // 可退，问题最明显）。这里只在 children 是**单个**还带 `id` 的元素时补上
+  // `id`/`htmlFor`，其余形状（多个元素、已是别的包裹层）行为不变。
+  const id = useId()
+  const single = isValidElement(children) ? (children as ReactElement<{ id?: string }>) : null
+  const linked = single && !single.props.id ? cloneElement(single, { id }) : null
   return (
     <div className="field">
-      <label>{label}</label>
-      {children}
+      <label htmlFor={linked ? id : undefined}>{label}</label>
+      {linked ?? children}
       {tip && <span className="tip">{tip}</span>}
     </div>
   )

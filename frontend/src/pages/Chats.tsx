@@ -437,7 +437,7 @@ export function ChatsPage() {
   return (
     <div className="ch-page">
       <div className="ch-toolbar">
-        <select className="ch-select" value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+        <select className="ch-select" aria-label="账号筛选" value={accountId} onChange={(e) => setAccountId(e.target.value)}>
           <option value="">全部账号</option>
           {(accounts.data ?? []).map((account) => (
             <option key={account.id} value={account.id}>
@@ -445,7 +445,7 @@ export function ChatsPage() {
             </option>
           ))}
         </select>
-        <select className="ch-select" value={modeFilter} onChange={(e) => setModeFilter(e.target.value)}>
+        <select className="ch-select" aria-label="接待模式筛选" value={modeFilter} onChange={(e) => setModeFilter(e.target.value)}>
           <option value="">全部模式</option>
           {MODES.map((mode) => (
             <option key={mode.value} value={mode.value}>
