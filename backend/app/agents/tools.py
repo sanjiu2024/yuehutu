@@ -200,6 +200,81 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---------------- 草稿箱（草稿是还没发布的商品） ----------------
+    # 前两条只读；后两条会真的从闲鱼草稿箱里删掉草稿，required 必含 confirm。
+    {
+        'type': 'function',
+        'function': {
+            'name': 'drafts_list',
+            'description': '列出一个账号的闲鱼草稿箱（还没发布的商品草稿）。'
+                           '卖家问「草稿箱里有什么 / 我攒了哪些没发的」时用。这是只读工具，不需要 confirm。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'page': {'type': 'integer', 'description': '第几页，默认 1'},
+                    'size': {'type': 'integer', 'description': '每页几条，默认 20'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'drafts_get',
+            'description': '看某一条闲鱼草稿的明细（标题、价格、描述、图片等）。'
+                           '先用 drafts_list 拿 draft_id。这是只读工具，不需要 confirm。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'draft_id': {'type': 'string', 'description': '草稿 id（从 drafts_list 拿）'},
+                },
+                'required': ['account_id', 'draft_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'drafts_delete',
+            'description': '删掉闲鱼草稿箱里的一条草稿（**会真的删除闲鱼上的草稿，不可撤销**，'
+                           '删了就找不回来，想再要只能重新写一遍）。卖家明确说「把那条草稿删了」时才用。'
+                           + _WRITE_HINT + 'account_id 与 draft_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'draft_id': {'type': 'string', 'description': '草稿 id（从 drafts_list 拿）'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'draft_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'drafts_batch_delete',
+            'description': '批量删掉闲鱼草稿箱里的多条草稿（**会真的删除闲鱼上的草稿，不可撤销**，'
+                           '删了就找不回来，想再要只能重新写一遍）。卖家明确说「把这几条草稿都删了」时才用。'
+                           + _WRITE_HINT + 'account_id 与 draft_ids 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'draft_ids': {'type': 'string', 'description': '多个草稿 ID 用逗号分隔'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'draft_ids', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 聊天 ----------------
     {
         'type': 'function',
@@ -1809,6 +1884,11 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'items_batch_offline': ['items', 'batch_offline'],
     'items_batch_delete': ['items', 'batch_delete'],
     'items_quick_edit': ['items', 'quick_edit'],
+    # ---- 草稿箱（2 读 + 2 写；写的那两条会真的删掉平台上的草稿）----
+    'drafts_list': ['drafts', 'list_drafts'],
+    'drafts_get': ['drafts', 'draft_detail'],
+    'drafts_delete': ['drafts', 'delete_draft'],
+    'drafts_batch_delete': ['drafts', 'batch_delete_drafts'],
     # ---- 改收货地址审批（1 读 + 2 写）----
     'trade_order_address_request': ['trade_write', 'order_address_info'],
     'trade_order_address_agree': ['trade_write', 'order_address_agree'],
@@ -1993,6 +2073,11 @@ _HANDLERS = {
     'items_batch_offline': lambda a: _dispatch_service('items_batch_offline', a),
     'items_batch_delete': lambda a: _dispatch_service('items_batch_delete', a),
     'items_quick_edit': lambda a: _dispatch_service('items_quick_edit', a),
+    # ---- 草稿箱 ----
+    'drafts_list': lambda a: _dispatch_service('drafts_list', a),
+    'drafts_get': lambda a: _dispatch_service('drafts_get', a),
+    'drafts_delete': lambda a: _dispatch_service('drafts_delete', a),
+    'drafts_batch_delete': lambda a: _dispatch_service('drafts_batch_delete', a),
     # ---- 改收货地址审批（读那条也走 services，工具层同样不做 confirm 判定）----
     'trade_order_address_request': lambda a: _dispatch_service('trade_order_address_request', a),
     'trade_order_address_agree': lambda a: _dispatch_service('trade_order_address_agree', a),

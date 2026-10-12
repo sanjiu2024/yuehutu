@@ -128,7 +128,10 @@ WRITE_PREFIX = ('trade_write_', 'trade_address_', 'promotion_write_', 'qualifica
                 # 改地址审批：只加这两条**完整写工具名**。故意不加 'trade_order_address_'，
                 # 那会把只读的 trade_order_address_request 一起误判成写工具。
                 'trade_order_address_agree', 'trade_order_address_refuse',
-                'security_appeal_submit', 'security_appeal_urge')
+                'security_appeal_submit', 'security_appeal_urge',
+                # 草稿箱：只加两条**完整写工具名**。故意不加 'drafts_'，
+                # 那会把只读的 drafts_list / drafts_get 一起误判成写工具。
+                'drafts_delete', 'drafts_batch_delete')
 write_names = [n for n in specs if n.startswith(WRITE_PREFIX) and n != 'promotion_write_actions']
 print(f'write_tools={len(write_names)}')
 for s in T.TOOL_SPECS:

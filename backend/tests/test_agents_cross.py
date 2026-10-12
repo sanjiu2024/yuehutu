@@ -484,6 +484,8 @@ class MasterChatTest(unittest.TestCase):
         expected = [
             'accounts_list', 'accounts_set_enabled', 'accounts_relogin',
             'items_list', 'items_get', 'items_edit', 'items_publish', 'items_batch_edit', 'items_sync',
+            # ---- 草稿箱（前两条只读；后两条会真的删掉闲鱼上的草稿，required 必含 confirm）----
+            'drafts_list', 'drafts_get', 'drafts_delete', 'drafts_batch_delete',
             'chats_list', 'chats_read', 'chats_send', 'chats_set_mode',
             'orders_list', 'orders_deliver',
             'risk_status', 'risk_clear',
@@ -550,6 +552,7 @@ class MasterChatTest(unittest.TestCase):
             'item_templates_unbind',
             'items_batch_offline', 'items_batch_delete', 'items_quick_edit',
             'trade_order_address_agree', 'trade_order_address_refuse',
+            'drafts_delete', 'drafts_batch_delete',
             'security_appeal_submit', 'security_appeal_submit_cro', 'security_appeal_urge',
         ]
         for name in write_tools:

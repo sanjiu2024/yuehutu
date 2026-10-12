@@ -319,6 +319,13 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
     'security_appeal_urge': {
         'module': 'security_write', 'fn': 'appeal_urge', 'confirm': True,
         'method': 'POST', 'path': '/api/security-center/{account_id}/appeal/urge'},
+    # ---- task-81：草稿箱的 2 条写（2 条只读故意不在，它们没有 confirm 判定可测）----
+    'drafts_delete': {
+        'module': 'drafts', 'fn': 'delete_draft', 'confirm': True,
+        'method': 'POST', 'path': '/api/drafts/{account_id}/{draft_id}/delete'},
+    'drafts_batch_delete': {
+        'module': 'drafts', 'fn': 'batch_delete_drafts', 'confirm': True,
+        'method': 'POST', 'path': '/api/drafts/{account_id}/batch-delete'},
 }
 
 WRITE_TOOL_NAMES = list(WRITE_TOOLS)
@@ -392,6 +399,11 @@ _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
         'proof_items': [{'code': 'appealReason', 'name': '申诉理由'}], 'confirm': False},
     'security_appeal_urge': {
         'account_id': 'acc-x', 'punish_id': 'p1', 'confirm': False},
+    # ---- task-81：草稿箱 2 条写，带全必填字段但 confirm=False ----
+    'drafts_delete': {
+        'account_id': 'acc-x', 'draft_id': 'd1', 'confirm': False},
+    'drafts_batch_delete': {
+        'account_id': 'acc-x', 'draft_ids': 'd1,d2', 'confirm': False},
 }
 
 

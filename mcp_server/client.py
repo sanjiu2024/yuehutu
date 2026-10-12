@@ -170,6 +170,24 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'method': 'POST', 'path': '/api/items/{account_id}/sync',
         'path_params': ['account_id'],
     },
+    # ---------------- 草稿箱（2 读 + 2 写）----------------
+    # 两条读**不能**带 confirm：带了就会被 confirm 闸门拦下，只读工具不该要点头。
+    'drafts_list': {
+        'method': 'GET', 'path': '/api/drafts/{account_id}',
+        'path_params': ['account_id'], 'query': ['page', 'size'],
+    },
+    'drafts_get': {
+        'method': 'GET', 'path': '/api/drafts/{account_id}/{draft_id}',
+        'path_params': ['account_id', 'draft_id'],
+    },
+    'drafts_delete': {
+        'method': 'POST', 'path': '/api/drafts/{account_id}/{draft_id}/delete',
+        'path_params': ['account_id', 'draft_id'], 'body': ['confirm'],
+    },
+    'drafts_batch_delete': {
+        'method': 'POST', 'path': '/api/drafts/{account_id}/batch-delete',
+        'path_params': ['account_id'], 'body': ['draft_ids', 'confirm'],
+    },
     'chats_list': {
         'method': 'GET', 'path': '/api/chats/conversations',
         'query': ['account_id', 'mode', 'limit'],
