@@ -25,7 +25,7 @@
    `platform_errors.explain`，**不会**把账号写成 `need_relogin`。只有平台真的回
    `SESSION_EXPIRED`（`common._is_session_expired` 按类名/文案认）才会标掉线。
 
-## 1. HTTP（12 个 POST + 1 个只读 GET，全部要求登录）
+## 1. HTTP（14 个 POST + 2 个只读 GET，全部要求登录）
 
 | 方法 | 路径 | body | 说明 |
 | --- | --- | --- | --- |
@@ -41,7 +41,10 @@
 | POST | `/api/trade/{account_id}/addresses/{contact_id}/update` | 同上 | 退货地址编辑（见 §8） |
 | POST | `/api/trade/{account_id}/addresses/{contact_id}/delete` | `{confirm}` | 退货地址删除，**不可撤销**（见 §8） |
 | POST | `/api/trade/{account_id}/addresses/{contact_id}/default` | `{confirm}` | 设为默认退货地址（见 §8） |
+| POST | `/api/trade/{account_id}/orders/{order_id}/modify-address/agree` | `{deliver_id, confirm}` | 同意买家改地址，**会真的改订单收货地址**（见 §9） |
+| POST | `/api/trade/{account_id}/orders/{order_id}/modify-address/refuse` | `{deliver_id, confirm}` | 拒绝买家改地址（见 §9） |
 | **GET** | `/api/trade/{account_id}/refunds/{refund_id}/verify-token` | —（无 body，**无 `confirm`**） | 退款凭证（只读，见 §7） |
+| **GET** | `/api/trade/{account_id}/orders/{order_id}/modify-address` | —（无 body，**无 `confirm`**） | 买家改地址申请（只读，见 §9） |
 
 - body 用 `Dict[str, Any] = Body(default={})` 收，字段校验交给服务层 → 统一信封；
   用 FastAPI 的必填字段校验会先返回 422 的裸 body。
@@ -269,4 +272,60 @@ POST /api/trade/{account_id}/addresses/{contact_id}/default
   `ConfirmDialog danger` 逐条列出最终 body。
 - **AI 侧**：`trade_address_add` / `trade_address_update` / `trade_address_delete` /
   `trade_address_set_default`（四条都要求 `confirm`），MCP 路由与上表同路径、method 全 POST。
+
+## 9. 买家改地址审批（**读 + 写**）`order_address_info` / `order_address_agree` / `order_address_refuse`
+
+买家在订单上申请改收货地址，卖家要同意或拒绝。官方在订单页内做这个审批，我们此前只有订单列表。
+
+### 9.1 只读：`GET /api/trade/{account_id}/orders/{order_id}/modify-address`
+
+`mtop.idle.merchant.order.get.modify.address.info` v1.0（bundle 偏移 3101551）`{bizOrderId}`
+→ `data.module = {modifyStatus, modifyAddressInfoVO, nowAddressInfoVO, modifyDeliverId}`。
+
+```text
+-> {order_id, status, deliver_id, can_operate, now_address, modify_address, decrypted,
+    privacy_flagged, warnings:[{code,message}], platform_message, api, account_id, source, fetched_at}
+```
+
+- **只查不改 ⇒ GET、故意没有 `confirm`**（判据一句话：confirm 只钉有副作用的那一步），
+  协议层登记在 `order_address.READ_APIS`，**不进 `WRITE_APIS`**（否则会被写闸门误伤）。
+- `status` 用平台原文，拿不到是 `null`（**不编** `'NONE'` —— 官方组件初值才是 `'NONE'`）；
+  **只有 `modifyStatus === 'WAITING'` 才认 `deliver_id`**（平台只在那一档给 `modifyDeliverId`）；
+  `can_operate === (status === 'WAITING' && bool(deliver_id))`；两个 VO 原样透传，
+  平台没给是 `null`（不是 `{}`）。
+- **隐私号订单**：`nowAddressInfoVO.privacyFlag` 为真时平台给的是打码字段，官方会再调一次
+  `mtop.idle.trade.order.detail.privacy.address`（bundle 偏移 2127351 的 `nP` 助手，
+  **必须带 `valueType:'string'`**，`{bizOrderId, pageSource}`，改地址场景 `pageSource='modify_address'`）
+  换明文 → `decrypted = {name, suffix, phone_number, address}`。
+  **解不开就是 `null` + warning `privacy_decrypt_failed`**，`now_address` 仍是平台原样给的打码字段
+  —— 不编明文、不把打码字段当明文。**解密失败不会把整个只读页判成失败**（用户至少还能看到字段）。
+- 平台拒绝（如 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`）→ 502 `protocol_error` 原文透出，
+  **不碰登录态**（无权限 ≠ 掉线）。钉它的用例：`test_read_platform_refusal_is_502_and_does_not_mark_relogin`。
+
+### 9.2 写：同意 / 拒绝
+
+```text
+POST /api/trade/{account_id}/orders/{order_id}/modify-address/agree   {deliver_id, confirm}
+POST /api/trade/{account_id}/orders/{order_id}/modify-address/refuse  {deliver_id, confirm}
+-> {order_id, deliver_id, action, api, platform_success, platform_message, platform_body, source, fetched_at}
+```
+
+- `mtop.idle.merchant.order.address.modify.agree`（偏移 3102802）/ `…modify.refuse`（偏移 3103173），
+  参数逐字 `{bizOrderId, deliverId}`；官方 toast 原文「已同意修改地址」/「已拒绝修改地址」。
+- **这是会真的改订单收货地址的写操作**（货可能寄到别处）⇒ `deliver_id` 必须来自同一条订单的
+  只读查询；`confirm` 只认 `True`/`'true'`/`1`（`_truthy`），HTTP 层把 body 的 `confirm`
+  **原样**交服务层，不做 `bool(...)`。
+- 三步顺序 **确认 → 字段校验 → 建客户端**；协议层是最后一道：空订单号 / 空 `deliverId`
+  在构造请求时就抛 `ValueError`，**不发出去**。
+- 平台拒绝 → 502 原文透出且**不碰登录态**；`SessionExpiredError` 才 409 + 回写 `need_relogin`。
+
+### 9.3 测试与未验证
+
+`backend/tests/test_order_address_api.py` **41 条**（协议 17 + 只读 10 + 写闸门 12 + 路由 2）：
+未确认零平台请求（`'false'`/`0`/`''`/`None` 都不算点头）、字段校验先于凭据检查、隐私解密
+`value_type='string'` 真发出、解密失败降级成 warning、不编明文/不补 0、读接口是 GET。
+
+**一次真机写请求都没发过**：改地址审批要买家先发起申请，不能为了验证去改用户的真实订单。
+UI 侧 `frontend/src/pages/Orders.tsx::ModifyAddressModal`（同意/拒绝三重闸 + 二次确认）；
+AI 侧 `trade_order_address_request`（读）/ `trade_order_address_agree` / `trade_order_address_refuse`（写）。
 

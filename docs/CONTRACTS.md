@@ -772,6 +772,40 @@ POST /api/trade/{account_id}/addresses/{contact_id}/default    {confirm}
           MCP 同口径）；HTTP 层把 body 里的 `confirm` **原样**交服务层，不做 `bool(...)` ——
           `bool('false')` 是 True，会把用户明确的拒绝当成同意。
 
+【读 · 买家改地址申请】`docs/contracts/trade_write.md` §9
+GET  /api/trade/{account_id}/orders/{order_id}/modify-address
+       -> {order_id, status, deliver_id, can_operate, now_address, modify_address,
+           decrypted, privacy_flagged, warnings:[{code,message}], platform_message, api,
+           account_id, source, fetched_at}
+       -- `mtop.idle.merchant.order.get.modify.address.info`（bundle 偏移 3101551）→
+          `data.module = {modifyStatus, modifyAddressInfoVO, nowAddressInfoVO, modifyDeliverId}`；
+          官方组件初值就是 `'NONE'`，**只有 `modifyStatus === 'WAITING'` 才给 `modifyDeliverId`**。
+       -- **只查不改，所以是 GET、故意没有 `confirm`**；协议层登记在
+          `order_address.READ_APIS`，不进 `WRITE_APIS`（免得被写闸门误伤）。
+       -- `status` 用平台原文，拿不到是 `null`（**不编** `'NONE'`）；`deliver_id` 只在 WAITING 认；
+          `can_operate === (status === 'WAITING' && bool(deliver_id))`；两个 VO 原样透传，
+          平台没给是 `null`（不是 `{}`）。
+       -- 隐私号订单（`nowAddressInfoVO.privacyFlag`）会再调一次
+          `mtop.idle.trade.order.detail.privacy.address`（**必须带 `valueType:'string'`**，
+          bundle 偏移 2127351，`{bizOrderId, pageSource:'modify_address'}`）换明文 →
+          `decrypted = {name, suffix, phone_number, address}`；**解不开就是 `null` + 中文 warning**
+          （`privacy_decrypt_failed`），**不编明文**，解密失败也不会把整个只读页判成失败。
+
+【写 · 改地址审批】`docs/contracts/trade_write.md` §9
+POST /api/trade/{account_id}/orders/{order_id}/modify-address/agree   {deliver_id,confirm}
+POST /api/trade/{account_id}/orders/{order_id}/modify-address/refuse  {deliver_id,confirm}
+       -> {order_id, deliver_id, action, api, platform_success, platform_message, platform_body, …}
+       -- 两条 mtop：`mtop.idle.merchant.order.address.modify.{agree,refuse}`
+          （bundle 偏移 3102802 / 3103173），参数逐字 `{bizOrderId, deliverId}`。
+       -- **这是会真的改订单收货地址的写操作**：`deliver_id` 必须来自同一条订单的只读查询。
+       -- `confirm` 只认 `True`/`'true'`/`1`（`_truthy`）；HTTP 层把 body 里的 `confirm`
+          **原样**交服务层，不做 `bool(...)`。
+       -- 三步顺序 **确认 → 字段校验 → 建客户端**；协议层再挡一次空订单号 / 空 `deliverId`
+          （抛出来，不发出去）。
+       -- 平台拒绝（如 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`）→ 502 原文透出，**不碰登录态**。
+       -- AI 侧：`trade_order_address_request`（只读、无 `confirm`）、
+          `trade_order_address_agree` / `trade_order_address_refuse`（写、`required` 含 `confirm`）。
+
 【读 · 退款凭证】`docs/contracts/trade_write.md` §7
 GET  /api/trade/{account_id}/refunds/{refund_id}/verify-token
        -> {verify_url, token, scene, refund_id, api}
@@ -813,13 +847,13 @@ POST /api/security-center/{account_id}/appeal/urge       {punish_id,confirm}
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 74 条 / `MASTER_TOOLS` 73 条（去掉 `master_chat` 防递归），
-其中 **25 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 75 条。五方对账（specs / master / routes / service targets / handlers）
+【AI 侧】`TOOL_SPECS` 77 条 / `MASTER_TOOLS` 76 条（去掉 `master_chat` 防递归），
+其中 **27 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
+`mcp_server/client.py::TOOL_ROUTES` 78 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=74 master=73 routes=75 targets=54 handlers=74 / write_tools=25 / route_checked=75 / RECON OK
+-> specs=77 master=76 routes=78 targets=57 handlers=77 / write_tools=27 / route_checked=78 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`

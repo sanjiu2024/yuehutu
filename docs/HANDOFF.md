@@ -55,14 +55,15 @@
 批量删除 / 快捷改价改库存 / 发布）、运费模版页（增删改 + 给商品设运费）、订单页（发货 / 改价 /
 退款处理 / 评价 / 投诉处理）、**退款页与评价页与投诉页各自行内的写按钮**（第二十三批接上，
 之前这三页只读且文案还写着「一律 405」）、超级擦亮（投放管理）、资质管理（提交材料）、
-安全中心（申诉提交 / 举证 / 催办）。**同意退款要的 `auth_token` 不用手抄**：面板里的
+安全中心（申诉提交 / 举证 / 催办）、**订单页的「改地址」审批**（同意 / 拒绝买家申请的修改收货地址，
+第二十六批）。**同意退款要的 `auth_token` 不用手抄**：面板里的
 「获取凭证」走只读接口 `mtop.idle.alipay.verify.url.query` 向平台要一次（第二十三批）。
 
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_addr_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 48  PASS 48  FAIL 0  CASES 1487  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_oa_full&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 49  PASS 49  FAIL 0  CASES 1534  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -82,20 +83,20 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 87 modules transformed.
-   frontend/dist/assets/index-B0lhDz8I.js (511.47 kB, gzip 160.46 kB)
-   frontend/dist/assets/index-DKqV08Ps.css (131.84 kB, gzip 20.98 kB)
+   frontend/dist/assets/index-DQjHBzUp.js (518.46 kB, gzip 162.6 kB)
+   frontend/dist/assets/index-F91U0U67.css (132.75 kB, gzip 21.1 kB)
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon_t76&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=74 master=73 routes=75 targets=54 handlers=74
-   write_tools=25  route_checked=75
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon_t78&& C:\Python310\python.exe scripts\reconcile_tools.py"
+-> specs=77 master=76 routes=78 targets=57 handlers=77
+   write_tools=27  route_checked=78
    RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
    （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18311"
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18333"
 -> UI SMOKE ALL OK  (26/26 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
    截图目录：logs/ui_smoke
 ```
@@ -1839,10 +1840,65 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 两边相同（`073172fe4946` / `d1e8d5b13265`）、**`ASSETS_MATCH=True`**；
 > `scripts/ui_smoke.py --port 18311` → **26/26 页通过**。
 
+### 第二十六批：买家改地址审批（读 + 同意/拒绝）+ 隐私号解密（162~166）
+
+162. **官方订单页的「买家申请修改收货地址」审批是有写能力的**。我们此前只有订单列表，用户在页面里
+     既看不到申请、也没法同意/拒绝，只能回官方点。去官方交易 bundle 取证拿到三条接口与逐字参数
+     （本地副本单行压缩 JS，只有字符偏移）：`mtop.idle.merchant.order.get.modify.address.info`
+     v1.0 `{bizOrderId}`（@3101551）→ `data.module = {modifyStatus, modifyAddressInfoVO,
+     nowAddressInfoVO, modifyDeliverId}`；`…order.address.modify.agree` `{bizOrderId,deliverId}`（@3102802）；
+     `…modify.refuse` 同参数（@3103173）。官方组件初值就是 `'NONE'`，**只在 `modifyStatus === 'WAITING'`
+     时才把 `modifyDeliverId` 与两个 VO 传下去** ⇒ 我们也只在那一档认 `deliver_id`，
+     `can_operate` 由服务层算好给前端。
+
+163. **隐私号订单必须调解密接口，而且必须带 `valueType:'string'`**。`nowAddressInfoVO.privacyFlag`
+     为真时平台给的是打码字段，官方会再调 `mtop.idle.trade.order.detail.privacy.address`
+     （@2127351 的 `nP` 助手，`{bizOrderId, pageSource}`，改地址场景 `pageSource='modify_address'`）
+     换明文。这个接口**必须带 `valueType:'string'`**（业务体是 JSON 字符串）—— 我们的 mtop 客户端
+     默认不带，所以给 `call_params`/`mtop` 加了**可选** `value_type`，**只有传了才加 `valueType`**
+     （给别的接口塞上会改变它们的响应形状）。解不开就 `decrypted: null` + 中文 warning，
+     `now_address` 仍是平台原样给的打码字段：**不编明文、也不把打码字段当明文**；
+     解密失败**不会**把整个只读页判成失败（用户至少还能看到字段）。
+
+164. **只读查询故意不给 `confirm` 闸门**。判据一句话：**confirm 只钉有副作用的那一步**。
+     `GET …/modify-address` 只查不改，加闸门只会稀释真危险操作的信号（用户被训练成无脑点确认）。
+     协议层把它登记在 `order_address.READ_APIS`，**不进 `WRITE_APIS`** —— 否则既会被写闸门误伤、
+     又会被写黑名单挡住。同一批里 `confirm` 只认 `True`/`'true'`/`1`（`_truthy`），HTTP 层
+     把 body 的 `confirm` **原样**交服务层、不做 `bool(...)`：`bool('false')` 是 `True`，
+     对「改真实收货地址」这种操作，宽松判真会出人命。
+
+165. **工具名不能让「读名是写名的前缀」**。读工具叫 `trade_order_address_request`、
+     写工具叫 `trade_order_address_agree`/`trade_order_address_refuse` —— 如果读工具叫
+     `trade_order_address_...` 而 `scripts/reconcile_tools.py` 的 `WRITE_PREFIX` 里加了
+     `'trade_order_address_'`，只读工具就会被误判成写工具、报「只读工具却带 confirm 参数」。
+     所以 `WRITE_PREFIX` 只加两个**完整**写工具名，不加前缀。这条与第二十四批 ④ 是同一类坑。
+
+166. **协议层是最后一道**：`agree_request`/`refuse_request` 在空订单号 / 空 `deliverId` 时直接抛
+     `ValueError`，不发出去。服务层的 `_missing` 也会挡（三步顺序 **确认 → 字段校验 → 建客户端**），
+     但协议层是最后一站，漏一个空字符串过去就可能把改地址请求发到平台上。
+
+> **第二十六批证据链**：`backend/tests/test_order_address_api.py` → **`Ran 41 tests in 0.449s OK`**（`EXIT=0`）；
+> `backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_oa_full`）→
+> **`TOTAL 49  PASS 49  FAIL 0  CASES 1534  SKIPPED 2`**（第二十五批 48/1487 → +41，另有 6 条
+> 主管 AI 写操作纪律用例落在第二十四~二十五批之间）；
+> `python -m unittest backend.tests.test_agents_cross backend.tests.test_mcp_server
+> backend.tests.test_agents_tools_workbench` → **`Ran 130 tests ... OK`**、`UNITTEST_EXIT=0`；
+> `scripts/reconcile_tools.py`（`XIANYU_APP_DIR=%TEMP%\xywb_recon_t78`）→
+> `specs=77 master=76 routes=78 targets=57 handlers=77` / `write_tools=27` / `route_checked=78` /
+> **`RECON OK`**、`RECON_EXIT=0`；
+> 前端 `npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0（87 modules，
+> `index-F91U0U67.css 132.75 kB` / `index-DQjHBzUp.js 518.46 kB`）；
+> `scripts/ui_smoke.py --port 18333` → **`UI SMOKE ALL OK (26/26 页通过)`**；
+> 提交：`16b9a5e`（协议层 + 服务层 + 3 条路由 + 41 条测试）、`ec33b0b`（订单页「改地址」审批入口）、
+> `121a9ab`（AI 工具 1 读 + 2 写 + MCP 路由）。
+> 诚实边界：**同意/拒绝一次真机请求都没发过** —— 改地址审批要买家先发起申请，不能为了验证
+> 去改用户真实订单的收货地址；隐私号解密也没有真机样本（本机账号的订单都没有 `privacyFlag`），
+> 「平台接受我们的 payload」仍未验证。UI 侧只做了离线探针/冒烟，没有真机实跑。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**48 个测试文件、1487 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**49 个测试文件、1534 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -1860,12 +1916,12 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   从 `共 95 条` 变成 `共 56 条`（= 两个在售账号的 45 + 11），页面里再也搜不到 `3998190171`，
   只读探针（真 Edge）`has_deleted_account: false`、`page_errors: []`。
 - 真实 HTTP：只读 17 条 + 写路径 11 条（早期探针）；打包版接口面现在
-  `/openapi.json` = **139 条路径 / 152 个操作**（第 24 批 136/148，本批 +4 条退货地址写），
+  `/openapi.json` = **142 条路径 / 155 个操作**（第 25 批 139/152，本批 +3 条改地址审批），
   均结构化信封、无 500。
-- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 74 / `MASTER_TOOLS` 73 /
-  `TOOL_ROUTES` 75，其中 **25 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
+- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 77 / `MASTER_TOOLS` 76 /
+  `TOOL_ROUTES` 78，其中 **27 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
   FastAPI 端点接受 → `RECON OK`。MCP 端到端冒烟（真起 `mcp_server/server.py` 子进程打打包版）
-  `tools/list` 返回 63 个工具（该数字早于本批新增的 4 个申诉工具与 4 个退货地址工具）。
+  `tools/list` 返回 63 个工具（该数字早于本批新增的工具）。
 - **真实浏览器逐页冒烟 26/26 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
   临时数据目录，逐页断言未白屏、未掉回登录页、无 JS 报错，截图在 `logs/ui_smoke/`）。
   它抓到了后端全绿时仍然「UI 完全不可用」的登录死循环。
