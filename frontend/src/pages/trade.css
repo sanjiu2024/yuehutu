@@ -486,6 +486,66 @@ tbody tr.tr-detail-row {
   font-size: var(--fs-11);
 }
 
+/* ---------------------------------------------------------------- 退货地址写操作 */
+
+.ra-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--sp-3);
+}
+
+.ra-form-wide {
+  grid-column: 1 / -1;
+}
+
+.ra-check {
+  display: flex;
+  align-items: center;
+  padding-top: var(--sp-1);
+}
+
+.ra-check-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-12);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.ra-problems {
+  font-size: var(--fs-12);
+  color: var(--warn);
+}
+
+.ra-orig {
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-12);
+  line-height: 1.7;
+  color: var(--text-dim);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  word-break: break-all;
+}
+
+/* 二次确认框里「这次到底提交什么」的清单 */
+.ra-facts {
+  margin: var(--sp-2) 0;
+  padding-left: var(--sp-4);
+  font-size: var(--fs-12);
+  color: var(--text-dim);
+  line-height: 1.8;
+  word-break: break-all;
+}
+
+.ra-facts code,
+.ra-orig code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--fs-11);
+}
+
 @media (max-width: 820px) {
   .tr-head {
     flex-direction: column;
