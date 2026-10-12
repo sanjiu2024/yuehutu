@@ -62,8 +62,8 @@
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_drafts_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 50  PASS 50  FAIL 0  CASES 1587  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_drafts_full2&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 50  PASS 50  FAIL 0  CASES 1588  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -2006,10 +2006,24 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 176. **UI 落在商品页的第三个 tab**（不是新侧栏页）：`frontend/src/pages/DraftBox.tsx` +
     `drafts.css`，`Items.tsx` 只加 import / tab 类型 / 一个按钮 / 一个渲染分支。批量结果逐条列出
     failed 与 warnings，`quantity` 为空显示 `-`（不补 0），详情 `fields === null` 与 `{}` 文案分开。
+177. **凭据语义与其它服务对齐**（打包版闸门探针抓到的）：草稿服务一开始自己调
+    `common.get_client`，于是「账号不存在」也落成 503 `xianyu_not_ready`，而
+    `items` / `item_templates` / `trade_write` 全都是 **账号不存在 → 404 `not_found`**、
+    **没有 Cookie / 已判定要重登 → 409 `verification_required`**。改成复用
+    `services/trade.py::_client`（同包私有助手，只此一份判定），不再自己写第二套。
+    抓法值得记：闸门探针的「确认腿」故意换成**不存在的账号**（`SAFE_ACC`），
+    于是「闸门放行后落到哪一层」被暴露出来 —— 别的端点回 404 / 400，只有草稿回 503。
+178. **草稿箱真机只读探针**（第一次拿真账号打真平台，只发 GET）：
+    `GET /api/drafts/2217970177348?page=1&size=20` → **502 `protocol_error`**，
+    平台原文 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问`，人话提示正确显示
+    「这个账号没有开通这个功能的权限……**不是登录掉线**」；`size=30` → **400 `invalid_fields`**
+    （本地就拦，零平台调用）。**这是账号没权限，不是代码 bug** —— 与退货地址写接口、
+    子账号、资质同族；但也顺带证明**参数形状被平台接受了**（它没报参数错，是走到权限判定才拒的）。
+    列表里没有草稿，所以详情**故意跳过**（不猜 `draft_id` 打平台）。
 
-> **第二十九批证据链**：`backend/tests/test_drafts_api.py` → **`Ran 46 tests in 0.683s OK`**（`EXIT=0`）；
-> `backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_drafts_full`）→
-> **`TOTAL 50  PASS 50  FAIL 0  CASES 1587  SKIPPED 2`**；
+> **第二十九批证据链**：`backend/tests/test_drafts_api.py` → **`Ran 47 tests in 0.668s OK`**（`EXIT=0`）；
+> `backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_drafts_full2`）→
+> **`TOTAL 50  PASS 50  FAIL 0  CASES 1588  SKIPPED 2`**；
 > `python -m unittest backend.tests.test_agents_cross backend.tests.test_mcp_server backend.tests.test_agents_tools_workbench`
 > → **`Ran 130 tests in 3.857s OK`**、`UNITTEST_EXIT=0`；
 > `scripts/reconcile_tools.py` → `specs=81 master=80 routes=82 targets=61 handlers=81`、
@@ -2017,13 +2031,20 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 前端 `cd frontend && npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0（89 modules，
 > `index-BZVYw-fj.css 136.44 kB` / `index-C_tiY-6h.js 529.29 kB`）；
 > `scripts/ui_smoke.py --port 18411` → **`UI SMOKE ALL OK (26/26 页通过)`**。
-> 诚实边界：**一次真机请求都没发过**（本机账号缺平台业务权限，且删草稿不可撤销）；上面所有形状
+> 打包版复验（exe `10,028,165` 字节 / 2026-10-13 04:42:58，`--port 18400` `/api/health` 200
+> `frozen:true`）：`/openapi.json` = **146 条路径 / 159 个操作**（4 条 `/api/drafts` 全在）；
+> `probe_write_gate.py` → **`GATE FAILURES: 0 / 30`**（`drafts.delete` 确认腿 404 `not_found`、
+> `drafts.batch_delete` 400 `invalid_fields`；语义只读的 `sec.appeal_form` 仍 400 `invalid_fields`）；
+> `packaged_ui_smoke.py` → **26/26 页通过**；`check_assets.py` → `ASSETS_MATCH=True`
+> （`index-BZVYw-fj.css` = `03f2288946a9`、`index-C_tiY-6h.js` = `87f233ebab08`，remote=local）；
+> 真机只读探针 `drafts_read_probe.py` → 列表 502 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（账号无权限）。
+> 诚实边界：**一次写请求都没发过**（本机账号缺平台业务权限，且删草稿不可撤销）；上面所有形状
 > 都是 bundle 反推 + 假协议层测试；草稿详情的 `fields` 键名未钉住，所以前端摊平成「字段 / 值」两列。
 
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**50 个测试文件、1587 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**50 个测试文件、1588 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -2044,7 +2065,7 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   从 `共 95 条` 变成 `共 56 条`（= 两个在售账号的 45 + 11），页面里再也搜不到 `3998190171`，
   只读探针（真 Edge）`has_deleted_account: false`、`page_errors: []`。
 - 真实 HTTP：只读 17 条 + 写路径 11 条（早期探针）；打包版接口面现在
-  `/openapi.json` = **142 条路径 / 155 个操作**（第 25 批 139/152，本批 +3 条改地址审批），
+  `/openapi.json` = **146 条路径 / 159 个操作**（第 26 批 142/155，本批 +4 条草稿箱），
   均结构化信封、无 500。
 - **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 81 / `MASTER_TOOLS` 80 /
   `TOOL_ROUTES` 82，其中 **29 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
@@ -2057,12 +2078,12 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   packaged_ui_smoke.py`，复用 `scripts/ui_smoke.py::run_browser` 但不启后端、直接打
   `127.0.0.1:18400` 与**真实 `%APPDATA%` 数据目录**，截图 `logs/packaged_ui_smoke/`）。
   与上一条的区别：上一条跑的是源码 + 临时库，这一条跑的是**用户手上那个 exe**。
-- **打包版 confirm 闸门 28 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
-  （`confirmation_required` / `confirm_required`），`GATE FAILURES: 0 / 28`；确认那一腿**故意换成不存在的
-  账号**（`SAFE_ACC`），闸门放行后本地查库直接 404 `not_found` / 400 `invalid_fields` —— 既证明闸门放行，
+- **打包版 confirm 闸门 30 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
+  （`confirmation_required` / `confirm_required`），`GATE FAILURES: 0 / 30`；确认那一腿**故意换成不存在的
+  账号**（`SAFE_ACC`），闸门放行后本地查库直接 404 `not_found` / 400 `invalid_fields` / 409 —— 既证明闸门放行，
   又保证**零平台请求**（2026-10-12 00:35 之前那版拿真账号打过，三条写请求真到了闲鱼，见第二十五批 161）。
-  本批新增两条（`order_address.agree`/`order_address.refuse`）确认腿都是 400 `invalid_fields`
-  （字段校验在建客户端之前，所以拿不到空 `deliver_id` 就本地拒了）。
+  本批新增两条（`drafts.delete` / `drafts.batch_delete`）：前者 404 `not_found`、后者 400 `invalid_fields`
+  —— 正是这对结果把「草稿服务的凭据语义与其它服务不一致」暴露出来（见第二十九批 177）。
 - **真实浏览器实时刷新 2/2 阶段通过**（`scripts/live_refresh_smoke.py`）：后端写账号
   备注 / 新增提示词后，页面在 0.21 秒内自己更新，且 `navigation` 计数不变。
 - **真后端 + 真 `XianyuClient` + `httpx.MockTransport` 逐条打商品接口**（不碰真平台）：

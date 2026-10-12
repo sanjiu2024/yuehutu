@@ -75,7 +75,10 @@
 1. **确认**：`confirm is True`（`_truthy` 只认 `True` / `'true'` / `1`）否则 400 `confirmation_required`，
    **一个平台请求都不发**；
 2. **字段校验**：`draft_ids` 非空、去重后 ≤ `BATCH_WRITE_LIMIT=200`、页面大小合法 —— 纯本地，免费；
-3. **建客户端**：这时候才可能因为 Cookie / 账号不存在回 503 `xianyu_not_ready`，或登录态过期回 409。
+3. **建客户端**：这时候才做账号/凭据检查 —— **账号不存在 → 404 `not_found`**、
+   **没有 Cookie 或已判定要重登 → 409 `verification_required`**、平台登录态过期 → 409 + 回写
+   `need_relogin`。这一层复用 `services/trade.py::_client`，与 `services/items.py` /
+   `services/item_templates.py` / `services/trade_write.py` **同一份判定**（不自己写第二套）。
 
 理由：把凭据检查放前面，用户会先被叫去「重新扫码」，扫完回来才发现草稿 ID 是空的。
 
@@ -88,16 +91,16 @@
 
 ## §3 测试
 
-`backend/tests/test_drafts_api.py` —— **46 条**，三个类：
+`backend/tests/test_drafts_api.py` —— **47 条**，三个类：
 
 - `DraftProtocolTest`（约 16 条）：API 名逐字、写白名单只放两条、`draft.update` 登记但不可调用、
   `draftIds` 两种入参、分页只有三档、`confirm` 五种假值全抛、空 ID 抛、`is_success` 把空草稿箱当成功、
   `parse_list` 不造值 / `parse_detail` 原样 / `parse_process` 的 `0` 与 `None` 之分。
-- `DraftApiTest`（约 27 条）：只读 happy path（含**只发一次**请求、`v='1.0'`）、空草稿箱、列表键缺失、
+- `DraftApiTest`（约 28 条）：只读 happy path（含**只发一次**请求、`v='1.0'`）、空草稿箱、列表键缺失、
   非法 `size` 零平台调用、平台拒绝 502 且 `login_state` 仍 `active`、详情两种 warning、读路径不碰写接口、
-  无 Cookie 503 零调用、两个写端点的确认闸门（含 8 种假值）、**字段校验先于凭据检查**、超限、
-  单删 / 批删 happy path（数组与逗号串）、`failed[]` 恒空、`no_counts`、平台拒绝、`SessionExpiredError`
-  409 + 回写 `need_relogin`、未登录 401。
+  无 Cookie 409 零调用、账号不存在 404 零调用、两个写端点的确认闸门（含 8 种假值）、
+  **字段校验先于凭据检查**、超限、单删 / 批删 happy path（数组与逗号串）、`failed[]` 恒空、`no_counts`、
+  平台拒绝、`SessionExpiredError` 409 + 回写 `need_relogin`、未登录 401。
 - `DraftRouteTest`（3 条）：四条路由的方法、`batch-delete` **声明在** `{draft_id}/delete` 之前、
   `main.ROUTE_MODULES` 含 `drafts`。
 
@@ -105,10 +108,10 @@
 
 ```
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\test_drafts_api.py"
-→ Ran 46 tests in 0.683s OK
+→ Ran 47 tests in 0.668s OK
 ```
 
-全量回归：`backend\tests\run_all.py` → `TOTAL 50  PASS 50  FAIL 0  CASES 1587  SKIPPED 2`。
+全量回归：`backend\tests\run_all.py` → `TOTAL 50  PASS 50  FAIL 0  CASES 1588  SKIPPED 2`。
 
 ## §4 AI 侧
 
