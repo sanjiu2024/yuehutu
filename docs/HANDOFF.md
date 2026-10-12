@@ -62,8 +62,8 @@
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_oa_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 49  PASS 49  FAIL 0  CASES 1534  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_contrast_full&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 49  PASS 49  FAIL 0  CASES 1541  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -83,8 +83,8 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 87 modules transformed.
-   frontend/dist/assets/index-DQjHBzUp.js (518.46 kB, gzip 162.6 kB)
-   frontend/dist/assets/index-F91U0U67.css (132.75 kB, gzip 21.1 kB)
+   frontend/dist/assets/index-B8urkkWX.js (518.71 kB, gzip 163.2 kB)
+   frontend/dist/assets/index-CLcnv55b.css (133.03 kB, gzip 21.2 kB)
 ```
 
 ```text
@@ -96,9 +96,27 @@ cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18333"
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18397"
 -> UI SMOKE ALL OK  (26/26 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
    截图目录：logs/ui_smoke
+```
+
+```text
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\contrast_audit.py --port 18393 --threshold 4.0"
+-> NON_GET_API_REQUESTS=[]
+   [dark] BAD_PAGES 0/26: []
+   [light] BAD_PAGES 0/26: []
+   报告：logs/contrast_audit/report.json
+```
+
+```text
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\a11y_audit.py --port 18395"
+-> NON_GET_API_REQUESTS=[]
+   == 无可访问名字的按钮：0 类
+   == 没有标签的输入框：0 类
+   焦点不可见的页面：[]
+   报告：logs/a11y_audit/report.json
+   （两个审计脚本都不给 --port 时打的是打包版 18400）
 ```
 
 ```text
@@ -1901,13 +1919,50 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `check_assets.py` → `GET /` 引用 `['index-DQjHBzUp.js','index-F91U0U67.css']`，remote/local
 > SHA256 相同（`d1dc70905cde` / `b177818cc5d0`），**`ASSETS_MATCH=True`**。
 
+### 第二十七批：UI 细节自查 —— 对比度、可访问性、表单标签关联（167~170）
+
+167. **深色主题的次要文字太灰**：`--text-mute` 深色 `#6b7a99` 在 panel 上只有 3.96:1
+   （panel-2 上 3.4:1）、浅色 `#78849d` 在白底上 3.76:1 —— 品牌副标题、导航分组标题、
+   页头描述、字段提示、表格里的次要行都是这个色（11~12px 的小字最吃亏）。改成深色
+   `#828fa8`（5.25 / 4.53）、浅色 `#667290`（4.80 / 4.51）：**只改值，令牌名与其余令牌不动**。
+168. **深色 `--accent` 两头不讨好**：白字压在 `#3b82f6` 上只有 3.68:1（主按钮、分段按钮
+   选中态），而它当**文字**放在淡蓝 chip 上更低（3.65 / 3.28）—— 一个变量救不了两头。
+   深色另加一段专用覆盖（放在浅色主题块之后，浅色完全不受影响）：主按钮 `#2563eb`
+   （白字 5.17:1，**含禁用态** —— 禁用只是压暗 opacity，底色仍是 accent）、hover
+   `#1d4ed8`、分段按钮选中态同色、`.ac-inline-link` 与 `.pv-default-chip` 改用 `--ask`。
+169. **`Field` 的 `<label>` 与控件是兄弟节点**（真缺陷）：点标签不会聚焦输入框，读屏只说
+   「组合框」而说不出这个框是干什么的（`<select>` 没有 placeholder 可退，最明显）。
+   `children` 是**单个**元素且自己还没 `id` 时，用 `useId()` 给它补 `id`、给 `<label>`
+   补 `htmlFor`；其余形状行为不变。另给「商品」页的账号/状态筛选与「会话」页的账号/模式
+   筛选补 `aria-label`，商品列表的全选与逐行复选框补上名字。
+170. **两个审计脚本入仓**（原来躺在临时目录，各查出一个真问题）：`scripts/contrast_audit.py`
+   （26 页 × 深/浅两套主题，背景沿父链逐层 alpha 合成，否则半透明 badge 会被当实色）、
+   `scripts/a11y_audit.py`（无可访问名字的按钮 / 没有标签的输入框 / 无 alt 图片 / 焦点环）。
+   两者都只读，并断言整轮没有非 GET 的 `/api/` 请求；不给 `--port` 就打打包版。
+
+> **第二十七批证据链**：`scripts/contrast_audit.py --port 18393 --threshold 4.0` →
+> `[dark] BAD_PAGES 0/26: []`、`[light] BAD_PAGES 0/26: []`、`NON_GET_API_REQUESTS=[]`；
+> `scripts/a11y_audit.py --port 18395` → 「无可访问名字的按钮 0 类、没有标签的输入框 0 类、
+> 焦点不可见的页面 []」、`NON_GET_API_REQUESTS=[]`；
+> `backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_contrast_full`）→
+> **`TOTAL 49  PASS 49  FAIL 0  CASES 1541  SKIPPED 2`**；
+> `scripts/ui_smoke.py --port 18397` → **`UI SMOKE ALL OK (26/26 页通过)`**；
+> 前端 `cd frontend && npx tsc --noEmit` EXIT=0、`npm run build` EXIT=0（87 modules，
+> `index-CLcnv55b.css 133.03 kB` / `index-B8urkkWX.js 518.71 kB`）；
+> 提交：`a66cfcf`（深色对比度补正）、`dbcf62f`（标签关联 + 可访问名字）、`4da7d86`（审计脚本入仓）。
+> 诚实边界：两个脚本查的是 DOM 与计算样式，查不出布局错位、动效、触屏手感；对比度阈值
+> 取 4.0（正文标准，大字本可放宽到 3.0），深色最低值正好 ≈4.0，**没有余量**。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**49 个测试文件、1534 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**49 个测试文件、1541 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
+- **UI 细节有两个可重跑的审计脚本**（`scripts/contrast_audit.py`、`scripts/a11y_audit.py`）：
+  26 页 × 深/浅两套主题的文字对比度全部 ≥4.0:1；无可访问名字的按钮 0、没有标签的
+  输入框 0、无 alt 的图片 0、焦点环全部可见；两者整轮都是 `NON_GET_API_REQUESTS=[]`。
 - **商品数据真的从平台拉回来了**（2026-10-08，打包版 + 真账号 `2221063792739`）：
   `app.log` 一轮 `{'2221063792739': {'pulled': 5, 'failed': 0, 'stopped': None}}`，
   `item_stats_cache` 出现 5 行 `source='platform'` 真值（曝光/浏览/想要分别
