@@ -75,6 +75,11 @@ ROUTE_MODULES: List[str] = [
     # `/api/security-center` 前缀。只读侧是 `GET /{account_id}`，写侧全是带后缀的 POST
     # （`/{account_id}/appeal/...`），路径与方法都不重叠，顺序无所谓。
     'security_write',
+    # 草稿箱（读 2 + 写 2）：`/api/drafts/{account_id}/...`。**独立前缀**，故意不并进
+    # `/api/items`：那边 `GET /{account_id}/{item_id}` 会把任何两段路径的第二段当商品 ID
+    # （`templates` 那次踩过），草稿 ID 混进去迟早出事。集合级动作 `batch-delete`
+    # 声明在 `/{draft_id}/delete` 之前（见 api/drafts.py 的注释）。
+    'drafts',
 ]
 
 PLACEHOLDER = """<!doctype html>
