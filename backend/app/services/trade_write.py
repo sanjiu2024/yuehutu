@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 
 from loguru import logger
 
+from ..xianyu import address_write as addr_proto
 from ..xianyu import trade_write as proto
 from . import common
 # 账号/凭据检查只有一份，直接复用只读服务里的私有助手（同包内，避免两套判定漂移）
@@ -346,3 +347,171 @@ def complain_business_failure(result: Dict[str, Any]) -> Optional[Dict[str, Any]
         return common.fail(f'平台接口失败: {reason}', 'protocol_error',
                            platform_errors={'api': result.get('api'), 'explain': reason})
     return None
+
+
+# --------------------------------------------------------------------------- 退货地址（写）
+
+
+def _truthy(value: Any) -> bool:
+    """只有字面量 `True` / `'true'` / `1` 才算确认，别的（含 `'false'`、`'yes'`）都不算。
+
+    与 `services/items.py::_truthy`、`services/item_templates.py::_truthy`、
+    `mcp_server/client.py::_truthy` 同一口径 —— 三条路（HTTP / 主管 AI / MCP）必须对
+    「什么算点头」有完全一样的判断。改退货地址是不可撤销的写操作，`"confirm": "false"`
+    这种字符串**绝不能**被当成点头。
+    """
+    if value is True:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() == 'true'
+    return value == 1
+
+
+def _mobile_problem(value: Any) -> Optional[Dict[str, Any]]:
+    """联系方式校验：去掉空格/横线后必须是 11 位数字。
+
+    官方 schema 的 `x-validator:"phone"` 就是中国大陆手机号；这里**不**用 `1[3-9]` 前缀硬卡
+    （号段会变，卡死会把用户的合法号码拦下来），只钉位数。
+    """
+    digits = ''.join(ch for ch in _text(value) if ch.isdigit())
+    if not digits:
+        return common.fail('联系方式不能为空', 'invalid_fields')
+    if len(digits) != addr_proto.MOBILE_DIGITS:
+        return common.fail(
+            f'联系方式要是 {addr_proto.MOBILE_DIGITS} 位数字（现在 {len(digits)} 位）', 'invalid_fields')
+    return None
+
+
+def _mobile_digits(value: Any) -> str:
+    """统一成纯数字再发。
+
+    官方表单是 `max 11` + `x-validator:"phone"`，用户不可能在官方页面输入空格/横线；
+    我们允许用户粘贴带分隔符的号码（校验按数字位数算），但**发给平台的是纯数字**，
+    与官方一致，避免平台按「格式非法」拒掉。
+    """
+    return ''.join(ch for ch in _text(value) if ch.isdigit())
+
+
+def _too_long(label: str, value: Any, limit: int) -> Optional[Dict[str, Any]]:
+    text = _text(value)
+    if len(text) > limit:
+        return common.fail(f'{label}最多 {limit} 个字（现在 {len(text)} 个）', 'invalid_fields')
+    return None
+
+
+def _address_fields_problem(contact_name: Any, mobile_phone: Any, province_name: Any,
+                            city_name: Any, district_name: Any,
+                            detail_address: Any) -> Optional[Dict[str, Any]]:
+    """必填 + 长度 + 手机号 —— **纯本地**，所以排在建客户端之前（掉线时也该先报「名字没填」）。"""
+    failure = _missing(('联系人姓名', contact_name), ('联系方式', mobile_phone),
+                       ('所在省', province_name), ('所在市', city_name), ('所在区', district_name),
+                       ('详细地址', detail_address))
+    if failure:
+        return failure
+    failure = _too_long('联系人姓名', contact_name, addr_proto.CONTACT_NAME_MAX)
+    if failure:
+        return failure
+    failure = _too_long('详细地址', detail_address, addr_proto.DETAIL_ADDRESS_MAX)
+    if failure:
+        return failure
+    return _mobile_problem(mobile_phone)
+
+
+def _address_submit(account_id: str, action: str, fields: Dict[str, Any],
+                    audit: Any = None) -> Dict[str, Any]:
+    """退货地址写请求的公共骨架：**已确认、已校验**之后才进来。"""
+    client, failure = _client(account_id)
+    if failure:
+        common.log_operation(account_id, action, '', False, failure.get('message') or '')
+        return failure
+
+    api, data = addr_proto.request_of(action, confirm=True, **fields)
+    raw, failure = _call_write(client, api, data, addr_proto.DEFAULT_VERSION)
+    if failure:
+        common.log_operation(account_id, action, '', False, failure.get('message') or '')
+        return failure
+
+    payload: Dict[str, Any] = {
+        'action': action,
+        'contact_id': addr_proto.contact_id_of(raw),
+        'api': api,
+        'warnings': [],
+    }
+    if action == 'add' and payload['contact_id'] is None:
+        # 官方前端新增后是重拉列表找新条目，从来没读过响应体；我们不假装知道新 id。
+        payload['warnings'].append({
+            'code': 'no_contact_id',
+            'message': '平台没有回显新的地址 ID，请重新拉一次列表（新地址就在里面）',
+        })
+    payload['account_id'] = account_id
+    common.log_operation(account_id, action, payload['contact_id'] or '', True,
+                         audit if audit is not None else data)
+    return _stamp(payload)
+
+
+def address_add(account_id: str, contact_name: Any, mobile_phone: Any, province_name: Any,
+                city_name: Any, district_name: Any, detail_address: Any,
+                area_id: Any = None, default_addr: Any = None,
+                *, confirm: Any = False) -> Dict[str, Any]:
+    """新增退货地址（`mtop.alibaba.idle.seller.platform.merchant.delivery.address.add`）。
+
+    **三步顺序：确认 → 字段校验 → 建客户端**。`area_id` 是区级区域码，我们没有来源，
+    留空就**不发这个键**（不伪造）；官方还会发 `division` 级联数组，我们故意不发
+    （理由见 `xianyu/address_write.py` 的模块 docstring）。
+    """
+    if not _truthy(confirm):
+        return _confirm_required('新增退货地址')
+    failure = _address_fields_problem(contact_name, mobile_phone, province_name, city_name,
+                                      district_name, detail_address)
+    if failure:
+        return failure
+    return _address_submit(account_id, 'add', {
+        'contact_name': contact_name, 'mobile_phone': _mobile_digits(mobile_phone),
+        'province_name': province_name, 'city_name': city_name,
+        'district_name': district_name, 'detail_address': detail_address,
+        'area_id': area_id, 'default_addr': default_addr,
+    })
+
+
+def address_update(account_id: str, contact_id: Any, contact_name: Any, mobile_phone: Any,
+                   province_name: Any, city_name: Any, district_name: Any, detail_address: Any,
+                   area_id: Any = None, default_addr: Any = None,
+                   *, confirm: Any = False) -> Dict[str, Any]:
+    """修改退货地址（`…delivery.address.update`）。`contact_id` 是官方必带的 `contactId`。"""
+    if not _truthy(confirm):
+        return _confirm_required('修改退货地址')
+    failure = _missing(('退货地址 ID', contact_id))
+    if failure:
+        return failure
+    failure = _address_fields_problem(contact_name, mobile_phone, province_name, city_name,
+                                      district_name, detail_address)
+    if failure:
+        return failure
+    return _address_submit(account_id, 'update', {
+        'contact_id': contact_id, 'contact_name': contact_name,
+        'mobile_phone': _mobile_digits(mobile_phone),
+        'province_name': province_name, 'city_name': city_name,
+        'district_name': district_name, 'detail_address': detail_address,
+        'area_id': area_id, 'default_addr': default_addr,
+    })
+
+
+def address_delete(account_id: str, contact_id: Any, *, confirm: Any = False) -> Dict[str, Any]:
+    """删除退货地址（`…delivery.address.delete`）。**不可撤销**。"""
+    if not _truthy(confirm):
+        return _confirm_required('删除退货地址')
+    failure = _missing(('退货地址 ID', contact_id))
+    if failure:
+        return failure
+    return _address_submit(account_id, 'delete', {'contact_id': contact_id})
+
+
+def address_set_default(account_id: str, contact_id: Any, *,
+                        confirm: Any = False) -> Dict[str, Any]:
+    """设为默认退货地址（`…delivery.address.set.default`）。"""
+    if not _truthy(confirm):
+        return _confirm_required('设为默认退货地址')
+    failure = _missing(('退货地址 ID', contact_id))
+    if failure:
+        return failure
+    return _address_submit(account_id, 'set_default', {'contact_id': contact_id})

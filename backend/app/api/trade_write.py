@@ -193,3 +193,86 @@ def complain_proof(
         body.get('kind') or 'sellerSubmitProof',
         confirm=bool(body.get('confirm')),
     ))
+
+
+# --------------------------------------------------------------------------- 退货地址（写）
+# 官方卖家工作台「小铺 → 退货地址」页的四个写接口（证据见 `xianyu/address_write.py`）。
+# 注意路径顺序：这一族用 `addresses` 段，与上面 `orders` / `refunds` 段不重叠。
+
+
+@router.post('/{account_id}/addresses')
+def address_add(
+    account_id: str,
+    body: Dict[str, Any] = Body(
+        default={},
+        description='{contact_name, mobile_phone, province_name, city_name, district_name,'
+                    ' detail_address, area_id?, default_addr?, confirm}',
+    ),
+    user=Depends(current_user),
+):
+    """新增退货地址：`mtop.alibaba.idle.seller.platform.merchant.delivery.address.add`。"""
+    return _envelope(trade_write.address_add(
+        account_id,
+        body.get('contact_name'),
+        body.get('mobile_phone'),
+        body.get('province_name'),
+        body.get('city_name'),
+        body.get('district_name'),
+        body.get('detail_address'),
+        body.get('area_id'),
+        body.get('default_addr'),
+        # 原样交给服务层判（`_truthy`：只有 True / 'true' / 1 算点头）——
+        # 这里绝不能写成 `bool(...)`，否则 `"confirm": "false"` 会被当成同意。
+        confirm=body.get('confirm'),
+    ))
+
+
+@router.post('/{account_id}/addresses/{contact_id}/update')
+def address_update(
+    account_id: str,
+    contact_id: str,
+    body: Dict[str, Any] = Body(
+        default={},
+        description='{contact_name, mobile_phone, province_name, city_name, district_name,'
+                    ' detail_address, area_id?, default_addr?, confirm}',
+    ),
+    user=Depends(current_user),
+):
+    """修改退货地址：`…delivery.address.update`。"""
+    return _envelope(trade_write.address_update(
+        account_id,
+        contact_id,
+        body.get('contact_name'),
+        body.get('mobile_phone'),
+        body.get('province_name'),
+        body.get('city_name'),
+        body.get('district_name'),
+        body.get('detail_address'),
+        body.get('area_id'),
+        body.get('default_addr'),
+        confirm=body.get('confirm'),
+    ))
+
+
+@router.post('/{account_id}/addresses/{contact_id}/delete')
+def address_delete(
+    account_id: str,
+    contact_id: str,
+    body: Dict[str, Any] = Body(default={}, description='{confirm}'),
+    user=Depends(current_user),
+):
+    """删除退货地址：`…delivery.address.delete`（不可撤销）。"""
+    return _envelope(trade_write.address_delete(
+        account_id, contact_id, confirm=body.get('confirm')))
+
+
+@router.post('/{account_id}/addresses/{contact_id}/default')
+def address_set_default(
+    account_id: str,
+    contact_id: str,
+    body: Dict[str, Any] = Body(default={}, description='{confirm}'),
+    user=Depends(current_user),
+):
+    """设为默认退货地址：`…delivery.address.set.default`。"""
+    return _envelope(trade_write.address_set_default(
+        account_id, contact_id, confirm=body.get('confirm')))
