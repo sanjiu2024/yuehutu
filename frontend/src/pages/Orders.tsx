@@ -1,7 +1,7 @@
 /**
  * 「交易」组公共外壳 + **订单页**。
  *
- * ⚠️ 写范围只有 `frontend/src/pages/{Orders,Refunds,Evaluations,Complaints,ReturnAddresses,Notifications}.tsx`
+ * 注意：写范围只有 `frontend/src/pages/{Orders,Refunds,Evaluations,Complaints,ReturnAddresses,Notifications}.tsx`
  * 与两个 css，**没有独立的公共文件可放**，所以本组 5 页共用的类型、工具函数与列表外壳全部从这里导出，
  * 其余四页 `import { ... } from './Orders'`。哪天允许建公共文件，把这一段整体搬走即可。
  *
@@ -27,7 +27,7 @@ import { AsyncBox, Badge, ConfirmDialog, Field, Modal, Notice, useToast } from '
 import { useAsync } from '../hooks/useAsync'
 import { formatTime } from '../format'
 import {
-  IconCheckCircle, IconChevronDown, IconChevronRight, IconEdit, IconRefresh, IconSend,
+  IconCheckCircle, IconChevronDown, IconChevronRight, IconEdit, IconLink, IconRefresh, IconSend,
   IconShield, IconSparkle, IconWarn,
 } from '../icons'
 import type { Account } from '../types'
@@ -1137,10 +1137,364 @@ interface OrdersResult extends TradeEnvelope<TradeOrder> {
   tabs?: OrderTab[] | null
 }
 
+/* ------------------------------------------------- 买家申请改收货地址审批（task-77） */
+
+/**
+ * `GET /api/trade/{account_id}/orders/{order_id}/modify-address` 的返回（契约已冻结）。
+ *
+ * 证据来自本地 trade bundle（`main.js`，**零平台请求**）：读接口是
+ * `mtop.idle.merchant.order.get.modify.address.info`，响应 `data.module` =
+ * `{modifyStatus, modifyAddressInfoVO, nowAddressInfoVO, modifyDeliverId}`。
+ */
+interface ModifyAddressData {
+  order_id?: string | null
+  /** 平台原文（`NONE` / `WAITING` / 其它原样透传）。**拿不到就是 `null`，不许编 'NONE'**。 */
+  status?: string | null
+  /** 只有 `status === 'WAITING'` 才是平台的 `modifyDeliverId`，否则 `null`。 */
+  deliver_id?: string | null
+  /** 契约：严格 `status === 'WAITING'`。 */
+  can_operate?: boolean
+  /** 平台 VO **原样透传**；平台没给是 `null`（不是 `{}`）。 */
+  now_address?: Record<string, unknown> | null
+  modify_address?: Record<string, unknown> | null
+  /** 解密成功时的 `{name,suffix,phoneNumber,address}`，否则 `null`。 */
+  decrypted?: {
+    name?: string | null
+    suffix?: string | null
+    phone_number?: string | null
+    address?: string | null
+  } | null
+  warnings?: unknown
+  api?: string
+  fetched_at?: string
+}
+
+/**
+ * 官方工作台自己也有这道闸：bundle 偏移 3101000 处是 `"NOT_PAY"===s || "待付款"===s`，
+ * 命中就**直接不查、不可操作**。我们跟着拦，并且把原因写给用户看。
+ */
+function isNotPaid(status: unknown): boolean {
+  return status === 'NOT_PAY' || status === '待付款'
+}
+
+/**
+ * 地址 VO 的**已知**键 → 中文。只认这几个 —— 平台可能给 `privacyFlag` / `namePlaintext`
+ * 这类字段，也可能换一套，**没进这张表的全部丢进「其它字段」原样展示，绝不猜键名**。
+ */
+const ADDRESS_FIELDS: Array<{ keys: string[]; label: string }> = [
+  { keys: ['name', 'namePlaintext'], label: '收件人' },
+  { keys: ['phoneNumber', 'phone', 'mobile'], label: '电话' },
+  { keys: ['address'], label: '地址' },
+  { keys: ['suffix'], label: '地址后缀' },
+  { keys: ['privacyFlag'], label: '隐私标记' },
+  { keys: ['maskedName'], label: '脱敏姓名' },
+]
+
+/** 地址字段渲染：`null` / 缺失一律 `-`，布尔翻成是/否 —— **绝不把空值写成 0**。 */
+function addressValue(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '-'
+  if (typeof value === 'boolean') return value ? '是' : '否'
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+function normalizeWarnings(value: unknown): Array<{ code: string; message: string }> {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((item) => {
+      if (typeof item === 'string') return { code: '', message: item }
+      if (item && typeof item === 'object') {
+        const record = item as Record<string, unknown>
+        return { code: String(record.code ?? ''), message: String(record.message ?? record.msg ?? '') }
+      }
+      return { code: '', message: String(item ?? '') }
+    })
+    .filter((item) => item.code || item.message)
+}
+
+/** 一个地址 VO 的卡片：已知键 + 其余键进「其它字段」。`null` 如实说没给。 */
+function AddressCard({ title, value }: { title: string; value: Record<string, unknown> | null | undefined }) {
+  if (!value) {
+    return (
+      <div className="tr-addr-card">
+        <div className="tr-addr-title">{title}</div>
+        <p className="tr-sub">
+          平台这一次<strong>没有</strong>传这个地址 —— 契约里它是 <code>null</code>（不是空对象）。
+          显示 <code>-</code> 是实情，不会拿空对象或 0 填满。
+        </p>
+        <div className="tr-addr-rows">
+          <span>收件人</span><b>-</b>
+          <span>电话</span><b>-</b>
+          <span>地址</span><b>-</b>
+        </div>
+      </div>
+    )
+  }
+
+  const used = new Set<string>()
+  const rows: Array<{ label: string; text: string }> = []
+  for (const field of ADDRESS_FIELDS) {
+    field.keys.forEach((key) => used.add(key))
+    const hit = field.keys.find((key) => value[key] !== undefined)
+    if (!hit) continue
+    rows.push({ label: field.label, text: addressValue(value[hit]) })
+  }
+  const extras = Object.keys(value).filter((key) => !used.has(key))
+
+  return (
+    <div className="tr-addr-card">
+      <div className="tr-addr-title">{title}</div>
+      {rows.length === 0 ? (
+        <p className="tr-sub">平台给了这个 VO，但已知键一个都没命中 —— 见下面的「其它字段」。</p>
+      ) : (
+        <div className="tr-addr-rows">
+          {rows.map((row) => (
+            <Fragment key={row.label}>
+              <span>{row.label}</span>
+              <b>{row.text}</b>
+            </Fragment>
+          ))}
+        </div>
+      )}
+      {extras.length > 0 && (
+        <div className="tr-addr-extra">
+          <div className="tr-sub">其它字段（平台原样透传，键名不翻译）</div>
+          <div className="tr-addr-rows">
+            {extras.map((key) => (
+              <Fragment key={key}>
+                <span>{key}</span>
+                <b>{addressValue(value[key])}</b>
+              </Fragment>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 改地址审批面板。先 GET 只读接口，`can_operate`（严格 `status === 'WAITING'`）才给同意/拒绝；
+ * 两个写操作都走 `ConfirmDialog danger`，请求体里的 `confirm` 只能是**字面量 `true`**。
+ */
+export function ModifyAddressModal({ accountId, orderId, onClose, onChanged }: {
+  accountId: string
+  orderId: string
+  onClose: () => void
+  onChanged: () => void
+}) {
+  const toast = useToast()
+  const [pending, setPending] = useState<'agree' | 'refuse' | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const state = useAsync<ModifyAddressData>(
+    () => api.get<ModifyAddressData>(
+      `/api/trade/${encodeURIComponent(accountId)}/orders/${encodeURIComponent(orderId)}/modify-address`,
+    ),
+    [accountId, orderId],
+    Boolean(accountId && orderId),
+    // 只读查询，没有对应的 WS topic；**不轮询**，只有用户点刷新或写完才重拉。
+    [],
+  )
+
+  const info = state.data
+  const status = info?.status ?? null
+  const deliverId = typeof info?.deliver_id === 'string' && info.deliver_id ? info.deliver_id : null
+  const canOperate = info?.can_operate === true && status === 'WAITING' && Boolean(deliverId)
+  const warnings = normalizeWarnings(info?.warnings)
+
+  async function submit(action: 'agree' | 'refuse') {
+    if (!deliverId) {
+      toast.error('平台没给 deliver_id，这次没法提交（拿不到就不编一个）')
+      return
+    }
+    setBusy(true)
+    try {
+      // 本功能**唯一**的写出口：同意 / 拒绝共用它，`confirm: true` 是字面量，
+      // 前端不做「默认执行」—— 用户必须先在 ConfirmDialog 上点确认。
+      await api.post(
+        `/api/trade/${encodeURIComponent(accountId)}/orders/${encodeURIComponent(orderId)}`
+        + `/modify-address/${action}`,
+        { deliver_id: deliverId, confirm: true },
+      )
+      toast.success(action === 'agree' ? '已同意修改地址' : '已拒绝修改地址')
+      setPending(null)
+      state.reload()
+      onChanged()
+    } catch (err) {
+      // 未确认 400 confirmation_required / 字段缺失 400 invalid_fields / 掉线 409 /
+      // 平台拒绝 502 protocol_error（带 platform_errors）。**无权限不改登录态**，
+      // 所以这里只照实显示原因，不把用户赶去重新扫码。
+      toast.error(errorText(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <Modal
+        wide
+        title={`改地址审批 · 订单 ${orderId}`}
+        onClose={onClose}
+        footer={
+          canOperate ? (
+            <>
+              <button className="btn ghost" onClick={onClose} disabled={busy}>关闭</button>
+              <button
+                className="btn danger"
+                disabled={busy}
+                title="拒绝买家修改收货地址：会真的改动平台数据，要二次确认"
+                onClick={() => setPending('refuse')}
+              >
+                拒绝修改
+              </button>
+              <button
+                className="btn danger"
+                disabled={busy}
+                title="同意买家修改收货地址：会真的改动平台数据，要二次确认"
+                onClick={() => setPending('agree')}
+              >
+                同意修改
+              </button>
+            </>
+          ) : (
+            <button className="btn ghost" onClick={onClose}>关闭</button>
+          )
+        }
+      >
+        {state.loading && !info ? (
+          <Notice kind="info">正在问平台：这个订单有没有待处理的改地址申请…</Notice>
+        ) : null}
+
+        {state.notReady ? (
+          <Notice kind="warn">
+            「改地址」这条只读接口还没就绪（后端还没注册路由，暂时 404）。
+            这**不是**平台问题，等后端上线再回来看。
+          </Notice>
+        ) : null}
+
+        {state.error ? (
+          <Notice kind="error" onRetry={state.reload}>{state.error}</Notice>
+        ) : null}
+
+        {info ? (
+          <>
+            <div className="tr-addr-status">
+              <span className="tr-sub">平台状态</span>
+              <Badge tone={status === 'WAITING' ? 'warn' : 'muted'}>{status ?? '-'}</Badge>
+              <span className="tr-sub">
+                {status === null
+                  ? '平台没回 modifyStatus —— 显示 - ，不编一个 NONE 出来'
+                  : status === 'WAITING'
+                    ? '买家有申请，等卖家处理'
+                    : `平台原文 ${status}：不是 WAITING，没有待处理的申请`}
+              </span>
+            </div>
+
+            <div className="tr-addr-status">
+              <span className="tr-sub">deliver_id</span>
+              <b className="tr-mono">{money(deliverId)}</b>
+              <span className="tr-sub">
+                只有 status 是 WAITING 时平台才会给这个值；其余情况是 null，显示 - 。
+              </span>
+            </div>
+
+            {isNotPaid(status) ? (
+              <Notice kind="warn">
+                平台把这个订单标成未付款（<code>NOT_PAY</code> / 待付款），官方工作台在这档
+                直接不查也不允许操作。
+              </Notice>
+            ) : null}
+
+            {warnings.length > 0 ? (
+              <Notice kind="warn">
+                平台 / 后端给出的提示：
+                <ul className="tr-addr-warn">
+                  {warnings.map((warning, index) => (
+                    <li key={`${warning.code}-${index}`}>
+                      {warning.code ? <code>{warning.code}</code> : null}
+                      {warning.message ? ` ${warning.message}` : ''}
+                    </li>
+                  ))}
+                </ul>
+              </Notice>
+            ) : null}
+
+            <div className="tr-addr-grid">
+              <AddressCard title="现地址（平台当前收件地址）" value={info.now_address} />
+              <AddressCard title="买家申请改成" value={info.modify_address} />
+            </div>
+
+            {info.decrypted ? (
+              <div className="tr-addr-card">
+                <div className="tr-addr-title">解密后的地址（平台明文）</div>
+                <div className="tr-addr-rows">
+                  <span>收件人</span><b>{addressValue(info.decrypted.name)}</b>
+                  <span>地址后缀</span><b>{addressValue(info.decrypted.suffix)}</b>
+                  <span>电话</span><b>{addressValue(info.decrypted.phone_number)}</b>
+                  <span>地址</span><b>{addressValue(info.decrypted.address)}</b>
+                </div>
+              </div>
+            ) : null}
+
+            {!canOperate ? (
+              <Notice kind="info">
+                这个订单没有待处理的改地址申请（平台状态 {status ?? '-'}），所以没有同意 / 拒绝按钮。
+                官方工作台也只在 <code>modifyStatus === 'WAITING'</code> 时才发两个地址和
+                <code>modifyDeliverId</code>。
+              </Notice>
+            ) : null}
+
+            <div className="tr-addr-status">
+              <span className="tr-sub">平台接口 {money(info.api)}</span>
+              <span className="tr-sub">拉取于 {when(info.fetched_at)}</span>
+              <button className="btn sm ghost" onClick={state.reload} disabled={state.loading}>
+                <IconRefresh size={13} /> {state.loading ? '刷新中…' : '重新查询'}
+              </button>
+            </div>
+          </>
+        ) : null}
+      </Modal>
+
+      {pending ? (
+        <ConfirmDialog
+          danger
+          busy={busy}
+          title={pending === 'agree' ? '确认同意买家修改收货地址？' : '确认拒绝买家修改收货地址？'}
+          confirmText={pending === 'agree' ? '同意修改' : '拒绝修改'}
+          onCancel={() => setPending(null)}
+          onConfirm={() => submit(pending)}
+          message={
+            <>
+              <p style={{ marginTop: 0 }}>
+                订单 <b className="tr-mono">{orderId}</b> · deliver_id{' '}
+                <b className="tr-mono">{money(deliverId)}</b>
+              </p>
+              <p>
+                {pending === 'agree'
+                  ? '同意后，平台会把订单的收货地址改成本次申请的地址，之后发货按新地址走。'
+                  : '拒绝后，订单继续用原来的收货地址，买家需要自己再申请或联系你。'}
+                这是<b>真的写平台数据</b>，做完不能在这里撤销。
+              </p>
+              <p className="tr-sub" style={{ marginBottom: 0 }}>
+                请求会带 <code>{'{ deliver_id, confirm: true }'}</code>；缺 confirm 后端直接 400
+                <code> confirmation_required</code>，一个平台请求都不发。
+              </p>
+            </>
+          }
+        />
+      ) : null}
+    </>
+  )
+}
+
 export function OrdersPage() {
   const { accounts, picked, setPicked, accountId } = useTradeAccounts()
   const [page, setPage] = useState(1)
   const [write, setWrite] = useState<WriteDraft | null>(null)
+  /** 正在看「买家申请改收货地址」的订单号；null 表示面板关着。 */
+  const [modifyOrderId, setModifyOrderId] = useState<string | null>(null)
   const pageSize = 10
 
   const state = useAsync<OrdersResult>(
@@ -1250,6 +1604,7 @@ export function OrdersPage() {
       label: '写操作',
       render: (row) => {
         const orderId = String(row.order_id ?? '')
+        const notPaid = isNotPaid(row.order_status)
         return (
           <span className="tr-writes" onClick={(event) => event.stopPropagation()}>
             <button
@@ -1278,6 +1633,20 @@ export function OrdersPage() {
                 <IconCheckCircle size={13} /> 退款
               </button>
             ) : null}
+            <button
+              className="btn sm"
+              disabled={!accountId || !orderId || notPaid}
+              title={
+                notPaid
+                  ? '未付款订单连查都不查：官方工作台在 NOT_PAY / 待付款这一档直接不查、不可操作'
+                  : row.buyer_apply_modify_address
+                    ? '买家申请了修改收货地址，点这里看「现地址 / 申请改成」并同意或拒绝'
+                    : '查看这个订单有没有待处理的改地址申请：先 GET 只读接口，只有平台状态是 WAITING 才出现同意 / 拒绝'
+              }
+              onClick={() => setModifyOrderId(orderId)}
+            >
+              <IconLink size={13} /> 改地址
+            </button>
           </span>
         )
       },
@@ -1388,6 +1757,15 @@ export function OrdersPage() {
           accountId={accountId}
           draft={write}
           onClose={() => setWrite(null)}
+          onChanged={state.reload}
+        />
+      ) : null}
+
+      {modifyOrderId && accountId ? (
+        <ModifyAddressModal
+          accountId={accountId}
+          orderId={modifyOrderId}
+          onClose={() => setModifyOrderId(null)}
           onChanged={state.reload}
         />
       ) : null}
