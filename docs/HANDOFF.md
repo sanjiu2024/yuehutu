@@ -1952,6 +1952,14 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 提交：`a66cfcf`（深色对比度补正）、`dbcf62f`（标签关联 + 可访问名字）、`4da7d86`（审计脚本入仓）。
 > 诚实边界：两个脚本查的是 DOM 与计算样式，查不出布局错位、动效、触屏手感；对比度阈值
 > 取 4.0（正文标准，大字本可放宽到 3.0），深色最低值正好 ≈4.0，**没有余量**。
+>
+> 打包版复验（exe `10,011,663` 字节 / 2026-10-13 02:45:08，`--port 18400` `/api/health` 200
+> `frozen:true`）：`scripts/contrast_audit.py --threshold 4.0`（不带 `--port`，打的就是打包版）
+> → `[dark] BAD_PAGES 0/26`、`[light] BAD_PAGES 0/26`、`NON_GET_API_REQUESTS=[]`；
+> `scripts/a11y_audit.py` → 三类问题全 0、`NON_GET_API_REQUESTS=[]`；
+> `probe_write_gate.py` → **`GATE FAILURES: 0 / 28`**；`packaged_ui_smoke.py` → **26/26 页通过**；
+> `check_assets.py` → `GET /` 引用 `['index-B8urkkWX.js','index-CLcnv55b.css']`，remote/local SHA256
+> 相同（`aeea3e6e7024` / `6f4b4d343470`），**`ASSETS_MATCH=True`**。
 
 ## 四、已验证 / 未验证（诚实边界）
 
