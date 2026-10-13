@@ -960,6 +960,30 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'datacenter_card',
+            'description': '查该账号数据总览页的一张「经营卡片」：kind=trade 交易数据 / seller 经营概况 / '
+                           'repurchase 复购 / refund 退款概览。用户问「这两天卖得怎么样 / 有多少人看 / '
+                           '退款多不多」时用。默认是「今天」（官方页面默认）；一次只查一张。'
+                           '指标名与中文标题都以平台为准：label 为 null 时说明平台新增了指标，'
+                           '照平台字段名说，**不要自己编中文名**；平台没给的值是 null，不要当成 0。'
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'kind': {'type': 'string',
+                             'description': '卡片类型：trade / seller / repurchase / refund，默认 trade'},
+                    'start': {'type': 'string', 'description': '开始日期 YYYYMMDD，不传就是今天'},
+                    'end': {'type': 'string', 'description': '结束日期 YYYYMMDD'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 通知（只读） ----------------
     {
         'type': 'function',
@@ -2267,6 +2291,7 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'datacenter_fans': ['datacenter', 'fans'],
     'datacenter_customer_service': ['datacenter', 'customer_service'],
     'datacenter_commodity': ['datacenter', 'commodity'],
+    'datacenter_card': ['datacenter', 'card'],
     # ---- 通知 ----
     'notifications_list': ['notify', 'notifications'],
     # ---- 运费模版 ----
@@ -2486,6 +2511,7 @@ _HANDLERS = {
     'datacenter_fans': lambda a: _dispatch_service('datacenter_fans', a),
     'datacenter_customer_service': lambda a: _dispatch_service('datacenter_customer_service', a),
     'datacenter_commodity': lambda a: _dispatch_service('datacenter_commodity', a),
+    'datacenter_card': lambda a: _dispatch_service('datacenter_card', a),
     'notifications_list': lambda a: _dispatch_service('notifications_list', a),
     'item_templates_list': lambda a: _dispatch_service('item_templates_list', a),
     'item_templates_get': lambda a: _dispatch_service('item_templates_get', a),

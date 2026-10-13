@@ -52,6 +52,9 @@ NEW_TOOLS: Dict[str, Dict[str, Any]] = {
     'datacenter_commodity': {
         'module': 'datacenter', 'fn': 'commodity', 'verb': 'get',
         'path': '/api/datacenter/{account_id}/commodity'},
+    'datacenter_card': {
+        'module': 'datacenter', 'fn': 'card', 'verb': 'get',
+        'path': '/api/datacenter/{account_id}/card/{kind}'},
     'notifications_list': {'module': 'notify', 'fn': 'notifications', 'verb': 'get',
                            'path': '/api/notifications/{account_id}'},
     'item_templates_list': {'module': 'item_templates', 'fn': 'list_templates',

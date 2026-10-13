@@ -509,6 +509,7 @@ class MasterChatTest(unittest.TestCase):
             # ---- 数据中心 ----
             'datacenter_overview', 'datacenter_fans', 'datacenter_customer_service',
             'datacenter_commodity',
+            'datacenter_card',
             # ---- 通知 ----
             'notifications_list',
             # ---- 运费模版 ----
