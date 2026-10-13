@@ -21,6 +21,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 from loguru import logger
 
 from ..xianyu import address_write as addr_proto
+from ..xianyu import compensate as cp_proto
 from ..xianyu import order_address as order_addr_proto
 from ..xianyu import trade_write as proto
 from . import common
@@ -780,3 +781,121 @@ def complain_revoke(account_id: str, complain_id: Any, *,
     if business:
         return business
     return result
+
+
+# --------------------------------------------------------------------------- 赔付 / 维权服务
+#
+#   detail.query   @831798  v1.0  {orderId, serviceCode} + **valueType:'string'**（只读）
+#   refuse.render  @827668  v1.0  {serviceCode} → data.module.reasonChoices（只读）
+#   refuse         bundle 模块 26675 v1.0 {orderId, serviceCode, sellerRefuseReason(JSON 串),
+#                  refuseProofs(JSON 串), isManual} + needLoginPC（凭证必填）
+#   同族的 compensate.service.pay（真付钱）**故意不做**，理由见协议层 docstring。
+
+
+def compensate_detail(account_id: str, order_id: Any, service_code: Any) -> Dict[str, Any]:
+    """赔付详情 —— **只读**，所以没有 `confirm`。
+
+    官方这一条带 `valueType:'string'`（`data` 是 JSON 字符串），必须原样传下去，
+    否则响应形状可能不是官方看到的那一种（协议层 `_module_of` 两种都认）。
+    平台没给 `module` 时给 `found=False` + 中文 warning —— **不替用户编一笔赔付出来**。
+    """
+    failure = _missing(('订单号', order_id), ('赔付服务号', service_code))
+    if failure:
+        return failure
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+    api, data = cp_proto.detail_request(order_id, service_code)
+    raw, failure = _call_api(client, api, data, cp_proto.DEFAULT_VERSION,
+                             cp_proto.DETAIL_VALUE_TYPE)
+    if failure:
+        return failure
+    payload = cp_proto.parse_detail(raw)
+    payload['account_id'] = account_id
+    payload['order_id'] = payload.get('order_id') or _text(order_id)
+    payload['service_code'] = payload.get('service_code') or _text(service_code)
+    payload['api'] = api
+    warnings = []
+    if not payload.get('found'):
+        warnings.append({
+            'code': 'compensate_detail_missing',
+            'message': '平台没有返回这笔赔付的详情（可能订单号 / 赔付服务号不对，'
+                       '也可能平台改了字段名）；这里不替你猜一笔赔付出来，'
+                       '请到官方卖家工作台核对这笔维权。',
+        })
+    payload['warnings'] = warnings
+    return _stamp(payload)
+
+
+def compensate_refuse_form(account_id: str, service_code: Any) -> Dict[str, Any]:
+    """拒绝赔付的原因候选 —— **只读**。
+
+    平台没给 `reasonChoices` 时给 `None` + warning（**不是空数组**：
+    「平台没给」和「平台给了空列表」是两件事，前者不该让用户以为「就是没有原因可选」）。
+    """
+    failure = _missing(('赔付服务号', service_code))
+    if failure:
+        return failure
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+    api, data = cp_proto.refuse_form_request(service_code)
+    raw, failure = _call_api(client, api, data, cp_proto.DEFAULT_VERSION)
+    if failure:
+        return failure
+    payload = cp_proto.parse_refuse_form(raw)
+    payload['account_id'] = account_id
+    payload['service_code'] = _text(service_code)
+    payload['api'] = api
+    warnings = []
+    if payload.get('reason_choices') is None:
+        warnings.append({
+            'code': 'compensate_reasons_missing',
+            'message': '平台没有返回拒绝原因候选（可能改了字段名）；这里不替你编原因，'
+                       '可以手填一个原因，或者去官方卖家工作台看当前可选值。',
+        })
+    payload['warnings'] = warnings
+    return _stamp(payload)
+
+
+def compensate_refuse(account_id: str, order_id: Any, service_code: Any, reason_choices: Any,
+                      reason_desc: Any = '', proof_urls: Any = (), is_manual: Any = False, *,
+                      confirm: Any = False) -> Dict[str, Any]:
+    """拒绝赔付（`...merchant.compensate.service.refuse`）—— **不可撤销**。
+
+    官方的两条硬约束照搬：**凭证必填**（原话「请上传凭证」）、说明最多 200 字。
+    字段校验排在「建客户端」**之前**（确认 → 字段校验 → 建客户端），
+    所以拼错原因 / 忘传凭证时不会白跑一次凭据检查，也一个平台请求都不发。
+    """
+    if not _truthy(confirm):
+        return _confirm_required('拒绝赔付')
+    failure = _missing(('订单号', order_id), ('赔付服务号', service_code))
+    if failure:
+        return failure
+    try:
+        api, data = cp_proto.refuse_request(order_id, service_code, reason_choices,
+                                            reason_desc, proof_urls, is_manual, confirm=True)
+    except (cp_proto.UnknownApi, cp_proto.WriteNotConfirmed, ValueError) as exc:
+        code = CONFIRM_CODE if isinstance(exc, cp_proto.WriteNotConfirmed) else 'invalid_fields'
+        return common.fail(str(exc), code)
+    audit = {
+        'order_id': _text(order_id),
+        'service_code': _text(service_code),
+        'reason_choices': len(cp_proto._choices(reason_choices)),
+        'proof_count': len(cp_proto._urls(proof_urls)),
+        'is_manual': bool(is_manual),
+    }
+    payload = _submit(account_id, 'trade_compensate_refuse', _text(order_id),
+                      lambda: (api, data), cp_proto.parse_refuse, cp_proto.DEFAULT_VERSION,
+                      audit=audit)
+    if common.is_failure(payload):
+        return payload
+    if payload.get('platform_success') is False:
+        # 平台收下了请求但明确说「没成功」（`data.success=false` + `data.failReason`）：
+        # 这种情况**绝不能**当成功返回，否则用户会以为拒绝赔付已经生效。
+        reason = payload.get('platform_message') or '平台拒绝了这次拒绝赔付'
+        logger.warning(f'[trade_write] 平台拒绝赔付 {payload.get("api")}: {reason}')
+        return common.fail(f'平台接口失败: {reason}', 'protocol_error',
+                           platform_errors={'api': payload.get('api'), 'explain': reason})
+    payload['submitted'] = audit
+    return payload

@@ -40,6 +40,7 @@ from backend.app.api import trade_write as trade_write_api  # noqa: E402
 from backend.app.core import db, security  # noqa: E402
 from backend.app.services import common as svc_common  # noqa: E402
 from backend.app.services import trade_write as trade_write_svc  # noqa: E402
+from backend.app.xianyu import compensate as cp_proto  # noqa: E402
 from backend.app.xianyu import trade as trade_proto  # noqa: E402
 from backend.app.xianyu import trade_write as proto  # noqa: E402
 from backend.tests.testenv import use_temp_app_dir  # noqa: E402
@@ -101,10 +102,40 @@ NO_PERMISSION = {'success': False, 'message': 'NO_PERMISSION::用户没有权限
 UNAUTHORIZED = {'success': False, 'message': 'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问',
                 'ret': ['FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问']}
 
+# --- 第四十五批：赔付 / 维权（形状按 bundle 手写，不是真机原文） -----------------
+
+#: `…compensate.service.detail.query`：官方带 `valueType:'string'`，`data.module` 才是业务体
+COMP_DETAIL = {'api': cp_proto.DETAIL_API, 'ret': ['SUCCESS::调用成功'],
+               'data': {'module': {
+                   'orderId': 'O1', 'serviceCode': 'S1', 'amount': 1250,
+                   'elements': [{'title': {'text': '平台判定需赔付 12.50 元'},
+                                 'desc': '买家举证成立'}],
+                   'serviceInfo': {'serviceIntroduce': '这是一笔赔付'},
+               }}}
+#: 同一条，但整个 `data` 是 JSON **字符串**（真机 `valueType:'string'` 就是这个形状）
+COMP_DETAIL_STRING = {'api': cp_proto.DETAIL_API, 'ret': ['SUCCESS::调用成功'],
+                      'data': json.dumps(COMP_DETAIL['data'], ensure_ascii=False)}
+#: 平台没给 module（`data` 是空字典）
+COMP_DETAIL_EMPTY = {'api': cp_proto.DETAIL_API, 'ret': ['SUCCESS::调用成功'], 'data': {}}
+COMP_REASONS = {'api': cp_proto.REFUSE_FORM_API, 'ret': ['SUCCESS::调用成功'],
+                'data': {'module': {'reasonChoices': ['原因A', '原因B']}}}
+COMP_REASONS_MISSING = {'api': cp_proto.REFUSE_FORM_API, 'ret': ['SUCCESS::调用成功'],
+                        'data': {'module': {'other': 1}}}
+COMP_REFUSE_OK = {'api': cp_proto.REFUSE_API, 'ret': ['SUCCESS::调用成功'],
+                  'data': {'module': {'success': True, 'msgId': 'm-1'}}}
+COMP_REFUSE_NOFLAG = {'api': cp_proto.REFUSE_API, 'ret': ['SUCCESS::调用成功'],
+                      'data': {'module': {}}}
+COMP_REFUSE_FAIL = {'api': cp_proto.REFUSE_API, 'ret': ['SUCCESS::调用成功'],
+                    'data': {'module': {'success': False, 'failReason': '凭证看不清'}}}
+COMP_REFUSE_UNAUTHORIZED = {'api': cp_proto.REFUSE_API, 'ret': ['SUCCESS::调用成功'],
+                            'data': {'module': {'success': False,
+                                                'failReason': 'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问'}}}
+#: 确认闸门的反例（`True`/`'true'`/`1` 之外的都不算点头）
+FALSE_LIKE = (False, None, 0, 'false', 'FALSE', 'no', 'yes', '', [], {})
+
 
 class SessionExpiredError(RuntimeError):
     """与协议层同名：`common._is_session_expired` 按**类名**认登录态过期。"""
-
 
 class FakeTradeClient:
     """假协议层：只实现 `mtop`，记录每次调用的 (api, data, v)。"""
@@ -115,8 +146,8 @@ class FakeTradeClient:
         self.errors = errors or {}
         self.calls: List[Dict[str, Any]] = []
 
-    async def mtop(self, api: str, data: Any = None, v: str = '1.0') -> Any:
-        self.calls.append({'api': api, 'data': data, 'v': v})
+    async def mtop(self, api: str, data: Any = None, v: str = '1.0', **kwargs: Any) -> Any:
+        self.calls.append({'api': api, 'data': data, 'v': v, 'kw': kwargs})
         error = self.errors.get(api)
         if error is not None:
             raise error
@@ -172,6 +203,9 @@ def full_client(**overrides: Any) -> FakeTradeClient:
         proto.COMPLAIN_PROOF_APIS['submitActiveProof']: COMPLAIN_OK,
         proto.COMPLAIN_PROOF_APIS['submitPassiveProof']: COMPLAIN_OK,
         proto.VERIFY_URL_API: VERIFY_OK,
+        cp_proto.DETAIL_API: COMP_DETAIL,
+        cp_proto.REFUSE_FORM_API: COMP_REASONS,
+        cp_proto.REFUSE_API: COMP_REFUSE_OK,
     }
     payloads.update(overrides)
     return FakeTradeClient(payloads)
@@ -1007,6 +1041,331 @@ class CloseAndDelayTest(TradeWritePageTest):
             self.assertIn((BASE + '/{account_id}/orders/{order_id}' + suffix, ('POST',)), paths)
         self.assertIn((BASE + '/{account_id}/refunds/{refund_id}/postage-pay', ('POST',)), paths)
         self.assertIn((BASE + '/{account_id}/complaints/{complain_id}/revoke', ('POST',)), paths)
+
+
+# --------------------------------------------------------------------------- 第四十五批：赔付 / 维权
+
+
+class CompensateProtocolTest(unittest.TestCase):
+    """协议层：接口名（逐字）、版本、读写切分、逐字载荷、解析四态。"""
+
+    def test_api_names_are_verbatim(self):
+        self.assertEqual(cp_proto.DETAIL_API,
+                         'mtop.taobao.idle.merchant.compensate.service.detail.query')
+        self.assertEqual(cp_proto.REFUSE_FORM_API,
+                         'mtop.taobao.idle.merchant.compensate.service.refuse.render')
+        self.assertEqual(cp_proto.REFUSE_API,
+                         'mtop.taobao.idle.merchant.compensate.service.refuse')
+        self.assertEqual(cp_proto.DEFAULT_VERSION, '1.0')
+        self.assertEqual(cp_proto.DETAIL_VALUE_TYPE, 'string')
+        self.assertEqual(cp_proto.REASON_DESC_MAX, 200)
+
+    def test_read_and_write_sets_do_not_overlap(self):
+        self.assertEqual(set(cp_proto.READ_APIS),
+                         {cp_proto.DETAIL_API, cp_proto.REFUSE_FORM_API})
+        self.assertEqual(cp_proto.WRITE_API_SET, {cp_proto.REFUSE_API})
+        self.assertFalse(cp_proto.WRITE_API_SET & set(cp_proto.READ_APIS))
+
+    def test_assert_write_only_accepts_the_write_api(self):
+        self.assertEqual(cp_proto.assert_write(cp_proto.REFUSE_API), cp_proto.REFUSE_API)
+        for api in cp_proto.READ_APIS:
+            with self.assertRaises(cp_proto.UnknownApi):
+                cp_proto.assert_write(api)
+
+    def test_assert_read_rejects_the_write_api(self):
+        self.assertEqual(cp_proto.assert_read(cp_proto.DETAIL_API), cp_proto.DETAIL_API)
+        with self.assertRaises(cp_proto.UnknownApi):
+            cp_proto.assert_read(cp_proto.REFUSE_API)
+
+    def test_detail_request_shape(self):
+        self.assertEqual(cp_proto.detail_request('O1', 'S1'), (cp_proto.DETAIL_API,
+                                                               {'orderId': 'O1', 'serviceCode': 'S1'}))
+
+    def test_refuse_form_request_shape(self):
+        self.assertEqual(cp_proto.refuse_form_request('S1'), (cp_proto.REFUSE_FORM_API,
+                                                              {'serviceCode': 'S1'}))
+
+    def test_refuse_request_shape_is_verbatim(self):
+        api, data = cp_proto.refuse_request('O1', 'S1', ['原因A', '原因B'], '不认可',
+                                            ['u1', 'u2'], False, confirm=True)
+        self.assertEqual(api, cp_proto.REFUSE_API)
+        self.assertEqual(data, {
+            'orderId': 'O1', 'serviceCode': 'S1',
+            'sellerRefuseReason': '{"reasonChoices":["原因A","原因B"],"reasonDesc":"不认可"}',
+            'refuseProofs': '["u1","u2"]', 'isManual': False,
+        })
+
+    def test_refuse_request_rejects_a_false_like_confirm(self):
+        for value in FALSE_LIKE:
+            with self.assertRaises(cp_proto.WriteNotConfirmed):
+                cp_proto.refuse_request('O1', 'S1', ['原因A'], '', ['u1'], False, confirm=value)
+
+    def test_refuse_validation_runs_in_the_protocol_layer(self):
+        with self.assertRaises(ValueError):
+            cp_proto.refuse_request('O1', 'S1', [], '', ['u1'], False, confirm=True)
+        with self.assertRaises(ValueError):
+            cp_proto.refuse_request('O1', 'S1', ['原因A'], '', [], False, confirm=True)
+        with self.assertRaises(ValueError):
+            cp_proto.refuse_request('O1', 'S1', ['原因A'], '字' * 201, ['u1'], False,
+                                    confirm=True)
+        with self.assertRaises(ValueError):
+            cp_proto.refuse_request('O1', '', ['原因A'], '', ['u1'], False, confirm=True)
+
+    def test_reason_choices_accept_a_comma_string_without_duplicates(self):
+        api, data = cp_proto.refuse_request('O1', 'S1', '原因A, 原因B,原因A', '', ['u1'],
+                                            False, confirm=True)
+        self.assertEqual(json.loads(data['sellerRefuseReason'])['reasonChoices'],
+                         ['原因A', '原因B'])
+
+    def test_proof_urls_are_deduplicated(self):
+        _, data = cp_proto.refuse_request('O1', 'S1', ['原因A'], '', ['u1', 'u1', 'u2'],
+                                          False, confirm=True)
+        self.assertEqual(json.loads(data['refuseProofs']), ['u1', 'u2'])
+
+    def test_request_of_dispatches_and_rejects_unknown_actions(self):
+        self.assertEqual(cp_proto.request_of('compensate_refuse', order_id='O1',
+                                             service_code='S1', reason_choices=['原因A'],
+                                             proof_urls=['u1'], confirm=True)[0],
+                         cp_proto.REFUSE_API)
+        with self.assertRaises(cp_proto.UnknownApi):
+            cp_proto.request_of('nope', confirm=True)
+
+    def test_module_of_accepts_both_shapes(self):
+        self.assertEqual(cp_proto._module_of(COMP_DETAIL)['orderId'], 'O1')
+        self.assertEqual(cp_proto._module_of(COMP_DETAIL_STRING)['orderId'], 'O1')
+
+    def test_module_of_returns_none_when_the_platform_gives_nothing(self):
+        self.assertIsNone(cp_proto._module_of(COMP_DETAIL_EMPTY))
+        self.assertIsNone(cp_proto._module_of({}))
+
+    def test_parse_detail_converts_cents_to_yuan(self):
+        parsed = cp_proto.parse_detail(COMP_DETAIL)
+        self.assertTrue(parsed['found'])
+        self.assertEqual(parsed['amount'], 1250)
+        self.assertEqual(parsed['amount_yuan'], '12.50')
+        self.assertEqual(parsed['title'], '平台判定需赔付 12.50 元')
+        self.assertEqual(parsed['desc'], '买家举证成立')
+
+    def test_parse_detail_never_invents_numbers(self):
+        parsed = cp_proto.parse_detail(COMP_DETAIL_EMPTY)
+        self.assertFalse(parsed['found'])
+        for key in ('amount', 'amount_yuan', 'title', 'desc', 'order_id', 'service_code'):
+            self.assertIsNone(parsed[key], key)
+
+    def test_parse_refuse_form_keeps_none_and_empty_apart(self):
+        self.assertEqual(cp_proto.parse_refuse_form(COMP_REASONS)['reason_choices'],
+                         ['原因A', '原因B'])
+        self.assertEqual(cp_proto.parse_refuse_form({'data': {'module': {'reasonChoices': []}}})
+                         ['reason_choices'], [])
+        missing = cp_proto.parse_refuse_form(COMP_REASONS_MISSING)
+        self.assertIsNone(missing['reason_choices'])
+        self.assertTrue(missing['found'])
+
+    def test_parse_refuse_reads_the_business_flag(self):
+        self.assertTrue(cp_proto.parse_refuse(COMP_REFUSE_OK)['saved'])
+        self.assertIs(cp_proto.parse_refuse(COMP_REFUSE_OK)['platform_success'], True)
+        failed = cp_proto.parse_refuse(COMP_REFUSE_FAIL)
+        self.assertFalse(failed['saved'])
+        self.assertEqual(failed['platform_message'], '凭证看不清')
+        self.assertIsNone(cp_proto.parse_refuse(COMP_REFUSE_NOFLAG)['platform_success'])
+
+    def test_refuse_api_is_registered_as_a_write(self):
+        self.assertIn('compensate_refuse', cp_proto.ACTIONS)
+        self.assertEqual(cp_proto.ACTIONS['compensate_refuse'], cp_proto.REFUSE_API)
+        self.assertIn(cp_proto.REFUSE_API, cp_proto.ALL_APIS)
+
+
+class CompensatePageTest(TradeWritePageTest):
+    """赔付三条路由的 HTTP 面。"""
+
+    def detail_path(self, order_id: str = 'O1', service_code: str = 'S1') -> str:
+        return f'{BASE}/{ACC}/orders/{order_id}/compensations/{service_code}'
+
+    def reasons_path(self, service_code: str = 'S1') -> str:
+        return f'{BASE}/{ACC}/compensations/{service_code}/reasons'
+
+    def refuse_path(self, order_id: str = 'O1', service_code: str = 'S1') -> str:
+        return f'{BASE}/{ACC}/orders/{order_id}/compensations/{service_code}/refuse'
+
+    def refuse_body(self, **overrides: Any) -> Dict[str, Any]:
+        body = {'reason_choices': ['原因A'], 'proof_urls': ['u1'], 'confirm': True}
+        body.update(overrides)
+        return body
+
+
+class CompensateReadTest(CompensatePageTest):
+    """两条只读：详情 + 拒绝原因候选（都**没有** confirm 闸门）。"""
+
+    def test_detail_shape_matches_the_bundle(self):
+        data = self.get(self.detail_path()).json()['data']
+        self.assertEqual(data['order_id'], 'O1')
+        self.assertEqual(data['service_code'], 'S1')
+        self.assertEqual(data['amount_yuan'], '12.50')
+        self.assertEqual(data['api'], cp_proto.DETAIL_API)
+        self.assertEqual(data['source'], 'platform')
+        self.assertEqual(data['warnings'], [])
+        call = self.fake.call_of(cp_proto.DETAIL_API)
+        self.assertEqual(call['data'], {'orderId': 'O1', 'serviceCode': 'S1'})
+        self.assertEqual(call['v'], '1.0')
+
+    def test_detail_passes_value_type_string(self):
+        """官方这一条带 `valueType:'string'`，不发就可能是另一种响应形状。"""
+        self.get(self.detail_path())
+        self.assertEqual(self.fake.call_of(cp_proto.DETAIL_API)['kw'],
+                         {'value_type': 'string'})
+
+    def test_detail_accepts_a_json_string_body(self):
+        self.fake.payloads[cp_proto.DETAIL_API] = COMP_DETAIL_STRING
+        data = self.get(self.detail_path()).json()['data']
+        self.assertEqual(data['amount_yuan'], '12.50')
+
+    def test_detail_has_no_confirm_gate(self):
+        resp = self.get(self.detail_path())
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(self.fake.apis(), [cp_proto.DETAIL_API])
+
+    def test_detail_missing_module_is_a_warning_not_invented_data(self):
+        self.fake.payloads[cp_proto.DETAIL_API] = COMP_DETAIL_EMPTY
+        data = self.get(self.detail_path()).json()['data']
+        self.assertFalse(data['found'])
+        self.assertIsNone(data['amount'])
+        self.assertIsNone(data['amount_yuan'])
+        self.assertEqual([w['code'] for w in data['warnings']], ['compensate_detail_missing'])
+
+    def test_reasons_shape(self):
+        data = self.get(self.reasons_path()).json()['data']
+        self.assertEqual(data['reason_choices'], ['原因A', '原因B'])
+        self.assertEqual(data['api'], cp_proto.REFUSE_FORM_API)
+        self.assertEqual(data['warnings'], [])
+
+    def test_reasons_missing_key_is_none_plus_a_warning(self):
+        self.fake.payloads[cp_proto.REFUSE_FORM_API] = COMP_REASONS_MISSING
+        data = self.get(self.reasons_path()).json()['data']
+        self.assertIsNone(data['reason_choices'], '「平台没给」不许写成空数组')
+        self.assertEqual([w['code'] for w in data['warnings']], ['compensate_reasons_missing'])
+
+    def test_platform_refusal_is_502_and_not_a_logout(self):
+        self.fake.payloads[cp_proto.DETAIL_API] = UNAUTHORIZED
+        resp = self.get(self.detail_path())
+        self.assertEqual(resp.status_code, 502, resp.text)
+        self.assertEqual(resp.json()['code'], 'protocol_error')
+        self.assertEqual(self.login_state(), 'active')
+
+    def test_missing_cookie_is_409_and_sends_nothing(self):
+        seed_account(cookie='')
+        resp = self.get(self.detail_path())
+        self.assertEqual(resp.status_code, 409, resp.text)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_unknown_account_is_404(self):
+        resp = self.get(f'{BASE}/nope/orders/O1/compensations/S1')
+        self.assertEqual(resp.status_code, 404, resp.text)
+        self.assertEqual(resp.json()['code'], 'not_found')
+
+    def test_requires_login(self):
+        self.assertEqual(self.get(self.detail_path(), headers={}).status_code, 401)
+
+
+class CompensateRefuseTest(CompensatePageTest):
+    """写：确认闸门 → 字段校验 → 建客户端，三步顺序一条都不许换。"""
+
+    def test_confirm_gate_rejects_every_false_like_value_without_calling_platform(self):
+        for value in FALSE_LIKE:
+            payload = self.fail(self.refuse_path(), self.refuse_body(confirm=value))
+            self.assertEqual(payload['code'], 'confirmation_required', repr(value))
+            self.assertEqual(self.fake.calls, [], repr(value))
+
+    def test_confirm_accepts_true_true_string_and_one(self):
+        for value in (True, 'true', ' TRUE ', 1):
+            self.fake.calls.clear()
+            resp = self.post(self.refuse_path(), self.refuse_body(confirm=value))
+            self.assertEqual(resp.status_code, 200, (value, resp.text))
+            self.assertEqual(len(self.fake.calls), 1, repr(value))
+
+    def test_field_validation_runs_before_the_credential_check(self):
+        """凭证/账号检查在建客户端那一步；字段错的时候一个平台请求都不该发。"""
+        db.execute('DELETE FROM account_credentials WHERE account_id=?', (ACC,))
+        payload = self.fail(self.refuse_path(), self.refuse_body(proof_urls=[]))
+        self.assertEqual(payload['code'], 'invalid_fields')
+        self.assertIn('凭证', payload['message'])
+        self.assertEqual(self.fake.calls, [], '字段校验必须排在凭据检查之前')
+
+    def test_empty_reason_choices_is_rejected(self):
+        payload = self.fail(self.refuse_path(), self.refuse_body(reason_choices=[]))
+        self.assertEqual(payload['code'], 'invalid_fields')
+
+    def test_overlong_reason_desc_is_rejected(self):
+        payload = self.fail(self.refuse_path(), self.refuse_body(reason_desc='字' * 201))
+        self.assertEqual(payload['code'], 'invalid_fields')
+        self.assertIn('200', payload['message'])
+
+    def test_happy_path_sends_the_verbatim_payload_and_audits_it(self):
+        data = self.ok_data(self.refuse_path(), self.refuse_body(
+            reason_choices=['原因A', '原因B'], reason_desc='不认可',
+            proof_urls=['u1', 'u2'], is_manual=True))
+        self.assertTrue(data['saved'])
+        self.assertEqual(data['action'], 'trade_compensate_refuse')
+        self.assertEqual(data['submitted']['proof_count'], 2)
+        self.assertEqual(data['submitted']['is_manual'], True)
+        call = self.fake.call_of(cp_proto.REFUSE_API)
+        self.assertEqual(call['data'], {
+            'orderId': 'O1', 'serviceCode': 'S1',
+            'sellerRefuseReason': '{"reasonChoices":["原因A","原因B"],"reasonDesc":"不认可"}',
+            'refuseProofs': '["u1","u2"]', 'isManual': True,
+        })
+        self.assertEqual([(row['action'], row['success']) for row in self.logs()],
+                         [('trade_compensate_refuse', 1)])
+
+    def test_business_rejection_is_502_with_the_platform_wording(self):
+        self.fake.payloads[cp_proto.REFUSE_API] = COMP_REFUSE_FAIL
+        payload = self.fail(self.refuse_path(), self.refuse_body(), status=502)
+        self.assertEqual(payload['code'], 'protocol_error')
+        self.assertIn('凭证看不清', payload['message'])
+        self.assertEqual(self.login_state(), 'active', '平台业务拒绝 ≠ 掉线')
+
+    def test_platform_refusal_never_touches_the_login_state(self):
+        self.fake.payloads[cp_proto.REFUSE_API] = COMP_REFUSE_UNAUTHORIZED
+        payload = self.fail(self.refuse_path(), self.refuse_body(), status=502)
+        self.assertEqual(payload['code'], 'protocol_error')
+        self.assertEqual(self.login_state(), 'active')
+
+    def test_envelope_failure_is_502(self):
+        self.fake.payloads[cp_proto.REFUSE_API] = UNAUTHORIZED
+        self.fail(self.refuse_path(), self.refuse_body(), status=502)
+
+    def test_session_expired_is_409_and_marks_need_relogin(self):
+        self.fake.errors[cp_proto.REFUSE_API] = SessionExpiredError(
+            'FAIL_SYS_SESSION_EXPIRED::Session过期')
+        self.fail(self.refuse_path(), self.refuse_body(), status=409)
+        self.assertEqual(self.login_state(), 'need_relogin')
+
+    def test_unknown_account_is_404_and_sends_nothing(self):
+        payload = self.fail(f'{BASE}/nope/orders/O1/compensations/S1/refuse',
+                            self.refuse_body(), status=404)
+        self.assertEqual(payload['code'], 'not_found')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_requires_login(self):
+        resp = self.post(self.refuse_path(), self.refuse_body(), headers={})
+        self.assertEqual(resp.status_code, 401, resp.text)
+
+
+class CompensateRoutesTest(CompensatePageTest):
+    """路由形状：两条只读 + 一条写；写路径不许被 GET 命中。"""
+
+    def test_routes_are_registered_with_the_right_methods(self):
+        paths = {(route.path, tuple(sorted(getattr(route, 'methods', ()))))
+                 for route in trade_write_api.router.routes}
+        self.assertIn((BASE + '/{account_id}/orders/{order_id}/compensations/{service_code}',
+                       ('GET',)), paths)
+        self.assertIn((BASE + '/{account_id}/compensations/{service_code}/reasons', ('GET',)),
+                      paths)
+        self.assertIn((BASE + '/{account_id}/orders/{order_id}/compensations/{service_code}/refuse',
+                       ('POST',)), paths)
+
+    def test_get_on_the_write_path_is_not_allowed(self):
+        resp = self.get(self.refuse_path())
+        self.assertIn(resp.status_code, (404, 405), resp.text)
 
 
 if __name__ == '__main__':

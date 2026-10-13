@@ -413,3 +413,60 @@ def complain_revoke(
     """撤销投诉申请：`mtop.taobao.idle.cco.shop.complain.apply.revoke`。"""
     return _envelope(trade_write.complain_revoke(
         account_id, complain_id, confirm=body.get('confirm')))
+
+
+# --------------------------------------------------------------------------- 赔付 / 维权（第四十五批）
+# 平台侧三条（证据与偏移见 `backend/app/xianyu/compensate.py` 顶部注释）：
+#   · `…compensate.service.detail.query` v1.0 —— 只读，且官方带 `valueType:'string'`
+#   · `…compensate.service.refuse.render` v1.0 —— 只读，给拒绝原因候选
+#   · `…compensate.service.refuse` v1.0 —— 写，**凭证必填**、**不可撤销**
+# 同族的 `…compensate.service.pay`（真付钱，要支付宝 authToken）**故意不做**。
+
+
+@router.get('/{account_id}/orders/{order_id}/compensations/{service_code}')
+def compensate_detail(
+    account_id: str,
+    order_id: str,
+    service_code: str,
+    user=Depends(current_user),
+):
+    """赔付详情（**只读**，没有 `confirm`）：`…compensate.service.detail.query`。
+
+    平台没给 `module` 时 `found=false` + 一条中文 warning，金额等字段一律 `null`，
+    **不替你编一笔赔付出来**。
+    """
+    return _envelope(trade_write.compensate_detail(account_id, order_id, service_code))
+
+
+@router.get('/{account_id}/compensations/{service_code}/reasons')
+def compensate_reasons(
+    account_id: str,
+    service_code: str,
+    user=Depends(current_user),
+):
+    """拒绝赔付的原因候选（**只读**）：`…compensate.service.refuse.render`。
+
+    平台没给 `reasonChoices` 时是 `null` + warning（**不是空数组**）。
+    """
+    return _envelope(trade_write.compensate_refuse_form(account_id, service_code))
+
+
+@router.post('/{account_id}/orders/{order_id}/compensations/{service_code}/refuse')
+def compensate_refuse(
+    account_id: str,
+    order_id: str,
+    service_code: str,
+    body: Dict[str, Any] = Body(
+        default={},
+        description='{reason_choices, reason_desc?, proof_urls, is_manual?, confirm}'),
+    user=Depends(current_user),
+):
+    """拒绝赔付：`…compensate.service.refuse` —— **不可撤销，且凭证必填**。
+
+    官方原话：不传凭证时提示「请上传凭证」；拒绝说明最多 200 字。
+    `reason_choices` 收数组也收逗号串，`proof_urls` 至少一张图片 URL。
+    """
+    return _envelope(trade_write.compensate_refuse(
+        account_id, order_id, service_code, body.get('reason_choices'),
+        body.get('reason_desc') or '', body.get('proof_urls'),
+        body.get('is_manual', False), confirm=body.get('confirm')))
