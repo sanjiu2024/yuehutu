@@ -869,11 +869,12 @@ POST /api/trade/{account_id}/orders/{order_id}/delay         {days,order_ids?,co
 POST /api/trade/{account_id}/orders/{order_id}/remind        {order_ids?,remind_all?,confirm}
 POST /api/trade/{account_id}/refunds/{refund_id}/postage-pay {order_id,pay_type?,amount?,confirm}
 POST /api/trade/{account_id}/complaints/{complain_id}/revoke {confirm}
-       -- 五条 mtop（bundle 偏移见 `docs/contracts/trade_write.md` §10）：
-          `mtop.taobao.idle.trade.close.by.seller` **v2.0** `{tid,bizOrderId,closeReason}`
-          （官方**把同一个订单号同时塞进 `tid` 与 `bizOrderId`**，我们照做）、
-          `mtop.taobao.idle.trade.seller.delay.confirm` v1.0 `{orderIdList,delayTime}`、
-          `mtop.taobao.idle.trade.consign.remind` v1.0 `{orderIdList,remindAllOrder}`、
+       -- 五条 mtop（名字逐字取自**卖家工作台** bundle `trade_bundle/main.js`，偏移见
+          `docs/contracts/trade_write.md` §10）：
+          `mtop.taobao.idle.trade.merchant.close.by.seller` **v2.0**
+          `{tid,bizOrderId,closeReason}`（官方**把同一个订单号同时塞进 `tid` 与 `bizOrderId`**，我们照做）、
+          `mtop.taobao.idle.trade.merchant.batch.delay.confirm` v1.0 `{orderIdList,delayTime}`、
+          `mtop.taobao.idle.trade.merchant.batch.remind.confirm` v1.0 `{orderIdList,remindAllOrder}`、
           `mtop.taobao.idle.merchant.postage.refund.pay` v1.0 `{orderId,refundId,payType}`
           （**这一步是真的付钱**，官方还带 `ttid`）、
           `mtop.taobao.idle.cco.shop.complain.apply.revoke` v1.0 `{complainId}`。

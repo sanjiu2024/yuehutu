@@ -364,11 +364,18 @@ IM 侧 `C:\Users\Administrator\.dsh-tmp\bundle_scan\js_006_p_im_index.js`（3,07
 
 | 动作 | mtop | 版本 | 请求字段（逐字） | 偏移 |
 | --- | --- | --- | --- | --- |
-| `close` | `mtop.taobao.idle.trade.close.by.seller` | **2.0** | `{tid, bizOrderId, closeReason}` | 2762506 |
-| `delay` | `mtop.taobao.idle.trade.seller.delay.confirm` | 1.0 | `{orderIdList, delayTime}` | 2758810 |
-| `remind` | `mtop.taobao.idle.trade.consign.remind` | 1.0 | `{orderIdList, remindAllOrder}` | 2023848 |
+| `close` | `mtop.taobao.idle.trade.merchant.close.by.seller` | **2.0** | `{tid, bizOrderId, closeReason}` | 2762506 |
+| `delay` | `mtop.taobao.idle.trade.merchant.batch.delay.confirm` | 1.0 | `{orderIdList, delayTime}` | 2758810 |
+| `remind` | `mtop.taobao.idle.trade.merchant.batch.remind.confirm` | 1.0 | `{orderIdList, remindAllOrder}` | 2023848 |
 | `postage_pay` | `mtop.taobao.idle.merchant.postage.refund.pay` | 1.0 | `{orderId, refundId, payType}`（+ `ttid`） | 2835556 |
 | `complain_revoke` | `mtop.taobao.idle.cco.shop.complain.apply.revoke` | 1.0 | `{complainId}` | 2814089 |
+
+> **名字来源**：这五条**逐字取自卖家工作台 bundle**（`C:\Users\Administrator\.dsh-tmp\trade_bundle\main.js`，
+> 3,879,584 字符），不是 IM bundle 里那套同族名字 —— IM 侧另有
+> `mtop.taobao.idle.trade.close.by.seller` v2.0（偏移 2585829）、`…trade.seller.delay.confirm` v1.0（偏移 2586275）、
+> `…trade.consign.remind`，它们的 payload 形状与这里不同（单订单、字段名不同），**我们没用**。
+> 选卖家工作台那一套的理由：登录态与 Cookie 就是那个站点的，且 `{orderIdList, delayTime}` 这种批量形状
+> 与我们页面的「勾几单一起做」一致。
 
 - **关单把同一个订单号同时塞进 `tid` 与 `bizOrderId`**（官方原文 `{tid: e, bizOrderId: e, closeReason: t}`）——
   这不是笔误，我们照做（只发 `bizOrderId` 平台不认）。官方文案：「确认关闭后，请确保已和买家协商达成一致，
