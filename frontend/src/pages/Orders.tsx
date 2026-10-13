@@ -541,8 +541,10 @@ export type WriteKind =
   | 'complain-revoke'
   // ---- 第三十九批：物流写能力（修改运单号，端点挂在 /api/logistics 下，不在 /api/trade）----
   | 'resend'
+  // ---- 第四十五批：赔付 / 维权（拒绝赔付，端点挂在 /api/trade 的 compensations 下）----
+  | 'compensate-refuse'
 
-type WriteGroup = 'order' | 'ship' | 'price' | 'refund' | 'rate' | 'complain'
+type WriteGroup = 'order' | 'ship' | 'price' | 'refund' | 'rate' | 'complain' | 'compensate'
 
 /** 打开写面板时带的预填：订单行的「发货 / 改价」按钮会把 order_id 带进来。 */
 export interface WriteDraft {
@@ -574,6 +576,11 @@ async function postWrite(path: string, body: Record<string, unknown>): Promise<W
 /** 多行 / 逗号分隔输入 → 数组（去空、保序）。 */
 function splitList(value: string): string[] {
   return value.split(/[\n,，;；]+/).map((item) => item.trim()).filter(Boolean)
+}
+
+/** 后端给的字符串数组（warnings / reason_choices）：只收字符串，别的原样丢掉。 */
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 }
 
 /**
@@ -631,6 +638,10 @@ interface WriteExtra {
   payType: string
   /** 提醒确认收货里的「全部提醒」开关。 */
   remindAll: boolean
+  /** 拒绝赔付里的「人工介入」开关（官方 refuse_and_cco / refuse_new 场景传 true）。 */
+  manualRefuse: boolean
+  /** 拒绝赔付选中的原因（候选来自只读的 refuse.render，多选）。 */
+  compReasons: string[]
 }
 
 interface WriteFormSpec {
@@ -638,7 +649,7 @@ interface WriteFormSpec {
   action: string
   desc: ReactNode
   fields: WriteFieldSpec[]
-  extras?: 'rate' | 'proof-kind' | 'close-reason' | 'delay-days' | 'pay-type' | 'remind-all'
+  extras?: 'rate' | 'proof-kind' | 'close-reason' | 'delay-days' | 'pay-type' | 'remind-all' | 'compensate'
   path: (accountId: string, value: (name: string) => string) => string
   body: (value: (name: string) => string, extra: WriteExtra) => Record<string, unknown>
   /** 额外校验：返回非空文案表示不通过（必填项由 `required` 统一判）。 */
@@ -941,6 +952,38 @@ const WRITE_SPECS: Record<WriteKind, WriteFormSpec> = {
     path: (accountId, value) => idPath(accountId, value, 'complain_id', 'complaints/{id}/revoke'),
     body: () => ({}),
   },
+
+  'compensate-refuse': {
+    title: '拒绝赔付（维权服务）',
+    action: '拒绝赔付',
+    desc: (
+      <>
+        平台接口 <code>mtop.taobao.idle.merchant.compensate.service.refuse</code>：
+        <strong>凭证必填</strong>（官方原话「请上传凭证」），拒绝说明最多 200 字，
+        提交后<strong>不可撤销</strong>。先点下面的「读取详情与原因」拿平台给的可选原因——
+        原因由平台返回，我们绝不替你编。
+      </>
+    ),
+    fields: [
+      { name: 'order_id', label: '订单号', required: true, placeholder: '订单号' },
+      { name: 'service_code', label: '赔付服务号', required: true, placeholder: '维权 / 赔付服务单号（serviceCode）' },
+      { name: 'reason_desc', label: '拒绝说明（最多 200 字）', multiline: true, placeholder: '给平台看的说明，可以不填' },
+      { name: 'proof_urls', label: '凭证图片 URL', required: true, multiline: true, placeholder: '一行一个图片 URL，至少一张' },
+    ],
+    extras: 'compensate',
+    path: (accountId, value) =>
+      tradePath(
+        accountId,
+        `/orders/${encodeURIComponent(value('order_id'))}/compensations/${encodeURIComponent(value('service_code'))}/refuse`,
+      ),
+    body: (value, extra) => ({
+      reason_choices: extra.compReasons,
+      reason_desc: value('reason_desc').trim(),
+      proof_urls: splitList(value('proof_urls')),
+      is_manual: extra.manualRefuse,
+    }),
+    check: (value) => (value('reason_desc').trim().length > 200 ? '拒绝说明最多 200 字' : ''),
+  },
 }
 
 const WRITE_TABS: Array<{ key: WriteGroup; label: string; icon: ReactNode }> = [
@@ -950,6 +993,7 @@ const WRITE_TABS: Array<{ key: WriteGroup; label: string; icon: ReactNode }> = [
   { key: 'refund', label: '退款处理', icon: <IconCheckCircle size={14} /> },
   { key: 'rate', label: '评价', icon: <IconSparkle size={14} /> },
   { key: 'complain', label: '投诉处理', icon: <IconWarn size={14} /> },
+  { key: 'compensate', label: '赔付维权', icon: <IconShield size={14} /> },
 ]
 
 const WRITE_MODES: Partial<Record<WriteGroup, Array<{ value: WriteKind; label: string }>>> = {
@@ -973,6 +1017,9 @@ const WRITE_MODES: Partial<Record<WriteGroup, Array<{ value: WriteKind; label: s
     { value: 'complain-proof', label: '投诉举证' },
     { value: 'complain-revoke', label: '撤销投诉申请' },
   ],
+  compensate: [
+    { value: 'compensate-refuse', label: '拒绝赔付' },
+  ],
 }
 
 /** 没有子模式的 tab（改价 / 评价）点一下要直接切到它唯一的那个端点，不能留在上一个 kind。 */
@@ -983,6 +1030,7 @@ const GROUP_DEFAULT_KIND: Record<WriteGroup, WriteKind> = {
   refund: 'refund-agree',
   rate: 'rate',
   complain: 'complain-refuse',
+  compensate: 'compensate-refuse',
 }
 
 function groupOf(kind: WriteKind): WriteGroup {
@@ -991,6 +1039,7 @@ function groupOf(kind: WriteKind): WriteGroup {
   if (kind === 'adjust-price') return 'price'
   if (kind === 'refund-agree' || kind === 'refund-refuse' || kind === 'postage-pay') return 'refund'
   if (kind === 'rate') return 'rate'
+  if (kind === 'compensate-refuse') return 'compensate'
   return 'complain'
 }
 
@@ -1045,6 +1094,16 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
   const [guessBusy, setGuessBusy] = useState(false)
   const [guessNote, setGuessNote] = useState('')
   const [guessBad, setGuessBad] = useState(false)
+  // 赔付 / 维权（第四十五批）：详情与「拒绝原因候选」都来自平台的两个**只读**接口。
+  // `null` = 平台没返回那个键（**不是「没有」**），`[]` = 平台明确回了空数组。
+  const [compBusy, setCompBusy] = useState(false)
+  const [compError, setCompError] = useState('')
+  const [compFetched, setCompFetched] = useState(false)
+  const [compDetail, setCompDetail] = useState<Record<string, unknown> | null>(null)
+  const [compReasons, setCompReasons] = useState<string[] | null>(null)
+  const [compPicked, setCompPicked] = useState<string[]>([])
+  const [compWarnings, setCompWarnings] = useState<string[]>([])
+  const [manualRefuse, setManualRefuse] = useState(false)
 
   const spec = WRITE_SPECS[kind]
   const group = groupOf(kind)
@@ -1054,7 +1113,9 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
 
   const missing = spec.fields.filter((field) => field.required && value(field.name).trim() === '')
   const checkMessage = spec.check ? spec.check(value) : ''
-  const blocked = missing.length > 0 || Boolean(checkMessage)
+  /** 拒绝赔付：平台要求至少一个原因，而原因只能从平台的候选里选（我们不编）。 */
+  const compBlocked = spec.extras === 'compensate' && compPicked.length === 0
+  const blocked = missing.length > 0 || Boolean(checkMessage) || compBlocked
   const path = spec.path(accountId, value)
   /** 这个表单要不要「快递公司」——发货与修改运单号都有 `cp_code`，虚拟发货没有。 */
   const hasCompanyField = spec.fields.some((field) => field.name === 'cp_code')
@@ -1066,6 +1127,12 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
     setReasons(null)
     setReasonsFetched(false)
     setReasonsError('')
+    // 赔付详情 / 拒绝原因同理：换动作就作废，免得把上一单的凭证与原因带过去。
+    setCompDetail(null)
+    setCompReasons(null)
+    setCompPicked([])
+    setCompFetched(false)
+    setCompError('')
   }
 
   /**
@@ -1209,6 +1276,50 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
     setGuessBusy(false)
   }
 
+  /**
+   * 读一次赔付详情 + 拒绝原因候选（两个 **只读** GET，第四十五批）。
+   *
+   * 官方「拒绝赔付」弹窗打开时会问平台两件事：`compensate.service.detail.query`
+   * （带 `valueType=string`，金额单位是**分**，后端额外给 `amount_yuan`）与
+   * `compensate.service.refuse.render`（`reasonChoices` 就是可选原因）。
+   * **不假装成功**：平台没返回就说没返回，绝不替用户编一个原因。
+   */
+  async function fetchCompensate() {
+    const orderId = value('order_id').trim()
+    const serviceCode = value('service_code').trim()
+    if (!orderId || !serviceCode) {
+      setCompError('先填「订单号」和「赔付服务号」——详情与原因都是按它们问的。')
+      return
+    }
+    setCompBusy(true)
+    setCompError('')
+    try {
+      const detail = await api.get<Record<string, unknown>>(
+        tradePath(
+          accountId,
+          `/orders/${encodeURIComponent(orderId)}/compensations/${encodeURIComponent(serviceCode)}`,
+        ),
+      )
+      setCompDetail(detail ?? null)
+      setCompWarnings(stringList((detail ?? {}).warnings))
+      const form = await api.get<Record<string, unknown>>(
+        tradePath(accountId, `/compensations/${encodeURIComponent(serviceCode)}/reasons`),
+      )
+      const choices = (form ?? {}).reason_choices
+      setCompReasons(Array.isArray(choices) ? stringList(choices) : null)
+      setCompWarnings((prev) => prev.concat(stringList((form ?? {}).warnings)))
+      setCompPicked([])
+      setCompFetched(true)
+    } catch (err) {
+      setCompError(errorText(err) || '读取赔付详情失败，后端没有给出原因')
+    }
+    setCompBusy(false)
+  }
+
+  function toggleCompReason(reason: string) {
+    setCompPicked((prev) => (prev.includes(reason) ? prev.filter((item) => item !== reason) : prev.concat(reason)))
+  }
+
   // 进到有「快递公司」的表单就自动拉一次（一次性，不轮询）；失败后由用户点按钮重试，不自动重试。
   useEffect(() => {
     if (!hasCompanyField || companiesTried) return
@@ -1223,7 +1334,7 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
     setError('')
     const outcome = await postWrite(
       spec.path(accountId, value),
-      spec.body(value, { rate, anonymous, proofKind, delayDays, payType, remindAll }),
+      spec.body(value, { rate, anonymous, proofKind, delayDays, payType, remindAll, manualRefuse, compReasons: compPicked }),
     )
     setBusy(false)
     if (!outcome.ok) {
@@ -1530,13 +1641,96 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
                 <span className="tr-sub">不勾就是只提醒上面填的订单。</span>
               </label>
             )}
+
+            {spec.extras === 'compensate' && (
+              <div className="tr-field tr-write-reasons">
+                <span>
+                  赔付详情与拒绝原因
+                  <code className="tr-write-name">compensate.service.detail.query</code>
+                </span>
+                <span className="tr-write-inline">
+                  <button className="btn ghost sm" onClick={fetchCompensate} disabled={compBusy || busy}>
+                    <IconRefresh size={14} /> {compBusy ? '正在读取…' : '读取详情与原因'}
+                  </button>
+                  <span className="tr-sub">两个只读接口，不会改动任何东西。</span>
+                </span>
+
+                {compDetail && compDetail.found === false && (
+                  <Notice kind="warn">
+                    平台<strong>没有给出这笔赔付的详情</strong>（这<strong>不是</strong>「没有问题」）。
+                    请核对订单号与赔付服务号，或者去官方卖家工作台看一眼这笔维权。
+                  </Notice>
+                )}
+                {compDetail && compDetail.found !== false && (
+                  <ul className="tr-write-facts">
+                    <li>
+                      赔付服务号 <code>{String(compDetail.service_code ?? value('service_code'))}</code>
+                    </li>
+                    <li>
+                      金额（元）：
+                      {compDetail.amount_yuan === null || compDetail.amount_yuan === undefined
+                        ? '（平台没给，不补 0）'
+                        : String(compDetail.amount_yuan)}
+                    </li>
+                    {compDetail.title ? <li>标题：{String(compDetail.title)}</li> : null}
+                    {compDetail.desc ? <li>说明：{String(compDetail.desc)}</li> : null}
+                  </ul>
+                )}
+
+                {compFetched && compReasons && compReasons.length > 0 && (
+                  <span className="tr-comp-checks">
+                    {compReasons.map((reason) => (
+                      <label key={reason} className="tr-comp-item">
+                        <input
+                          type="checkbox"
+                          checked={compPicked.includes(reason)}
+                          onChange={() => toggleCompReason(reason)}
+                        />
+                        {reason}
+                      </label>
+                    ))}
+                  </span>
+                )}
+                {compFetched && compReasons && compReasons.length === 0 && (
+                  <Notice kind="warn">
+                    平台明确回了一个<strong>空数组</strong>：这笔维权现在没有可选的拒绝原因。
+                    别在这儿硬拒 —— 先去官方卖家工作台看一眼这笔维权。
+                  </Notice>
+                )}
+                {compFetched && compReasons === null && (
+                  <Notice kind="warn">
+                    平台<strong>没有返回原因候选键</strong>（这<strong>不是</strong>「没有原因」）。
+                    我们不替你编原因：请去官方卖家工作台确认当前可选值，或者先别拒绝。
+                  </Notice>
+                )}
+
+                <label className="tr-write-check">
+                  <span>人工介入<code className="tr-write-name">is_manual</code></span>
+                  <span className="tr-write-inline">
+                    <input
+                      type="checkbox"
+                      checked={manualRefuse}
+                      onChange={(event) => setManualRefuse(event.target.checked)}
+                    />
+                    官方 refuse_and_cco / refuse_new 场景（转人工处理）
+                  </span>
+                </label>
+
+                {compError ? <Notice kind="warn">{compError}</Notice> : null}
+                {compWarnings.map((warning) => (
+                  <Notice key={warning} kind="warn">{warning}</Notice>
+                ))}
+              </div>
+            )}
           </div>
 
           {blocked && (
             <p className="tr-note tr-write-blocked">
               {missing.length > 0
                 ? `还缺必填项：${missing.map((field) => field.label).join('、')}`
-                : checkMessage}
+                : compBlocked
+                  ? '先点「读取详情与原因」，再从平台给的原因里至少选一个。'
+                  : checkMessage}
             </p>
           )}
         </div>
@@ -1574,6 +1768,13 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
                   里扣款给买家，不是只改本地记录。
                 </p>
               )}
+              {kind === 'compensate-refuse' && (
+                <p>
+                  <strong>这一步会真的拒绝这笔赔付，提交后不可撤销</strong>：平台会把你选的原因、
+                  说明与 {splitList(value('proof_urls')).length} 张凭证图一起提交；
+                  凭证是平台硬要求（官方原话「请上传凭证」）。
+                </p>
+              )}
               <ul className="tr-write-facts">
                 <li>接口 <code>{path}</code></li>
                 {spec.fields.filter((field) => value(field.name).trim() !== '').map((field) => (
@@ -1586,6 +1787,12 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
                 {spec.extras === 'delay-days' && <li>days：{delayDays}（delayTime = {delayDays} × 86400 秒）</li>}
                 {spec.extras === 'pay-type' && <li>pay_type：{payType}</li>}
                 {spec.extras === 'remind-all' && <li>remind_all：{remindAll ? '是' : '否'}</li>}
+                {spec.extras === 'compensate' && (
+                  <li>
+                    reason_choices：{compPicked.length > 0 ? compPicked.join('、') : '-'} · is_manual：
+                    {manualRefuse ? '是' : '否'}
+                  </li>
+                )}
               </ul>
               <p style={{ marginBottom: 0 }} className="tr-sub">
                 提交时 <code>confirm</code> 是字面量 <code>true</code>；未确认时后端不会向平台发任何请求。

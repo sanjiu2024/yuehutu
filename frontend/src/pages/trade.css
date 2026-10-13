@@ -654,3 +654,25 @@ tbody tr.tr-detail-row {
 .tr-ship-companies .notice {
   margin: 0;
 }
+/* 第四十五批：赔付 / 维权的拒绝原因多选（只用既有变量，不引依赖） */
+.tr-comp-checks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.tr-comp-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 0.86rem;
+}
+
+.tr-comp-item input {
+  margin: 0;
+  /* 面板里 `.tr-field input` 带 min-width:150px，复选框会被撑成一整列 ⇒ 这里必须收回来 */
+  min-width: 0;
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
