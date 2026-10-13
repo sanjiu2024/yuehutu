@@ -30,6 +30,7 @@
 """
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 #: 数据起始日（唯一一个在真机上确认能通的接口）
@@ -371,6 +372,229 @@ async def customer_service(client: Any, start: str = '', end: str = '',
         # `unrecognized_keys` 自证，CS 页 6 个指标全是假设别名却查不出问题。
         'real_date_range': _real_date_range(raw.get('cs')),
         'suspect_keys': suspect_keys(raw.get('cs'), CS_METRICS),
+        'errors': errors,
+        'raw': raw,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 商品数据（官方 `/seller-data/commodity`）—— 一行一个商品 + 平台给的指标列
+# ---------------------------------------------------------------------------
+#: 商品数据：列表（官方包装 `zSe`，`data:{...}` 直传）
+COMMODITY_LIST_API = 'mtop.alibaba.idle.seller.pc.datacompass.item.list'
+#: 商品数据：指标列定义（平台决定表头有哪些列、`orderBy` 该填什么）
+COMMODITY_INDICATORS_API = 'mtop.alibaba.idle.seller.pc.datacompass.item.indicators'
+#: 官方页面 `tabType` 只有一个取值（bundle 里唯一调用点 `M("all")`，在时间筛选的
+#: `onChange` 里 —— 所以它不是「用户在两个 tab 之间切」，就是常量）
+COMMODITY_TAB_TYPE = 'all'
+#: 自定义区间的 `dateType`（官方页面自己的枚举值，与 `date_data` 的 `month` 不是一套）
+COMMODITY_DATE_CUSTOM = 'customDate'
+#: 官方每页条数选项（`showSizeChanger` 开着，`[10,20,50]`）
+COMMODITY_PAGE_SIZES: Tuple[int, ...] = (10, 20, 50)
+COMMODITY_DEFAULT_PAGE_SIZE = 20
+#: 每行都有的固定字段（其余列由 `item.indicators` 决定，列名不翻译）
+COMMODITY_ROW_KEYS: Tuple[str, ...] = ('itmId', 'itmName', 'itmPicUrl', 'accountName')
+
+
+def category_info_str(value: Any) -> str:
+    """官方 `X()`：类目筛选入参是**字符串化的数组**（falsy → `'[]'`）。
+
+    官方写法 `JSON.stringify(list.map(JSON.parse))` 说明「数组元素本身又是 JSON 字符串」
+    也吃。这里两种都收：元素是 dict 直接用、是字符串就尽量解析（解不出来按原样留着，
+    平台要拒就让它拒，**不悄悄丢数据**）。
+    """
+    if not value:
+        return '[]'
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return '[]'
+        try:
+            value = json.loads(text)
+        except ValueError:
+            raise ValueError('类目筛选必须是 JSON 数组')
+    if not isinstance(value, (list, tuple)):
+        raise ValueError('类目筛选必须是 JSON 数组')
+    items: List[Any] = []
+    for item in value:
+        if isinstance(item, str):
+            try:
+                item = json.loads(item)
+            except ValueError:
+                pass
+        items.append(item)
+    return json.dumps(items, ensure_ascii=False, separators=(',', ':'))
+
+
+def commodity_dates(start: str = '', end: str = '') -> Tuple[str, List[str]]:
+    """官方页面的日期入参：给了区间 → `('customDate', [start, end])`；否则今天。
+
+    缺哪头用另一头顶上，理由同 `date_data`：`recent1d` 的请求体里一个日期都没有，
+    平台只能回「今天」，把它标成用户要的那一天就是对外撒谎。
+    """
+    if start or end:
+        begin = start or end
+        finish = end or start
+        return COMMODITY_DATE_CUSTOM, [begin, finish]
+    return DATE_TYPE_DAY, []
+
+
+def commodity_list_request(date_type: str = DATE_TYPE_DAY, dates: Optional[List[str]] = None,
+                           seller_id: str = '', category_info: Any = None,
+                           item_id: str = '', item_name: str = '', is_dp_stk: str = '',
+                           mkt_act_id: str = '', page: int = 1,
+                           page_size: int = COMMODITY_DEFAULT_PAGE_SIZE,
+                           order_by: str = '', order: str = '') -> Dict[str, Any]:
+    """构造 `item.list` 的入参。**键名逐字照 bundle**，一个都不能少、也不能改名。
+
+    官方那行（`datacenter_main.js` 偏移 2596900 附近）：
+
+    ```js
+    {selectedSellerId: Y, tabType: E, dateRange: 'customDate'===f ? r.join('|') : '',
+     ms: 'month'===f ? r[0] : '', dateType: f, categoryInfoStr: X(L.categoryInfoStr),
+     itmName: L.itmName, itmId: L.itmId, isDpStk: L.isDpStk, mktActId: k||'',
+     page: z.current, pageSize: z.pageSize, orderBy: W.sortField, order: W.sortOrder}
+    ```
+
+    两个容易写错的点：`dateRange` 用 `|` 连接（不是 `-`、不是数组）；`isDpStk` 是页面上
+    「是否掉包」的下拉值，可能是 `''`（不筛）而不是布尔。
+    """
+    dates = [str(item) for item in (dates or [])]
+    payload: Dict[str, Any] = {
+        'selectedSellerId': str(seller_id or ''),
+        'tabType': COMMODITY_TAB_TYPE,
+        'dateRange': '|'.join(dates) if date_type == COMMODITY_DATE_CUSTOM and dates else '',
+        'ms': dates[0] if date_type == DATE_TYPE_MONTH and dates else '',
+        'dateType': date_type,
+        'categoryInfoStr': category_info_str(category_info),
+        'itmName': str(item_name or ''),
+        'itmId': str(item_id or ''),
+        'isDpStk': str(is_dp_stk or ''),
+        'mktActId': str(mkt_act_id or ''),
+        'page': int(page),
+        'pageSize': int(page_size),
+        'orderBy': str(order_by or ''),
+        'order': str(order or ''),
+    }
+    return payload
+
+
+def parse_commodity_list(payload: Any) -> Dict[str, Any]:
+    """解析 `item.list`：`data.list` + `data.total` + 顶层 `extendInfo`。
+
+    `_mtop` 已剥掉客户端外层信封，所以 `payload` 就是平台 `data`（官方包装读
+    `e.data.data.list`，对应这里的 `payload['data']['list']`）。
+
+    **认不出列表键时 `rows=None`（不是 `[]`）**：`[]` 会被读成「这个卖家一件商品都没有」，
+    而真实情况更可能是平台改了字段名 —— 服务层据此给人话 warning。
+    """
+    business = payload.get('data') if isinstance(payload, dict) else None
+    if not isinstance(business, dict):
+        business = None
+    rows: Optional[List[Any]] = None
+    found = ''
+    for source, key in ((business, 'list'), (payload, 'list'), (business, 'itemList'),
+                        (business, 'result'), (payload, 'itemList')):
+        if isinstance(source, dict):
+            value = source.get(key)
+            if isinstance(value, list):
+                rows = value
+                found = key
+                break
+    total: Optional[float] = None
+    for source in (business, payload):
+        if isinstance(source, dict) and _is_number(source.get('total')):
+            total = float(source['total'])
+            break
+    extend = payload.get('extendInfo') if isinstance(payload, dict) else None
+    if not isinstance(extend, list):
+        extend = None
+    return {'rows': rows, 'total': total, 'extend_info': extend, 'found_key': found}
+
+
+def parse_commodity_indicators(payload: Any) -> Dict[str, Any]:
+    """解析 `item.indicators`：平台决定「商品数据」表有哪些列。
+
+    官方形状：`data` 是分组数组，每组 `{name, subFields:[{name,title,key}]}`；页面把
+    `subFields` 摊平、每列打上 `type = 组名`（`type` 只是表头分组），排序用的 `orderBy`
+    是**列自己的 `name`**，`dataIndex` 也是 `name`。
+
+    认不出时 `columns`/`groups` 都是 `None`（不是空表 —— 空表会让前端以为「这个账号
+    没有可看的指标」）。
+    """
+    data = payload.get('data') if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        data = payload if isinstance(payload, list) else None
+    if not isinstance(data, list):
+        return {'columns': None, 'groups': None}
+    columns: List[Dict[str, Any]] = []
+    groups: List[Dict[str, Any]] = []
+    for group in data:
+        if not isinstance(group, dict):
+            continue
+        name = str(group.get('name') or '')
+        fields: List[Dict[str, Any]] = []
+        sub = group.get('subFields')
+        if isinstance(sub, list):
+            for field in sub:
+                if not isinstance(field, dict):
+                    continue
+                field_name = str(field.get('name') or '')
+                column = {
+                    'name': field_name,
+                    'title': str(field.get('title') or field_name),
+                    'key': str(field.get('key') or field_name),
+                    'group': name,
+                }
+                fields.append(column)
+                columns.append(column)
+        groups.append({'name': name, 'fields': fields})
+    if not columns:
+        return {'columns': None, 'groups': None}
+    return {'columns': columns, 'groups': groups}
+
+
+async def commodity(client: Any, start: str = '', end: str = '', seller_id: str = '',
+                    category_info: Any = None, item_id: str = '', item_name: str = '',
+                    is_dp_stk: str = '', mkt_act_id: str = '', page: int = 1,
+                    page_size: int = COMMODITY_DEFAULT_PAGE_SIZE, order_by: str = '',
+                    order: str = '') -> Dict[str, Any]:
+    """商品数据：一行一个商品 + 平台给的指标列定义（**只读**）。
+
+    两个接口各自容错（列定义拿不到不该让整页空掉），但**两个都坏**时按 `_collect`
+    的口径处理：全是「平台拒绝访问」就如实返回 + 人话 warning，否则抛最严重的那个
+    （登录态过期优先），让服务层回 502 / 409。
+    """
+    date_type, dates = commodity_dates(start, end)
+    request = commodity_list_request(date_type=date_type, dates=dates, seller_id=seller_id,
+                                     category_info=category_info, item_id=item_id,
+                                     item_name=item_name, is_dp_stk=is_dp_stk,
+                                     mkt_act_id=mkt_act_id, page=page, page_size=page_size,
+                                     order_by=order_by, order=order)
+    errors: Dict[str, str] = {}
+    failed: Dict[str, BaseException] = {}
+    raw: Dict[str, Any] = {}
+    for label, api, data in (('commodity', COMMODITY_LIST_API, dict(request)),
+                             ('columns', COMMODITY_INDICATORS_API, None)):
+        try:
+            raw[label] = await _mtop(client, api, data)
+        except Exception as exc:  # noqa: BLE001 - 逐接口容错，原文进 errors
+            errors[label] = _error_text(exc)
+            failed[label] = exc
+    if failed and len(failed) == 2 and not all(_is_permission_error(exc) for exc in failed.values()):
+        raise _pick_exc(failed)
+    parsed = parse_commodity_list(raw.get('commodity'))
+    indicators = parse_commodity_indicators(raw.get('columns'))
+    return {
+        'rows': parsed['rows'],
+        'total': parsed['total'],
+        'extend_info': parsed['extend_info'],
+        'found_key': parsed['found_key'],
+        'columns': indicators['columns'],
+        'groups': indicators['groups'],
+        'real_date_range': _real_date_range(raw.get('commodity')),
+        'date_type': date_type,
+        'dates': dates,
         'errors': errors,
         'raw': raw,
     }

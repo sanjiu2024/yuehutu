@@ -53,3 +53,32 @@ def customer_service(
     user=Depends(current_user),
 ):
     return _envelope(datacenter.customer_service(account_id, start, end))
+
+
+@router.get('/{account_id}/commodity')
+def commodity(
+    account_id: str,
+    start: str = Query('', description='YYYYMMDD，不传就是「今天」'),
+    end: str = Query('', description='YYYYMMDD'),
+    item_id: str = Query('', description='按商品 ID 精确筛选'),
+    item_name: str = Query('', description='按商品标题模糊筛选'),
+    category_info: str = Query('', description='类目筛选，JSON 数组字符串'),
+    is_dp_stk: str = Query('', description='是否掉包（官方下拉值，空=不筛）'),
+    mkt_act_id: str = Query('', description='营销活动 ID（官方活动 tab）'),
+    page: int = Query(1, ge=1),
+    size: int = Query(datacenter.COMMODITY_DEFAULT_PAGE_SIZE, ge=1,
+                      le=datacenter.COMMODITY_MAX_PAGE_SIZE),
+    order_by: str = Query('', description='排序字段（取指标列定义里的 name）'),
+    order: str = Query('', description='asc / desc'),
+    user=Depends(current_user),
+):
+    """商品数据（一行一个商品 + 平台给的指标列）。
+
+    `size` 的上下界用 `Query(ge/le)` 声明而不是只在服务层校验：FastAPI 会先拦下来
+    给 422，AI 工具与前端都能从 openapi 里直接看到边界。服务层仍保留同一份校验
+    （MCP 之外还有别的调用方）。
+    """
+    return _envelope(datacenter.commodity(
+        account_id, start, end, item_id, item_name, category_info, is_dp_stk,
+        mkt_act_id, page, size, order_by, order,
+    ))

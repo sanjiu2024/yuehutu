@@ -81,6 +81,61 @@ CS_PAYLOAD = {
              'avgReplyTime': 42, 'unrepliedCount': 2, 'satisfactionRate': 98.5},
 }
 
+#: 商品数据（官方 `/seller-data/commodity`）：列表响应。指标列名由平台决定，
+#: 我们**原样透传**（`ipvUv` / `payAmt` 这类是平台字段，不翻译成我们的键）。
+COMMODITY_PAYLOAD = {
+    'data': {
+        'list': [
+            {'itmId': '812345678901', 'itmName': '测试商品 A',
+             'itmPicUrl': 'https://img.alicdn.com/a.jpg', 'accountName': '月狐兔_',
+             'ipvUv': 12, 'ipvPv': 30, 'payCnt': 1, 'payAmt': 39.9},
+            {'itmId': '812345678902', 'itmName': '测试商品 B', 'itmPicUrl': '',
+             'accountName': '月狐兔_', 'ipvUv': 3, 'ipvPv': 4, 'payCnt': 0, 'payAmt': 0},
+        ],
+        'total': 45,
+    },
+    'extendInfo': [{'realDateRange': ['2026-10-13', '2026-10-13']}],
+}
+#: 指标列定义：官方形状是「分组数组 + subFields」，页面摊平后每列带组名
+COMMODITY_INDICATORS = {
+    'data': [
+        {'name': '流量', 'subFields': [
+            {'name': 'ipvUv', 'title': '商品访客数', 'key': 'ipvUv'},
+            {'name': 'ipvPv', 'title': '商品浏览量', 'key': 'ipvPv'},
+        ]},
+        {'name': '成交', 'subFields': [
+            {'name': 'payCnt', 'title': '支付笔数', 'key': 'payCnt'},
+            {'name': 'payAmt', 'title': '支付金额', 'key': 'payAmt'},
+        ]},
+    ],
+}
+#: 平台没回列表键（改了字段名）：必须是 None，**不是空列表**
+COMMODITY_NO_LIST = {'data': {'total': 0}}
+#: 平台没回列定义：必须是 None
+COMMODITY_NO_COLUMNS = {'code': 'success', 'data': None}
+
+
+def commodity_payload(rows: Any = COMMODITY_PAYLOAD, columns: Any = COMMODITY_INDICATORS,
+                      total: Any = 45, date_type: str = datacenter_proto.DATE_TYPE_DAY,
+                      dates: Optional[List[str]] = None,
+                      errors: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """把「平台原始响应」拼成协议层 `commodity()` 的返回形状（真解析函数参与）。"""
+    parsed = datacenter_proto.parse_commodity_list(rows)
+    indicators = datacenter_proto.parse_commodity_indicators(columns)
+    return {
+        'rows': parsed['rows'],
+        'total': parsed['total'] if total is None else total,
+        'extend_info': parsed['extend_info'],
+        'found_key': parsed['found_key'],
+        'columns': indicators['columns'],
+        'groups': indicators['groups'],
+        'real_date_range': None,
+        'date_type': date_type,
+        'dates': list(dates or []),
+        'errors': errors or {},
+        'raw': {},
+    }
+
 
 class SessionExpiredError(RuntimeError):
     """与协议层同名：`common._is_session_expired` 按**类名**认登录态过期，不看文案。"""
@@ -147,6 +202,14 @@ class FakeDataCenterProtocol:
                                seller_id: str = '') -> Any:
         return self._answer('customer_service', client, start, end, seller_id)
 
+    async def commodity(self, client: Any, start: str = '', end: str = '', seller_id: str = '',
+                        category_info: Any = None, item_id: str = '', item_name: str = '',
+                        is_dp_stk: str = '', mkt_act_id: str = '', page: int = 1,
+                        page_size: int = 20, order_by: str = '', order: str = '') -> Any:
+        return self._answer('commodity', client, start, end, seller_id, category_info,
+                            item_id, item_name, is_dp_stk, mkt_act_id, page, page_size,
+                            order_by, order)
+
     def args_of(self, name: str) -> tuple:
         for call in self.calls:
             if call[0] == name:
@@ -177,6 +240,7 @@ def install_fake_protocol(protocol: FakeDataCenterProtocol) -> FakeXianyuClient:
     module.overview = protocol.overview  # type: ignore[attr-defined]
     module.fans = protocol.fans  # type: ignore[attr-defined]
     module.customer_service = protocol.customer_service  # type: ignore[attr-defined]
+    module.commodity = protocol.commodity  # type: ignore[attr-defined]
     sys.modules['backend.app.xianyu.datacenter'] = module
     return client
 
@@ -223,6 +287,7 @@ def full_protocol(**overrides: Any) -> FakeDataCenterProtocol:
                  'suspect_keys': [], 'errors': {}},
         'customer_service': {'metrics': datacenter_proto.extract_metrics(CS_PAYLOAD, datacenter_proto.CS_METRICS),
                              'real_date_range': None, 'suspect_keys': [], 'errors': {}},
+        'commodity': commodity_payload(),
     }
     payloads.update(overrides)
     return FakeDataCenterProtocol(payloads)
@@ -297,7 +362,7 @@ class DataCenterApiTest(unittest.TestCase):
         from backend.app import main as app_main  # noqa: PLC0415 - 真 app 只在这里需要
         with TestClient(app_main.create_app()) as real:
             for path in (f'{BASE}/{ACC}/overview', f'{BASE}/{ACC}/fans',
-                         f'{BASE}/{ACC}/customer-service'):
+                         f'{BASE}/{ACC}/customer-service', f'{BASE}/{ACC}/commodity'):
                 for method in ('post', 'put', 'patch', 'delete'):
                     resp = getattr(real, method)(path, headers=self.headers)
                     self.assertEqual(resp.status_code, 405, f'{method} {path}: {resp.text}')
@@ -764,6 +829,188 @@ class DataCenterProtocolTest(unittest.TestCase):
         # 给用户看的话里只许有中文业务名，不许漏 `overview` 这种内部调用名
         self.assertIn('数据总览', warnings[0])
         self.assertNotIn('overview', warnings[0])
+
+
+class CommodityTest(DataCenterApiTest):
+    """商品数据页（官方 `/seller-data/commodity`）的协议 + 服务 + HTTP 口径。
+
+    这一页与另外三页不同：**列由平台定义**（`item.indicators`）、**分页排序由平台做**、
+    默认日期是**今天**而不是最近 7 天。三条都容易被「想当然」写错，所以逐条钉住。
+    """
+
+    # -- 协议层：入参形状（官方 bundle 逐字） ----------------------------
+
+    def test_request_matches_the_official_payload(self):
+        payload = datacenter_proto.commodity_list_request(page=2, page_size=50)
+        self.assertEqual(set(payload), {
+            'selectedSellerId', 'tabType', 'dateRange', 'ms', 'dateType',
+            'categoryInfoStr', 'itmName', 'itmId', 'isDpStk', 'mktActId',
+            'page', 'pageSize', 'orderBy', 'order',
+        })
+        self.assertEqual(payload['tabType'], 'all')
+        self.assertEqual(payload['dateType'], datacenter_proto.DATE_TYPE_DAY)
+        self.assertEqual(payload['dateRange'], '')
+        self.assertEqual(payload['ms'], '')
+        self.assertEqual(payload['categoryInfoStr'], '[]')
+        self.assertEqual((payload['page'], payload['pageSize']), (2, 50))
+
+    def test_custom_range_uses_pipe_and_custom_date_type(self):
+        date_type, dates = datacenter_proto.commodity_dates('20261001', '20261007')
+        self.assertEqual(date_type, datacenter_proto.COMMODITY_DATE_CUSTOM)
+        self.assertEqual(dates, ['20261001', '20261007'])
+        payload = datacenter_proto.commodity_list_request(date_type=date_type, dates=dates)
+        self.assertEqual(payload['dateRange'], '20261001|20261007')
+        self.assertEqual(payload['ms'], '')
+
+    def test_single_sided_range_fills_the_other_side(self):
+        self.assertEqual(datacenter_proto.commodity_dates('20261001', ''),
+                         (datacenter_proto.COMMODITY_DATE_CUSTOM, ['20261001', '20261001']))
+
+    def test_category_info_is_a_json_string(self):
+        self.assertEqual(datacenter_proto.category_info_str(None), '[]')
+        self.assertEqual(datacenter_proto.category_info_str([]), '[]')
+        self.assertEqual(datacenter_proto.category_info_str([{'id': 1}]), '[{"id":1}]')
+        # 元素本身是 JSON 字符串（官方 `list.map(JSON.parse)` 的输入形态）
+        self.assertEqual(datacenter_proto.category_info_str(['{"id":2}']), '[{"id":2}]')
+        # 直接给 JSON 字符串也认
+        self.assertEqual(datacenter_proto.category_info_str('[{"id":3}]'), '[{"id":3}]')
+        # 给了个对象（不是数组）→ 明确报错，不猜
+        with self.assertRaises(ValueError):
+            datacenter_proto.category_info_str('{"id":1}')
+
+    def test_parse_list_reads_the_real_shape(self):
+        parsed = datacenter_proto.parse_commodity_list(COMMODITY_PAYLOAD)
+        self.assertEqual(parsed['total'], 45.0)
+        self.assertEqual(parsed['found_key'], 'list')
+        self.assertEqual(len(parsed['rows']), 2)
+        self.assertEqual(parsed['extend_info'], COMMODITY_PAYLOAD['extendInfo'])
+
+    def test_missing_list_key_is_none_not_empty(self):
+        parsed = datacenter_proto.parse_commodity_list(COMMODITY_NO_LIST)
+        self.assertIsNone(parsed['rows'],
+                          '认不出列表键必须是 None：空列表会被读成「这个卖家一件商品都没有」')
+        self.assertEqual(parsed['found_key'], '')
+
+    def test_parse_indicators_flattens_groups(self):
+        parsed = datacenter_proto.parse_commodity_indicators(COMMODITY_INDICATORS)
+        self.assertEqual([c['name'] for c in parsed['columns']],
+                         ['ipvUv', 'ipvPv', 'payCnt', 'payAmt'])
+        self.assertEqual(parsed['columns'][0]['title'], '商品访客数')
+        self.assertEqual(parsed['columns'][0]['group'], '流量')
+        self.assertEqual([g['name'] for g in parsed['groups']], ['流量', '成交'])
+        self.assertEqual(len(parsed['groups'][1]['fields']), 2)
+
+    def test_indicators_not_a_list_is_none(self):
+        parsed = datacenter_proto.parse_commodity_indicators(COMMODITY_NO_COLUMNS)
+        self.assertIsNone(parsed['columns'])
+        self.assertIsNone(parsed['groups'])
+
+    # -- HTTP + 服务层 ---------------------------------------------------
+
+    def test_default_is_today_and_rows_pass_through(self):
+        seed_account()
+        data = self.ok_data(f'{BASE}/{ACC}/commodity')
+        self.assertEqual(data['kind'], 'commodity')
+        self.assertEqual(data['source'], 'platform')
+        self.assertEqual(data['date_type'], datacenter_proto.DATE_TYPE_DAY)
+        self.assertEqual(data['period'], {'from': '', 'to': ''})
+        self.assertEqual(data['total'], 45.0)
+        self.assertEqual((data['page'], data['page_size'], data['pages']), (1, 20, 3))
+        row = data['rows'][0]
+        self.assertEqual(row['itmName'], '测试商品 A')
+        self.assertEqual(row['itmId'], '812345678901')
+        # 平台列名原样透传：改名的话前端拿列定义（`name`）就取不到值
+        self.assertEqual(row['ipvUv'], 12)
+        self.assertIn('payAmt', row)
+        self.assertEqual([c['name'] for c in data['columns']][:2], ['ipvUv', 'ipvPv'])
+        self.assertEqual(data['warnings'], [])
+
+    def test_platform_calls_use_the_page_args(self):
+        seed_account()
+        self.ok_data(f'{BASE}/{ACC}/commodity?start=20261001&end=20261007&page=2&size=10'
+                     '&order_by=ipvUv&order=desc&item_name=%E6%B5%8B%E8%AF%95')
+        args = self.proto.args_of('commodity')
+        # (client, start, end, seller_id, category_info, item_id, item_name, is_dp_stk,
+        #  mkt_act_id, page, page_size, order_by, order)
+        self.assertEqual(args[1:4], ('20261001', '20261007', ACC))
+        self.assertEqual(args[6], '测试')
+        self.assertEqual(args[9:], (2, 10, 'ipvUv', 'desc'))
+
+    def test_missing_list_gives_null_rows_and_a_warning(self):
+        seed_account()
+        self.proto = full_protocol(commodity=commodity_payload(rows=COMMODITY_NO_LIST))
+        install_fake_protocol(self.proto)
+        data = self.ok_data(f'{BASE}/{ACC}/commodity')
+        self.assertIsNone(data['rows'])
+        self.assertTrue(any('列表' in w for w in data['warnings']), data['warnings'])
+
+    def test_missing_columns_gives_null_columns_and_a_warning(self):
+        seed_account()
+        self.proto = full_protocol(commodity=commodity_payload(columns=COMMODITY_NO_COLUMNS))
+        install_fake_protocol(self.proto)
+        data = self.ok_data(f'{BASE}/{ACC}/commodity')
+        self.assertIsNone(data['columns'])
+        self.assertTrue(any('指标列' in w for w in data['warnings']), data['warnings'])
+
+    def test_permission_denied_is_200_with_a_human_warning(self):
+        """真机现状：这个账号对 `datacompass` 一族一律「无权限」。
+
+        「无权限」是平台给的有效答复，页面必须拿到 200 + 人话，而不是 502；
+        而且**不能说成掉线**（用户会白扫一次码）。
+        """
+        seed_account()
+        denied = 'XianyuError: FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问'
+        self.proto = full_protocol(commodity=commodity_payload(
+            rows=COMMODITY_NO_LIST, columns=COMMODITY_NO_COLUMNS,
+            errors={'commodity': denied, 'columns': denied}))
+        install_fake_protocol(self.proto)
+        data = self.ok_data(f'{BASE}/{ACC}/commodity')
+        self.assertIsNone(data['rows'])
+        self.assertTrue(any('没有「数据」权限' in w for w in data['warnings']), data['warnings'])
+        self.assertTrue(any('商品数据' in w for w in data['warnings']), data['warnings'])
+        for warning in data['warnings']:
+            self.assertNotIn('commodity', warning, 'warnings 里不许漏内部调用名')
+
+    def test_size_over_the_limit_is_422_and_never_calls_the_platform(self):
+        seed_account()
+        resp = self.get(f'{BASE}/{ACC}/commodity', '?size=99')
+        self.assertEqual(resp.status_code, 422, resp.text)
+        self.assertEqual(self.proto.calls, [])
+
+    def test_service_rejects_bad_args_with_400(self):
+        """服务层自己也要拦（MCP 与其它调用方不走 FastAPI 的 `Query` 约束）。"""
+        seed_account()
+        for kwargs in ({'page': 0}, {'size': 99}, {'size': 'x'},
+                       {'order': 'sideways'}, {'order': 'asc'}):
+            result = datacenter_service.commodity(ACC, **kwargs)
+            self.assertFalse(result.get('success'), kwargs)
+            self.assertEqual(result.get('code'), 'invalid_fields', kwargs)
+        self.assertEqual(self.proto.calls, [], '参数不合法时一次平台都不该打')
+
+    def test_missing_cookie_is_409_and_never_calls_the_platform(self):
+        seed_account(cookie='')
+        body = self.fail_envelope(f'{BASE}/{ACC}/commodity', status=409)
+        self.assertEqual(body.get('login_state'), 'need_relogin')
+        self.assertEqual(self.proto.calls, [])
+
+    def test_unknown_account_is_404(self):
+        body = self.fail_envelope(f'{BASE}/{ACC}/commodity', status=404)
+        self.assertEqual(body.get('code'), 'not_found')
+        self.assertEqual(self.proto.calls, [])
+
+    def test_route_is_mounted_on_the_real_app(self):
+        """挂载形状必须与测试里自挂的一致（自建 FastAPI 防不住挂载方式变化）。
+
+        用 `openapi()` 而不是自己遍历 `app.routes`：子路由被 `include_router` 包在
+        `_IncludedRouter` 里（`path` 是 None），手写遍历会**一条都走不到**、
+        于是这条用例变成永远通过的空断言。
+        """
+        remove_fake_protocol()
+        from backend.app import main as app_main  # noqa: PLC0415 - 真 app 只在这里需要
+
+        paths = app_main.create_app().openapi().get('paths', {})
+        self.assertIn(f'{BASE}/{{account_id}}/commodity', paths)
+        self.assertIn('get', paths[f'{BASE}/{{account_id}}/commodity'])
 
 
 if __name__ == '__main__':

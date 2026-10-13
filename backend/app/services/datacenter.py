@@ -178,6 +178,9 @@ _LABELS = {
     'fans': '粉丝数据',
     'insights': '粉丝画像',
     'cs': '客服数据',
+    # 商品数据页（`commodity`）自己的两个标签：列表与指标列定义
+    'commodity': '商品数据',
+    'columns': '商品指标列',
 }
 
 
@@ -274,3 +277,115 @@ def fans(account_id: str, start: str = '', end: str = '') -> Dict[str, Any]:
 def customer_service(account_id: str, start: str = '', end: str = '') -> Dict[str, Any]:
     """客服数据（询单人数 / 询单量 / 3 分钟响应率 / 平均响应时长 / 未回复 / 满意度）。"""
     return _page('customer_service', account_id, start, end)
+
+
+# ---------------------------------------------------------------------------
+# 商品数据（官方 `/seller-data/commodity`）—— 只读、分页、可排序
+# ---------------------------------------------------------------------------
+#: 每页条数上限。官方只给 10/20/50 三档，这里按最大值卡住 —— 别让 AI 一次拉一万行
+#: （那既慢又容易触发风控）。
+COMMODITY_PAGE_SIZES: Tuple[int, ...] = (10, 20, 50)
+COMMODITY_DEFAULT_PAGE_SIZE = 20
+COMMODITY_MAX_PAGE_SIZE = 50
+
+WARN_COMMODITY_LIST_MISSING = ('平台没有返回商品列表字段（可能改了字段名），'
+                               '这一页显示不出商品，请点「刷新」重试。')
+WARN_COMMODITY_COLUMNS_MISSING = ('平台没有返回指标列定义，只能看到商品本身的字段'
+                                  '（标题 / 图片 / 商品 ID），指标列暂时显示不出来。')
+
+
+def _int_arg(label: str, value: Any, minimum: int, maximum: int):
+    """整数参数校验：非整数 / 越界 → `invalid_fields`（400）。
+
+    **绝不悄悄改成默认值**：AI 传了 `size=500` 而平台只吃 50，静默改成 50 会让它以为
+    「我拉到 500 条了」，据此做的判断全错。
+    """
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None, common.fail(f'{label}必须是整数', 'invalid_fields')
+    if number < minimum or number > maximum:
+        return None, common.fail(f'{label}必须在 {minimum}~{maximum} 之间', 'invalid_fields')
+    return number, None
+
+
+def _wrap_commodity(account_id: str, payload: Dict[str, Any], page: int,
+                    page_size: int) -> Dict[str, Any]:
+    """把协议层结果包成对外契约。**`rows` / `columns` 认不出时保持 `None`**。"""
+    warnings = _warnings(payload.get('errors') or {})
+    if payload.get('rows') is None:
+        warnings.append(WARN_COMMODITY_LIST_MISSING)
+    if payload.get('columns') is None:
+        warnings.append(WARN_COMMODITY_COLUMNS_MISSING)
+    dates = payload.get('dates') or []
+    total = payload.get('total')
+    pages = None
+    if isinstance(total, (int, float)) and page_size > 0:
+        pages = int((total + page_size - 1) // page_size)
+    return {
+        'account_id': account_id,
+        'kind': 'commodity',
+        'period': {
+            'from': dates[0] if dates else '',
+            'to': dates[1] if len(dates) > 1 else (dates[0] if dates else ''),
+        },
+        'date_type': payload.get('date_type') or '',
+        'rows': payload.get('rows'),
+        'columns': payload.get('columns'),
+        'total': total,
+        'page': page,
+        'page_size': page_size,
+        'pages': pages,
+        'real_date_range': payload.get('real_date_range'),
+        'warnings': warnings,
+        'source': 'platform',
+        'fetched_at': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
+    }
+
+
+def commodity(account_id: str, start: str = '', end: str = '', item_id: str = '',
+              item_name: str = '', category_info: Any = None, is_dp_stk: str = '',
+              mkt_act_id: str = '', page: Any = 1, size: Any = None,
+              order_by: str = '', order: str = '') -> Dict[str, Any]:
+    """商品数据：一行一个商品 + 平台给的指标列（只读）。
+
+    与另外三页的三点不同（都是官方页面行为，不是我们的选择）：
+
+    * **默认是「今天」**（`recent1d`），不是最近 7 天 —— 官方页面的时间筛选默认今天；
+    * **分页 + 排序**由平台做，所以**不进缓存**（键要含全部参数，缓存价值低而误命中
+      代价高：翻页时给你上一页的缓存就是「点了没反应」）；
+    * **列由平台定义**（`item.indicators`），我们不写死指标键 —— 官方表头是可变的，
+      写死就会漏掉平台新增的列。
+    """
+    page_number, failure = _int_arg('页码', page, 1, 100000)
+    if failure:
+        return failure
+    page_size, failure = _int_arg(
+        '每页条数',
+        COMMODITY_DEFAULT_PAGE_SIZE if size in (None, '') else size,
+        1, COMMODITY_MAX_PAGE_SIZE,
+    )
+    if failure:
+        return failure
+    order = str(order or '').strip().lower()
+    if order not in ('', 'asc', 'desc'):
+        return common.fail('排序方向只能是 asc 或 desc', 'invalid_fields')
+    order_by = str(order_by or '').strip()
+    if order and not order_by:
+        return common.fail('指定排序方向时必须同时给出排序字段', 'invalid_fields')
+    module = common.protocol_module('datacenter')
+    if module is None:
+        return common.not_ready('协议层未提供数据组接口（backend.app.xianyu.datacenter）')
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+    status, value = common.call_method(
+        _BoundProtocol(module, client), ('commodity',), client,
+        _text(start).strip(), _text(end).strip(), account_id, category_info,
+        _text(item_id).strip(), _text(item_name).strip(), _text(is_dp_stk).strip(),
+        _text(mkt_act_id).strip(), page_number, page_size, order_by, order,
+    )
+    if status != common.CALL_OK:
+        return common.call_failed(status, value) or common.fail(
+            '商品数据接口调用失败', 'protocol_error')
+    return _wrap_commodity(account_id, value, page_number, page_size)
