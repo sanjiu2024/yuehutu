@@ -14,7 +14,7 @@
 
 import { useState } from 'react'
 import { api, errorText } from '../api'
-import { Badge, Field, Loading, Modal, Notice, useToast } from '../components'
+import { Badge, ConfirmDialog, Field, Loading, Modal, Notice, useToast } from '../components'
 import { useAsync } from '../hooks/useAsync'
 import {
   IconChat,
@@ -412,6 +412,18 @@ export function ComplaintsPage() {
 
 /* ---------------- 「联系纠纷小二」面板（task-94） ---------------- */
 
+/**
+ * 面板里四个写操作的待确认项。
+ * **必须二次确认**：这四个按钮点下去就是一条真到平台的写请求，页面文案（列表里的入口提示）
+ * 也写着「写操作都要二次确认」，所以确认这一步不能省。
+ */
+interface DisputePending {
+  kind: 'text' | 'image' | 'urge' | 'markRead'
+  title: string
+  message: string
+  ok: string
+}
+
 function DisputeTalkPanel({
   accountId,
   target,
@@ -426,6 +438,8 @@ function DisputeTalkPanel({
   const [imageUrl, setImageUrl] = useState('')
   /** 正在进行的写操作 path；空串 = 空闲。所有写按钮共用它做禁用。 */
   const [busy, setBusy] = useState('')
+  /** 待确认的写操作；非空时弹确认框，用户点「确认」才真的发。 */
+  const [pending, setPending] = useState<DisputePending | null>(null)
 
   // ① 先拿纠纷会话：found:false 就是「这个订单还没有纠纷会话」，不要拿空消息列表冒充
   const conversation = useAsync<DisputeConversation>(
@@ -512,34 +526,45 @@ function DisputeTalkPanel({
     }
   }
 
-  const sendText = () => {
+  const askSendText = () => {
     const body = text.trim()
     if (!body) {
       toast.info('先写点内容再发')
       return
     }
-    void runDisputeWrite(`${base}/messages`, { text: body }, '留言已发出').then((saved) => {
-      if (saved) setText('')
+    setPending({
+      kind: 'text',
+      title: '确认给纠纷小二留言',
+      message: `这条留言会真的发到闲鱼平台：\n\n${body}`,
+      ok: '发送留言',
     })
   }
 
-  const sendImage = () => {
+  const askSendImage = () => {
     const url = imageUrl.trim()
     if (!url) {
       toast.info('先填图片 URL 再发')
       return
     }
-    void runDisputeWrite(`${base}/messages/image`, { url }, '图片已发出').then((saved) => {
-      if (saved) setImageUrl('')
+    setPending({
+      kind: 'image',
+      title: '确认发图举证',
+      message: `会把这张图片链接发给纠纷小二（平台只收链接，本机不上传文件）：\n\n${url}`,
+      ok: '发送图片',
     })
   }
 
-  const urge = () => {
-    void runDisputeWrite(`${base}/urge`, {}, '已催办')
+  const askUrge = () => {
+    setPending({
+      kind: 'urge',
+      title: '确认催办',
+      message: '会给纠纷小二发一条「催促处理维权」，会真的发到闲鱼平台。',
+      ok: '催办',
+    })
   }
 
   /** 标记已读要 `{msg_id, sequence}`：拿最后一条（未读优先）；平台没给 msg_id 就直说标不了。 */
-  const markRead = () => {
+  const askMarkRead = () => {
     if (!markTarget) {
       toast.info('还没有消息，没有可标记的已读')
       return
@@ -549,9 +574,42 @@ function DisputeTalkPanel({
       toast.error('这条消息平台没有给 msg_id，标不了已读')
       return
     }
+    setPending({
+      kind: 'markRead',
+      title: '确认标记已读',
+      message: `会把消息 ${idOf(msgId)}（序号 ${num(markTarget.sequence)}）在平台上标记为已读。`,
+      ok: '标记已读',
+    })
+  }
+
+  /** 确认框点「确认」后才走到这里 —— 仍然是唯一写出口 `runDisputeWrite`。 */
+  const confirmPending = () => {
+    const item = pending
+    if (!item) return
+    setPending(null)
+    if (item.kind === 'text') {
+      const body = text.trim()
+      void runDisputeWrite(`${base}/messages`, { text: body }, '留言已发出').then((saved) => {
+        if (saved) setText('')
+      })
+      return
+    }
+    if (item.kind === 'image') {
+      const url = imageUrl.trim()
+      void runDisputeWrite(`${base}/messages/image`, { url }, '图片已发出').then((saved) => {
+        if (saved) setImageUrl('')
+      })
+      return
+    }
+    if (item.kind === 'urge') {
+      void runDisputeWrite(`${base}/urge`, {}, '已催办')
+      return
+    }
+    const msgId = markTarget?.msg_id
     const body: Record<string, unknown> = { msg_id: msgId }
-    if (markTarget.sequence !== null && markTarget.sequence !== undefined && markTarget.sequence !== '') {
-      body.sequence = markTarget.sequence
+    const sequence = markTarget?.sequence
+    if (sequence !== null && sequence !== undefined && sequence !== '') {
+      body.sequence = sequence
     }
     void runDisputeWrite(`${base}/mark-read`, body, '已标记已读')
   }
@@ -657,13 +715,13 @@ function DisputeTalkPanel({
                 onChange={(event) => setText(event.target.value)}
               />
               <div className="cp-actions">
-                <button className="btn sm" disabled={locked} onClick={sendText}>
+                <button className="btn sm" disabled={locked} onClick={askSendText}>
                   <IconSend size={13} /> {busy.endsWith('/messages') ? '发送中…' : '发送'}
                 </button>
-                <button className="btn sm" disabled={locked || !markTarget} onClick={markRead} title={markTarget ? '把最后一条（优先未读）消息标记为已读' : '还没有消息可标记'}>
+                <button className="btn sm" disabled={locked || !markTarget} onClick={askMarkRead} title={markTarget ? '把最后一条（优先未读）消息标记为已读' : '还没有消息可标记'}>
                   <IconCheckCircle size={13} /> 标记已读
                 </button>
-                <button className="btn sm" disabled={locked} onClick={urge} title="催办：请小二尽快处理">
+                <button className="btn sm" disabled={locked} onClick={askUrge} title="催办：请小二尽快处理">
                   <IconClock size={13} /> 催办
                 </button>
                 <span className="cp-grow" />
@@ -679,17 +737,28 @@ function DisputeTalkPanel({
                   placeholder="图片 URL（发图举证；平台只收链接，本机不上传文件）"
                   onChange={(event) => setImageUrl(event.target.value)}
                 />
-                <button className="btn sm" disabled={locked} onClick={sendImage}>
+                <button className="btn sm" disabled={locked} onClick={askSendImage}>
                   <IconImage size={13} /> {busy.endsWith('/messages/image') ? '发送中…' : '发送图片'}
                 </button>
               </div>
               <span className="cp-sub">
-                写操作都会带 <code>confirm: true</code>；平台拒绝的原因原样显示，不笼统说「请重新登录」。
+                写操作都要先在确认框里过一道；确认后才带 <code>confirm: true</code> 发出去，
+                平台拒绝的原因原样显示，不笼统说「请重新登录」。
               </span>
             </div>
           </>
         )}
       </div>
+      {pending ? (
+        <ConfirmDialog
+          title={pending.title}
+          message={<span style={{ whiteSpace: 'pre-wrap' }}>{pending.message}</span>}
+          confirmText={pending.ok}
+          busy={busy !== ''}
+          onConfirm={confirmPending}
+          onCancel={() => setPending(null)}
+        />
+      ) : null}
     </Modal>
   )
 }
