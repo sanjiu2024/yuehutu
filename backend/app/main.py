@@ -87,6 +87,12 @@ ROUTE_MODULES: List[str] = [
     # 官方这是另一个微应用（账号管理），而 `/api/shop` 已承载「客服分流 + 店铺资料」。
     # 集合级 `POST /{account_id}`（新建）与 `/{sub_id}/delete` 等路径不重叠。
     'sub_accounts',
+    # 话术（官方 IM 工作台的「快捷回复」：分组 + 短语，读 1 + 写 6）：
+    # `/api/quick-reply/{account_id}/...`。**独立前缀**，故意不并进 `/api/chats`：
+    # 那边是本地会话与消息（两张本地表），话术是平台侧配置（`idlemessage.quickreply.*`）。
+    # 集合级 `POST /{account_id}/groups`、`POST /{account_id}/phrases` 与
+    # `/{group_id}/delete`、`/{content_id}/delete` 路径不重叠。
+    'quick_reply',
 ]
 
 PLACEHOLDER = """<!doctype html>
