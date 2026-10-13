@@ -181,6 +181,11 @@ _LABELS = {
     # 商品数据页（`commodity`）自己的两个标签：列表与指标列定义
     'commodity': '商品数据',
     'columns': '商品指标列',
+    # 经营卡片（`card`）：协议层的错误标签就是 kind（一次只查一张，所以只会出现一个）
+    'trade': '交易数据',
+    'seller': '经营概况',
+    'repurchase': '复购',
+    'refund': '退款概览',
 }
 
 
@@ -426,7 +431,9 @@ def _wrap_card(account_id: str, kind: str, payload: Dict[str, Any]) -> Dict[str,
     条目」与「结构都没有」用 `found` 区分，`found=False` 时额外给一条 warning）。
     """
     warnings = _warnings(payload.get('errors') or {})
-    if not payload.get('found'):
+    if not payload.get('found') and not warnings:
+        # 已经有「平台拒绝访问…」时不再补这条 —— 那条才是真因，两条一起说会把
+        # 「没权限」说成「可能改了字段名」，把人往错方向带。
         warnings.append(WARN_CARD_EMPTY)
     dates = payload.get('dates') or []
     if not dates:

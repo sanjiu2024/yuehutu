@@ -859,16 +859,45 @@ def parse_card(payload: Any, kind: str, labels: Dict[str, str]) -> Dict[str, Any
 
 async def card(client: Any, kind: str = 'trade', start: str = '', end: str = '',
                seller_id: str = '') -> Dict[str, Any]:
-    """四张经营卡片（**只读**）。`kind` 不认识时抛 `ValueError`（服务层转 400）。"""
+    """四张经营卡片（**只读**）。`kind` 不认识时抛 `ValueError`（服务层转 400）。
+
+    **平台「拒绝访问」是有效答复，不是故障**（与 `_collect` 同一口径）：真机上这个账号对
+    四张卡都回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问`。若照抛，界面上会同时出现
+    四个红框、每个框里都是 `协议层调用失败: MTOP 调用失败 [api]: FAIL_BIZ_…` 的原文，
+    而同一页的核心指标却是「人话 + 一屏 -」—— 同一页两套口径。所以这里只把**无权限**
+    翻成 `errors`（服务层给人话 warning，200），其余（登录态过期、链路、风控）照抛。
+    """
     if kind not in CARD_APIS:
         raise ValueError('不支持的数据卡片：%s（可选 %s）' % (kind, '/'.join(CARD_KINDS)))
     date_type, dates = card_dates(start, end)
     request = card_request(date_type=date_type, dates=dates, seller_id=seller_id)
-    payload = await _mtop(client, CARD_APIS[kind], dict(request))
-    parsed = parse_card(payload, kind, card_labels(kind, seller_id))
+    errors: Dict[str, str] = {}
+    payload: Any = None
+    try:
+        payload = await _mtop(client, CARD_APIS[kind], dict(request))
+    except Exception as exc:  # noqa: BLE001 - 只放行「无权限」，其余照抛
+        if not _is_permission_error(exc):
+            raise
+        errors[kind] = _error_text(exc)
+    if payload is None:
+        parsed: Dict[str, Any] = {
+            'kind': kind,
+            'title': CARD_TITLES.get(kind, kind),
+            'api': CARD_APIS.get(kind, ''),
+            'metrics': [],
+            'banner': [],
+            'series': [],
+            'promotion': None,
+            'extra': {},
+            'real_date_range': None,
+            'found': False,
+        }
+    else:
+        parsed = parse_card(payload, kind, card_labels(kind, seller_id))
     parsed.update({
         'date_type': date_type,
         'dates': dates,
         'raw': payload,
+        'errors': errors,
     })
     return parsed

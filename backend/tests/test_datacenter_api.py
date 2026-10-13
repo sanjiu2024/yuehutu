@@ -897,9 +897,53 @@ class DataCenterProtocolTest(unittest.TestCase):
             {'overview': 'XianyuError: FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问'})
         self.assertEqual(len(warnings), 1)
         self.assertIn('没有「数据」权限', warnings[0])
-        # 给用户看的话里只许有中文业务名，不许漏 `overview` 这种内部调用名
+
+    def test_card_permission_denied_returns_errors_instead_of_raising(self):
+        """真协议层：无权限**不许抛**（抛了界面上就是四个红框 + 一屏 mtop 原文）。
+
+        这条是**真机抓出来的**：假协议层早就按「回 `errors`」写，服务层测试因此一直绿，
+        而真协议层当时是直接抛 ⇒ 打包版上四张卡全 502、原文糊在卡片里，
+        同一页的核心指标却是「人话 + 一屏 -」。所以这条必须在**协议层**用真函数钉住。
+        """
+        client = FakeMtopClient(errors={
+            datacenter_proto.CARD_APIS['trade']:
+                RuntimeError('FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问')})
+        parsed = asyncio.run(datacenter_proto.card(client, 'trade', '', '', ''))
+        self.assertFalse(parsed['found'])
+        self.assertEqual(parsed['metrics'], [])
+        self.assertIn('trade', parsed['errors'])
+        self.assertIn('UNAUTHORIZED', parsed['errors']['trade'])
+
+    def test_card_other_failures_still_raise(self):
+        """链路/风控/登录态这类故障**照抛** —— 它们必须变成 502/409 说实话。"""
+        client = FakeMtopClient(errors={
+            datacenter_proto.CARD_APIS['refund']: RuntimeError('FAIL_SYS_TRAFFIC_LIMIT::挤爆了')})
+        with self.assertRaises(RuntimeError):
+            asyncio.run(datacenter_proto.card(client, 'refund', '', '', ''))
+
+    def test_card_session_expired_still_raises(self):
+        """登录态过期必须照抛：`common.call_failed` 按类名认它 → 409 + 回写 need_relogin。"""
+        client = FakeMtopClient(errors={
+            datacenter_proto.CARD_APIS['seller']:
+                SessionExpiredError('FAIL_SYS_SESSION_EXPIRED::Session过期')})
+        with self.assertRaises(SessionExpiredError):
+            asyncio.run(datacenter_proto.card(client, 'seller', '', '', ''))
+
+    def test_service_warnings_use_chinese_labels_not_internal_names(self):
+        """给用户看的话里只许有中文业务名，不许漏 `overview` 这种内部调用名。"""
+        warnings = datacenter_service._warnings(
+            {'overview': 'XianyuError: FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问'})
         self.assertIn('数据总览', warnings[0])
         self.assertNotIn('overview', warnings[0])
+
+    def test_service_warnings_have_chinese_labels_for_cards(self):
+        """四张卡片的错误标签就是 `kind`，也必须翻成中文（否则卡片上写 `trade`）。"""
+        for kind, label in (('trade', '交易数据'), ('seller', '经营概况'),
+                            ('repurchase', '复购'), ('refund', '退款概览')):
+            warnings = datacenter_service._warnings(
+                {kind: 'XianyuError: FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问'})
+            self.assertIn(label, warnings[0], kind)
+            self.assertNotIn(kind, warnings[0], kind)
 
 
 class CommodityTest(DataCenterApiTest):
@@ -1235,6 +1279,16 @@ class CardTest(DataCenterApiTest):
             'card': 'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问'})
         data = self.ok_data(f'{BASE}/{ACC}/card/seller')
         self.assertTrue(any('没有「数据」权限' in w for w in data['warnings']), data['warnings'])
+
+    def test_permission_denied_does_not_also_blame_the_field_names(self):
+        """「这个账号没权限」与「平台可能改了字段名」不能同时说 —— 后者会把人往错方向带。"""
+        seed_account()
+        self.proto.payloads['card'] = card_payload(found=False, errors={
+            'seller': 'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问'})
+        data = self.ok_data(f'{BASE}/{ACC}/card/seller')
+        self.assertEqual(len(data['warnings']), 1, data['warnings'])
+        self.assertIn('经营概况', data['warnings'][0])
+        self.assertIn('没有「数据」权限', data['warnings'][0])
 
     def test_platform_error_is_502_with_protocol_error(self):
         seed_account()
