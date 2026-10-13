@@ -1086,6 +1086,30 @@ POST /api/logistics/{account_id}/orders/{order_id}/resend      {mail_no,cp_code,
         --   `ConfirmDialog` 列清楚「要发什么」，用户点确认才真的发（补丁前是点一下就发，属缺陷）；
         --   唯一写出口仍是 `runDisputeWrite`，请求体一律 `confirm: true` 字面量。
 
+【第 42 批 /api/items/{account_id}/{item_id}/fans-price —— 粉丝价（1 读 + 1 写）】
+   GET  /api/items/{account_id}/{item_id}/fans-price
+   POST /api/items/{account_id}/{item_id}/fans-price
+        {groups: {all?, old?, buy?} 或 prices: [{fans_group, price_string}], confirm}
+        -- 官方（`item-main.js` 逐字）：读 `mtop.alibaba.idle.seller.platform.item.operate.fansprice.get`、
+        --   写 `…fansprice.set`（都 v1.0，`data:{...e}`）。三组是 `all` 全部粉 / `old` 老粉 / `buy` 已购粉。
+        -- **写是「整份替换」，不是按组增量**：`groups` 里留空或没给的组会被平台清空；
+        --   `prices` 只含有值的组（官方就是这么拼的）；`groups` 与 `prices` 同时给时以 `prices` 为准。
+        --   三组全空 → 400 `invalid_fields`。
+        -- 价格口径（官方文案）：十进制写法（不认 `1e3` 这类科学计数法）、最多 **2 位小数**
+        --   （「粉丝价最多为2位小数，请修改」）、必须 **> 0**（「粉丝价必须大于0，请修改」）、上限 99999999.99；
+        --   0 元 / 3 位小数 / 未知组名 / 空 item_id 一律 400 `invalid_fields` 且**零平台请求**。
+        -- 只读：`prices` 是数组 = 平台返回的配置；`prices === null` + warning（`fans_price_config_missing`）
+        --   = 平台这一次没返回配置（**不等于「没配」**）；`groups` 三键可能都是 `null`
+        --   （拿不到的一组**不补 0**，界面显示 `-`）。`price_key` 这类平台内部键名不外泄。
+        -- 写成功返回 `{action:'fans_price_set', saved, item_id, submitted, warnings, fetched_at}`；
+        --   平台接受但没回 `data.data` → `saved:false` + `fans_price_no_echo` warning（**不谎报成功**）。
+        -- 成功后记 `operation_logs`（action `fans_price_set`）并播 `items.changed`。
+        -- AI 侧 2 个工具：`items_fans_price`（只读、无 `confirm`）+ `items_set_fans_price`（写，必带 `confirm`）。
+        -- **界面口径**：行内「粉丝价」弹窗预填当前三组值（只填一次，避免静默重拉冲掉用户输入）；
+        --   保存前必须弹 `ConfirmDialog` 逐条列出「哪几组要改成多少、哪几组会被清空」；
+        --   唯一写出口是 `postFansPrice` → `postItemWrite`（`confirm: true` 字面量）。
+        -- 详见 `docs/contracts/fans_price.md`。
+
 【写接口的三条硬口径（所有 *_write 一律遵守）】
 1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /
    `confirm_required`），**一次平台请求都不发**；
@@ -1093,13 +1117,13 @@ POST /api/logistics/{account_id}/orders/{order_id}/resend      {mail_no,cp_code,
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 128 条 / `MASTER_TOOLS` 127 条（去掉 `master_chat` 防递归），
-其中 **59 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 129 条。五方对账（specs / master / routes / service targets / handlers）
+【AI 侧】`TOOL_SPECS` 130 条 / `MASTER_TOOLS` 129 条（去掉 `master_chat` 防递归），
+其中 **60 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
+`mcp_server/client.py::TOOL_ROUTES` 131 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=128 master=127 routes=129 targets=108 handlers=128 / write_tools=59 / route_checked=129 / RECON OK
+-> specs=130 master=129 routes=131 targets=110 handlers=130 / write_tools=60 / route_checked=131 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`

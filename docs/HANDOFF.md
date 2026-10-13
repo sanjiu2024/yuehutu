@@ -62,8 +62,8 @@
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_d41_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 58  PASS 58  FAIL 0  CASES 2213  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_fp42_full2&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 59  PASS 59  FAIL 0  CASES 2280  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -75,7 +75,7 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_xianyu_log
 ```text
 cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_mcp_server.py"
 -> Ran 65 tests ... OK        （含 RouteParamAlignmentTest：MCP 路由参数 ↔ 真实端点签名、
-                                WriteToolConfirmGateTest：59 条写路由不带 confirm 一律零 HTTP 请求）
+                                WriteToolConfirmGateTest：60 条写路由不带 confirm 一律零 HTTP 请求）
 ```
 
 ```text
@@ -83,20 +83,20 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 97 modules transformed.
-   frontend/dist/assets/index-3WxsizZZ.js (609.95 kB, gzip 191.24 kB)
-   frontend/dist/assets/index-CbU9mCPj.css (150.51 kB, gzip 23.73 kB)
+   frontend/dist/assets/index-8xdDx-7r.js (615.75 kB, gzip 193.26 kB)
+   frontend/dist/assets/index-BX9YNMmk.css (151.22 kB, gzip 23.82 kB)
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon40&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=121 master=120 routes=122 targets=101 handlers=121
-   write_tools=55  route_checked=122
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon42&& C:\Python310\python.exe scripts\reconcile_tools.py"
+-> specs=130 master=129 routes=131 targets=110 handlers=130
+   write_tools=60  route_checked=131
    RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
    （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18465"
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18471"
 -> UI SMOKE ALL OK  (29/29 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
    截图目录：logs/ui_smoke
 ```
@@ -2773,10 +2773,57 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `runDisputeWrite`；`frontend/src/pages/Complaints.tsx`（tsc `TSC_EXIT=0`、`vite build BUILD_EXIT=0`、
 > `ui_smoke.py` 29/29 页），契约补进 `docs/CONTRACTS.md` 第 41 批块。
 
+### 第四十二批：粉丝价（全部粉 / 老粉 / 已购粉）（247~251）
+
+247. 后端三层（`backend/app/xianyu/fans_price.py` / `backend/app/services/fans_price.py` /
+     `backend/app/api/fans_price.py`）：官方 `mtop.alibaba.idle.seller.platform.item.operate.fansprice.get`
+     与 `…fansprice.set`（都 v1.0，逐字来自 `item-main.js` @3080605 / @3081007）。**写是「整份替换」**：
+     官方只把**有值的组**拼进 `fansPriceList`（@4101088），所以留空 = 清空；价格口径沿用官方文案
+     （最多 2 位小数、必须 > 0）。同一路径 1 读 + 1 写；`ROUTE_MODULES` 里 `'fans_price'` 必须
+     **插在 `'items'` 之前**（同前缀先注册者先匹配）。
+248. `backend/tests/test_fans_price_api.py` **67 条**（协议 12 / 只读 8 / 闸门 6 / 校验 6 /
+     happy path 8 / 失败 8 / 路由 3），文件头列了本族最容易犯的七个错（整份替换被当成改一组、
+     未确认就发、`bool('false')`、平台没返回补成 `[]`、拿不到的价格补 0、价格校验漏项、
+     字段校验排在凭据检查之后）。
+249. AI 侧 2 个工具：`items_fans_price`（只读）+ `items_set_fans_price`（写，description 必须写明
+     「整份替换：只想改一组时要把另外两组当前值一起给」）；`mcp_server/client.py` 2 条 `TOOL_ROUTES`；
+     `scripts/reconcile_tools.py` 的 `WRITE_PREFIX` 补**完整**写工具名（不加 `items_` 宽前缀，
+     否则只读工具会被误判成写工具）；`backend/tests/test_mcp_server.py` 两处硬编码 59 → 60。
+     **★ 这次接线顺手修掉一个真缺陷**：第 39 批的补丁脚本把物流那 13 行 `TOOL_ROUTES`
+     连续重复插了 5 份，对账脚本用的是字典（重复键只留一份）、单测只断言条数，两边都查不出来
+     ⇒ 用 `fix_mcp_dup.py` 收敛成一份（折叠前 5 → 折叠后 1）。
+250. 前端（`fix-im` 交付、Lead 复验）：`frontend/src/pages/Items.tsx` 行内「粉丝价」→
+     `FansPriceModal`（预填当前三组值、**只填一次**、四种空态分开说、底部实时列「本次会提交
+     （整份替换）」）→ `ConfirmDialog`（逐条列出改成多少 / 哪几组会被清空）；唯一写出口
+     `postFansPrice` → `postItemWrite`（`confirm: true` 字面量）；`frontend/src/pages/items.css`
+     八个 `.it-fans-*` 类（只用既有变量）。
+251. 文档：`docs/contracts/fans_price.md`（新建，平台接口 / HTTP 面 / 校验 / 三态 / 三步顺序 /
+     界面口径 / 测试 / AI 侧 / 未验证）+ `docs/CONTRACTS.md` 第 42 批契约块 + AI 侧计数
+     130 / 129 / 131（写 60）。
+
+> **第四十二批证据链**：`backend/tests/test_fans_price_api.py` → `Ran 67 tests ... OK`；
+> `backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_fp42_full2`）→
+> `TOTAL 59  PASS 59  FAIL 0  CASES 2280  SKIPPED 2`；
+> `python -m unittest backend.tests.test_agents_cross backend.tests.test_mcp_server
+> backend.tests.test_agents_tools_workbench` → `Ran 130 tests ... OK`；
+> `scripts/reconcile_tools.py` → `specs=130 master=129 routes=131 targets=110 handlers=130 /
+> write_tools=60 / route_checked=131 / RECON OK`；
+> `cd frontend && npx tsc --noEmit` → `TSC_EXIT=0`；`npx vite build` → `BUILD_EXIT=0`
+> （97 modules，`index-8xdDx-7r.js` 615.75 kB / `index-BX9YNMmk.css` 151.22 kB）；
+> `scripts/ui_smoke.py --port 18471` → **29/29 页通过**。
+> **界面取证（`C:\Users\Administrator\.dsh-tmp\fp42_panel_shots.py`，`page.route` 拦
+> `**/api/items/*/*/fans-price*` 喂假数据、零平台请求）**：`PROBLEMS []` —— 弹窗渲染出
+> 「闲鱼上的当前配置」三组值、三个输入框**预填** `12.50/11.00/10.00`、底部「本次会提交（整份替换）」；
+> 二次确认框写出「会在闲鱼上真的改掉，不可撤销」+ 逐条组价 + 「没填的组会被清空」；
+> **`fans_posts []`**（只开确认框、没点确认）、`page_errors []`；截图
+> `logs/fp42_panel_shots/{01-fans-modal-dark,02-fans-confirm-dark,03-fans-modal-light}.png`。
+> 诚实边界：**写接口一次真机请求都没发过**（会真的改平台上三组粉丝价）；只读接口的真机形状
+> 也没有样例（本机账号在数据域一直回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`，粉丝价属同一权限域）。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**58 个测试文件、2213 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**59 个测试文件、2280 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -2802,19 +2849,20 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   从 `共 95 条` 变成 `共 56 条`（= 两个在售账号的 45 + 11），页面里再也搜不到 `3998190171`，
   只读探针（真 Edge）`has_deleted_account: false`、`page_errors: []`。
 - 真实 HTTP：只读 17 条 + 写路径 11 条（早期探针）；打包版接口面现在
-  `/openapi.json` = **190 条路径 / 206 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
+  `/openapi.json` = **191 条路径 / 208 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
   第三十二批 +10 条店铺资料/子账号；第三十三批 +4 条推广资金明细；第三十四批 +1 条商品数据；第三十五批 +1 条经营卡片；
   第三十六批 +1 条客服明细表 `GET /api/datacenter/{account_id}/cs/{kind}`；
   第三十七批 +6 条话术 `/api/quick-reply/*`（7 个操作）；第三十八批 +6 条订单处理
   `/api/trade/{account_id}/orders|refunds|complaints/*`；第三十九批 +3 条物流
   `/api/logistics/{account_id}/{companies,guess,orders/{order_id}/resend}`；
   第四十批 +3 条 IM 会话操作 `/api/im/{account_id}/{blacklist,blacklist/remove,cards}`（4 个操作）；
-  第四十一批 +6 条纠纷协商 `/api/disputes/*`（7 个操作）），
+  第四十一批 +6 条纠纷协商 `/api/disputes/*`（7 个操作）；第四十二批 +1 条粉丝价
+   `GET|POST /api/items/{account_id}/{item_id}/fans-price`（2 个操作）），
   均结构化信封、无 500。
-- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 128 / `MASTER_TOOLS` 127 /
-  `TOOL_ROUTES` 129，其中 **59 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
+- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 130 / `MASTER_TOOLS` 129 /
+  `TOOL_ROUTES` 131，其中 **60 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
   FastAPI 端点接受 → `RECON OK`。MCP 端到端冒烟（真起 `mcp_server/server.py` 子进程打打包版）
-  `tools/list` 返回 63 个工具（该数字早于后面几批新增的工具）。
+  `tools/list` 返回 63 个工具（第 6 批的旧数字；`TOOL_ROUTES` 现在 131 条，本次未重跑该冒烟）。
 - **真实浏览器逐页冒烟 29/29 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
   临时数据目录，逐页断言未白屏、未掉回登录页、无 JS 报错，截图在 `logs/ui_smoke/`）。
   它抓到了后端全绿时仍然「UI 完全不可用」的登录死循环。
