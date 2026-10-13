@@ -1381,3 +1381,91 @@ textarea.it-invalid:focus {
   color: var(--warn);
 }
 
+/* ---- 发布前预检（只读，见 Items.tsx 的 PublishItemModal）---- */
+
+.it-precheck {
+  margin: var(--sp-3) 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--ok);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  font-size: var(--fs-12);
+}
+
+/* 有步骤没过：整块换成 warn 色，别和「通过」长一个样。 */
+.it-precheck.it-precheck-warn {
+  border-left-color: var(--warn);
+}
+
+.it-precheck-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  font-weight: 600;
+}
+
+.it-precheck-close {
+  margin-left: auto;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.it-precheck-close:hover {
+  color: var(--text);
+}
+
+.it-precheck-steps {
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.it-precheck-steps li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.it-precheck-yes {
+  color: var(--ok);
+  flex: none;
+}
+
+.it-precheck-no {
+  color: var(--warn);
+  flex: none;
+}
+
+.it-precheck-name {
+  min-width: 6.5em;
+  color: var(--text-dim);
+}
+
+.it-precheck-warns {
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--warn);
+}
+
+.it-precheck-warns li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+}
+
+.it-precheck-note {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-11);
+}
+

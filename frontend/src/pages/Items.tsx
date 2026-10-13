@@ -24,6 +24,7 @@ import {
   IconArrowRight,
   IconBox,
   IconChart,
+  IconCheck,
   IconChevronDown,
   IconCopy,
   IconEdit,
@@ -35,6 +36,7 @@ import {
   IconSort,
   IconTrash,
   IconWarn,
+  IconXCircle,
 } from '../icons'
 import { useAsync } from '../hooks/useAsync'
 import { DraftBox } from './DraftBox'
@@ -3460,6 +3462,35 @@ function FansPriceModal({ item, onClose, onDone }: { item: Item; onClose: () => 
 
 /* ---------------- 发布商品 ---------------- */
 
+/** 发布前预检的一步（后端 `POST /api/items/{account_id}/publish/precheck`）。 */
+interface PublishPrecheckStep {
+  step?: string
+  ok?: boolean
+  detail?: string
+}
+
+/** 预检结果：**只读** —— 后端只跑到「分类推荐」为止，不注册分类路径、更不会发布。 */
+interface PublishPrecheck {
+  ready?: boolean
+  steps?: PublishPrecheckStep[] | null
+  warnings?: string[] | null
+  note?: string
+  category?: { ok?: boolean; channel_cate_id?: string; channel_cate_name?: string } | null
+}
+
+/**
+ * 预检步骤的中文名。
+ *
+ * 后端 `steps[].step` 是协议层的英文步骤名（`images` / `bad_words` / `category`），
+ * 直接摆给用户看就是「images ✓」——用户不知道那是什么。**认不出的步骤名原样显示**，
+ * 不猜（后端加步骤时不会在这里被悄悄吞掉）。
+ */
+const PRECHECK_STEP_LABELS: Record<string, string> = {
+  images: '图片准备',
+  bad_words: '违禁词预检',
+  category: '分类推荐',
+}
+
 function PublishItemModal({
   accountId,
   onClose,
@@ -3485,6 +3516,9 @@ function PublishItemModal({
   const [touched, setTouched] = useState(false)
   /** 发布失败的原因：原样保留后端 message；`risk` 为真时用 warn 而不是 error。 */
   const [failure, setFailure] = useState<{ message: string; risk: boolean } | null>(null)
+  /** 发布前预检的结果（只读，见 `runPrecheck`）。 */
+  const [precheck, setPrecheck] = useState<PublishPrecheck | null>(null)
+  const [checking, setChecking] = useState(false)
 
   const rememberSize = useCallback((url: string, size: { width: number; height: number }) => {
     setImageSizes((prev) => ({ ...prev, [url]: size }))
@@ -3538,6 +3572,59 @@ function PublishItemModal({
 
   const canPublish = Object.keys(errors).length === 0 && uploadingCount === 0 && !saving
 
+  /**
+   * 发布载荷**只在这里构造一次**：真发布（`submit`）与发布前预检（`runPrecheck`）必须发同一份，
+   * 否则预检说「没问题」而真发布换了字段，预检就成了摆设。
+   */
+  const buildPayload = useCallback((): Record<string, unknown> => {
+    const payload: Record<string, unknown> = {
+      title: title.trim(),
+      description,
+      category_id: categoryId.trim() || undefined,
+      // 契约：第一张是主图；新传的图带真实尺寸 {url,width,height}，没有尺寸的用裸 URL。
+      images: imagePayload(images, imageSizes),
+    }
+    if (price.trim() !== '') payload.price = Number(price)
+    if (originalPrice.trim() !== '') payload.original_price = Number(originalPrice)
+    if (stock.trim() !== '') payload.stock = Number(stock)
+    return payload
+  }, [title, description, categoryId, images, imageSizes, price, originalPrice, stock])
+
+  /**
+   * 发布前预检（只读）：能提前看到「平台会不会拒」与「会被归到哪个分类」。
+   *
+   * 为什么值得做一个按钮：发布失败时平台只回一句
+   * `FAIL_BIZ_IDLE_UNKNOWN_THROWABLE::发布失败`，用户完全不知道该改哪儿；预检把
+   * 违禁词命中与分类推荐结果先摆出来，**且一次都不发发布请求**。
+   */
+  const runPrecheck = async () => {
+    setTouched(true)
+    setFailure(null)
+    const firstError = Object.values(errors)[0]
+    if (firstError) {
+      toast.info(firstError)
+      return
+    }
+    if (uploadingCount > 0) {
+      toast.info('还有图片正在上传，等传完再预检')
+      return
+    }
+    setChecking(true)
+    try {
+      const result = await api.post<PublishPrecheck>(
+        `/api/items/${encodeURIComponent(accountId)}/publish/precheck`,
+        buildPayload(),
+      )
+      setPrecheck(result ?? null)
+    } catch (err) {
+      // 预检失败不挡发布：后端的人话原样显示，用户自己决定要不要照发。
+      setPrecheck(null)
+      toast.error(errorText(err))
+    } finally {
+      setChecking(false)
+    }
+  }
+
   const submit = async () => {
     setTouched(true)
     setFailure(null)
@@ -3553,17 +3640,7 @@ function PublishItemModal({
     }
     setSaving(true)
     try {
-      const payload: Record<string, unknown> = {
-        title: title.trim(),
-        description,
-        category_id: categoryId.trim() || undefined,
-        // 契约：第一张是主图；新传的图带真实尺寸 {url,width,height}，没有尺寸的用裸 URL。
-        images: imagePayload(images, imageSizes),
-      }
-      if (price.trim() !== '') payload.price = Number(price)
-      if (originalPrice.trim() !== '') payload.original_price = Number(originalPrice)
-      if (stock.trim() !== '') payload.stock = Number(stock)
-      await api.post(`/api/items/${encodeURIComponent(accountId)}/publish`, payload)
+      await api.post(`/api/items/${encodeURIComponent(accountId)}/publish`, buildPayload())
       toast.success('发布请求已提交')
       onDone()
     } catch (err) {
@@ -3597,6 +3674,14 @@ function PublishItemModal({
             取消
           </button>
           <button
+            className="btn ghost"
+            onClick={runPrecheck}
+            disabled={uploadingCount > 0 || saving || checking}
+            title="只跑发布链路的前半段（违禁词预检 + 分类推荐），不会发布、不会注册分类路径"
+          >
+            {checking ? '预检中…' : '发布前预检'}
+          </button>
+          <button
             className="btn primary"
             onClick={submit}
             disabled={!canPublish}
@@ -3616,6 +3701,52 @@ function PublishItemModal({
           {failure.message}
           {failure.risk ? ' —— 这是平台风控，等冷却结束再试，别连着点。' : ''}
         </Notice>
+      )}
+
+      {/*
+        预检结果。三种状态分开说：全部通过 / 有步骤没过 / 平台压根没返回步骤（`steps` 为空）。
+        预检**不挡发布** —— 它只是把平台会怎么看先摆出来，发不发由用户决定。
+      */}
+      {precheck && (
+        <div className={`it-precheck ${precheck.ready ? '' : 'it-precheck-warn'}`}>
+          <div className="it-precheck-head">
+            {precheck.ready
+              ? '预检通过：平台会接这份表单。'
+              : (precheck.steps ?? []).length > 0
+                ? '预检没全过：下面标出来的那一步有问题，先改了再发更稳。'
+                : '平台没有返回预检步骤（可能改了字段名）—— 这次预检看不出问题，不等于能发成功。'}
+            <button className="it-precheck-close" onClick={() => setPrecheck(null)} aria-label="关掉预检结果">
+              <IconXCircle size={14} />
+            </button>
+          </div>
+          {(precheck.steps ?? []).length > 0 && (
+            <ul className="it-precheck-steps">
+              {(precheck.steps ?? []).map((step, index) => (
+                <li key={`${step.step ?? 'step'}-${index}`}>
+                  {step.ok ? (
+                    <IconCheck size={14} className="it-precheck-yes" />
+                  ) : (
+                    <IconXCircle size={14} className="it-precheck-no" />
+                  )}
+                  <span className="it-precheck-name">
+                    {PRECHECK_STEP_LABELS[step.step ?? ''] ?? step.step ?? '（未命名的步骤）'}
+                  </span>
+                  <span className="dim">{step.detail ?? ''}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {(precheck.warnings ?? []).length > 0 && (
+            <ul className="it-precheck-warns">
+              {(precheck.warnings ?? []).map((text, index) => (
+                <li key={index}>
+                  <IconWarn size={14} /> {text}
+                </li>
+              ))}
+            </ul>
+          )}
+          {precheck.note && <div className="it-precheck-note dim">{precheck.note}</div>}
+        </div>
       )}
 
       {/* 买家视角预览：填的时候就能看到「主图 + 标题 + 价格」长什么样，别等发出去才发现写错。 */}
