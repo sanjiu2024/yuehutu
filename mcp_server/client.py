@@ -350,6 +350,11 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'method': 'GET', 'path': '/api/datacenter/{account_id}/card/{kind}',
         'path_params': ['account_id', 'kind'], 'query': ['start', 'end'],
     },
+    'datacenter_cs_list': {
+        'method': 'GET', 'path': '/api/datacenter/{account_id}/cs/{kind}',
+        'path_params': ['account_id', 'kind'],
+        'query': ['start', 'end', 'page', 'size', 'order_by', 'order'],
+    },
     # ---------------- 通知（只读）----------------
     'notifications_list': {
         'method': 'GET', 'path': '/api/notifications/{account_id}',

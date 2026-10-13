@@ -984,6 +984,38 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---------------- 客服数据明细（只读） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'datacenter_cs_list',
+            'description': '查该账号客服数据页的一张明细表：kind=detail 客服明细（咨询人数 / 会话数 / '
+                           '3 分钟与 1 分钟响应率 / 满意率 / 评价数）/ diversion 订单分流明细（哪个分组分到 '
+                           '多少会话）/ evaluation 客户评价明细（评价人、客服、时间、评价分、不满意原因）。'
+                           '用户问「客服响应得怎么样 / 哪个分组接了多少会话 / 客户给了什么评价」时用。'
+                           '默认是「今天」（官方页面默认）。列名与中文标题都以平台表头为准，平台加列就多一列；'
+                           'rows 为 null 表示平台没给列表字段（不是「这段时间没有数据」，那是空数组），'
+                           '不要编数据、不要把 null 当 0。'
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'kind': {'type': 'string',
+                             'description': '明细类型：detail / diversion / evaluation，默认 detail'},
+                    'start': {'type': 'string', 'description': '开始日期 YYYYMMDD，不传就是今天'},
+                    'end': {'type': 'string', 'description': '结束日期 YYYYMMDD'},
+                    'page': {'type': 'string', 'description': '页码，从 1 开始，缺省 1'},
+                    'size': {'type': 'string', 'description': '每页条数 10 / 20 / 50，缺省 10'},
+                    'order_by': {'type': 'string',
+                                 'description': '排序字段（取列定义里的 key），缺省不排序'},
+                    'order': {'type': 'string', 'description': 'asc / desc'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 通知（只读） ----------------
     {
         'type': 'function',
@@ -2292,6 +2324,7 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'datacenter_customer_service': ['datacenter', 'customer_service'],
     'datacenter_commodity': ['datacenter', 'commodity'],
     'datacenter_card': ['datacenter', 'card'],
+    'datacenter_cs_list': ['datacenter', 'cs_list'],
     # ---- 通知 ----
     'notifications_list': ['notify', 'notifications'],
     # ---- 运费模版 ----
@@ -2512,6 +2545,7 @@ _HANDLERS = {
     'datacenter_customer_service': lambda a: _dispatch_service('datacenter_customer_service', a),
     'datacenter_commodity': lambda a: _dispatch_service('datacenter_commodity', a),
     'datacenter_card': lambda a: _dispatch_service('datacenter_card', a),
+    'datacenter_cs_list': lambda a: _dispatch_service('datacenter_cs_list', a),
     'notifications_list': lambda a: _dispatch_service('notifications_list', a),
     'item_templates_list': lambda a: _dispatch_service('item_templates_list', a),
     'item_templates_get': lambda a: _dispatch_service('item_templates_get', a),
