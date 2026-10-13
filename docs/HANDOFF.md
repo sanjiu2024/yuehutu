@@ -2365,8 +2365,18 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `NameError`：`test_service_warnings_use_chinese_labels_not_internal_names` 断言被上一次编辑
 > 挂到了隔壁函数体里）；`backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_card_full2`）→
 > **`TOTAL 54  PASS 54  FAIL 0  CASES 1883  SKIPPED 2`**；
-> 真机：`cards_read_probe.py` → 四个 kind 全 502（修复前）/ 200 + 人话 warning（修复后）；
-> `read_sweep.py` → 41 条只读端点、`SERVER_ERRORS 9` **全是平台拒绝**、无 500、无解析异常。
+> 真机：`cards_read_probe.py` → 修复前四个 kind 全 502（界面四块红框 + mtop 原文），
+> 修复后**全 200 + 一句人话 warning**（`平台拒绝访问交易数据接口：这个账号没有「数据」权限，
+> 对应指标显示 -。换个有数据权限的卖家账号再试。`，四个 kind 的中文名都对，
+> 且**没有**再追加「平台可能改了字段名」那条）；`read_sweep.py` → 41 条只读端点、
+> `SERVER_ERRORS 9` **全是平台拒绝**、无 500、无解析异常。
+> 重打包（**10,084,760 B / 2026-10-13 11:12:35**）后打包版复验全绿：
+> `probe_write_gate.py` → **`GATE FAILURES: 0 / 41`**；`packaged_ui_smoke.py` → **28/28 页**；
+> `check_assets.py` → `ASSETS_MATCH=True`（`index-C43KMt5l.js` / `index-CMIURv5_.css`）；
+> `scripts/contrast_audit.py` → `[dark] 0/28`、`[light] 0/28`、`NON_GET=[]`；
+> `scripts/a11y_audit.py` → 三类问题全 0、`焦点不可见的页面：[]`、`NON_GET=[]`；
+> `cards_shots.py` → 卡片区 343 字符、`PROBLEMS: []`，深浅两套截图里四张卡各显示
+> 「这一张暂时没有数据。」+ 那句人话 warning（与同页核心指标同一姿势）。
 
 ## 四、已验证 / 未验证（诚实边界）
 
