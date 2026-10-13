@@ -2817,6 +2817,17 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 二次确认框写出「会在闲鱼上真的改掉，不可撤销」+ 逐条组价 + 「没填的组会被清空」；
 > **`fans_posts []`**（只开确认框、没点确认）、`page_errors []`；截图
 > `logs/fp42_panel_shots/{01-fans-modal-dark,02-fans-confirm-dark,03-fans-modal-light}.png`。
+> 重打包（`build_exe.ps1 -SkipFrontend`，exe **10,171,806 B / 2026-10-14 01:08:57**，
+> `--port 18400` `/api/health` 200 `frozen:true`）后打包版**六项**复验全绿：
+> `probe_write_gate.py`（已扩到含粉丝价那条写）→ **`GATE FAILURES: 0 / 61`**
+> （`items.set_fans_price` 未确认与 `confirm:false` 都是 400 `confirmation_required`，
+> 确认腿换不存在账号后 400 `invalid_fields`）；`packaged_ui_smoke.py` → **29/29 页**；
+> `check_assets.py` → `ASSETS_MATCH=True`（`index-8xdDx-7r.js` `c6565b0efcf2`、
+> `index-BX9YNMmk.css` `bee41e32dea0`）；`scripts/contrast_audit.py --threshold 4.0` →
+> `[dark] 0/29`、`[light] 0/29`、`NON_GET=[]`；`scripts/a11y_audit.py` → 三类问题全 0、
+> 焦点不可见页面 `[]`；**打包版粉丝价探针**（`fp42_packaged_probe.py`，只用不存在的账号
+> `9999999999999`，零平台请求）→ `PROBLEMS []`（GET 未知账号 404 `not_found` 而不是
+> `route_not_found` ⇒ 路由确实进了冻结包；未确认 400、`confirm:false` 400、三组全空 400）。
 > 诚实边界：**写接口一次真机请求都没发过**（会真的改平台上三组粉丝价）；只读接口的真机形状
 > 也没有样例（本机账号在数据域一直回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`，粉丝价属同一权限域）。
 
