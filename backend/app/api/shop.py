@@ -17,7 +17,7 @@ from typing import Any, Dict
 from fastapi import APIRouter, Body, Depends, Query
 from fastapi.responses import JSONResponse
 
-from ..services import common, shop
+from ..services import common, shop, shop_profile as shop_profile_service
 from .deps import current_user
 
 router = APIRouter(prefix='/api/shop', tags=['shop'])
@@ -83,3 +83,39 @@ def delete_cs_group(account_id: str, body: Dict[str, Any] = Body(default={}),
     """删除客服分组（写，`confirm=true` 才发）。**不可撤销。**"""
     return _envelope(shop.delete_cs_group(
         account_id, group_id=body.get('group_id'), confirm=body.get('confirm')))
+
+
+# ------------------------------------------------------------------ 店铺资料
+
+
+@router.get('/{account_id}/profile')
+def shop_profile(account_id: str, user: Any = Depends(current_user)):
+    """店铺资料（只读）：昵称 / 简介 / 头像 / 行业 / 支付宝账号 / 认证到期时间。
+
+    平台没返回的字段一律 `null`（前端显示「-」），不补 0。
+    """
+    return _envelope(shop_profile_service.get_profile(account_id))
+
+
+@router.post('/{account_id}/profile/nick')
+def update_shop_nick(account_id: str, body: Dict[str, Any] = Body(default={}),
+                     user: Any = Depends(current_user)):
+    """改店铺昵称（写，`confirm=true` 才发）。官方限制 4~12 个字符。"""
+    return _envelope(shop_profile_service.update_nick(
+        account_id, nick=body.get('nick'), confirm=body.get('confirm')))
+
+
+@router.post('/{account_id}/profile/desc')
+def update_shop_desc(account_id: str, body: Dict[str, Any] = Body(default={}),
+                     user: Any = Depends(current_user)):
+    """改店铺简介（写，`confirm=true` 才发）。"""
+    return _envelope(shop_profile_service.update_desc(
+        account_id, desc=body.get('desc'), confirm=body.get('confirm')))
+
+
+@router.post('/{account_id}/profile/avatar')
+def update_shop_avatar(account_id: str, body: Dict[str, Any] = Body(default={}),
+                       user: Any = Depends(current_user)):
+    """改店铺头像（写，`confirm=true` 才发）。传的是图片 URL，不是二进制。"""
+    return _envelope(shop_profile_service.update_avatar(
+        account_id, avatar_url=body.get('avatar_url'), confirm=body.get('confirm')))

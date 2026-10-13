@@ -705,13 +705,18 @@ class ShopWriteRouteTest(unittest.TestCase):
                 found.add(getattr(route, 'path', ''))
         self.assertEqual(found, {f'{BASE}/{{account_id}}/cs-routing/rule',
                                  f'{BASE}/{{account_id}}/cs-groups',
-                                 f'{BASE}/{{account_id}}/cs-groups/delete'})
+                                 f'{BASE}/{{account_id}}/cs-groups/delete',
+                                 # 第三十二批：店铺资料三个写端点共用同一个 router
+                                 f'{BASE}/{{account_id}}/profile/nick',
+                                 f'{BASE}/{{account_id}}/profile/desc',
+                                 f'{BASE}/{{account_id}}/profile/avatar'})
 
     def test_read_routes_are_untouched(self):
         gets = {getattr(route, 'path', '') for route in shop_api.router.routes
                 if 'GET' in (getattr(route, 'methods', set()) or set())}
         self.assertEqual(gets, {f'{BASE}/{{account_id}}/sub-accounts',
-                                f'{BASE}/{{account_id}}/cs-routing'})
+                                f'{BASE}/{{account_id}}/cs-routing',
+                                f'{BASE}/{{account_id}}/profile'})
 
 
 if __name__ == '__main__':

@@ -484,10 +484,16 @@ class ShopApiTest(unittest.TestCase):
                 by_method.setdefault(method, set()).add(path)
         self.assertEqual(set(by_method), {'GET', 'POST'}, f'出现了预期外的方法: {set(by_method)}')
         self.assertEqual(by_method['GET'], {f'{BASE}/{{account_id}}/sub-accounts',
-                                            f'{BASE}/{{account_id}}/cs-routing'})
+                                            f'{BASE}/{{account_id}}/cs-routing',
+                                            # 第三十二批：店铺资料（读）
+                                            f'{BASE}/{{account_id}}/profile'})
         self.assertEqual(by_method['POST'], {f'{BASE}/{{account_id}}/cs-routing/rule',
                                              f'{BASE}/{{account_id}}/cs-groups',
-                                             f'{BASE}/{{account_id}}/cs-groups/delete'})
+                                             f'{BASE}/{{account_id}}/cs-groups/delete',
+                                             # 第三十二批：店铺资料（写）
+                                             f'{BASE}/{{account_id}}/profile/nick',
+                                             f'{BASE}/{{account_id}}/profile/desc',
+                                             f'{BASE}/{{account_id}}/profile/avatar'})
 
     def test_no_write_api_is_ever_called(self):
         """两个**只读**页面跑一遍，所有 mtop 调用都必须落在只读清单里。

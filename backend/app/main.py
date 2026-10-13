@@ -80,6 +80,11 @@ ROUTE_MODULES: List[str] = [
     # （`templates` 那次踩过），草稿 ID 混进去迟早出事。集合级动作 `batch-delete`
     # 声明在 `/{draft_id}/delete` 之前（见 api/drafts.py 的注释）。
     'drafts',
+    # 子账号管理（岗位只读 + 新建 / 删除 / 改手机号 / 改岗位 / 改密码）：
+    # `/api/sub-accounts/{account_id}/...`。**独立前缀**，故意不并进 `/api/shop`：
+    # 官方这是另一个微应用（账号管理），而 `/api/shop` 已承载「客服分流 + 店铺资料」。
+    # 集合级 `POST /{account_id}`（新建）与 `/{sub_id}/delete` 等路径不重叠。
+    'sub_accounts',
 ]
 
 PLACEHOLDER = """<!doctype html>
