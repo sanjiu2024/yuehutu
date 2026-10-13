@@ -56,6 +56,8 @@ NEW_TOOLS: Dict[str, Dict[str, Any]] = {
                           'path': '/api/disputes/{account_id}/{conversation_id}/messages'},
     'disputes_unread': {'module': 'disputes', 'fn': 'unread', 'verb': 'get',
                         'path': '/api/disputes/{account_id}/{conversation_id}/unread'},
+    'items_fans_price': {'module': 'fans_price', 'fn': 'read', 'verb': 'get',
+                         'path': '/api/items/{account_id}/{item_id}/fans-price'},
     'datacenter_overview': {'module': 'datacenter', 'fn': 'overview', 'verb': 'get',
                             'path': '/api/datacenter/{account_id}/overview'},
     'datacenter_fans': {'module': 'datacenter', 'fn': 'fans', 'verb': 'get',
@@ -478,12 +480,19 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
     'trade_complain_revoke': {
         'module': 'trade_write', 'fn': 'complain_revoke', 'confirm': True,
         'method': 'POST', 'path': '/api/trade/{account_id}/complaints/{complain_id}/revoke'},
+    # ---- 第四十二批：粉丝价写（整份替换）----
+    'items_set_fans_price': {
+        'module': 'fans_price', 'fn': 'set_prices', 'confirm': True,
+        'method': 'POST', 'path': '/api/items/{account_id}/{item_id}/fans-price'},
 }
 
 WRITE_TOOL_NAMES = list(WRITE_TOOLS)
 
 #: 一个「参数齐全但 confirm=False」的最小调用，用来验证工具层不替服务层做确认判定。
 _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
+    'items_set_fans_price': {
+        'account_id': 'acc-x', 'item_id': 'it-1', 'groups': {'all': '9.9'},
+        'confirm': False},
     'im_blacklist_add': {
         'account_id': 'acc-x', 'session_id': 'cid-1', 'confirm': False},
     'im_blacklist_remove': {

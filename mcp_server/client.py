@@ -295,6 +295,15 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'path_params': ['account_id', 'conversation_id'],
         'body': ['msg_id', 'sequence', 'confirm'],
     },
+    # ---- 粉丝价（1 读 + 1 写；写的那条是「整份替换」，留空的组会被清空）----
+    'items_fans_price': {
+        'method': 'GET', 'path': '/api/items/{account_id}/{item_id}/fans-price',
+        'path_params': ['account_id', 'item_id'],
+    },
+    'items_set_fans_price': {
+        'method': 'POST', 'path': '/api/items/{account_id}/{item_id}/fans-price',
+        'path_params': ['account_id', 'item_id'], 'body': ['groups', 'prices', 'confirm'],
+    },
     'orders_list': {
         'method': 'GET', 'path': '/api/orders',
         'query': ['account_id', 'status', 'limit'],

@@ -160,7 +160,10 @@ WRITE_PREFIX = ('trade_write_', 'trade_address_', 'promotion_write_', 'qualifica
                 # 第四十一批：纠纷协商的四条写，同样只写完整名。
                 # 故意不加 'disputes_' 宽前缀，那会把只读的 disputes_conversation 一起误判。
                 'disputes_send_text', 'disputes_send_image', 'disputes_urge',
-                'disputes_mark_read')
+                'disputes_mark_read',
+                # 第四十二批：粉丝价写只有这一条，用完整工具名
+                # （只读的 items_fans_price 故意不在，别用 'items_' 宽前缀）。
+                'items_set_fans_price')
 write_names = [n for n in specs if n.startswith(WRITE_PREFIX) and n != 'promotion_write_actions']
 print(f'write_tools={len(write_names)}')
 for s in T.TOOL_SPECS:

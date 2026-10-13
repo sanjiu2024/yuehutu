@@ -566,6 +566,8 @@ class MasterChatTest(unittest.TestCase):
 
             'disputes_conversation', 'disputes_messages', 'disputes_unread',
             'disputes_send_text', 'disputes_send_image', 'disputes_urge', 'disputes_mark_read',
+            # ---- 第四十二批：粉丝价（1 读 + 1 写）----
+            'items_fans_price', 'items_set_fans_price',
             'master_chat',
         ]
         self.assertEqual(tools.TOOL_NAMES, expected)
@@ -604,6 +606,7 @@ class MasterChatTest(unittest.TestCase):
             'logistics_resend_consign',
             'im_blacklist_add', 'im_blacklist_remove', 'im_card_send',
             'disputes_send_text', 'disputes_send_image', 'disputes_urge', 'disputes_mark_read',
+            'items_set_fans_price',
         ]
         for name in write_tools:
             spec = tools.get_tool(name)

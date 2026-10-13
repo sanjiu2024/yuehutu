@@ -2593,6 +2593,52 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---- 粉丝价（1 读 + 1 写；写是「整份替换」，留空的组会被平台清空）----
+    {
+        'type': 'function',
+        'function': {
+            'name': 'items_fans_price',
+            'description': '读一件商品当前的三组粉丝价（全部粉 / 老粉 / 已购粉）。'
+                           'prices 为 null 表示平台这一次没返回配置（不等于「没配」）；'
+                           '拿不到的那一组是 null。account_id 与 item_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'item_id': {'type': 'string', 'description': '要查的商品 ID'},
+                },
+                'required': ['account_id', 'item_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'items_set_fans_price',
+            'description': '设置一件商品的三组粉丝价（全部粉 / 老粉 / 已购粉）。'
+                           '★ 这是「整份替换」：groups 里留空或没给的组会被平台清空，'
+                           '所以只想改一组时，必须把另外两组当前值一起给。'
+                           + _WRITE_HINT + 'account_id 与 item_id 必填，groups 或 prices 至少给一个。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'item_id': {'type': 'string', 'description': '要改的商品 ID'},
+                    'groups': {'type': 'object',
+                               'description': '三组价格，例如 {"all": "9.9", "old": "8.8", '
+                                              '"buy": ""}；留空 = 清空该组'},
+                    'prices': {'type': 'array',
+                               'description': '也可以直接给 [{fans_group, price_string}]；'
+                                              '与 groups 同时给时以它为准',
+                               'items': {'type': 'object'}},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'item_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 主管 AI（只给 MCP 侧） ----------------
     {
         'type': 'function',
@@ -2918,6 +2964,9 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'items_batch_offline': ['items', 'batch_offline'],
     'items_batch_delete': ['items', 'batch_delete'],
     'items_quick_edit': ['items', 'quick_edit'],
+    # ---- 粉丝价（1 读 + 1 写；写是整份替换，会真的改平台上三组粉丝价）----
+    'items_fans_price': ['fans_price', 'read'],
+    'items_set_fans_price': ['fans_price', 'set_prices'],
     # ---- 草稿箱（2 读 + 2 写；写的那两条会真的删掉平台上的草稿）----
     'drafts_list': ['drafts', 'list_drafts'],
     'drafts_get': ['drafts', 'draft_detail'],
@@ -3158,6 +3207,8 @@ _HANDLERS = {
     'items_batch_offline': lambda a: _dispatch_service('items_batch_offline', a),
     'items_batch_delete': lambda a: _dispatch_service('items_batch_delete', a),
     'items_quick_edit': lambda a: _dispatch_service('items_quick_edit', a),
+    'items_fans_price': lambda a: _dispatch_service('items_fans_price', a),
+    'items_set_fans_price': lambda a: _dispatch_service('items_set_fans_price', a),
     # ---- 草稿箱 ----
     'drafts_list': lambda a: _dispatch_service('drafts_list', a),
     'drafts_get': lambda a: _dispatch_service('drafts_get', a),
