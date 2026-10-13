@@ -2449,6 +2449,15 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 真机只读探针 `cs_list_read_probe.py`（报告 `logs/cs_list_read_probe.json`）→ 三个 kind **全 200**
 > + 人话权限 warning（平台认下接口名与参数形状、账号没有「数据」权限）、`rows/total` 仍 `null`，
 > 另两条本地拦 `cs-bogus` / `cs-order-without-by` → 400 `invalid_fields`（零平台调用）。
+> 重打包（`build_exe.ps1 -SkipFrontend`，exe **10,088,481 B / 2026-10-13 12:10:39**，
+> `--port 18400` `/api/health` 200 `frozen:true`）后打包版复验全绿：
+> `probe_write_gate.py` → **`GATE FAILURES: 0 / 41`**；`packaged_ui_smoke.py` → **28/28 页**；
+> `check_assets.py` → `ASSETS_MATCH=True`（`index-C5sZJrHk.js` / `index-CE1STJ7C.css`）；
+> `scripts/contrast_audit.py --threshold 4.0` → `[dark] 0/28`、`[light] 0/28`、`NON_GET=[]`；
+> `scripts/a11y_audit.py` → 三类问题全 0、`焦点不可见的页面：[]`、`NON_GET=[]`；
+> **打包版**只读探针 `cs_list_packaged_probe.py`（打 18400，只发 GET）→ 三条 `cs/{kind}` 全 200、
+> 标题与列数正确（客服明细 12 列 / 订单分流明细 3 列 / 客户评价明细 6 列）、`rows`/`total` 为 `null`
+> + 人话权限 warning，两条本地拦 400 `invalid_fields`。
 
 ## 四、已验证 / 未验证（诚实边界）
 
