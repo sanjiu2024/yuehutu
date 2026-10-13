@@ -790,6 +790,10 @@ GET /api/datacenter/{account_id}/card/{kind}?start=&end=
        --     `extra` 是没登记过的字段原样带出（不翻译、不丢），前端折叠在「平台原始字段」里；
        --     `series[].points` 是非数字点可跳过的折线点，前端画线时**不插 0**（插 0 会画出假谷底）。
        --   kind 不在枚举里 → 400 invalid_fields，一次平台都不打。
+       --   **平台「拒绝访问」是有效答复不是故障**（与总览/粉丝/客服同一口径）：
+       --     真机这个账号对四张卡都回 FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问
+       --     ⇒ 这一张给 200 + 一句人话 warning（不是 502，更不是把 mtop 原文糊在卡片上）；
+       --     登录态过期（409）与链路/风控故障（502）仍然照抛。
 
 【读 + 写 · 运费模版】`docs/contracts/item_templates.md`
 GET  /api/item-templates/{account_id}?page=&size=&template_name=

@@ -63,7 +63,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_card_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 54  PASS 54  FAIL 0  CASES 1877  SKIPPED 2
+-> TOTAL 54  PASS 54  FAIL 0  CASES 1883  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -2309,17 +2309,17 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   平台没给的值显示「-」不补 0；折线跳过非数字点**不插 0**，插 0 会画出假的谷底；
   未登记字段折叠在「平台原始字段」里）+ `datacenter.css` 追加 `dc-opcard`/`dc-spark`/`dc-metric-row` 等规则。
 
-> **第三十五批证据链**：`backend/tests/test_datacenter_api.py` → **`Ran 139 tests ... OK`**
+> **第三十五批证据链**：`backend/tests/test_datacenter_api.py` → **`Ran 145 tests ... OK`**
 > （新增 `CardTest`：四个 kind 的接口名与标题、区间校验 400 且零平台调用、`kind` 非法 400、
 > 指标名回落平台字段名、`extra` 原样带出、`metrics`/`banner`/`series` 缺失给 `[]`、
-> `real_date_range` 给 null、平台拒绝 502 且 `login_state` 仍 active、无 Cookie 409、
-> 未知账号 404、路由挂载形状）；
+> `real_date_range` 给 null、**平台拒绝 → 200 + 人话 warning（不是 502，且不许再顺嘴说「可能改了字段名」）**、
+> 无 Cookie 409、未知账号 404、路由挂载形状）；
 > `python -m unittest backend.tests.test_agents_cross backend.tests.test_mcp_server
 > backend.tests.test_agents_tools_workbench` → **`Ran 130 tests OK`**（`UNITS_EXIT=0`）；
 > `scripts/reconcile_tools.py` → `specs=100 master=99 routes=101 targets=80 handlers=100`、
 > `write_tools=40`（本批只加只读工具）、`route_checked=101`、**`RECON OK`**；
-> `backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_card_full`）→
-> **`TOTAL 54  PASS 54  FAIL 0  CASES 1877  SKIPPED 2`**；
+> `backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_card_full2`）→
+> **`TOTAL 54  PASS 54  FAIL 0  CASES 1883  SKIPPED 2`**；
 > `create_app().openapi()` → 5 条 `/api/datacenter/*`（含新 `card/{kind}`）；
 > `cd frontend && npx tsc --noEmit` → `TSC_EXIT=0`；`npm run build` → `BUILD_EXIT=0`
 > （94 modules、`index-C43KMt5l.js 629169` / `index-CMIURv5_.css 143354`）；
@@ -2327,10 +2327,51 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > （`data-overview` 653 字符，截图里四张卡各带自己的错误提示 —— 演示账号无 Cookie，
 > **四张卡的错误是彼此独立的**，页面没有因此空白）。
 
+### 第三十五批补：真机探针抓到「同一页两套错误口径」（208）
+
+**动机**：第三十五批的四张卡片只有单元测试和 bundle 证据，**一次真机请求都没发过**（写在「未验证」里）。
+真机只读探针一跑，抓到的不是「卡片能不能用」，而是**同一页上两套互相矛盾的错误口径**。
+
+- **探针**：`C:\Users\Administrator\.dsh-tmp\cards_read_probe.py`（把真实数据目录拷到临时根 →
+  源码起后端 → 桌面密钥换 token → 只发 GET；报告 `logs/cards_read_probe.json`）。
+- **真机结果**：账号 `2217970177348` 当时 `login_state='active'`（用户 2026-10-13 01:22 重新扫过码）
+  ⇒ 四个接口**都真打到了平台**，且**都没有 `FAIL_SYS_API_NOT_FOUNDED`**（接口名是对的），
+  但四个 kind 一致回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问`
+  —— 与数据总览/粉丝/客服**同族**（这个账号没有「数据」权限）。
+- **抓到的缺陷**：协议层 `card()` 对平台拒绝**直接抛** ⇒ 服务层 502 ⇒ 界面上四张卡
+  各是一个红框、框里糊着 `协议层调用失败: MTOP 调用失败 [mtop.alibaba.idle.seller.pc.datacompass
+  .flow.detail]: FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问` 的**平台原文**；
+  而**同一页**的核心指标块却是「一句人话 + 一屏 `-`」（那是第三十三批给只读路径统一加的
+  `platform_errors.decorate`）。同一页两套口径，用户看到的就是「一块好好说话、四块甩原文」。
+- **为什么单元测试没抓住**：假协议层**早就按「回 `errors` 不抛」写**（`install_fake_protocol`
+  里 `card` 的实现），服务层测试因此一直是绿的；只有**协议层真函数**在真机那条路径上会抛。
+  ⇒ 补的三条测试必须**直接调 `datacenter_proto.card()`**（用 `FakeMtopClient(errors=…)`）：
+  无权限 → `found=False` + `errors['trade']` 带原文；**链路/风控故障照抛**（`FAIL_SYS_TRAFFIC_LIMIT`）；
+  **登录态过期照抛**（`common.call_failed` 按类名认 `SessionExpiredError` → 409 + 回写 `need_relogin`）。
+- **修法**（两处，都不改 HTTP 形状）：协议层 `card()` 把「平台拒绝访问」这一类
+  （`UNAUTHORIZED` / `NO_PERMISSION` / `无权限`）收进返回值的 `errors`，不再抛；
+  服务层 `_LABELS` 把四个 `kind` 翻成中文（交易数据/经营概况/复购/退款概览），
+  并且**有权限类 warning 时不再追加 `WARN_CARD_EMPTY`**（「没权限」和「平台可能改了字段名」
+  同时出现会把人往错方向带）。
+- **真机复验口径**：`cards_read_probe.py` 与 `read_sweep.py`（41 条只读端点、9 处平台拒绝）
+  证明**所有平台拒绝都被 `decorate` 成人话**（「不是登录掉线，重新扫码不会变好」），
+  界面文案与真机一致；四张卡的指标真值仍然拿不到（账号无数据权限），
+  所以「卡片能不能显示真数据」**依旧未验证**，只是**失败姿势与同页其它块一致了**。
+
+> **第三十五批补证据链**：`backend/tests/test_datacenter_api.py` →
+> **`Ran 145 tests in 3.731s OK`**（+4：`test_card_permission_denied_returns_errors_instead_of_raising`、
+> `test_card_other_failures_still_raise`、`test_card_session_expired_still_raises`、
+> `test_service_warnings_have_chinese_labels_for_cards`；并修好一处**测试自身**的
+> `NameError`：`test_service_warnings_use_chinese_labels_not_internal_names` 断言被上一次编辑
+> 挂到了隔壁函数体里）；`backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_card_full2`）→
+> **`TOTAL 54  PASS 54  FAIL 0  CASES 1883  SKIPPED 2`**；
+> 真机：`cards_read_probe.py` → 四个 kind 全 502（修复前）/ 200 + 人话 warning（修复后）；
+> `read_sweep.py` → 41 条只读端点、`SERVER_ERRORS 9` **全是平台拒绝**、无 500、无解析异常。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**54 个测试文件、1877 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**54 个测试文件、1883 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -2452,14 +2493,15 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   `cwd=C:\Windows` + 显式清空 `PYTHONPATH` 仍能 `initialize` 并列出 21 个工具。
 
 **未验证（不要当成已完成）**
-- **数据总览页四张经营卡片没在真机上取到过数据**（第三十五批）：四条只读接口
-  （`flow.detail` / `singleuser.seller.summary` / `singleuser.repurchase.summary` / `refund.summary`）
-  的接口名、入参形状与**官方中文指标标题**都只有 bundle 静态证据 + 单元测试；
-  账号 `2217970177348` 当前是 `login_state=need_relogin`，任何真机请求都会停在 409
-  （这是正确行为，不会去打平台）。所以「平台回的 `bannerDataList` / `graphDataList` /
-  `promotionInfoList` 真实字段名是否与 bundle 一致」「四个 kind 里哪几个这个账号有权限」
-  目前未知 —— 重新扫码后应先跑只读探针，再看 UI。前端截图里四张卡各带自己的错误提示，
-  证明**错误是彼此独立的**（页面不会因为一张卡失败而空白），但那张截图是演示账号（无 Cookie）。
+- **数据总览页四张经营卡片没有取到过真数据**（第三十五批）：真机只读探针
+  （`C:\Users\Administrator\.dsh-tmp\cards_read_probe.py`，打打包版 18400、桌面密钥换 token、只发 GET）
+  证明**四个接口名都被平台认下来了**（没有 `FAIL_SYS_API_NOT_FOUNDED`），但账号 `2217970177348`
+  对四张卡都回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问`（与数据总览/粉丝/客服同族，
+  这个账号没有「数据」权限）⇒ **指标值、折线、`bannerDataList`/`graphDataList` 的真实字段名仍未知**。
+  探针顺带抓到一个真缺陷并已修：协议层原先直接抛，界面上四张卡各是一个红框、框里糊着
+  `协议层调用失败: MTOP 调用失败 [api]: FAIL_BIZ_…` 原文，而同一页的核心指标却是「人话 + 一屏 -」；
+  现在四张卡与其它三页同口径（200 + 一句人话 warning），登录态过期/链路故障仍照抛。
+  （探针那次 `login_state` 已是 `active` —— 用户 2026-10-13 01:22 重新扫过码。）
 - **推广资金明细的 4 条只读接口没能在真机上跑通**（第三十三批）：探针脚本
   `C:\Users\Administrator\.dsh-tmp\funds_read_probe.py`（拷真实数据目录到临时根 → 从源码起后端 →
   桌面密钥换 token → **只发 GET**）打过去时，账号 `2217970177348` 已经是
