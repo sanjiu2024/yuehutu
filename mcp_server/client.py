@@ -284,6 +284,49 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'path_params': ['account_id'],
         'body': ['group_id', 'confirm'],
     },
+    # ---------------- 店铺资料（读 + 写）----------------
+    'shop_profile_get': {
+        'method': 'GET', 'path': '/api/shop/{account_id}/profile',
+        'path_params': ['account_id'],
+    },
+    'shop_profile_update_nick': {
+        'method': 'POST', 'path': '/api/shop/{account_id}/profile/nick',
+        'path_params': ['account_id'], 'body': ['nick', 'confirm'],
+    },
+    'shop_profile_update_desc': {
+        'method': 'POST', 'path': '/api/shop/{account_id}/profile/desc',
+        'path_params': ['account_id'], 'body': ['desc', 'confirm'],
+    },
+    'shop_profile_update_avatar': {
+        'method': 'POST', 'path': '/api/shop/{account_id}/profile/avatar',
+        'path_params': ['account_id'], 'body': ['avatar_url', 'confirm'],
+    },
+    # ---------------- 子账号（读 + 写）----------------
+    'sub_accounts_roles': {
+        'method': 'GET', 'path': '/api/sub-accounts/{account_id}/roles',
+        'path_params': ['account_id'],
+    },
+    'sub_account_create': {
+        'method': 'POST', 'path': '/api/sub-accounts/{account_id}',
+        'path_params': ['account_id'],
+        'body': ['nick', 'mobile', 'role_ids', 'password', 'custom_name', 'confirm'],
+    },
+    'sub_account_delete': {
+        'method': 'POST', 'path': '/api/sub-accounts/{account_id}/{sub_id}/delete',
+        'path_params': ['account_id', 'sub_id'], 'body': ['confirm'],
+    },
+    'sub_account_update_mobile': {
+        'method': 'POST', 'path': '/api/sub-accounts/{account_id}/{sub_id}/mobile',
+        'path_params': ['account_id', 'sub_id'], 'body': ['mobile', 'confirm'],
+    },
+    'sub_account_update_roles': {
+        'method': 'POST', 'path': '/api/sub-accounts/{account_id}/{sub_id}/roles',
+        'path_params': ['account_id', 'sub_id'], 'body': ['role_ids', 'confirm'],
+    },
+    'sub_account_update_password': {
+        'method': 'POST', 'path': '/api/sub-accounts/{account_id}/{sub_id}/password',
+        'path_params': ['account_id', 'sub_id'], 'body': ['password', 'confirm'],
+    },
     # ---------------- 数据中心（只读）----------------
     'datacenter_overview': {
         'method': 'GET', 'path': '/api/datacenter/{account_id}/overview',

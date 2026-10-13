@@ -676,6 +676,207 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---------------- 店铺资料（读 + 写） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'shop_profile_get',
+            'description': '查店铺资料（昵称、简介、头像、行业、支付宝账号、店铺类型、专业卖家有效期）。'
+                           '用户问「我的店铺资料」「店铺简介是什么」时用。'
+                           '平台没返回的字段是 null，不要当成空字符串或 0。'
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'shop_profile_update_nick',
+            'description': '改店铺昵称（会真的改动闲鱼上的店铺资料）。官方限制 4~12 个字，前后空格会被去掉。'
+                           '卖家明确说「把店铺昵称改成 XXX」时才用。'
+                           + _WRITE_HINT + 'account_id 与 nick 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'nick': {'type': 'string', 'description': '新昵称，4~12 个字'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'nick', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'shop_profile_update_desc',
+            'description': '改店铺简介（会真的改动闲鱼上的店铺资料）。简介不能为空（想清空请让用户去官方卖家工作台）。'
+                           '卖家明确说「把店铺简介改成 XXX」时才用。'
+                           + _WRITE_HINT + 'account_id 与 desc 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'desc': {'type': 'string', 'description': '新简介，不能为空'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'desc', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'shop_profile_update_avatar',
+            'description': '改店铺头像（会真的改动闲鱼上的店铺资料）。要一个 http(s) 开头的图片地址，本机不上传文件。'
+                           '卖家明确说「把店铺头像换成这张图」且给出了图片地址时才用。'
+                           + _WRITE_HINT + 'account_id 与 avatar_url 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'avatar_url': {'type': 'string', 'description': '头像图片地址，必须 http:// 或 https:// 开头'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'avatar_url', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    # ---------------- 子账号写（会真的改动闲鱼上的子账号；required 必含 confirm） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'sub_accounts_roles',
+            'description': '查可分配的岗位（角色）列表，用于新建子账号或改岗位。'
+                           '平台没返回数组时 roles 是 null —— 这不等于「一个岗位都没有」，可能只是没权限。'
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'sub_account_create',
+            'description': '新建一个店铺子账号（会真的在闲鱼上创建账号）。'
+                           'mobile 要 11 位手机号；password 必须是字母和数字组合、8~15 位。'
+                           'role_ids 传岗位 id 的逗号串（先用 sub_accounts_roles 查）。'
+                           '卖家明确说「新建一个子账号」并给了昵称/手机号/岗位时才用。'
+                           + _WRITE_HINT + 'account_id、nick、mobile、role_ids、password 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'nick': {'type': 'string', 'description': '子账号昵称，不能为空'},
+                    'mobile': {'type': 'string', 'description': '11 位手机号'},
+                    'role_ids': {'type': 'string', 'description': '岗位 id 的逗号串，如 "11,22"'},
+                    'password': {'type': 'string', 'description': '登录密码，字母+数字，8~15 位'},
+                    'custom_name': {'type': 'string', 'description': '备注名，可留空'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'nick', 'mobile', 'role_ids', 'password', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'sub_account_delete',
+            'description': '删除一个店铺子账号（会真的在闲鱼上删掉，**不可撤销**）。'
+                           'sub_id 从只读的 shop_sub_accounts 列表里拿。'
+                           '卖家明确说「把某个子账号删掉」时才用。'
+                           + _WRITE_HINT + 'account_id 与 sub_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'sub_id': {'type': 'string', 'description': '子账号 id'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'sub_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'sub_account_update_mobile',
+            'description': '改子账号的手机号（会真的改动闲鱼上的子账号）。mobile 要 11 位手机号。'
+                           '卖家明确说「把某个子账号的手机号改成 XXX」时才用。'
+                           + _WRITE_HINT + 'account_id、sub_id、mobile 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'sub_id': {'type': 'string', 'description': '子账号 id'},
+                    'mobile': {'type': 'string', 'description': '新的 11 位手机号'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'sub_id', 'mobile', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'sub_account_update_roles',
+            'description': '改子账号的岗位（会真的改动闲鱼上的子账号权限）。role_ids 传岗位 id 的逗号串，'
+                           '会**整体替换**原岗位（先用 sub_accounts_roles 查可选项）。'
+                           '卖家明确说「把某个子账号的岗位改成 XXX」时才用。'
+                           + _WRITE_HINT + 'account_id、sub_id、role_ids 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'sub_id': {'type': 'string', 'description': '子账号 id'},
+                    'role_ids': {'type': 'string', 'description': '岗位 id 的逗号串，如 "11,22"（整体替换）'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'sub_id', 'role_ids', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'sub_account_update_password',
+            'description': '改子账号的登录密码（会真的改动闲鱼上的子账号）。密码必须是字母和数字组合、8~15 位。'
+                           '密码会经本机后端用平台公钥加密后提交，日志与响应里不会回显密码。'
+                           '卖家明确说「把某个子账号的密码改成 XXX」时才用。'
+                           + _WRITE_HINT + 'account_id、sub_id、password 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'sub_id': {'type': 'string', 'description': '子账号 id'},
+                    'password': {'type': 'string', 'description': '新密码，字母+数字，8~15 位'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'sub_id', 'password', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 数据中心（只读） ----------------
     {
         'type': 'function',
@@ -1947,6 +2148,18 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'shop_cs_routing_rule_save': ['shop', 'save_routing_rule'],
     'shop_cs_group_save': ['shop', 'save_cs_group'],
     'shop_cs_group_delete': ['shop', 'delete_cs_group'],
+    # ---- 店铺资料（读 + 写）----
+    'shop_profile_get': ['shop_profile', 'get_profile'],
+    'shop_profile_update_nick': ['shop_profile', 'update_nick'],
+    'shop_profile_update_desc': ['shop_profile', 'update_desc'],
+    'shop_profile_update_avatar': ['shop_profile', 'update_avatar'],
+    # ---- 子账号（读 + 写）----
+    'sub_accounts_roles': ['sub_accounts', 'list_roles'],
+    'sub_account_create': ['sub_accounts', 'create'],
+    'sub_account_delete': ['sub_accounts', 'delete'],
+    'sub_account_update_mobile': ['sub_accounts', 'update_mobile'],
+    'sub_account_update_roles': ['sub_accounts', 'update_roles'],
+    'sub_account_update_password': ['sub_accounts', 'update_password'],
     # ---- 数据中心 ----
     'datacenter_overview': ['datacenter', 'overview'],
     'datacenter_fans': ['datacenter', 'fans'],
@@ -2151,6 +2364,17 @@ _HANDLERS = {
     'shop_cs_routing_rule_save': lambda a: _dispatch_service('shop_cs_routing_rule_save', a),
     'shop_cs_group_save': lambda a: _dispatch_service('shop_cs_group_save', a),
     'shop_cs_group_delete': lambda a: _dispatch_service('shop_cs_group_delete', a),
+    # ---- 店铺资料 + 子账号（工具层同样不做 confirm 判定，原样透传给服务层）----
+    'shop_profile_get': lambda a: _dispatch_service('shop_profile_get', a),
+    'shop_profile_update_nick': lambda a: _dispatch_service('shop_profile_update_nick', a),
+    'shop_profile_update_desc': lambda a: _dispatch_service('shop_profile_update_desc', a),
+    'shop_profile_update_avatar': lambda a: _dispatch_service('shop_profile_update_avatar', a),
+    'sub_accounts_roles': lambda a: _dispatch_service('sub_accounts_roles', a),
+    'sub_account_create': lambda a: _dispatch_service('sub_account_create', a),
+    'sub_account_delete': lambda a: _dispatch_service('sub_account_delete', a),
+    'sub_account_update_mobile': lambda a: _dispatch_service('sub_account_update_mobile', a),
+    'sub_account_update_roles': lambda a: _dispatch_service('sub_account_update_roles', a),
+    'sub_account_update_password': lambda a: _dispatch_service('sub_account_update_password', a),
     'datacenter_overview': lambda a: _dispatch_service('datacenter_overview', a),
     'datacenter_fans': lambda a: _dispatch_service('datacenter_fans', a),
     'datacenter_customer_service': lambda a: _dispatch_service('datacenter_customer_service', a),

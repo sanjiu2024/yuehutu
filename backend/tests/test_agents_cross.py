@@ -496,6 +496,16 @@ class MasterChatTest(unittest.TestCase):
             'shop_sub_accounts', 'shop_cs_routing',
             # ---- 客服分流写（会真的改平台数据，required 必含 confirm）----
             'shop_cs_routing_rule_save', 'shop_cs_group_save', 'shop_cs_group_delete',
+    'shop_profile_get',
+    'shop_profile_update_nick',
+    'shop_profile_update_desc',
+    'shop_profile_update_avatar',
+    'sub_accounts_roles',
+    'sub_account_create',
+    'sub_account_delete',
+    'sub_account_update_mobile',
+    'sub_account_update_roles',
+    'sub_account_update_password',
             # ---- 数据中心 ----
             'datacenter_overview', 'datacenter_fans', 'datacenter_customer_service',
             # ---- 通知 ----
@@ -555,6 +565,14 @@ class MasterChatTest(unittest.TestCase):
             'items_batch_offline', 'items_batch_delete', 'items_quick_edit',
             'trade_order_address_agree', 'trade_order_address_refuse',
             'shop_cs_routing_rule_save', 'shop_cs_group_save', 'shop_cs_group_delete',
+    'shop_profile_update_nick',
+    'shop_profile_update_desc',
+    'shop_profile_update_avatar',
+    'sub_account_create',
+    'sub_account_delete',
+    'sub_account_update_mobile',
+    'sub_account_update_roles',
+    'sub_account_update_password',
             'drafts_delete', 'drafts_batch_delete',
             'security_appeal_submit', 'security_appeal_submit_cro', 'security_appeal_urge',
         ]

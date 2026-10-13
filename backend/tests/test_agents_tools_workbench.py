@@ -336,6 +336,38 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
     'shop_cs_group_delete': {
         'module': 'shop', 'fn': 'delete_cs_group', 'confirm': True,
         'method': 'POST', 'path': '/api/shop/{account_id}/cs-groups/delete'},
+    # ---- 店铺资料（第三十二批）----
+    'shop_profile_get': {
+        'module': 'shop_profile', 'fn': 'get_profile', 'confirm': False,
+        'method': 'GET', 'path': '/api/shop/{account_id}/profile'},
+    'shop_profile_update_nick': {
+        'module': 'shop_profile', 'fn': 'update_nick', 'confirm': True,
+        'method': 'POST', 'path': '/api/shop/{account_id}/profile/nick'},
+    'shop_profile_update_desc': {
+        'module': 'shop_profile', 'fn': 'update_desc', 'confirm': True,
+        'method': 'POST', 'path': '/api/shop/{account_id}/profile/desc'},
+    'shop_profile_update_avatar': {
+        'module': 'shop_profile', 'fn': 'update_avatar', 'confirm': True,
+        'method': 'POST', 'path': '/api/shop/{account_id}/profile/avatar'},
+    # ---- 子账号（第三十二批）----
+    'sub_accounts_roles': {
+        'module': 'sub_accounts', 'fn': 'list_roles', 'confirm': False,
+        'method': 'GET', 'path': '/api/sub-accounts/{account_id}/roles'},
+    'sub_account_create': {
+        'module': 'sub_accounts', 'fn': 'create', 'confirm': True,
+        'method': 'POST', 'path': '/api/sub-accounts/{account_id}'},
+    'sub_account_delete': {
+        'module': 'sub_accounts', 'fn': 'delete', 'confirm': True,
+        'method': 'POST', 'path': '/api/sub-accounts/{account_id}/{sub_id}/delete'},
+    'sub_account_update_mobile': {
+        'module': 'sub_accounts', 'fn': 'update_mobile', 'confirm': True,
+        'method': 'POST', 'path': '/api/sub-accounts/{account_id}/{sub_id}/mobile'},
+    'sub_account_update_roles': {
+        'module': 'sub_accounts', 'fn': 'update_roles', 'confirm': True,
+        'method': 'POST', 'path': '/api/sub-accounts/{account_id}/{sub_id}/roles'},
+    'sub_account_update_password': {
+        'module': 'sub_accounts', 'fn': 'update_password', 'confirm': True,
+        'method': 'POST', 'path': '/api/sub-accounts/{account_id}/{sub_id}/password'},
 }
 
 WRITE_TOOL_NAMES = list(WRITE_TOOLS)
@@ -424,6 +456,22 @@ _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
         'confirm': False},
     'shop_cs_group_delete': {
         'account_id': 'acc-x', 'group_id': 'g1', 'confirm': False},
+    # ---- 店铺资料 ----
+    'shop_profile_update_nick': {'account_id': 'acc-x', 'nick': '月狐兔_', 'confirm': False},
+    'shop_profile_update_desc': {'account_id': 'acc-x', 'desc': '测试简介', 'confirm': False},
+    'shop_profile_update_avatar': {
+        'account_id': 'acc-x', 'avatar_url': 'https://example.com/a.png', 'confirm': False},
+    # ---- 子账号 ----
+    'sub_account_create': {
+        'account_id': 'acc-x', 'nick': '小客服', 'mobile': '13800138000',
+        'role_ids': '11', 'password': 'abc12345', 'confirm': False},
+    'sub_account_delete': {'account_id': 'acc-x', 'sub_id': '9001', 'confirm': False},
+    'sub_account_update_mobile': {
+        'account_id': 'acc-x', 'sub_id': '9001', 'mobile': '13800138000', 'confirm': False},
+    'sub_account_update_roles': {
+        'account_id': 'acc-x', 'sub_id': '9001', 'role_ids': '11', 'confirm': False},
+    'sub_account_update_password': {
+        'account_id': 'acc-x', 'sub_id': '9001', 'password': 'abc12345', 'confirm': False},
 }
 
 

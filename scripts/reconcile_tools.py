@@ -131,6 +131,14 @@ WRITE_PREFIX = ('trade_write_', 'trade_address_', 'promotion_write_', 'qualifica
                 # 客服分流写：同样只加完整工具名。故意不加 'shop_cs' 宽前缀，
                 # 那会把只读的 shop_cs_routing 一起误判成写工具。
                 'shop_cs_routing_rule_save', 'shop_cs_group_save', 'shop_cs_group_delete',
+    'shop_profile_update_nick',
+    'shop_profile_update_desc',
+    'shop_profile_update_avatar',
+    'sub_account_create',
+    'sub_account_delete',
+    'sub_account_update_mobile',
+    'sub_account_update_roles',
+    'sub_account_update_password',
                 'security_appeal_submit', 'security_appeal_urge',
                 # 草稿箱：只加两条**完整写工具名**。故意不加 'drafts_'，
                 # 那会把只读的 drafts_list / drafts_get 一起误判成写工具。
