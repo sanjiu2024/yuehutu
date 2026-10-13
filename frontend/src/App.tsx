@@ -29,6 +29,7 @@ import { SubAccountsPage } from './pages/SubAccounts'
 import { ShopProfilePage } from './pages/ShopProfile'
 import { CsRoutingPage } from './pages/CsRouting'
 import { DataOverviewPage } from './pages/DataOverview'
+import { CommodityDataPage } from './pages/CommodityData'
 import { FansPage } from './pages/Fans'
 import { CsDataPage } from './pages/CsData'
 import { ItemTemplatesPage } from './pages/ItemTemplates'
@@ -107,6 +108,7 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
     title: '数据',
     items: [
       { key: 'data-overview', label: '数据总览', icon: 'chart', desc: '曝光、访问、询单与支付' },
+      { key: 'commodity', label: '商品数据', icon: 'box', desc: '一行一个商品的经营指标' },
       { key: 'fans', label: '粉丝数据', icon: 'users', desc: '粉丝增长与活跃' },
       { key: 'cs-data', label: '客服数据', icon: 'send', desc: '询单响应与服务质量' },
     ],
@@ -361,6 +363,7 @@ function Shell() {
             {page === 'shop-profile' && <ShopProfilePage />}
             {page === 'cs-routing' && <CsRoutingPage />}
             {page === 'data-overview' && <DataOverviewPage />}
+            {page === 'commodity' && <CommodityDataPage />}
             {page === 'fans' && <FansPage />}
             {page === 'cs-data' && <CsDataPage />}
             {page === 'item-templates' && <ItemTemplatesPage />}

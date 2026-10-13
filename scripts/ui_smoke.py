@@ -54,6 +54,7 @@ PAGES = [
     ('shop-profile', '店铺资料'),
     ('cs-routing', '客服分流'),
     ('data-overview', '数据总览'),
+    ('commodity', '商品数据'),
     ('fans', '粉丝数据'),
     ('cs-data', '客服数据'),
     ('item-templates', '运费模版'),

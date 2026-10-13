@@ -1,0 +1,180 @@
+/**
+ * 商品数据页（`frontend/src/pages/CommodityData.tsx`）专属样式，`cm-` 前缀。
+ *
+ * 不碰 `styles.css` 里任何既有 class 与 `:root` 变量；列宽与横向滚动都在这里。
+ * 表格宽是因为指标列由平台决定（可能十几列），所以外层必须有横向滚动容器。
+ */
+
+.cm-count {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.cm-wrap {
+  overflow-x: auto;
+}
+
+.cm-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 640px;
+}
+
+.cm-table th,
+.cm-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.cm-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font-weight: 500;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.cm-table tbody tr:hover td {
+  background: var(--panel-2);
+}
+
+/* 商品信息列固定在最左（官方 `fixed: 'left'`），横向滚动时不跟着跑 */
+.cm-th-info,
+.cm-td-info {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  min-width: 260px;
+  max-width: 320px;
+  text-align: left;
+  background: var(--panel);
+}
+
+.cm-table thead .cm-th-info {
+  z-index: 3;
+  background: var(--panel-2);
+}
+
+.cm-table tbody tr:hover .cm-td-info {
+  background: var(--panel-2);
+}
+
+.cm-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cm-thumb {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  background: var(--bg-soft);
+  border: 1px solid var(--border-soft);
+  flex: none;
+}
+
+.cm-thumb-none {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-mute);
+}
+
+.cm-info-text {
+  min-width: 0;
+}
+
+.cm-info-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+.cm-info-id {
+  font-size: 11.5px;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+}
+
+.cm-th {
+  padding: 0;
+}
+
+.cm-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  justify-content: center;
+  padding: 8px 6px;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.cm-sort:hover {
+  color: var(--text);
+}
+
+.cm-sort.active {
+  color: var(--accent);
+}
+
+.cm-th-text {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cm-sort-ico {
+  display: inline-flex;
+  opacity: 0.45;
+}
+
+.cm-sort-ico.active {
+  opacity: 1;
+}
+
+.cm-sort-order {
+  display: block;
+  font-size: 10.5px;
+  color: var(--accent);
+  line-height: 1;
+  padding-bottom: 4px;
+}
+
+.cm-td {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 拿不到的值显示「-」并压暗 —— 与真实 0 在视觉上分开 */
+.cm-missing {
+  color: var(--text-mute);
+}
+
+.cm-pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.cm-size {
+  margin-left: auto;
+}
