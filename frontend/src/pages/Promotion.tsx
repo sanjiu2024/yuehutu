@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { api, ApiError, errorText } from '../api'
 import { AsyncBox, ConfirmDialog, Modal, Notice, Stat, useToast } from '../components'
 import { useAsync } from '../hooks/useAsync'
-import { IconChart, IconCopy, IconEdit, IconInfo, IconRefresh, IconShield } from '../icons'
+import { IconChart, IconCopy, IconEdit, IconInfo, IconRefresh, IconShield, IconWarn } from '../icons'
 import { formatTime } from '../format'
 import type { Account } from '../types'
 import './promotion.css'
@@ -14,6 +14,27 @@ type Overview = {
 type Campaigns = { campaigns?: any; period?: Period; fetched_at?: string }
 type Reports = { plans?: any; items?: any; period?: Period; fetched_at?: string }
 type AccountView = { account?: any; settle?: any; period?: Period; fetched_at?: string }
+/** 资金明细（只读）：`funds` 为 null 表示平台没给列表键，不是「没有流水」。 */
+type FundsView = {
+  funds?: any[] | null
+  total?: number | null
+  period?: Period
+  page?: number
+  page_size?: number
+  operate_type?: number
+  operate_type_text?: string | null
+  warnings?: string[]
+  fetched_at?: string
+}
+/** 单条充值/提现详情（只读）。status_text 未知状态码时为 null。 */
+type OrderDetailView = {
+  order_id?: string
+  detail?: any
+  status?: string | null
+  status_text?: string | null
+  warnings?: string[]
+  fetched_at?: string
+}
 
 /** 写接口目录（`GET /api/promotion/write/actions`）。 */
 type WriteAction = { action: string; api: string; params?: boolean; confirm_required?: boolean }
@@ -29,6 +50,7 @@ const TABS = [
   { key: 'campaigns', label: '擦亮计划' },
   { key: 'reports', label: '数据报表' },
   { key: 'account', label: '账户' },
+  { key: 'funds', label: '资金明细' },
   { key: 'write', label: '投放管理' },
 ] as const
 type TabKey = (typeof TABS)[number]['key']
@@ -40,6 +62,14 @@ type TabKey = (typeof TABS)[number]['key']
  * 所以这里只翻译「动作名」（纯 UI 文案），绝不为任何动作编字段名、也不做字段表单。
  * 目录里出现没登记的新动作时回落到英文 action 名，不会因为少一条翻译就渲染不出来。
  */
+/** 资金流水的类型筛选：取值与官方页面一致（0=全部 1=现金 2=礼金 3=红包）。 */
+const OPERATE_TYPES = [
+  { value: 0, label: '全部' },
+  { value: 1, label: '现金' },
+  { value: 2, label: '礼金' },
+  { value: 3, label: '红包' },
+]
+
 const ACTION_LABELS: Record<string, string> = {
   campaign_edit: '编辑投放计划',
   campaign_delete: '删除投放计划',
@@ -64,6 +94,16 @@ function day(offset: number): string {
   d.setDate(d.getDate() + offset)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`
+}
+
+/** 平台流水时间形如 `20260901120000`（YYYYMMDDHHmmss）；认不出来就原样显示，不猜。 */
+function flowTime(value: unknown): string {
+  const text = String(value ?? '').trim()
+  if (/^\d{14}$/.test(text)) {
+    return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)} ${text.slice(8, 10)}:${text.slice(10, 12)}:${text.slice(12, 14)}`
+  }
+  if (/^\d{8}$/.test(text)) return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`
+  return text || '-'
 }
 
 /** 平台指标里的金额单位是**分**；拿不到就显示「-」，绝不补 0。 */
@@ -97,6 +137,10 @@ export function PromotionPage() {
   const [tab, setTab] = useState<TabKey>('overview')
   const [from, setFrom] = useState(day(-6))
   const [to, setTo] = useState(day(0))
+  // ---- 资金明细（只读）状态 ----
+  const [opType, setOpType] = useState(0)
+  const [fundPage, setFundPage] = useState(1)
+  const [order, setOrder] = useState<{ kind: 'recharge' | 'withdraw'; orderId: string } | null>(null)
 
   // ---- 写操作（投放管理）状态 ----
   const [draft, setDraft] = useState<WriteAction | null>(null)
@@ -125,7 +169,14 @@ export function PromotionPage() {
   const catalog = useAsync<WriteCatalog>(
     () => api.get<WriteCatalog>('/api/promotion/write/actions'),
     [], tab === 'write', ['promotion.changed', 'accounts.changed'])
-  const active = { overview, campaigns, reports, account, write: catalog }[tab]
+  // 资金明细：只读，切换流水类型/翻页才重拉；同样不轮询
+  const funds = useAsync<FundsView>(
+    () => api.get(`/api/promotion/${encodeURIComponent(accountId)}/funds?${range}&page=${fundPage}&size=20&operate_type=${opType}`),
+    [accountId, range, fundPage, opType], Boolean(accountId) && tab === 'funds', ['accounts.changed'])
+  const orderDetail = useAsync<OrderDetailView>(
+    () => api.get(`/api/promotion/${encodeURIComponent(accountId)}/${order?.kind}/${encodeURIComponent(order?.orderId || '')}`),
+    [accountId, order?.kind, order?.orderId], Boolean(accountId) && Boolean(order), ['accounts.changed'])
+  const active = { overview, campaigns, reports, account, funds, write: catalog }[tab]
   const accountName = useMemo(
     () => accounts.data?.find((a) => a.id === accountId)?.nickname || accountId,
     [accounts.data, accountId])
@@ -137,6 +188,8 @@ export function PromotionPage() {
   const planRows: any[] = reports.data?.plans?.result || []
   const itemRows: any[] = reports.data?.items?.result || []
   const settle = account.data?.settle as any
+  const fundRows: any[] = funds.data?.funds || []
+  const detail = orderDetail.data?.detail as any
   const balance = card?.totalUsableBalanceOfYuan ?? card?.cashBalanceOfYuan
 
   const writeActions: WriteAction[] = catalog.data?.actions || []
@@ -314,7 +367,47 @@ export function PromotionPage() {
         <Stat label="礼金（元）" value={settle?.giftAmountOfYuan ?? '-'} />
         <Stat label="红包（元）" value={settle?.redPacketAmountOfYuan ?? '-'} />
       </div>
-      <Notice kind="info"><IconInfo size={15} /> 充值、提现、发票不在这里做 —— 平台没有网页版下单接口（提现按钮原文是「请进入闲鱼App内操作」）。账户流水操作在「投放管理」里，需要二次确认。</Notice>
+      <Notice kind="info"><IconInfo size={15} /> 充值、提现、发票不在这里下单 —— 平台没有网页版下单接口（提现按钮原文是「请进入闲鱼App内操作」）。逐条流水与充值/提现单详情在「资金明细」标签里，那些都是只读查询。投放写操作在「投放管理」里，需要二次确认。</Notice>
+    </AsyncBox>}
+
+    {tab === 'funds' && <AsyncBox loading={funds.loading} error={funds.error} notReady={funds.notReady} empty={!funds.data} onRetry={funds.reload} emptyTitle="暂无资金流水" emptyDesc="这个区间里平台没有返回可识别的流水数据" emptyIcon="">
+      <section className="card pr-bar">
+        <label>流水类型<select value={opType} aria-label="流水类型筛选" onChange={(e) => { setOpType(Number(e.target.value)); setFundPage(1) }}>
+          {OPERATE_TYPES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select></label>
+        <span className="pr-hint">共 {num(funds.data?.total)} 条 · 第 {num(funds.data?.page)} 页（每页 {num(funds.data?.page_size)} 条）· 金额单位：元</span>
+        <span style={{ flex: 1 }} />
+        <button className="btn ghost" onClick={() => setFundPage((p) => Math.max(1, p - 1))} disabled={fundPage <= 1}>上一页</button>
+        <button className="btn ghost" onClick={() => setFundPage((p) => p + 1)} disabled={fundRows.length < Number(funds.data?.page_size || 20)}>下一页</button>
+      </section>
+
+      {funds.data?.warnings?.length ? <Notice kind="warn"><IconWarn size={15} /> {funds.data.warnings.join('；')}</Notice> : null}
+
+      {funds.data?.funds === null
+        ? <Notice kind="warn"><IconWarn size={15} /> 平台这次没有返回流水列表，所以这里不显示任何行 —— 这既不是「没有流水」也不是 0，请点「刷新」重试。</Notice>
+        : <div className="card">
+          <div className="pr-table-head"><IconChart size={13} /> 资金流水 · 共 {num(funds.data?.total)} 条 · 类型 {funds.data?.operate_type_text || '全部'}</div>
+          <div className="table-wrap"><table>
+            <thead><tr><th>时间</th><th>类型</th><th>金额（元）</th><th>订单号</th><th>账号类型</th><th>操作</th></tr></thead>
+            <tbody>{fundRows.map((row) => {
+              const kind = String(row.operatorType || '').toUpperCase()
+              const openable = kind === 'RECHARGE' || kind === 'WITHDRAW'
+              return <tr key={String(row.orderId)}>
+                <td className="pr-sub">{flowTime(row.createTime)}</td>
+                <td>{kind === 'RECHARGE' ? '充值' : kind === 'WITHDRAW' ? '提现' : (kind || '-')}</td>
+                <td>{row.amountOfYuan ?? '-'}</td>
+                <td className="mono pr-sub">{row.orderId || '-'}</td>
+                <td className="pr-sub">{row.accountType ?? '-'}</td>
+                <td>{openable
+                  ? <button className="btn ghost" onClick={() => setOrder({ kind: kind === 'RECHARGE' ? 'recharge' : 'withdraw', orderId: String(row.orderId) })}>查看详情</button>
+                  : '-'}</td>
+              </tr>
+            })}</tbody>
+          </table></div>
+          {fundRows.length === 0 && <div className="pr-sub">这个区间里没有流水记录。</div>}
+        </div>}
+
+      <Notice kind="info"><IconInfo size={15} /> 这一页全是<b>只读查询</b>：官方 bundle 里不存在「发起充值 / 发起提现」的 mtop 接口，钱的实际划转在支付宝侧完成，本工作台不会替你下单。数据更新于 {formatTime(funds.data?.fetched_at)}</Notice>
     </AsyncBox>}
 
     {tab === 'write' && <>
@@ -379,6 +472,42 @@ export function PromotionPage() {
         </div>}
       </AsyncBox>
     </>}
+
+    {order && <Modal
+      title={order.kind === 'recharge' ? '充值详情（只读）' : '提现详情（只读）'}
+      onClose={() => setOrder(null)}
+      footer={<button className="btn" onClick={() => setOrder(null)}>关闭</button>}>
+      <AsyncBox loading={orderDetail.loading} error={orderDetail.error} notReady={orderDetail.notReady} empty={!orderDetail.data} onRetry={orderDetail.reload} emptyTitle="暂无详情" emptyDesc="平台没有返回这条单子的详情" emptyIcon="">
+        <div className="pr-sub">订单号 <span className="mono">{orderDetail.data?.order_id || '-'}</span></div>
+        <div className="table-wrap"><table>
+          <thead><tr><th>字段</th><th>值</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>状态</td>
+              <td>{orderDetail.data?.status_text || orderDetail.data?.status || '-'}
+                {orderDetail.data?.status_text && orderDetail.data?.status ? `（${orderDetail.data.status}）` : ''}</td>
+            </tr>
+            {order.kind === 'recharge' ? <>
+              <tr><td>充值类型</td><td>{detail?.rechargeType ?? '-'}</td></tr>
+              <tr><td>充值订单号</td><td className="mono">{detail?.rechargeOrderNo ?? '-'}</td></tr>
+              <tr><td>交易流水号</td><td className="mono">{detail?.channelTradeNo ?? '-'}</td></tr>
+              <tr><td>发起时间</td><td>{detail?.rechargeCreateTime ?? '-'}</td></tr>
+              <tr><td>到账时间</td><td>{detail?.rechargeCompleteTime ?? '-'}</td></tr>
+            </> : <>
+              <tr><td>来源账户</td><td>{detail?.sourceAccount ?? '-'}</td></tr>
+              <tr><td>去向账户</td><td>支付宝余额{detail?.alipayAccount ? `（${detail.alipayAccount}）` : ''}</td></tr>
+              <tr><td>操作人</td><td>{detail?.operator ?? '-'}</td></tr>
+              <tr><td>发起时间</td><td>{detail?.withdrawTime ?? '-'}</td></tr>
+              <tr><td>备注</td><td>{detail?.remark ?? '-'}</td></tr>
+            </>}
+          </tbody>
+        </table></div>
+        <div className="pr-sub">平台原始字段（不翻译、不补 0）：</div>
+        <div className="code-block mono">{JSON.stringify(detail ?? null, null, 2)}</div>
+        {orderDetail.data?.warnings?.length ? <Notice kind="warn">{orderDetail.data.warnings.join('；')}</Notice> : null}
+        <div className="pr-sub">数据更新于 {formatTime(orderDetail.data?.fetched_at)}</div>
+      </AsyncBox>
+    </Modal>}
 
     {draft && !confirming && <Modal
       title={`${label(draft.action)} · 填写 requestJson`}
