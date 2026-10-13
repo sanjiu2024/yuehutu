@@ -2627,6 +2627,20 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > （`test_tool_names_match_contract` 报 `First extra element 117: 'trade_close_order'`），
 > 用 `fix_lg_lists.py` / `fix_wb39.py` 收敛成一份，并把名字按 `TOOL_SPECS` 的真实顺序
 > 放到 `trade_complain_revoke` 之后。
+> 重打包（`build_exe.ps1 -SkipFrontend`，exe **10,122,701 B / 2026-10-13 15:10:43**，
+> `--port 18400` `/api/health` 200 `frozen:true`）后打包版五项复验全绿：
+> `probe_write_gate.py` → **`GATE FAILURES: 0 / 53`**（`logistics.resend` 未确认 400
+> `confirmation_required`、确认腿 400 `invalid_fields`）；`packaged_ui_smoke.py` → **29/29 页**；
+> `check_assets.py` → `ASSETS_MATCH=True`（`index-D0-oMDFd.js` `dc326c94d9e0` /
+> `index-DpVg3Xto.css` `405780f12bad`）；`scripts/contrast_audit.py --threshold 4.0` →
+> `[dark] 0/29`、`[light] 0/29`、`NON_GET=[]`；`scripts/a11y_audit.py` → 三类问题全 0、
+> `焦点不可见的页面：[]`、`NON_GET=[]`。
+> 发货表单视觉复核（`C:\Users\Administrator\.dsh-tmp\order_ship_shots.py`：打打包版 18400、
+> 选真实账号、开写面板 → 发货 → 修改运单号，**不点最终确认**）：`PROBLEMS: []`、
+> `page errors: []`、**非 GET 请求 `[]`**；深/浅两套截图里快递公司下拉有 **336 个选项**
+> （335 家公司 + 占位），填 `SF1234567890` 后失焦 → 公司自动变成 **顺丰速运（SF）**、
+> 状态行写「平台认出：顺丰速运（SF），已自动选中。」、缺必填项提示随之变成「还缺必填项：订单号」；
+> 截图 `logs/order_ship_shots/{01,02}-{dark,light}-*.png`。
 
 ## 四、已验证 / 未验证（诚实边界）
 
