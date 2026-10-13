@@ -901,3 +901,161 @@ async def card(client: Any, kind: str = 'trade', start: str = '', end: str = '',
         'errors': errors,
     })
     return parsed
+
+
+# ---------------------------------------------------------------------------
+# 客服数据页的三张明细表：客服明细 / 订单分流明细 / 客户评价明细 —— 只读
+# ---------------------------------------------------------------------------
+#: 三个列表接口（bundle 静态提取，偏移 2257163 起）。官方包装 `wge(api, data)`：
+#: `xge({api, v:'1.0', data:{...t}, showErrorToast:true})`，并按
+#: `api + ':' + JSON.stringify(data)` 做**在途去重**（同一请求没回来前不重复发）。
+#: 另有导出族（`cs.detail.export` / `cs.diversion.export` / `cs.evaluation.export`
+#: 与 `cs.excel.url`）**故意不做**：那要轮询生成 Excel 文件。
+CS_DETAIL_API = 'mtop.alibaba.idle.seller.pc.datacompass.cs.detail.list'
+CS_DIVERSION_API = 'mtop.alibaba.idle.seller.pc.datacompass.cs.diversion.list'
+CS_EVALUATION_API = 'mtop.alibaba.idle.seller.pc.datacompass.cs.evaluation.list'
+
+CS_LIST_APIS: Dict[str, str] = {
+    'detail': CS_DETAIL_API,
+    'diversion': CS_DIVERSION_API,
+    'evaluation': CS_EVALUATION_API,
+}
+CS_LIST_KINDS: Tuple[str, ...] = ('detail', 'diversion', 'evaluation')
+CS_LIST_TITLES: Dict[str, str] = {
+    'detail': '客服明细',
+    'diversion': '订单分流明细',
+    'evaluation': '客户评价明细',
+}
+
+#: 官方表头（`dataIndex` + 中文标题，逐字取自 bundle 的列定义）。**不翻译、不增删**：
+#: 平台加列我们照原样多显示一列，平台改列名我们跟着改 —— 写死一份映射表，平台改版后
+#: 就会「标题是旧的、数据是新的」，那比少显示一列难发现得多。
+CS_LIST_COLUMNS: Dict[str, Tuple[Tuple[str, str], ...]] = {
+    'detail': (
+        ('acctName', '账号名称'),
+        ('consultUv', '咨询人数'),
+        ('visitorCnt', '接待人数'),
+        ('consultItmCnt', '咨询商品数'),
+        ('avgRespTm', '平均响应时长'),
+        ('custSatCnt', '客户服务满意度'),
+        ('custSatRate', '客户服务满意率'),
+        ('validReviewCnt', '有效评价数'),
+        ('validPosReviewCnt', '有效好评数'),
+        ('validNegReviewCnt', '有效差评数'),
+        ('respRate3min', '3分钟响应率'),
+        ('respRate1min', '1分钟响应率'),
+    ),
+    'diversion': (
+        ('divTp', '分流类型'),
+        ('dtlTp', '明细分类'),
+        ('sessCnt', '会话数'),
+    ),
+    'evaluation': (
+        ('buyerUserName', '客户名称'),
+        ('buyerNick', '客户nick'),
+        ('subUserName', '被评价的客服'),
+        ('reviewTime', '评价时间'),
+        ('reviewScore', '评分'),
+        ('dissatReason', '不满意原因'),
+    ),
+}
+
+CS_LIST_PAGE_SIZES: Tuple[int, ...] = (10, 20, 50)
+CS_LIST_DEFAULT_PAGE_SIZE = 10
+
+
+def cs_list_request(kind: str, date_type: str = DATE_TYPE_DAY,
+                    dates: Optional[List[str]] = None, seller_id: str = '',
+                    order_by: str = '', order: str = '', page: int = 1,
+                    page_size: int = CS_LIST_DEFAULT_PAGE_SIZE) -> Dict[str, Any]:
+    """官方入参逐字（bundle 调用点 2387031 / 2372357 等）：
+
+    `{selectedSellerId, dateRange, ms, dateType, orderBy, order, page, pageSize}`。
+
+    `dateRange` 只在自定义区间时给（`'|'.join(dates)`，**竖线**），`ms` 只在
+    `dateType == 'month'` 时给首日 —— 官方那两处用的是 `undefined`（键根本不在），
+    所以这里给空串而不是 `None`：`None` 会被序列化成 `null`，那是另一种语义。
+    """
+    if kind not in CS_LIST_APIS:
+        raise ValueError(f'未知的客服明细类型：{kind}')
+    values = [str(item) for item in (dates or []) if str(item).strip()]
+    return {
+        'selectedSellerId': seller_id,
+        'dateRange': '|'.join(values) if date_type == COMMODITY_DATE_CUSTOM else '',
+        'ms': values[0] if date_type == DATE_TYPE_MONTH and values else '',
+        'dateType': date_type,
+        'orderBy': order_by,
+        'order': order,
+        'page': page,
+        'pageSize': page_size,
+    }
+
+
+def parse_cs_list(payload: Any, kind: str) -> Dict[str, Any]:
+    """解析客服明细响应。**注意双层 `data`**。
+
+    `_mtop` 已经剥掉客户端信封，剩下平台体 `{extendInfo, data}`；业务码与列表都在
+    `payload['data']['data']` 里（官方前端写的是 `v.data.data.data.list`）。
+    列表键认不出 → `rows=None`（**不是 `[]`**：「平台没给列表」与「这段时间一条都没有」
+    对用户是两件事）；`total` 只认数值，`0` 保留。
+    """
+    result: Dict[str, Any] = {'rows': None, 'total': None, 'found_key': None}
+    body = payload.get('data') if isinstance(payload, dict) else None
+    inner = body.get('data') if isinstance(body, dict) else None
+    if isinstance(inner, dict):
+        code = body.get('code')
+        if code in (None, '') or str(code).lower() == 'success':
+            for key in ('list', 'rows', 'result'):
+                value = inner.get(key)
+                if isinstance(value, list):
+                    result['rows'] = value
+                    result['found_key'] = key
+                    break
+            total = inner.get('total')
+            if _is_number(total):
+                result['total'] = int(total)
+    result['columns'] = CS_LIST_COLUMNS[kind]
+    result['real_date_range'] = _real_date_range(payload)
+    return result
+
+
+async def cs_list(client: Any, kind: str = 'detail', start: str = '', end: str = '',
+                  seller_id: str = '', order_by: str = '', order: str = '',
+                  page: int = 1,
+                  page_size: int = CS_LIST_DEFAULT_PAGE_SIZE) -> Dict[str, Any]:
+    """客服数据页的一张明细表（**只读**）。
+
+    默认 `recent1d`（今天，与官方一致）；给了区间就 `customDate` + `dateRange`。
+
+    **平台「拒绝访问」是有效答复，不是故障**（与 `card` / `_collect` 同一口径）：真机上
+    这个账号对客服明细也回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问`。照抛的话界面上
+    会出现红框 + mtop 原文，而同一页的核心指标是「人话 + 一屏 -」—— 同一页两套口径。
+    所以这里只把**无权限**翻成 `errors`（服务层给人话 warning，200），其余照抛。
+    """
+    if kind not in CS_LIST_APIS:
+        raise ValueError('不支持的客服明细类型：%s（可选 %s）'
+                         % (kind, '/'.join(CS_LIST_KINDS)))
+    date_type, dates = commodity_dates(start, end)
+    request = cs_list_request(kind=kind, date_type=date_type, dates=dates, seller_id=seller_id,
+                              order_by=order_by, order=order, page=page, page_size=page_size)
+    errors: Dict[str, str] = {}
+    payload: Any = None
+    try:
+        payload = await _mtop(client, CS_LIST_APIS[kind], dict(request))
+    except Exception as exc:  # noqa: BLE001 - 只放行「无权限」，其余照抛
+        if not _is_permission_error(exc):
+            raise
+        errors[kind] = _error_text(exc)
+    parsed = parse_cs_list(payload, kind)
+    return {
+        'kind': kind,
+        'rows': parsed['rows'],
+        'columns': parsed['columns'],
+        'total': parsed['total'],
+        'found_key': parsed['found_key'],
+        'real_date_range': parsed['real_date_range'],
+        'date_type': date_type,
+        'dates': dates,
+        'raw': payload,
+        'errors': errors,
+    }

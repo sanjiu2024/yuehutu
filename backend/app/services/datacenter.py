@@ -186,6 +186,10 @@ _LABELS = {
     'seller': '经营概况',
     'repurchase': '复购',
     'refund': '退款概览',
+    # 客服明细三张表：协议层一次只调一个接口，标签就是 kind
+    'detail': '客服明细',
+    'diversion': '订单分流明细',
+    'evaluation': '客户评价明细',
 }
 
 
@@ -496,3 +500,106 @@ def card(account_id: str, kind: str = 'trade', start: str = '', end: str = '') -
         return common.call_failed(status, value) or common.fail(
             '数据卡片接口调用失败', 'protocol_error')
     return _wrap_card(account_id, kind, value)
+
+
+# ---------------------------------------------------------------------------
+# 客服数据页的三张明细表：客服明细 / 订单分流明细 / 客户评价明细 —— 只读
+# ---------------------------------------------------------------------------
+#: 服务层**自己再列一份** kind：契约的合法值（400 的边界）不该由协议层实现细节决定。
+CS_LIST_KINDS: Tuple[str, ...] = ('detail', 'diversion', 'evaluation')
+CS_LIST_TITLES: Dict[str, str] = {
+    'detail': '客服明细',
+    'diversion': '订单分流明细',
+    'evaluation': '客户评价明细',
+}
+CS_LIST_DEFAULT_PAGE_SIZE = 10
+CS_LIST_MAX_PAGE_SIZE = 50
+
+WARN_CS_LIST_MISSING = ('平台没有返回这张明细表的数据（可能改了字段名），'
+                        '这一张暂时显示不出来，请点「刷新」重试。')
+
+
+def _wrap_cs_list(account_id: str, kind: str, payload: Dict[str, Any], page: int,
+                  page_size: int) -> Dict[str, Any]:
+    """把协议层结果包成对外契约。**`rows` 认不出时保持 `None`**（不是空数组）。"""
+    warnings = _warnings(payload.get('errors') or {})
+    if payload.get('rows') is None and not warnings:
+        # 已经有「平台拒绝访问…」时不再补这条 —— 那条才是真因，两条一起说会把
+        # 「没权限」说成「可能改了字段名」，把人往错方向带（与 `_wrap_card` 同一口径）。
+        warnings.append(WARN_CS_LIST_MISSING)
+    dates = payload.get('dates') or []
+    if not dates:
+        # 显示用今天，但**线上参数仍是不带日期的 `recent1d`**（显示值不能反过来决定
+        # 线上参数，否则会把「今天」变成 `customDate` 查询，平台行为就变了）。
+        today = datetime.now().strftime('%Y%m%d')
+        dates = [today, today]
+    total = payload.get('total')
+    pages = None
+    if isinstance(total, (int, float)) and page_size > 0:
+        pages = int((total + page_size - 1) // page_size)
+    return {
+        'account_id': account_id,
+        'kind': kind,
+        'title': CS_LIST_TITLES[kind],
+        #: 列由官方表头定义（`key` + 中文 `title`），前端按这个顺序渲染
+        'columns': [{'key': key, 'title': title}
+                    for key, title in (payload.get('columns') or ())],
+        'rows': payload.get('rows'),
+        'total': total,
+        'page': page,
+        'page_size': page_size,
+        'pages': pages,
+        'period': {
+            'from': dates[0] if dates else '',
+            'to': dates[1] if len(dates) > 1 else (dates[0] if dates else ''),
+        },
+        'date_type': payload.get('date_type') or '',
+        'real_date_range': payload.get('real_date_range'),
+        'warnings': warnings,
+        'source': 'platform',
+        'fetched_at': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
+    }
+
+
+def cs_list(account_id: str, kind: str = 'detail', start: str = '', end: str = '',
+            page: Any = 1, size: Any = None, order_by: str = '',
+            order: str = '') -> Dict[str, Any]:
+    """客服数据页的一张明细表（只读）。
+
+    与商品数据页同一取舍：**分页与排序由平台做，所以不进缓存**（键要含全部参数，
+    缓存价值低而误命中代价高：翻页时给你上一页的缓存就是「点了没反应」）。
+    """
+    kind = str(kind or 'detail').strip().lower()
+    if kind not in CS_LIST_KINDS:
+        return common.fail('明细类型只能是 detail / diversion / evaluation', 'invalid_fields')
+    page_number, failure = _int_arg('页码', page, 1, 100000)
+    if failure:
+        return failure
+    page_size, failure = _int_arg(
+        '每页条数',
+        CS_LIST_DEFAULT_PAGE_SIZE if size in (None, '') else size,
+        1, CS_LIST_MAX_PAGE_SIZE,
+    )
+    if failure:
+        return failure
+    order = str(order or '').strip().lower()
+    if order not in ('', 'asc', 'desc'):
+        return common.fail('排序方向只能是 asc 或 desc', 'invalid_fields')
+    order_by = str(order_by or '').strip()
+    if order and not order_by:
+        return common.fail('指定排序方向时必须同时给出排序字段', 'invalid_fields')
+    module = common.protocol_module('datacenter')
+    if module is None:
+        return common.not_ready('协议层未提供数据组接口（backend.app.xianyu.datacenter）')
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+    status, value = common.call_method(
+        _BoundProtocol(module, client), ('cs_list',), client,
+        kind, _text(start).strip(), _text(end).strip(), account_id,
+        order_by, order, page_number, page_size,
+    )
+    if status != common.CALL_OK:
+        return common.call_failed(status, value) or common.fail(
+            '客服明细接口调用失败', 'protocol_error')
+    return _wrap_cs_list(account_id, kind, value, page_number, page_size)

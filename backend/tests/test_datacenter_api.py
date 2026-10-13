@@ -190,6 +190,39 @@ def card_payload(kind: str = 'seller', payload: Any = None, found: bool = True,
     return parsed
 
 
+#: 三张明细表的行（字段名逐字取自官方表头的 `dataIndex`）
+CS_DETAIL_ROWS = [
+    {'acctName': '月狐兔_', 'consultUv': 12, 'visitorCnt': 10, 'consultItmCnt': 5,
+     'avgRespTm': '36秒', 'custSatCnt': 4.8, 'custSatRate': '96%', 'validReviewCnt': 20,
+     'validPosReviewCnt': 19, 'validNegReviewCnt': 1, 'respRate3min': '88.5%',
+     'respRate1min': '50%'},
+]
+CS_DIVERSION_ROWS = [{'divTp': '客服分组', 'dtlTp': '默认分组', 'sessCnt': 37}]
+CS_EVALUATION_ROWS = [{'buyerUserName': '张三', 'buyerNick': 'zhangsan',
+                       'subUserName': '月狐兔_', 'reviewTime': '2026-10-13 10:00:00',
+                       'reviewScore': '很满意', 'dissatReason': ''}]
+
+
+def cs_list_payload(kind: str = 'detail', rows: Any = None, total: Any = 3,
+                    errors: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """协议层 `cs_list` 的返回值形状（列是 `(平台键, 官方中文标题)` 元组）。"""
+    if rows is None:
+        rows = {'detail': CS_DETAIL_ROWS, 'diversion': CS_DIVERSION_ROWS,
+                'evaluation': CS_EVALUATION_ROWS}[kind]
+    return {
+        'kind': kind,
+        'rows': rows,
+        'columns': datacenter_proto.CS_LIST_COLUMNS[kind],
+        'total': total,
+        'found_key': 'list',
+        'real_date_range': ['2026-10-13', '2026-10-13'],
+        'date_type': datacenter_proto.DATE_TYPE_DAY,
+        'dates': [],
+        'raw': {},
+        'errors': errors or {},
+    }
+
+
 class SessionExpiredError(RuntimeError):
     """与协议层同名：`common._is_session_expired` 按**类名**认登录态过期，不看文案。"""
 
@@ -278,6 +311,23 @@ class FakeDataCenterProtocol:
             answer['dates'] = list(dates)
         return answer
 
+    async def cs_list(self, client: Any, kind: str = 'detail', start: str = '',
+                      end: str = '', seller_id: str = '', order_by: str = '',
+                      order: str = '', page: int = 1, page_size: int = 10) -> Any:
+        """与真协议层同样**从 start/end 推导** `date_type` / `dates`（理由同 `card`）。"""
+        answer = self._answer('cs_list', client, kind, start, end, seller_id, order_by,
+                              order, page, page_size)
+        if isinstance(answer, dict):
+            date_type, dates = datacenter_proto.commodity_dates(start, end)
+            answer = dict(answer)
+            answer['date_type'] = date_type
+            answer['dates'] = list(dates)
+            # 与真协议层一致：**按请求的 kind 给标题与列**（照抄一份死 payload 会让
+            # 「三张表各自的列」永远相等 —— 那种假绿会把真 bug 藏起来）
+            answer['kind'] = kind
+            answer['columns'] = datacenter_proto.CS_LIST_COLUMNS[kind]
+        return answer
+
     def args_of(self, name: str) -> tuple:
         for call in self.calls:
             if call[0] == name:
@@ -310,6 +360,7 @@ def install_fake_protocol(protocol: FakeDataCenterProtocol) -> FakeXianyuClient:
     module.customer_service = protocol.customer_service  # type: ignore[attr-defined]
     module.commodity = protocol.commodity  # type: ignore[attr-defined]
     module.card = protocol.card  # type: ignore[attr-defined]
+    module.cs_list = protocol.cs_list  # type: ignore[attr-defined]
     sys.modules['backend.app.xianyu.datacenter'] = module
     return client
 
@@ -358,6 +409,7 @@ def full_protocol(**overrides: Any) -> FakeDataCenterProtocol:
                              'real_date_range': None, 'suspect_keys': [], 'errors': {}},
         'commodity': commodity_payload(),
         'card': card_payload(),
+        'cs_list': cs_list_payload(),
     }
     payloads.update(overrides)
     return FakeDataCenterProtocol(payloads)
@@ -433,7 +485,7 @@ class DataCenterApiTest(unittest.TestCase):
         with TestClient(app_main.create_app()) as real:
             for path in (f'{BASE}/{ACC}/overview', f'{BASE}/{ACC}/fans',
                          f'{BASE}/{ACC}/customer-service', f'{BASE}/{ACC}/commodity',
-                         f'{BASE}/{ACC}/card/seller'):
+                         f'{BASE}/{ACC}/card/seller', f'{BASE}/{ACC}/cs/detail'):
                 for method in ('post', 'put', 'patch', 'delete'):
                     resp = getattr(real, method)(path, headers=self.headers)
                     self.assertEqual(resp.status_code, 405, f'{method} {path}: {resp.text}')
@@ -1322,6 +1374,226 @@ class CardTest(DataCenterApiTest):
         paths = app_main.create_app().openapi().get('paths', {})
         self.assertIn(f'{BASE}/{{account_id}}/card/{{kind}}', paths)
         self.assertIn('get', paths[f'{BASE}/{{account_id}}/card/{{kind}}'])
+
+
+class CsListTest(DataCenterApiTest):
+    """客服数据页三张明细表（客服明细 / 订单分流明细 / 客户评价明细）的协议 + 服务 + HTTP。
+
+    三张表共用一套入参与响应形状（官方就是三个接口），但**列名与中文标题全取官方表头**：
+    我们不翻译、不增删 —— 平台加列就多显示一列，平台改列名就跟着改。响应是**双层 `data`**
+    （官方前端写的是 `v.data.data.data.list`），`rows=None` 与 `rows=[]` 是两件事。
+    """
+
+    # -- 协议层：入参形状（官方 bundle 逐字） ----------------------------
+
+    def test_request_matches_the_official_payload(self):
+        payload = datacenter_proto.cs_list_request('detail')
+        self.assertEqual(payload, {
+            'selectedSellerId': '', 'dateRange': '', 'ms': '',
+            'dateType': datacenter_proto.DATE_TYPE_DAY,
+            'orderBy': '', 'order': '', 'page': 1, 'pageSize': 10,
+        })
+
+    def test_custom_range_uses_pipe_and_month_uses_ms(self):
+        payload = datacenter_proto.cs_list_request(
+            'evaluation', date_type=datacenter_proto.COMMODITY_DATE_CUSTOM,
+            dates=['20261001', '20261013'], seller_id='221')
+        self.assertEqual(payload['dateRange'], '20261001|20261013')
+        self.assertEqual(payload['ms'], '')
+        monthly = datacenter_proto.cs_list_request(
+            'diversion', date_type=datacenter_proto.DATE_TYPE_MONTH, dates=['202610'])
+        self.assertEqual(monthly['ms'], '202610')
+        self.assertEqual(monthly['dateRange'], '')
+
+    def test_unknown_kind_raises(self):
+        with self.assertRaises(ValueError):
+            datacenter_proto.cs_list_request('nope')
+        with self.assertRaises(ValueError):
+            asyncio.get_event_loop().run_until_complete(
+                datacenter_proto.cs_list(FakeMtopClient(), 'nope'))
+
+    def test_columns_come_from_the_official_table(self):
+        detail = datacenter_proto.CS_LIST_COLUMNS['detail']
+        self.assertEqual(len(detail), 12)
+        self.assertEqual(detail[0], ('acctName', '账号名称'))
+        self.assertEqual(detail[-1], ('respRate1min', '1分钟响应率'))
+        self.assertEqual(datacenter_proto.CS_LIST_COLUMNS['diversion'],
+                         (('divTp', '分流类型'), ('dtlTp', '明细分类'), ('sessCnt', '会话数')))
+        evaluation = datacenter_proto.CS_LIST_COLUMNS['evaluation']
+        self.assertEqual(evaluation[0], ('buyerUserName', '客户名称'))
+        self.assertEqual(evaluation[-1], ('dissatReason', '不满意原因'))
+
+    def test_parse_reads_the_double_nested_data(self):
+        payload = {'data': {'code': 'success', 'data': {'list': [{'acctName': 'a'}],
+                                                        'total': 3}},
+                   'extendInfo': {'realDateRange': ['2026-10-13', '2026-10-13']}}
+        parsed = datacenter_proto.parse_cs_list(payload, 'detail')
+        self.assertEqual(parsed['rows'], [{'acctName': 'a'}])
+        self.assertEqual(parsed['total'], 3)
+        self.assertEqual(parsed['found_key'], 'list')
+        self.assertEqual(parsed['real_date_range'], ['2026-10-13', '2026-10-13'])
+
+    def test_parse_without_the_list_key_is_none_not_empty(self):
+        missing = datacenter_proto.parse_cs_list(
+            {'data': {'code': 'success', 'data': {'total': 0}}}, 'detail')
+        self.assertIsNone(missing['rows'], '「平台没给列表」不能当成「一条都没有」')
+        self.assertEqual(missing['total'], 0, 'total=0 是有效值，要保留')
+        empty = datacenter_proto.parse_cs_list(
+            {'data': {'code': 'success', 'data': {'list': [], 'total': 0}}}, 'detail')
+        self.assertEqual(empty['rows'], [])
+
+    def test_parse_ignores_a_failed_business_code(self):
+        parsed = datacenter_proto.parse_cs_list(
+            {'data': {'code': 'FAIL_BIZ_X', 'data': {'list': [{'a': 1}], 'total': 1}}},
+            'diversion')
+        self.assertIsNone(parsed['rows'])
+
+    def test_permission_denied_returns_errors_instead_of_raising(self):
+        """平台「拒绝访问」是有效答复（与同页其它块同一口径），不能变成 502 红框。"""
+        client = FakeMtopClient(errors={datacenter_proto.CS_LIST_APIS['detail']: RuntimeError(
+            'MTOP 调用失败 [mtop.alibaba.idle.seller.pc.datacompass.cs.detail.list]: '
+            'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问')})
+        result = asyncio.get_event_loop().run_until_complete(
+            datacenter_proto.cs_list(client, 'detail'))
+        self.assertIsNone(result['rows'])
+        self.assertIn('detail', result['errors'])
+        self.assertIn('UNAUTHORIZED', result['errors']['detail'])
+
+    def test_other_failures_still_raise(self):
+        client = FakeMtopClient(
+            errors={datacenter_proto.CS_LIST_APIS['detail']: RuntimeError('boom')})
+        with self.assertRaises(RuntimeError):
+            asyncio.get_event_loop().run_until_complete(
+                datacenter_proto.cs_list(client, 'detail'))
+
+    def test_session_expired_still_raises(self):
+        client = FakeMtopClient(
+            errors={datacenter_proto.CS_LIST_APIS['detail']: SessionExpiredError(
+                'FAIL_SYS_SESSION_EXPIRED::Session过期')})
+        with self.assertRaises(SessionExpiredError):
+            asyncio.get_event_loop().run_until_complete(
+                datacenter_proto.cs_list(client, 'detail'))
+
+    # -- 服务层 + HTTP ---------------------------------------------------
+
+    def test_every_kind_is_served_with_its_own_title_and_columns(self):
+        seed_account()
+        for kind, title, first_key in (('detail', '客服明细', 'acctName'),
+                                       ('diversion', '订单分流明细', 'divTp'),
+                                       ('evaluation', '客户评价明细', 'buyerUserName')):
+            with self.subTest(kind=kind):
+                data = self.ok_data(f'{BASE}/{ACC}/cs/{kind}')
+                self.assertEqual(data['kind'], kind)
+                self.assertEqual(data['title'], title)
+                self.assertEqual(data['columns'][0], {'key': first_key,
+                                                      'title': data['columns'][0]['title']})
+                self.assertEqual(data['source'], 'platform')
+
+    def test_default_period_is_today_and_the_platform_gets_no_dates(self):
+        seed_account()
+        data = self.ok_data(f'{BASE}/{ACC}/cs/detail')
+        self.assertEqual(data['date_type'], datacenter_proto.DATE_TYPE_DAY)
+        self.assertEqual(data['period']['from'], datetime.now().strftime('%Y%m%d'))
+        # 协议层收到的仍是**空** start/end（线上参数是 recent1d，不带 dateRange）
+        # `args_of` 记的是 `(client, kind, start, end, seller_id, order_by, order, page, page_size)`
+        self.assertEqual(self.proto.args_of('cs_list')[1:4], ('detail', '', ''))
+        self.assertEqual(self.proto.args_of('cs_list')[8], 10)
+
+    def test_custom_range_and_paging_are_passed_through(self):
+        seed_account()
+        data = self.ok_data(f'{BASE}/{ACC}/cs/evaluation',
+                            '?start=20261001&end=20261007&page=2&size=20')
+        self.assertEqual(data['period'], {'from': '20261001', 'to': '20261007'})
+        args = self.proto.args_of('cs_list')
+        self.assertEqual(args[1:4], ('evaluation', '20261001', '20261007'))
+        self.assertEqual(args[7:9], (2, 20))
+        self.assertEqual(data['page'], 2)
+        self.assertEqual(data['page_size'], 20)
+
+    def test_total_zero_is_kept_and_pages_are_computed(self):
+        seed_account()
+        self.proto.payloads['cs_list'] = cs_list_payload(rows=[], total=0)
+        data = self.ok_data(f'{BASE}/{ACC}/cs/detail')
+        self.assertEqual(data['total'], 0)
+        self.assertEqual(data['pages'], 0)
+        self.proto.payloads['cs_list'] = cs_list_payload(total=21)
+        data = self.ok_data(f'{BASE}/{ACC}/cs/detail', '?size=10')
+        self.assertEqual(data['pages'], 3)
+
+    def test_rows_null_gives_a_warning_not_an_empty_table(self):
+        seed_account()
+        self.proto.payloads['cs_list'] = cs_list_payload(rows=None, total=None)
+        self.proto.payloads['cs_list']['rows'] = None
+        data = self.ok_data(f'{BASE}/{ACC}/cs/diversion')
+        self.assertIsNone(data['rows'])
+        self.assertTrue(any('没有返回这张明细表' in w for w in data['warnings']),
+                        data['warnings'])
+
+    def test_permission_denied_is_one_human_warning_not_502(self):
+        seed_account()
+        self.proto.payloads['cs_list'] = cs_list_payload(
+            rows=None, total=None,
+            errors={'detail': 'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问'})
+        self.proto.payloads['cs_list']['rows'] = None
+        data = self.ok_data(f'{BASE}/{ACC}/cs/detail')
+        self.assertEqual(len(data['warnings']), 1, data['warnings'])
+        self.assertIn('客服明细', data['warnings'][0])
+        self.assertIn('没有「数据」权限', data['warnings'][0])
+
+    def test_unknown_kind_is_400_and_never_calls_the_platform(self):
+        seed_account()
+        body = self.fail_envelope(f'{BASE}/{ACC}/cs/nope')
+        self.assertEqual(body.get('code'), 'invalid_fields')
+        self.assertIn('detail', body.get('message', ''))
+        self.assertEqual(self.proto.calls, [])
+
+    def test_bad_paging_is_rejected_and_never_calls_the_platform(self):
+        seed_account()
+        # 上下界由 `Query(ge/le)` 先拦（422），与服务层 400 的分工与商品数据页一致
+        for query in ('?page=0', '?size=999'):
+            with self.subTest(query=query):
+                resp = self.get(f'{BASE}/{ACC}/cs/detail{query}')
+                self.assertEqual(resp.status_code, 422, resp.text)
+        # `order` 的取值是业务约束 → 服务层 400 `invalid_fields`
+        self.assertEqual(self.fail_envelope(f'{BASE}/{ACC}/cs/detail',
+                                            '?order=asc').get('code'), 'invalid_fields')
+        self.assertEqual(self.fail_envelope(f'{BASE}/{ACC}/cs/detail',
+                                            '?order=sideways').get('code'), 'invalid_fields')
+        self.assertEqual(self.proto.calls, [])
+
+    def test_platform_error_is_502_with_protocol_error(self):
+        seed_account()
+        self.proto.errors['cs_list'] = RuntimeError('mtop 调用失败')
+        body = self.fail_envelope(f'{BASE}/{ACC}/cs/detail', status=502)
+        self.assertEqual(body.get('code'), 'protocol_error')
+
+    def test_session_expired_is_409_and_marks_need_relogin(self):
+        seed_account()
+        self.proto.errors['cs_list'] = SessionExpiredError(
+            'FAIL_SYS_SESSION_EXPIRED::Session过期')
+        body = self.fail_envelope(f'{BASE}/{ACC}/cs/detail', status=409)
+        self.assertEqual(body.get('code'), 'verification_required')
+        self.assertEqual(body.get('login_state'), 'need_relogin')
+
+    def test_missing_cookie_is_409_and_never_calls_the_platform(self):
+        seed_account(cookie='')
+        body = self.fail_envelope(f'{BASE}/{ACC}/cs/detail', status=409)
+        self.assertEqual(body.get('code'), 'verification_required')
+        self.assertEqual(self.proto.calls, [])
+
+    def test_unknown_account_is_404(self):
+        body = self.fail_envelope(f'{BASE}/nope/cs/detail', status=404)
+        self.assertEqual(body.get('code'), 'not_found')
+        self.assertEqual(self.proto.calls, [])
+
+    def test_route_is_mounted_on_the_real_app(self):
+        """挂载形状必须与测试里自挂的一致（自建 FastAPI 防不住挂载方式变化）。"""
+        remove_fake_protocol()
+        from backend.app import main as app_main  # noqa: PLC0415 - 真 app 只在这里需要
+
+        paths = app_main.create_app().openapi().get('paths', {})
+        self.assertIn(f'{BASE}/{{account_id}}/cs/{{kind}}', paths)
+        self.assertIn('get', paths[f'{BASE}/{{account_id}}/cs/{{kind}}'])
 
 
 if __name__ == '__main__':

@@ -101,3 +101,27 @@ def card(
     指标名与中文标题都以平台为准（`label` 拿不到就是 `null`，前端显示平台字段名）。
     """
     return _envelope(datacenter.card(account_id, kind, start, end))
+
+
+@router.get('/{account_id}/cs/{kind}')
+def cs_list(
+    account_id: str,
+    kind: str,
+    start: str = Query('', description='YYYYMMDD，不传就是「今天」'),
+    end: str = Query('', description='YYYYMMDD'),
+    page: int = Query(1, ge=1),
+    size: int = Query(datacenter.CS_LIST_DEFAULT_PAGE_SIZE, ge=1,
+                      le=datacenter.CS_LIST_MAX_PAGE_SIZE),
+    order_by: str = Query('', description='排序字段（取列定义里的 key）'),
+    order: str = Query('', description='asc / desc'),
+    user=Depends(current_user),
+):
+    """客服数据页的一张明细表：`detail` 客服明细 / `diversion` 订单分流明细 /
+    `evaluation` 客户评价明细。
+
+    三张表共用同一套入参与响应形状（官方就是三个接口），**列名与中文标题都取官方表头**，
+    我们不翻译也不增删 —— 平台加列就多显示一列，平台改列名就跟着改。
+    `rows` 为 `null` 表示平台没给列表字段（不是「这段时间没有数据」，那是 `[]`）。
+    """
+    return _envelope(datacenter.cs_list(account_id, kind, start, end, page, size,
+                                        order_by, order))
