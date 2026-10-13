@@ -847,6 +847,39 @@ POST /api/trade/{account_id}/refunds/{refund_id}/refuse      {order_id,refuse_re
 POST /api/trade/{account_id}/evaluations                     {trade_ids,feedback,rate,image_urls,anonymous,confirm}  -- 无等级传 -1
 POST /api/trade/{account_id}/complaints/{complain_id}/refuse {proof_desc,proof_urls,confirm}
 POST /api/trade/{account_id}/complaints/{complain_id}/proof  {proof_desc,proof_urls,kind,confirm}
+       -- ★ **路由层不许写 `bool(body.get('confirm'))`**：`bool('false')` 是 `True`，会把
+          「我明确拒绝」当成「我确认」。第 38 批真机探针抓到 11 处这么写过
+          （`backend/app/api/trade_write.py` 8 处 + `backend/app/api/security_write.py` 3 处），
+          现已全部改成**原样透传** `confirm=body.get('confirm')`，判断权只在服务层 `_truthy`。
+          服务层同样**不许**裸 `if not confirm:`（`not 'false'` 是 `False`，同样会放行）。
+
+【写 · 订单处理】`docs/contracts/trade_write.md` §10   —— 关单 / 延时 / 提醒 / 运费退款 / 撤销投诉
+GET  /api/trade/{account_id}/orders/{order_id}/close-reasons
+       -> {order_id, reasons, raw_keys, warnings, api, account_id, source, fetched_at}
+       -- **只读、故意没有 `confirm`**（登记在 `trade_write.READ_APIS`，不进 `WRITE_APIS`）。
+       -- `mtop.taobao.idle.trade.order.close.reason.get` v1.0 `{bizOrderId}`；
+          官方读 `data.closeReasons`（**字符串数组**，消费点 `map(r => ({label:r,value:r}))`）。
+       -- **`reasons === null`（平台没给列表键，可以手填）与 `[]`（平台明确说这个订单没有可选原因）
+          是两件事**，前端文案必须分开说，不能都写成「没有原因」。
+POST /api/trade/{account_id}/orders/{order_id}/close         {close_reason,confirm}
+POST /api/trade/{account_id}/orders/{order_id}/delay         {days,order_ids?,confirm}
+POST /api/trade/{account_id}/orders/{order_id}/remind        {order_ids?,remind_all?,confirm}
+POST /api/trade/{account_id}/refunds/{refund_id}/postage-pay {order_id,pay_type?,amount?,confirm}
+POST /api/trade/{account_id}/complaints/{complain_id}/revoke {confirm}
+       -- 五条 mtop（bundle 偏移见 `docs/contracts/trade_write.md` §10）：
+          `mtop.taobao.idle.trade.close.by.seller` **v2.0** `{tid,bizOrderId,closeReason}`
+          （官方**把同一个订单号同时塞进 `tid` 与 `bizOrderId`**，我们照做）、
+          `mtop.taobao.idle.trade.seller.delay.confirm` v1.0 `{orderIdList,delayTime}`、
+          `mtop.taobao.idle.trade.consign.remind` v1.0 `{orderIdList,remindAllOrder}`、
+          `mtop.taobao.idle.merchant.postage.refund.pay` v1.0 `{orderId,refundId,payType}`
+          （**这一步是真的付钱**，官方还带 `ttid`）、
+          `mtop.taobao.idle.cco.shop.complain.apply.revoke` v1.0 `{complainId}`。
+       -- `days` 只认官方四档 **3 / 5 / 7 / 10**；协议层换算 `delayTime = days × 86400` 秒。
+       -- `order_ids` 收数组或逗号串（去重保序、上限 50）；**留空就不发这个键**，
+          后端用路径里那一个订单号（空列表 ≠ 就用这一单）。
+       -- `pay_type` ∈ `alipay` / `deposit`；`amount` 只用于确认框与回执展示，**不进请求体**。
+       -- 批量回执读 `data.module.{totalNum,successNum,failOrderInfos[{orderId,errorMsg}]}`，
+          认不出给 `null`（**不补 0**）；`confirm` 只认 `True`/`'true'`/`1`，HTTP 层原样透传。
 
 【写 · 退货地址】`docs/contracts/trade_write.md` §8
 POST /api/trade/{account_id}/addresses                        {contact_name,mobile_phone,province_name,city_name,district_name,detail_address,area_id?,default_addr?,confirm}
@@ -982,12 +1015,12 @@ POST /api/quick-reply/{account_id}/phrases/{content_id}/delete {group_id,confirm
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
 【AI 侧】`TOOL_SPECS` 108 条 / `MASTER_TOOLS` 107 条（去掉 `master_chat` 防递归），
-其中 **46 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 109 条。五方对账（specs / master / routes / service targets / handlers）
+其中 **51 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
+`mcp_server/client.py::TOOL_ROUTES` 115 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=108 master=107 routes=109 targets=88 handlers=108 / write_tools=46 / route_checked=109 / RECON OK
+-> specs=114 master=113 routes=115 targets=94 handlers=114 / write_tools=51 / route_checked=115 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`

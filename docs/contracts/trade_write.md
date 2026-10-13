@@ -25,7 +25,7 @@
    `platform_errors.explain`，**不会**把账号写成 `need_relogin`。只有平台真的回
    `SESSION_EXPIRED`（`common._is_session_expired` 按类名/文案认）才会标掉线。
 
-## 1. HTTP（14 个 POST + 2 个只读 GET，全部要求登录）
+## 1. HTTP（19 个 POST + 3 个只读 GET，全部要求登录）
 
 | 方法 | 路径 | body | 说明 |
 | --- | --- | --- | --- |
@@ -43,8 +43,14 @@
 | POST | `/api/trade/{account_id}/addresses/{contact_id}/default` | `{confirm}` | 设为默认退货地址（见 §8） |
 | POST | `/api/trade/{account_id}/orders/{order_id}/modify-address/agree` | `{deliver_id, confirm}` | 同意买家改地址，**会真的改订单收货地址**（见 §9） |
 | POST | `/api/trade/{account_id}/orders/{order_id}/modify-address/refuse` | `{deliver_id, confirm}` | 拒绝买家改地址（见 §9） |
+| POST | `/api/trade/{account_id}/orders/{order_id}/close` | `{close_reason, confirm}` | 卖家关闭订单，**不可撤销**（见 §10） |
+| POST | `/api/trade/{account_id}/orders/{order_id}/delay` | `{days, order_ids?, confirm}` | 延长收货时间，`days` ∈ 3/5/7/10（见 §10） |
+| POST | `/api/trade/{account_id}/orders/{order_id}/remind` | `{order_ids?, remind_all?, confirm}` | 提醒买家确认收货（见 §10） |
+| POST | `/api/trade/{account_id}/refunds/{refund_id}/postage-pay` | `{order_id, pay_type?, amount?, confirm}` | 支付运费退款，**这一步是真的付钱**（见 §10） |
+| POST | `/api/trade/{account_id}/complaints/{complain_id}/revoke` | `{confirm}` | 撤销投诉申请（见 §10） |
 | **GET** | `/api/trade/{account_id}/refunds/{refund_id}/verify-token` | —（无 body，**无 `confirm`**） | 退款凭证（只读，见 §7） |
 | **GET** | `/api/trade/{account_id}/orders/{order_id}/modify-address` | —（无 body，**无 `confirm`**） | 买家改地址申请（只读，见 §9） |
+| **GET** | `/api/trade/{account_id}/orders/{order_id}/close-reasons` | —（无 body，**无 `confirm`**） | 关单可选原因（只读，见 §10） |
 
 - body 用 `Dict[str, Any] = Body(default={})` 收，字段校验交给服务层 → 统一信封；
   用 FastAPI 的必填字段校验会先返回 422 的裸 body。
@@ -328,4 +334,64 @@ POST /api/trade/{account_id}/orders/{order_id}/modify-address/refuse  {deliver_i
 **一次真机写请求都没发过**：改地址审批要买家先发起申请，不能为了验证去改用户的真实订单。
 UI 侧 `frontend/src/pages/Orders.tsx::ModifyAddressModal`（同意/拒绝三重闸 + 二次确认）；
 AI 侧 `trade_order_address_request`（读）/ `trade_order_address_agree` / `trade_order_address_refuse`（写）。
+
+## 10. 订单处理（**读 + 写**）：关单 / 延时 / 提醒 / 运费退款 / 撤销投诉
+
+第 38 批新增。证据全部来自本地 bundle 副本（**零平台请求**）：
+IM 侧 `C:\Users\Administrator\.dsh-tmp\bundle_scan\js_006_p_im_index.js`（3,071,011 字符，偏移 2586009~2586275）、
+卖家工作台 `C:\Users\Administrator\.dsh-tmp\trade_bundle\main.js`（3,879,584 字符，偏移见下）。
+
+### 10.1 只读：关单原因 `GET /api/trade/{account_id}/orders/{order_id}/close-reasons`
+
+| 项 | 值 |
+| --- | --- |
+| mtop | `mtop.taobao.idle.trade.order.close.reason.get` v1.0 |
+| 请求 | `{bizOrderId}`（偏移 2586009，包装 `cG`） |
+| 响应 | 官方消费点（偏移 2598721）读 **`data.closeReasons`**，是**字符串数组**，`map(r => ({label: r, value: r}))` |
+| 我们的返回 | `{order_id, reasons, raw_keys, warnings, api, account_id, source, fetched_at}` |
+
+- **`reasons === null` 与 `reasons === []` 是两件事**：前者是「平台没返回列表键」（可以手填），
+  后者是「平台明确回了一个空数组」（这个订单现在没有可选原因）。钉它的用例在
+  `backend/tests/test_trade_write_api.py::CloseAndDelayTest`。
+- 只读、**故意没有 `confirm`**，登记在 `trade_write.READ_APIS`，不进 `WRITE_APIS`（免得被写闸门误伤）。
+
+### 10.2 五条写接口
+
+| 动作 | mtop | 版本 | 请求字段（逐字） | 偏移 |
+| --- | --- | --- | --- | --- |
+| `close` | `mtop.taobao.idle.trade.close.by.seller` | **2.0** | `{tid, bizOrderId, closeReason}` | 2762506 |
+| `delay` | `mtop.taobao.idle.trade.seller.delay.confirm` | 1.0 | `{orderIdList, delayTime}` | 2758810 |
+| `remind` | `mtop.taobao.idle.trade.consign.remind` | 1.0 | `{orderIdList, remindAllOrder}` | 2023848 |
+| `postage_pay` | `mtop.taobao.idle.merchant.postage.refund.pay` | 1.0 | `{orderId, refundId, payType}`（+ `ttid`） | 2835556 |
+| `complain_revoke` | `mtop.taobao.idle.cco.shop.complain.apply.revoke` | 1.0 | `{complainId}` | 2814089 |
+
+- **关单把同一个订单号同时塞进 `tid` 与 `bizOrderId`**（官方原文 `{tid: e, bizOrderId: e, closeReason: t}`）——
+  这不是笔误，我们照做（只发 `bizOrderId` 平台不认）。官方文案：「确认关闭后，请确保已和买家协商达成一致，
+  否则您将面临投诉或赔偿」；未选原因时官方提示「请选择订单取消原因~」。
+- `delayTime` 是**秒**：官方 `60 * days * 60 * 24`，`days` 只给四档 **3 / 5 / 7 / 10**。
+  批量回执读 `data.module.{totalNum, successNum, failOrderInfos[{orderId, errorMsg}]}`，缺 → `null`（**不补 0**）。
+- `postage_pay` 的 `payType` ∈ `alipay` / `deposit`；官方还带 `ttid:"1@tbwang_mac_1.0.0#pc"` 与 `needLoginPC:!0`。
+  **这一步是真的付钱**（从支付宝余额或保证金里扣给买家）⇒ 确认框必须写明，`amount` 只用于展示、**不进请求体**。
+- `order_ids` 收数组或逗号串（去重保序、上限 50）；**留空就不发这个键**，后端用路径里那一个订单号。
+- 五条都在服务层走 `_confirm_gate` → 字段校验（协议层构造）→ `_client`；成功/失败都写 `operation_logs`
+  （`trade_close_order` / `trade_delay_confirm` / `trade_remind_confirm` / `trade_postage_refund_pay` /
+  `trade_complain_revoke`），成功才 `publish('trade.changed')`。
+- **本批顺手修掉一个真缺陷**：`backend/app/api/trade_write.py`（8 处）与
+  `backend/app/api/security_write.py`（3 处）曾把 `confirm` 写成 `bool(body.get('confirm'))`，
+  而 `bool('false')` 是 `True` ⇒ 用户传 `"false"` 反而**打开了写闸门**。真机探针
+  （`C:\Users\Administrator\.dsh-tmp\confirm_false_probe.py`，用不存在的账号保证零平台写请求）
+  实测 `trade.ship_dummy` + `{"confirm": "false"}` 返回 **404 `not_found`**（闸门被绕过、直接走到建客户端），
+  正确应为 400 `confirmation_required`。现已全部改成原样透传；服务层同理不许裸 `if not confirm:`
+  （`backend/app/services/{trade_write,security_write}.py` 共 10 处也一并改成 `_truthy(confirm)`）。
+  钉它的用例：`backend/tests/test_trade_write_api.py::ConfirmGateBypassTest`（**遍历本模块全部 19 条 POST 路由**
+  × 10 个假确认值 `('false','FALSE',' false ','no','yes','0',0,'',None,2)`，全部要求 400 且零平台调用）。
+
+### 10.3 测试与未验证
+
+`backend/tests/test_trade_write_api.py` **74 条**（第 38 批 +30：`ConfirmGateBypassTest` + `CloseAndDelayTest`）；
+`backend/tests/test_security_write_api.py` **22 条**（+1 条假确认值遍历）。
+
+**未验证**：这五条写接口**一次真机请求都没发过**（关单/延时/提醒/付运费/撤诉都会真的改动真实订单或真的扣钱，
+不能为了验证去动用户的订单）。只验到：路由注册（`openapi` 178 路径 / 192 操作）、body 被端点接受、
+`confirm` 闸门拦得住假确认值、界面上不点最终确认就零写请求、`close-reasons` 只读接口的真机响应形状。
 
