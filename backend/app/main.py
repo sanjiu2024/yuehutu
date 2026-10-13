@@ -106,6 +106,12 @@ ROUTE_MODULES: List[str] = [
     # `POST /{account_id}/blacklist`、`/{account_id}/blacklist/remove`、`/{account_id}/cards`
     # 方法与路径都不重叠（`/remove` 是 POST，不会被 GET 抢先）。
     'im_actions',
+    # 纠纷协商（官方卖家工作台「投诉 → 联系纠纷小二」：只读 3 + 写 4）：
+    # `/api/disputes/{account_id}/...`。**独立前缀**，故意不并进 `/api/trade`（那边是订单族）
+    # 也不并进 `/api/im`（那边是买家 IM 会话；这一族的 `conversationId` 是**纠纷会话**）。
+    # `GET /{account_id}/conversation` 是两段路径，`GET/POST /{account_id}/{conversation_id}/messages`
+    # 是三段，互不抢占；`messages` 与 `messages/image` 是不同路径，顺序无所谓。
+    'disputes',
 ]
 
 PLACEHOLDER = """<!doctype html>
