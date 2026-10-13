@@ -62,8 +62,8 @@
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_b38_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 55  PASS 55  FAIL 0  CASES 2023  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_lg_full&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 56  PASS 56  FAIL 0  CASES 2072  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -75,7 +75,7 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_xianyu_log
 ```text
 cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_mcp_server.py"
 -> Ran 65 tests ... OK        （含 RouteParamAlignmentTest：MCP 路由参数 ↔ 真实端点签名、
-                                WriteToolConfirmGateTest：51 条写路由不带 confirm 一律零 HTTP 请求）
+                                WriteToolConfirmGateTest：52 条写路由不带 confirm 一律零 HTTP 请求）
 ```
 
 ```text
@@ -83,14 +83,14 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 96 modules transformed.
-   frontend/dist/assets/index-oqk1Jlhv.js (595.10 kB, gzip 186.25 kB)
-   frontend/dist/assets/index-B4KMbKO0.css (147.41 kB, gzip 23.33 kB)
+   frontend/dist/assets/index-D0-oMDFd.js (599.15 kB, gzip 187.57 kB)
+   frontend/dist/assets/index-DpVg3Xto.css (147.53 kB, gzip 23.35 kB)
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon_shop&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=114 master=113 routes=115 targets=94 handlers=114
-   write_tools=51  route_checked=115
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon39&& C:\Python310\python.exe scripts\reconcile_tools.py"
+-> specs=117 master=116 routes=118 targets=97 handlers=117
+   write_tools=52  route_checked=118
    RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
    （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
 ```
@@ -2579,18 +2579,67 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 同一轮验证写闸门：`POST .../orders/1/close` + `{confirm: false}` → **400 `confirmation_required`**
 > （中文文案「关闭订单 是写操作，需要显式确认（confirm=true）后才会提交」）。
 
+### 第三十九批：物流（发货选公司 / 单号认公司 / 修改运单号）（232~236）
+
+**动机**：第 37/38 批把「交易写」补齐后，第 39 批从「官方 bundle 里有、我们没实现、末段像写」
+的 22 条候选里挑形状最干净、且贴合已复刻页面（订单管理 → 发货）的一族：物流。
+
+**取证**（零平台请求，`C:\Users\Administrator\.dsh-tmp\trade_bundle\main.js` 3,879,584 字符 +
+`seller_scan\js_008_vendors.js` 5,857,382 字符）：
+- 公司字典 `com.taobao.idle.logistics.new.get.companies` v1.0，**不带 data**（`{api, v}`），
+  官方读 `data.items[].{code,name}` 并 `map(e => ({label: e.name, value: e.code}))`，默认值 `OTHER`。
+- 单号认公司 `mtop.taobao.idle.logistics.guess.mailno` v1.0 `{mailNo}` → `data.unionCode` / `data.cpName`；
+  官方输入框 **500ms 防抖**，认出的公司若不在下拉里就 `append` 进去。
+- 改运单号 `mtop.taobao.idle.logistics.merchant.consign.resend` v1.0 `{tradeId, mailNo, cpCode}`
+  （`main.js` @2766767「修改物流信息」弹窗，成功 toast「修改成功」）。
+
+**落盘（4 处）**：新建 `backend/app/xianyu/logistics.py`（协议层：`companies_request` 不带 data、
+`guess_request`、`resend_request(order_id, mail_no, cp_code='', *, confirm)`；
+解析用 `trade.body_of` 认 `data.module`/`data.data`/`data` 三种容器）、
+`backend/app/services/logistics.py`（三步顺序 + `_client` 统一凭据判定）、
+`backend/app/api/logistics.py`（`prefix='/api/logistics'`，2 GET + 1 POST）、
+`backend/app/main.py` 的 `ROUTE_MODULES` 追 `'logistics'`；
+`backend/tests/test_logistics_api.py` **49 条**。
+
+**★ 首跑抓到的三件事**（都在本地，零平台请求）：
+1. `decode_payload` **只解 JSON 字符串、不拆层级**；我第一版手写 `raw['data']` 在**双层回执**
+   上取不到值（`parse_resend(RESEND_OK)['cp_code']` 得到 `None`）⇒ 改用 `trade.body_of`。
+2. 「平台收了但没回显公司编码」**不是失败**：官方也是只看信封就 toast「修改成功」，
+   所以语义定为 `saved=True` + `echoed=False` + 一条中文 warning（原先把 `saved` 判成 False，
+   等于把成功说成失败）。
+3. `WRITE_ROUTES` 是三元组 `(method, path, body)`，测试里按二元组解包会 `ValueError`。
+
+> **第三十九批证据链**：
+> `backend/tests/test_logistics_api.py` → **`Ran 49 tests ... OK`**（首跑 2 failures + 1 error，全是上面三件事）；
+> `python -m unittest backend.tests.test_agents_cross backend.tests.test_mcp_server backend.tests.test_agents_tools_workbench`
+> → `Ran 130 tests OK`；`scripts/reconcile_tools.py` → `specs=117 master=116 routes=118 targets=97
+> handlers=117`、`write_tools=52`、`route_checked=118`、`RECON OK`；
+> `backend/tests/run_all.py` → **`TOTAL 56  PASS 56  FAIL 0  CASES 2072  SKIPPED 2`**（2023 → 2072）；
+> **真机只读探针**（`C:\Users\Administrator\.dsh-tmp\logistics_read_probe.py`：拷真实数据目录到临时根 →
+> 源码起后端 18521 → 桌面密钥换 token → 只发 GET + 一条 `confirm:false` 的闸门检查）：
+> `GET /api/logistics/2217970177348/companies` → **200**、**335 家公司**（样例 海信物流 / 天喜物流 / 中通冷链）；
+> `GET …/guess?mail_no=SF1234567890` → **200**、`cp_code='SF'`、`cp_name='顺丰速运'`；
+> `POST …/orders/<真实订单号>/resend` + `{confirm:false}` → **400 `confirmation_required`**
+> （中文文案「修改运单号 是写操作，需要显式确认（confirm=true）后才会提交到闲鱼」）⇒
+> **接口名与参数形状被平台接受、两条只读接口真机拿到真数据、写闸门在真机生效且零平台写请求**。
+> 补丁脚本踩坑（记一笔）：`patch_lg39.py` 的 marker 只写在 tools.py/路由里，导致
+> `test_agents_cross.py` / `test_agents_tools_workbench.py` 被重复插入 3~6 份同名条目
+> （`test_tool_names_match_contract` 报 `First extra element 117: 'trade_close_order'`），
+> 用 `fix_lg_lists.py` / `fix_wb39.py` 收敛成一份，并把名字按 `TOOL_SPECS` 的真实顺序
+> 放到 `trade_complain_revoke` 之后。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**55 个测试文件、2023 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**56 个测试文件、2072 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
 - **UI 细节有两个可重跑的审计脚本**（`scripts/contrast_audit.py`、`scripts/a11y_audit.py`）：
   29 页 × 深/浅两套主题的文字对比度全部 ≥4.0:1；无可访问名字的按钮 0、没有标签的
   输入框 0、无 alt 的图片 0、焦点环全部可见；两者整轮都是 `NON_GET_API_REQUESTS=[]`。
-  打包版实测（不带 `--port`，打的就是 18400 上那份）：**`[dark] BAD_PAGES 0/28`、
-  `[light] BAD_PAGES 0/28`**（第三十四批把新页加进清单并重打包后实测；上一版 27 页时是 0/27）。
+  打包版实测（不带 `--port`，打的就是 18400 上那份）：**`[dark] BAD_PAGES 0/29`、
+  `[light] BAD_PAGES 0/29`**（第三十七批把新页加进清单后实测；28 页时是 0/28、27 页时是 0/27）。
   另有第三十批那个一次性扫描（`C:\Users\Administrator\.dsh-tmp\scan_markdown2.py`：
   按 tokenize 取非 docstring 字符串，找用户可见的字面 `**` 与反引号）—— 它抓到 6 处并已修，
   但**没入仓**（一次性核对用，重跑价值低）。
@@ -2608,14 +2657,15 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   从 `共 95 条` 变成 `共 56 条`（= 两个在售账号的 45 + 11），页面里再也搜不到 `3998190171`，
   只读探针（真 Edge）`has_deleted_account: false`、`page_errors: []`。
 - 真实 HTTP：只读 17 条 + 写路径 11 条（早期探针）；打包版接口面现在
-  `/openapi.json` = **178 条路径 / 192 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
+  `/openapi.json` = **181 条路径 / 195 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
   第三十二批 +10 条店铺资料/子账号；第三十三批 +4 条推广资金明细；第三十四批 +1 条商品数据；第三十五批 +1 条经营卡片；
   第三十六批 +1 条客服明细表 `GET /api/datacenter/{account_id}/cs/{kind}`；
   第三十七批 +6 条话术 `/api/quick-reply/*`（7 个操作）；第三十八批 +6 条订单处理
-  `/api/trade/{account_id}/orders|refunds|complaints/*`），
+  `/api/trade/{account_id}/orders|refunds|complaints/*`；第三十九批 +3 条物流
+  `/api/logistics/{account_id}/{companies,guess,orders/{order_id}/resend}`），
   均结构化信封、无 500。
-- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 114 / `MASTER_TOOLS` 113 /
-  `TOOL_ROUTES` 115，其中 **51 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
+- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 117 / `MASTER_TOOLS` 116 /
+  `TOOL_ROUTES` 118，其中 **52 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
   FastAPI 端点接受 → `RECON OK`。MCP 端到端冒烟（真起 `mcp_server/server.py` 子进程打打包版）
   `tools/list` 返回 63 个工具（该数字早于后面几批新增的工具）。
 - **真实浏览器逐页冒烟 29/29 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
@@ -2625,15 +2675,16 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   packaged_ui_smoke.py`，复用 `scripts/ui_smoke.py::run_browser` 但不启后端、直接打
   `127.0.0.1:18400` 与**真实 `%APPDATA%` 数据目录**，截图 `logs/packaged_ui_smoke/`）。
   与上一条的区别：上一条跑的是源码 + 临时库，这一条跑的是**用户手上那个 exe**。
-- **打包版 confirm 闸门 52 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
+- **打包版 confirm 闸门 53 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
   （`confirmation_required` / `confirm_required`），**`GATE FAILURES: 0 / 47`**（探针随批次扩过：
-  19 → 22 → 26 → 28 → 30 → 33 → 41 → 47 → 52）；确认那一腿**故意换成不存在的
+  19 → 22 → 26 → 28 → 30 → 33 → 41 → 47 → 52 → 53）；确认那一腿**故意换成不存在的
   账号**（`SAFE_ACC`），闸门放行后本地查库直接 404 `not_found` / 400 `invalid_fields` / 409 —— 既证明闸门放行，
   又保证**零平台请求**（2026-10-12 00:35 之前那版拿真账号打过，三条写请求真到了闲鱼，见第二十五批 161）。
   第 32 批新增八条（`shop.profile_{nick,desc,avatar}` / `sub.{create,delete,mobile,roles,password}`）：
   未确认 400 `confirmation_required`，确认腿除 `sub.delete` 是 404 `not_found` 外都是 400 `invalid_fields`。
   第 37 批新增六条话术写（`qr.group_{create,update,delete}` / `qr.phrase_{create,update,delete}`）；
-  第 38 批新增五条订单处理写（`trade.close` / `delay` / `remind` / `postage_pay` / `complain_revoke`）。
+  第 38 批新增五条订单处理写（`trade.close` / `delay` / `remind` / `postage_pay` / `complain_revoke`）；
+  第 39 批新增一条物流写（`logistics.resend`）。
 - **真实浏览器实时刷新 2/2 阶段通过**（`scripts/live_refresh_smoke.py`）：后端写账号
   备注 / 新增提示词后，页面在 0.21 秒内自己更新，且 `navigation` 计数不变。
 - **真后端 + 真 `XianyuClient` + `httpx.MockTransport` 逐条打商品接口**（不碰真平台）：
@@ -2709,10 +2760,22 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   `cwd=C:\Windows` + 显式清空 `PYTHONPATH` 仍能 `initialize` 并列出 21 个工具。
 
 **未验证（不要当成已完成）**
+- **物流「修改运单号」这个写接口一次真机请求都没发过**（第三十九批）：它会真的改动平台上已发货
+  订单的物流信息，所以不能为了验证去动用户的订单。只验到「路由注册成功（`openapi` 181 路径 /
+  195 操作）、body 被真实端点接受（对账脚本逐条核 path/query/body）、`confirm` 闸门拦得住
+  （打包版闸门探针 53 条里含这条：`{confirm:false}` → 400 `confirmation_required`）、界面上不点
+  最终确认就零写请求」。**没验到**：平台是否接受 `{tradeId,mailNo,cpCode}`、回执里有没有可用的
+  编码回显（我们按「`echoed=False` 只加一条中文 warning、不谎称成功也不谎称失败」处理）、
+  `cpCode` 回落到 `OTHER` 时平台认不认。
+  **两条只读接口已经在真机上通了**：`logistics_read_probe.py`（打打包版/源码后端、只发 GET）
+  拿到 `GET …/companies` → 200、**335 家快递公司**（海信物流 / 天喜物流 / 中通冷链 …）、
+  `warnings: []`；`GET …/guess?mail_no=SF1234567890` → 200、`cp_code='SF'`、`cp_name='顺丰速运'`；
+  `mail_no=ZZZ000` → 200、平台自己猜成 `EMS`（这条反过来说明「认不出」的分支要拿更假的单号才触发）。
+  发货表单的下拉、「失焦认公司」、三种文案与确认框**没有在浏览器里人工点过**（只过了 `tsc` 与生产构建）。
 - **订单处理的 5 个写接口一次真机请求都没发过**（第三十八批）：关单 / 延长收货 / 提醒确认收货 /
   支付运费退款 / 撤销投诉，全部会真的改动真实订单或**真的扣钱**（`postage.refund.pay` 从支付宝余额或
-  保证金里扣给买家），所以不能为了验证去动用户的订单。只验到「路由注册成功（`openapi` 178 路径 /
-  192 操作）、body 被真实端点接受、`confirm` 闸门拦得住（打包版闸门探针 52 条里含这 5 条）、
+  保证金里扣给买家），所以不能为了验证去动用户的订单。只验到「路由注册成功（`openapi` 181 路径 /
+  195 操作）、body 被真实端点接受、`confirm` 闸门拦得住（打包版闸门探针 53 条里含这 5 条）、
   界面上不点最终确认就零写请求」。**没验到**：平台是否接受
   `{tid,bizOrderId,closeReason}`（官方把同一个订单号同时塞进两个字段）/ `{orderIdList,delayTime}` /
   `{orderIdList,remindAllOrder}` / `{orderId,refundId,payType}` 这套 payload、

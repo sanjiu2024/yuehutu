@@ -1011,6 +1011,25 @@ POST /api/quick-reply/{account_id}/phrases/{content_id}/delete {group_id,confirm
        --   `quick_reply_group_update` / `quick_reply_group_delete` / `quick_reply_phrase_create` /
        --   `quick_reply_phrase_update` / `quick_reply_phrase_delete`（都要 `confirm`）。
 
+【读 + 写 · 物流（发货选公司 / 单号认公司 / 修改运单号）】`docs/contracts/logistics.md`
+GET  /api/logistics/{account_id}/companies                    -- 快递公司列表
+GET  /api/logistics/{account_id}/guess?mail_no=SF1234567890   -- 按单号认公司
+POST /api/logistics/{account_id}/orders/{order_id}/resend      {mail_no,cp_code,confirm}
+       -- 三个平台接口：`com.taobao.idle.logistics.new.get.companies`（**不带 data**，官方读
+       --   `data.items[].{code,name}`，默认编码 `OTHER`）、`mtop.taobao.idle.logistics.guess.mailno`
+       --   `{mailNo}` → `data.unionCode`/`data.cpName`、`…logistics.merchant.consign.resend`
+       --   v1.0 `{tradeId,mailNo,cpCode}`（官方「修改物流信息」弹窗，成功 toast「修改成功」）。
+       -- `companies` 认不出列表键 → `companies:null` + 中文 warning（**不是 `[]`**）；认不出公司时
+       --   `cp_code`/`cp_name` 都是 null，不猜。
+       -- 成功判据就是**平台信封**（官方也是只看 envelope 就 toast 成功，回执里没有业务 id）：
+       --   `echoed:false` 只表示平台没回显公司编码，加一条中文 warning，**不谎称失败**。
+       -- `cp_code` 留空按 `OTHER` 提交；单号为空或超 64 字 → 400 `invalid_fields`，零平台调用。
+       -- 真机（2026-10-13）：`companies` 返回 **335 家**（样例 海信物流 / 天喜物流 / 中通冷链）；
+       --   guess `SF1234567890` → `SF` 顺丰速运；`confirm:false` → 400 `confirmation_required` 且零平台写请求。
+       -- 单开 `/api/logistics` 而不并进 `/api/trade`：那边是订单/退款/评价的读写，这边是物流基础设施。
+       -- AI 侧 3 个工具：`logistics_companies` / `logistics_guess_mailno`（只读、无 `confirm`）
+       --   + `logistics_resend_consign`（要 `confirm`）。
+
 【写接口的三条硬口径（所有 *_write 一律遵守）】
 1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /
    `confirm_required`），**一次平台请求都不发**；
@@ -1018,13 +1037,13 @@ POST /api/quick-reply/{account_id}/phrases/{content_id}/delete {group_id,confirm
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 108 条 / `MASTER_TOOLS` 107 条（去掉 `master_chat` 防递归），
-其中 **51 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 115 条。五方对账（specs / master / routes / service targets / handlers）
+【AI 侧】`TOOL_SPECS` 117 条 / `MASTER_TOOLS` 116 条（去掉 `master_chat` 防递归），
+其中 **52 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
+`mcp_server/client.py::TOOL_ROUTES` 118 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=114 master=113 routes=115 targets=94 handlers=114 / write_tools=51 / route_checked=115 / RECON OK
+-> specs=117 master=116 routes=118 targets=97 handlers=117 / write_tools=52 / route_checked=118 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`
