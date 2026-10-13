@@ -16,7 +16,7 @@
 | 6 | 主 AI 对接我 / 插件让 DSH 控制 | `POST /api/agents/master/chat` + `mcp_server/` | 冒烟 ⑦；`test_mcp_server.py` 55 项；端口文件端到端 |
 | 7 | 除 AI 外我自己也能回消息 | `POST /api/chats/{id}/send` | 冒烟 ⑤（消息落库） |
 | 8 | 不能老登录、风控要做好 | `xianyu/risk.py` 熔断 + `xianyu/login.py` 人工验证 | `test_xianyu_cookies.py` 37 项 |
-| 9 | 集成闲鱼客服 / 网页版功能 | `services/cs.py` 意图分类 + 快捷回复；**官方卖家工作台逐页复刻**：财务四页、超级擦亮、安全中心（含申诉写）、交易五页（订单/退款/评价/投诉页内直接处理）、小铺四页（**客服分流含规则保存与分组增删**、**店铺资料含昵称/简介/头像修改**、**子账号含新建/删除/改手机号/改岗位/改密码**）、数据三页（总览含四张经营卡片、商品数据含动态列与排序、粉丝、**客服数据含三张明细表：客服明细/订单分流明细/客户评价明细**）、通知、营销、资质、运费模版（含写）、退货地址（含写）、商品管理（含批量下架/删除/快捷改价改库存、**草稿箱**）、买家改地址审批（同意/拒绝） | `test_services_cs.py` 20 项；`test_finance_api.py`、`test_promotion_api.py`、`test_security_write_api.py`、`test_trade_api.py`、`test_trade_write_api.py`、`test_address_write_api.py`、`test_order_address_api.py`、`test_drafts_api.py`、`test_shop_api.py`、`test_shop_write_api.py`、`test_shop_profile_api.py`、`test_sub_accounts_api.py`、`test_notify_api.py`、`test_datacenter_api.py`、`test_marketing_api.py`、`test_item_templates_api.py`、`test_item_write_api.py`；真机探针见第十七~三十二批 |
+| 9 | 集成闲鱼客服 / 网页版功能 | `services/cs.py` 意图分类 + 快捷回复；**官方卖家工作台逐页复刻**：财务四页、超级擦亮、安全中心（含申诉写）、交易五页（订单/退款/评价/投诉页内直接处理）、小铺四页（**客服分流含规则保存与分组增删**、**店铺资料含昵称/简介/头像修改**、**子账号含新建/删除/改手机号/改岗位/改密码**）、数据三页（总览含四张经营卡片、商品数据含动态列与排序、粉丝、**客服数据含三张明细表：客服明细/订单分流明细/客户评价明细**）、**话术（官方 IM 工作台的「快捷回复」：分组与短语的增删改，读 + 写）**、通知、营销、资质、运费模版（含写）、退货地址（含写）、商品管理（含批量下架/删除/快捷改价改库存、**草稿箱**）、买家改地址审批（同意/拒绝） | `test_services_cs.py` 20 项；`test_finance_api.py`、`test_promotion_api.py`、`test_security_write_api.py`、`test_trade_api.py`、`test_trade_write_api.py`、`test_address_write_api.py`、`test_order_address_api.py`、`test_drafts_api.py`、`test_shop_api.py`、`test_shop_write_api.py`、`test_shop_profile_api.py`、`test_sub_accounts_api.py`、`test_quick_reply_api.py`、`test_notify_api.py`、`test_datacenter_api.py`、`test_marketing_api.py`、`test_item_templates_api.py`、`test_item_write_api.py`；真机探针见第十七~三十七批 |
 
 ### 官方卖家工作台菜单树 → 我们的页面（逐叶对照）
 
@@ -62,8 +62,8 @@
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_card_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 54  PASS 54  FAIL 0  CASES 1933  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_qr_full&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 55  PASS 55  FAIL 0  CASES 1992  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -75,29 +75,29 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_xianyu_log
 ```text
 cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_mcp_server.py"
 -> Ran 65 tests ... OK        （含 RouteParamAlignmentTest：MCP 路由参数 ↔ 真实端点签名、
-                                WriteToolConfirmGateTest：40 条写路由不带 confirm 一律零 HTTP 请求）
+                                WriteToolConfirmGateTest：46 条写路由不带 confirm 一律零 HTTP 请求）
 ```
 
 ```text
 cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
--> BUILD_EXIT=0   ✓ 94 modules transformed.
-   frontend/dist/assets/index-C5sZJrHk.js (576.97 kB, gzip 180.37 kB)
-   frontend/dist/assets/index-CE1STJ7C.css (143.83 kB, gzip 22.82 kB)
+-> BUILD_EXIT=0   ✓ 96 modules transformed.
+   frontend/dist/assets/index-d3X2Qg1j.js (587.87 kB, gzip 183.91 kB)
+   frontend/dist/assets/index-C-5jTLtH.css (147.28 kB, gzip 23.30 kB)
 ```
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon_shop&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=101 master=100 routes=102 targets=81 handlers=101
-   write_tools=40  route_checked=102
+-> specs=108 master=107 routes=109 targets=88 handlers=108
+   write_tools=46  route_checked=109
    RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
    （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
 ```
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18491"
--> UI SMOKE ALL OK  (28/28 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
+-> UI SMOKE ALL OK  (29/29 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
    截图目录：logs/ui_smoke
 ```
 
@@ -2459,15 +2459,60 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 标题与列数正确（客服明细 12 列 / 订单分流明细 3 列 / 客户评价明细 6 列）、`rows`/`total` 为 `null`
 > + 人话权限 warning，两条本地拦 400 `invalid_fields`。
 
+### 第三十七批：话术（官方 IM 工作台的「快捷回复」）读 + 写（214~221）
+
+**动机**：用户诉求「①一个商品配一个 AI 回复 ③助词自己填」里，「话术」是官方 IM 工作台的一等公民；
+上一批（第三十六批）把官方菜单树的**页面**补齐后，本批从「官方写接口覆盖审计」里挑出
+`mtop.taobao.idlemessage.quickreply.{group,content}.operate`（bundle 里存在、我们完全没实现、
+且是**平台侧配置**而非本地数据）来补。
+
+**取证**（`C:\Users\Administrator\.dsh-tmp\write_coverage_audit.py` + `quickreply_*.py`，零平台请求）：
+14 份本地 bundle 里共 362 个 `mtop.*` 名字，我们登记了 188 个，**213 个没登记**，其中末段像写操作的有 32 条；
+本批只做话术族（其余按产品价值排序留在后续批次）。三个接口、参数形状、`needLoginPC:true`、
+官方两个输入框上限（分组名 10、短语 200）与官方确认框原文都从 bundle 逐字抄下，
+写进 `docs/contracts/quick_reply.md`。
+
+**落盘**：`backend/app/xianyu/quick_reply.py`（协议层：三个接口常量、6 条 `WRITE_APIS`、
+`assert_write` 只认 `WRITE_API_SET`、请求构造与解析）→ `backend/app/services/quick_reply.py`
+（`list_groups` + 6 个写函数，三步顺序 **确认 → 字段校验 → 建客户端**；平台收了但没回显 id 时
+`saved:false` + 中文 warning，**不谎报成功也不谎报失败**）→ `backend/app/api/quick_reply.py`
+（`prefix='/api/quick-reply'`，1 读 + 6 写）→ `backend/app/main.py` 挂 `'quick_reply'`
+→ `backend/tests/test_quick_reply_api.py`（58 条）→ 前端 `frontend/src/pages/QuickReply.tsx`
++ `quickreply.css`（第 29 页，导航「运营」组）→ AI 侧 7 个工具 + MCP 7 条路由。
+
+**★ 本批顺手修掉的真 bug（由前端队友报出、我复核并修）**：`backend/app/main.py` 的
+`StarletteHTTPException` 处理器把**路由层**的 404/405 也套成统一信封 ⇒ `frontend/src/api.ts`
+的 `isFrameworkError` 恒为 false ⇒ `notReady` 永不成立 ⇒ 页面把英文 `Not Found` 当业务错误显示，
+**全站「后端未就绪」空态机制失效**。修法：新增 `_path_registered(request)`（遍历
+`request.app.router.routes`，**跳过 `Mount` 与非 `APIRoute`** —— `/` 上挂着托管前端的
+`StaticFiles` Mount，它匹配任何路径，算进来会让「没注册」永远判成「注册过」），
+路由层 404/405 回 `code='route_not_found'` + 中文文案；前端把 `route_not_found` 一并当 `notReady`。
+`backend/tests/test_api_hardening.py` 三条钉住（含 `test_business_not_found_keeps_its_code`：
+业务 404 仍是 `not_found`，不许被这次改动吞掉）。
+
+> **第三十七批证据链**：`backend/tests/test_quick_reply_api.py` → **`Ran 58 tests ... OK`**；
+> `python -m unittest backend.tests.test_agents_cross backend.tests.test_mcp_server
+> backend.tests.test_agents_tools_workbench` → **`Ran 130 tests ... OK`**；
+> `scripts/reconcile_tools.py` → `specs=108 master=107 routes=109 targets=88 handlers=108`、
+> `write_tools=46`、`route_checked=109`、**`RECON OK`**；
+> `backend/tests/run_all.py` → **`TOTAL 55  PASS 55  FAIL 0  CASES 1992  SKIPPED 2`**（1933 → 1992）；
+> `create_app().openapi()` = **172 条路径 / 186 个操作**（6 条 `/api/quick-reply/*` = 7 个操作）、
+> `MCP_TOOL_ROUTES` = 109、`TOOL_SPECS` = 108、`MASTER_TOOLS` = 107；
+> `cd frontend && npx tsc --noEmit` → `TSC_EXIT=0`；`npm run build` → `BUILD_EXIT=0`
+> （96 modules、`index-d3X2Qg1j.js 587.87 kB` / `index-C-5jTLtH.css 147.28 kB`）；
+> `scripts/ui_smoke.py --port 18491` → **`UI SMOKE ALL OK (29/29 页通过)`**（`quick-reply` 467 字符）；
+> `scripts/contrast_audit.py --port 18501 --threshold 4.0` → `[dark] 0/29`、`[light] 0/29`、`NON_GET=[]`；
+> `scripts/a11y_audit.py --port 18503` → 三类问题全 0、`焦点不可见的页面：[]`、`NON_GET=[]`。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**54 个测试文件、1933 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**55 个测试文件、1992 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
 - **UI 细节有两个可重跑的审计脚本**（`scripts/contrast_audit.py`、`scripts/a11y_audit.py`）：
-  28 页 × 深/浅两套主题的文字对比度全部 ≥4.0:1；无可访问名字的按钮 0、没有标签的
+  29 页 × 深/浅两套主题的文字对比度全部 ≥4.0:1；无可访问名字的按钮 0、没有标签的
   输入框 0、无 alt 的图片 0、焦点环全部可见；两者整轮都是 `NON_GET_API_REQUESTS=[]`。
   打包版实测（不带 `--port`，打的就是 18400 上那份）：**`[dark] BAD_PAGES 0/28`、
   `[light] BAD_PAGES 0/28`**（第三十四批把新页加进清单并重打包后实测；上一版 27 页时是 0/27）。
@@ -2488,28 +2533,30 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   从 `共 95 条` 变成 `共 56 条`（= 两个在售账号的 45 + 11），页面里再也搜不到 `3998190171`，
   只读探针（真 Edge）`has_deleted_account: false`、`page_errors: []`。
 - 真实 HTTP：只读 17 条 + 写路径 11 条（早期探针）；打包版接口面现在
-  `/openapi.json` = **166 条路径 / 179 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
+  `/openapi.json` = **172 条路径 / 186 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
   第三十二批 +10 条店铺资料/子账号；第三十三批 +4 条推广资金明细；第三十四批 +1 条商品数据；第三十五批 +1 条经营卡片；
-  第三十六批 +1 条客服明细表 `GET /api/datacenter/{account_id}/cs/{kind}`），
+  第三十六批 +1 条客服明细表 `GET /api/datacenter/{account_id}/cs/{kind}`；
+  第三十七批 +6 条话术 `/api/quick-reply/*`（7 个操作）），
   均结构化信封、无 500。
-- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 101 / `MASTER_TOOLS` 100 /
-  `TOOL_ROUTES` 102，其中 **40 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
+- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 108 / `MASTER_TOOLS` 107 /
+  `TOOL_ROUTES` 109，其中 **46 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
   FastAPI 端点接受 → `RECON OK`。MCP 端到端冒烟（真起 `mcp_server/server.py` 子进程打打包版）
   `tools/list` 返回 63 个工具（该数字早于后面几批新增的工具）。
-- **真实浏览器逐页冒烟 28/28 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
+- **真实浏览器逐页冒烟 29/29 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
   临时数据目录，逐页断言未白屏、未掉回登录页、无 JS 报错，截图在 `logs/ui_smoke/`）。
   它抓到了后端全绿时仍然「UI 完全不可用」的登录死循环。
 - **打包版（frozen exe）逐页冒烟 28/28 页通过**（`C:\Users\Administrator\.dsh-tmp\
   packaged_ui_smoke.py`，复用 `scripts/ui_smoke.py::run_browser` 但不启后端、直接打
   `127.0.0.1:18400` 与**真实 `%APPDATA%` 数据目录**，截图 `logs/packaged_ui_smoke/`）。
   与上一条的区别：上一条跑的是源码 + 临时库，这一条跑的是**用户手上那个 exe**。
-- **打包版 confirm 闸门 41 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
-  （`confirmation_required` / `confirm_required`），**`GATE FAILURES: 0 / 41`**（探针随批次扩过：
-  19 → 22 → 26 → 28 → 30 → 33 → 41）；确认那一腿**故意换成不存在的
+- **打包版 confirm 闸门 47 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
+  （`confirmation_required` / `confirm_required`），**`GATE FAILURES: 0 / 47`**（探针随批次扩过：
+  19 → 22 → 26 → 28 → 30 → 33 → 41 → 47）；确认那一腿**故意换成不存在的
   账号**（`SAFE_ACC`），闸门放行后本地查库直接 404 `not_found` / 400 `invalid_fields` / 409 —— 既证明闸门放行，
   又保证**零平台请求**（2026-10-12 00:35 之前那版拿真账号打过，三条写请求真到了闲鱼，见第二十五批 161）。
   第 32 批新增八条（`shop.profile_{nick,desc,avatar}` / `sub.{create,delete,mobile,roles,password}`）：
   未确认 400 `confirmation_required`，确认腿除 `sub.delete` 是 404 `not_found` 外都是 400 `invalid_fields`。
+  第 37 批新增六条话术写（`qr.group_{create,update,delete}` / `qr.phrase_{create,update,delete}`）。
 - **真实浏览器实时刷新 2/2 阶段通过**（`scripts/live_refresh_smoke.py`）：后端写账号
   备注 / 新增提示词后，页面在 0.21 秒内自己更新，且 `navigation` 计数不变。
 - **真后端 + 真 `XianyuClient` + `httpx.MockTransport` 逐条打商品接口**（不碰真平台）：
@@ -2585,6 +2632,14 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   `cwd=C:\Windows` + 显式清空 `PYTHONPATH` 仍能 `initialize` 并列出 21 个工具。
 
 **未验证（不要当成已完成）**
+- **话术（快捷回复）7 个写接口一次真机请求都没发过**（第三十七批）：只验到「路由注册成功、
+  body 被真实端点接受（对账脚本逐条核 path/query/body）、`confirm` 闸门拦得住（打包版闸门探针
+  47 条里含这 6 条）、界面上不点最终确认就零写请求」。**没验到**：平台是否接受
+  `{groupName,operateType}` / `{groupId,contentId,operateType}` 这套 payload、
+  `groupInfo.groupId` / `contentInfo.contentId` 的真实回显形状、「平台收了但不回显 id」那条分支
+  （`no_group_id` / `no_content_id`）、列表接口的真实 `groups` 结构。原因是账号
+  `2217970177348` 在那一刻的 `login_state` 是 `need_relogin`（列表接口真机也只跑到 409）。
+  分组/短语表格在真机上的渲染、批量选择、删除确认框也没有人工鼠标点过。
 - **数据总览页四张经营卡片没有取到过真数据**（第三十五批）：真机只读探针
   （`C:\Users\Administrator\.dsh-tmp\cards_read_probe.py`，打打包版 18400、桌面密钥换 token、只发 GET）
   证明**四个接口名都被平台认下来了**（没有 `FAIL_SYS_API_NOT_FOUNDED`），但账号 `2217970177348`

@@ -951,6 +951,29 @@ POST /api/drafts/{account_id}/batch-delete           {draft_ids,confirm}
        -- AI 侧 4 个工具：`drafts_list` / `drafts_get`（只读）+ `drafts_delete` /
        --   `drafts_batch_delete`（要 `confirm`）。
 
+【读 + 写 · 话术（官方 IM 工作台的「快捷回复」）】`docs/contracts/quick_reply.md`
+GET  /api/quick-reply/{account_id}/groups                    -- 分组 + 每组的短语
+POST /api/quick-reply/{account_id}/groups                    {group_name,confirm}
+POST /api/quick-reply/{account_id}/groups/{group_id}         {group_name,confirm}
+POST /api/quick-reply/{account_id}/groups/{group_id}/delete  {confirm}
+POST /api/quick-reply/{account_id}/phrases                   {group_id,content,confirm}
+POST /api/quick-reply/{account_id}/phrases/{content_id}      {group_id,content,confirm}
+POST /api/quick-reply/{account_id}/phrases/{content_id}/delete {group_id,confirm}
+       -- 三个平台接口：`idlemessage.quickreply.list.get.v1`（**不带参数**）、
+       --   `…quickreply.group.operate`、`…quickreply.content.operate`（后两个都 `needLoginPC:true`）。
+       -- 官方上限照抄：分组名 ≤10 字（输入框 `maxLength:10`）、短语内容 ≤200 字
+       --   （`maxLength:200` 且 onChange 里再 `slice(0,200)`）；本地超限 → 400 `invalid_fields`，零平台调用。
+       -- 成功判据是**平台回显 id**（`groupInfo.groupId` / `contentInfo.contentId`）；只有它存在才算
+       --   `saved:true`。平台收了却没回显 ⇒ `saved:false` + 中文 warning（`no_group_id` /
+       --   `no_content_id`），**既不谎报成功也不谎报失败**；删除动作另给 `deleted`。
+       -- `groups === null`（平台没给列表键）与 `groups: []`（真的没有分组）是两件事，前端分开提示。
+       -- 这一族只有一个列表接口 ⇒ **平台拒绝不做容错降级**，如实 502 + 人话（与经营卡片不同）。
+       -- 单开 `/api/quick-reply` 而不并进 `/api/chats`：那边是本地会话/消息两张表，
+       --   话术是平台侧配置，跟本地数据无关。
+       -- AI 侧 7 个工具：`quick_reply_list`（只读、无 `confirm`）+ `quick_reply_group_create` /
+       --   `quick_reply_group_update` / `quick_reply_group_delete` / `quick_reply_phrase_create` /
+       --   `quick_reply_phrase_update` / `quick_reply_phrase_delete`（都要 `confirm`）。
+
 【写接口的三条硬口径（所有 *_write 一律遵守）】
 1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /
    `confirm_required`），**一次平台请求都不发**；
@@ -958,13 +981,13 @@ POST /api/drafts/{account_id}/batch-delete           {draft_ids,confirm}
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 101 条 / `MASTER_TOOLS` 100 条（去掉 `master_chat` 防递归），
-其中 **40 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 102 条。五方对账（specs / master / routes / service targets / handlers）
+【AI 侧】`TOOL_SPECS` 108 条 / `MASTER_TOOLS` 107 条（去掉 `master_chat` 防递归），
+其中 **46 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
+`mcp_server/client.py::TOOL_ROUTES` 109 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=101 master=100 routes=102 targets=81 handlers=101 / write_tools=40 / route_checked=102 / RECON OK
+-> specs=108 master=107 routes=109 targets=88 handlers=108 / write_tools=46 / route_checked=109 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`
