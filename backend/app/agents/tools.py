@@ -2376,6 +2376,87 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---- IM 会话操作（拉黑状态是只读；另外三条写，工具层不做 confirm 判定，原样透传给服务层）----
+    {
+        'type': 'function',
+        'function': {
+            'name': 'im_blacklist_status',
+            'description': ('查这个会话有没有把买家拉黑（只读，不会改任何东西）。session_id 用平台会话 id（cid），'
+                            '拿不到就改传 conversation_id（本地会话行 id），由后端解析；'
+                            '不传 account_id 会回 not_found。'),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '账号 id'},
+                    'session_id': {'type': 'string', 'description': '平台会话 id（cid）；不知道就改传 conversation_id'},
+                    'conversation_id': {'type': 'string', 'description': '本地会话行 id；不知道平台会话 id（cid）时传这个，由后端解析。两个都不传会回 400'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'im_blacklist_add',
+            'description': ('把这个会话的买家拉黑（写操作，会真的改平台上的拉黑名单）。'
+                            'session_id 拿不到就改传 conversation_id；'
+                            + _WRITE_HINT),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '账号 id'},
+                    'session_id': {'type': 'string', 'description': '平台会话 id（cid）；不知道就改传 conversation_id'},
+                    'conversation_id': {'type': 'string', 'description': '本地会话行 id；不知道平台会话 id（cid）时传这个，由后端解析。两个都不传会回 400'},
+                    'confirm': {'type': 'boolean', 'description': '必须为 true 才真的执行（confirm=true）'},
+                },
+                'required': ['account_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'im_blacklist_remove',
+            'description': ('把买家从拉黑名单里解除（写操作，会真的改平台上的拉黑名单）。'
+                            'session_id 拿不到就改传 conversation_id；'
+                            + _WRITE_HINT),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '账号 id'},
+                    'session_id': {'type': 'string', 'description': '平台会话 id（cid）；不知道就改传 conversation_id'},
+                    'conversation_id': {'type': 'string', 'description': '本地会话行 id；不知道平台会话 id（cid）时传这个，由后端解析。两个都不传会回 400'},
+                    'confirm': {'type': 'boolean', 'description': '必须为 true 才真的执行（confirm=true）'},
+                },
+                'required': ['account_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'im_card_send',
+            'description': ('往这个会话里发一张商品卡片（写操作，会真的给对方发一条消息）。'
+                            'session_id 拿不到就改传 conversation_id；'
+                            + _WRITE_HINT),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '账号 id'},
+                    'session_id': {'type': 'string', 'description': '平台会话 id（cid）；不知道就改传 conversation_id'},
+                    'conversation_id': {'type': 'string', 'description': '本地会话行 id；不知道平台会话 id（cid）时传这个，由后端解析。两个都不传会回 400'},
+                    'item_id': {'type': 'string', 'description': '要发的商品 id'},
+                    'confirm': {'type': 'boolean', 'description': '必须为 true 才真的执行（confirm=true）'},
+                },
+                'required': ['account_id', 'item_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 主管 AI（只给 MCP 侧） ----------------
     {
         'type': 'function',
@@ -2728,6 +2809,10 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'logistics_companies': ['logistics', 'companies'],
     'logistics_guess_mailno': ['logistics', 'guess_mailno'],
     'logistics_resend_consign': ['logistics', 'resend_consign'],
+    'im_blacklist_status': ['im_actions', 'blacklist_status'],
+    'im_blacklist_add': ['im_actions', 'blacklist_add'],
+    'im_blacklist_remove': ['im_actions', 'blacklist_remove'],
+    'im_card_send': ['im_actions', 'send_item_card'],
 }
 
 # 有额外位置参数（不是直接透传 args 的）在这里补上固定值
@@ -2957,6 +3042,10 @@ _HANDLERS = {
     'logistics_companies': lambda a: _dispatch_service('logistics_companies', a),
     'logistics_guess_mailno': lambda a: _dispatch_service('logistics_guess_mailno', a),
     'logistics_resend_consign': lambda a: _dispatch_service('logistics_resend_consign', a),
+    'im_blacklist_status': lambda a: _dispatch_service('im_blacklist_status', a),
+    'im_blacklist_add': lambda a: _dispatch_service('im_blacklist_add', a),
+    'im_blacklist_remove': lambda a: _dispatch_service('im_blacklist_remove', a),
+    'im_card_send': lambda a: _dispatch_service('im_card_send', a),
 }
 
 

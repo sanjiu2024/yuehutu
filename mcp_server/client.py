@@ -247,57 +247,22 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'method': 'POST', 'path': '/api/logistics/{account_id}/orders/{order_id}/resend',
         'path_params': ['account_id', 'order_id'], 'body': ['mail_no', 'cp_code', 'confirm'],
     },
-    # ---- 物流（2 读 + 1 写；写的那条会真的改平台上的运单号）----
-    'logistics_companies': {
-        'method': 'GET', 'path': '/api/logistics/{account_id}/companies',
-        'path_params': ['account_id'],
+    # ---- IM 会话操作（1 读 + 3 写；写的那三条会真的改平台）----
+    'im_blacklist_status': {
+        'method': 'GET', 'path': '/api/im/{account_id}/blacklist',
+        'path_params': ['account_id'], 'query': ['session_id', 'conversation_id'],
     },
-    'logistics_guess_mailno': {
-        'method': 'GET', 'path': '/api/logistics/{account_id}/guess',
-        'path_params': ['account_id'], 'query': ['mail_no'],
+    'im_blacklist_add': {
+        'method': 'POST', 'path': '/api/im/{account_id}/blacklist',
+        'path_params': ['account_id'], 'body': ['session_id', 'conversation_id', 'confirm'],
     },
-    'logistics_resend_consign': {
-        'method': 'POST', 'path': '/api/logistics/{account_id}/orders/{order_id}/resend',
-        'path_params': ['account_id', 'order_id'], 'body': ['mail_no', 'cp_code', 'confirm'],
+    'im_blacklist_remove': {
+        'method': 'POST', 'path': '/api/im/{account_id}/blacklist/remove',
+        'path_params': ['account_id'], 'body': ['session_id', 'conversation_id', 'confirm'],
     },
-    # ---- 物流（2 读 + 1 写；写的那条会真的改平台上的运单号）----
-    'logistics_companies': {
-        'method': 'GET', 'path': '/api/logistics/{account_id}/companies',
-        'path_params': ['account_id'],
-    },
-    'logistics_guess_mailno': {
-        'method': 'GET', 'path': '/api/logistics/{account_id}/guess',
-        'path_params': ['account_id'], 'query': ['mail_no'],
-    },
-    'logistics_resend_consign': {
-        'method': 'POST', 'path': '/api/logistics/{account_id}/orders/{order_id}/resend',
-        'path_params': ['account_id', 'order_id'], 'body': ['mail_no', 'cp_code', 'confirm'],
-    },
-    # ---- 物流（2 读 + 1 写；写的那条会真的改平台上的运单号）----
-    'logistics_companies': {
-        'method': 'GET', 'path': '/api/logistics/{account_id}/companies',
-        'path_params': ['account_id'],
-    },
-    'logistics_guess_mailno': {
-        'method': 'GET', 'path': '/api/logistics/{account_id}/guess',
-        'path_params': ['account_id'], 'query': ['mail_no'],
-    },
-    'logistics_resend_consign': {
-        'method': 'POST', 'path': '/api/logistics/{account_id}/orders/{order_id}/resend',
-        'path_params': ['account_id', 'order_id'], 'body': ['mail_no', 'cp_code', 'confirm'],
-    },
-    # ---- 物流（2 读 + 1 写；写的那条会真的改平台上的运单号）----
-    'logistics_companies': {
-        'method': 'GET', 'path': '/api/logistics/{account_id}/companies',
-        'path_params': ['account_id'],
-    },
-    'logistics_guess_mailno': {
-        'method': 'GET', 'path': '/api/logistics/{account_id}/guess',
-        'path_params': ['account_id'], 'query': ['mail_no'],
-    },
-    'logistics_resend_consign': {
-        'method': 'POST', 'path': '/api/logistics/{account_id}/orders/{order_id}/resend',
-        'path_params': ['account_id', 'order_id'], 'body': ['mail_no', 'cp_code', 'confirm'],
+    'im_card_send': {
+        'method': 'POST', 'path': '/api/im/{account_id}/cards',
+        'path_params': ['account_id'], 'body': ['session_id', 'conversation_id', 'item_id', 'confirm'],
     },
     'orders_list': {
         'method': 'GET', 'path': '/api/orders',

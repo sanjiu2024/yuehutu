@@ -153,7 +153,10 @@ WRITE_PREFIX = ('trade_write_', 'trade_address_', 'promotion_write_', 'qualifica
                 'trade_close_order', 'trade_delay_confirm', 'trade_remind_confirm',
                 'trade_postage_refund_pay', 'trade_complain_revoke',
                 # 第三十九批：物流写只有这一条，同样用完整工具名。
-                'logistics_resend_consign')
+                'logistics_resend_consign',
+                # 第四十批：IM 会话操作的三条写，同样只加**完整写工具名**。
+                # 故意不加 'im_' 宽前缀，那会把只读的 im_blacklist_status 一起误判成写工具。
+                'im_blacklist_add', 'im_blacklist_remove', 'im_card_send')
 write_names = [n for n in specs if n.startswith(WRITE_PREFIX) and n != 'promotion_write_actions']
 print(f'write_tools={len(write_names)}')
 for s in T.TOOL_SPECS:
