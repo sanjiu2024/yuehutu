@@ -340,6 +340,144 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---------------- 话术 / 快捷回复（1 读 + 6 写；写的那六条会真的改动平台上的快捷回复） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'quick_reply_list',
+            'description': '列出闲鱼 IM 工作台里的快捷回复（话术）：每个分组有哪些短语。'
+                           '卖家问「我有哪些话术/常用回复」时用。'
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。'
+                           '平台没给列表字段时 groups 是 null（不是空数组）——别当成「一条话术都没有」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'quick_reply_group_create',
+            'description': '新建一个话术分组（会真的改动闲鱼上的快捷回复）。分组名最多 10 个字。'
+                           '卖家说「新建一个话术分组叫…」时用。'
+                           + _WRITE_HINT + 'account_id 与 group_name 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'group_name': {'type': 'string', 'description': '分组名称，最多 10 个字'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'group_name', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'quick_reply_group_update',
+            'description': '改话术分组的名字（会真的改动闲鱼上的快捷回复）。group_id 从 quick_reply_list 里取。'
+                           '卖家说「把话术分组 X 改名成 Y」时用。'
+                           + _WRITE_HINT + 'account_id、group_id 与 group_name 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'group_id': {'type': 'string', 'description': '分组 id（从 quick_reply_list 取）'},
+                    'group_name': {'type': 'string', 'description': '新的分组名称，最多 10 个字'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'group_id', 'group_name', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'quick_reply_group_delete',
+            'description': '删除话术分组（会真的改动闲鱼上的快捷回复，**分组里的短语一起没了，不可撤销**）。'
+                           '卖家明确说「删掉这个话术分组」时用；对象含糊就先问清楚。'
+                           + _WRITE_HINT + 'account_id 与 group_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'group_id': {'type': 'string', 'description': '分组 id（从 quick_reply_list 取）'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'group_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'quick_reply_phrase_create',
+            'description': '在某个话术分组里新建一条短语（会真的改动闲鱼上的快捷回复）。内容最多 200 个字。'
+                           '卖家说「加一条常用回复：…」时用。'
+                           + _WRITE_HINT + 'account_id、group_id 与 content 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'group_id': {'type': 'string', 'description': '放进哪个分组（从 quick_reply_list 取）'},
+                    'content': {'type': 'string', 'description': '短语内容，最多 200 个字'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'group_id', 'content', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'quick_reply_phrase_update',
+            'description': '改一条短语的内容（会真的改动闲鱼上的快捷回复）。content_id 从 quick_reply_list 里取。'
+                           '卖家说「把那条话术改成…」时用。'
+                           + _WRITE_HINT + 'account_id、group_id、content_id 与 content 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'group_id': {'type': 'string', 'description': '短语所在的分组 id'},
+                    'content_id': {'type': 'string', 'description': '短语 id（从 quick_reply_list 取）'},
+                    'content': {'type': 'string', 'description': '新的短语内容，最多 200 个字'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'group_id', 'content_id', 'content', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'quick_reply_phrase_delete',
+            'description': '删除一条短语（会真的改动闲鱼上的快捷回复，**不可撤销**）。'
+                           '卖家明确说「删掉那条话术」时用；对象含糊就先问清楚。'
+                           + _WRITE_HINT + 'account_id、group_id 与 content_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'group_id': {'type': 'string', 'description': '短语所在的分组 id'},
+                    'content_id': {'type': 'string', 'description': '短语 id（从 quick_reply_list 取）'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'group_id', 'content_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 订单 ----------------
     {
         'type': 'function',
@@ -2396,6 +2534,14 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'trade_order_address_request': ['trade_write', 'order_address_info'],
     'trade_order_address_agree': ['trade_write', 'order_address_agree'],
     'trade_order_address_refuse': ['trade_write', 'order_address_refuse'],
+    # ---- 话术 / 快捷回复（1 读 + 6 写）----
+    'quick_reply_list': ['quick_reply', 'list_groups'],
+    'quick_reply_group_create': ['quick_reply', 'create_group'],
+    'quick_reply_group_update': ['quick_reply', 'update_group'],
+    'quick_reply_group_delete': ['quick_reply', 'delete_group'],
+    'quick_reply_phrase_create': ['quick_reply', 'create_phrase'],
+    'quick_reply_phrase_update': ['quick_reply', 'update_phrase'],
+    'quick_reply_phrase_delete': ['quick_reply', 'delete_phrase'],
 }
 
 # 有额外位置参数（不是直接透传 args 的）在这里补上固定值
@@ -2607,6 +2753,14 @@ _HANDLERS = {
     'trade_order_address_request': lambda a: _dispatch_service('trade_order_address_request', a),
     'trade_order_address_agree': lambda a: _dispatch_service('trade_order_address_agree', a),
     'trade_order_address_refuse': lambda a: _dispatch_service('trade_order_address_refuse', a),
+    # ---- 话术 / 快捷回复 ----
+    'quick_reply_list': lambda a: _dispatch_service('quick_reply_list', a),
+    'quick_reply_group_create': lambda a: _dispatch_service('quick_reply_group_create', a),
+    'quick_reply_group_update': lambda a: _dispatch_service('quick_reply_group_update', a),
+    'quick_reply_group_delete': lambda a: _dispatch_service('quick_reply_group_delete', a),
+    'quick_reply_phrase_create': lambda a: _dispatch_service('quick_reply_phrase_create', a),
+    'quick_reply_phrase_update': lambda a: _dispatch_service('quick_reply_phrase_update', a),
+    'quick_reply_phrase_delete': lambda a: _dispatch_service('quick_reply_phrase_delete', a),
 }
 
 

@@ -953,10 +953,10 @@ class WriteToolConfirmGateTest(unittest.TestCase):
         return Recorder(), calls
 
     def test_every_write_route_refuses_without_confirm(self):
-        """40 条写路由逐个试：都不发请求、都回 confirm_required。"""
+        """46 条写路由逐个试：都不发请求、都回 confirm_required。"""
         write_routes = sorted(k for k, v in mcp_client.TOOL_ROUTES.items()
                               if 'confirm' in (v.get('body') or []))
-        self.assertEqual(len(write_routes), 40, '写工具数量变了就要同步复核这份清单')
+        self.assertEqual(len(write_routes), 46, '写工具数量变了就要同步复核这份清单')
         for name in write_routes:
             with self.subTest(tool=name):
                 client, calls = self._client()
@@ -993,7 +993,7 @@ class WriteToolConfirmGateTest(unittest.TestCase):
         self.assertEqual(seen, [('GET', '/api/accounts')])
 
     def test_confirm_routes_are_exactly_the_write_tools(self):
-        """反向断言：声明了 confirm 的 40 条，必须与 `agents/tools.py` 的写工具清单一致。"""
+        """反向断言：声明了 confirm 的 46 条，必须与 `agents/tools.py` 的写工具清单一致。"""
         from backend.app.agents import tools as agent_tools
         declared = {n for n, r in mcp_client.TOOL_ROUTES.items()
                     if 'confirm' in (r.get('body') or [])}
@@ -1004,7 +1004,7 @@ class WriteToolConfirmGateTest(unittest.TestCase):
             if 'confirm' in props:
                 write_specs.add(fn.get('name'))
         self.assertEqual(declared, write_specs)
-        self.assertEqual(len(declared), 40)
+        self.assertEqual(len(declared), 46)
 
     def test_truthy_helper_matches_service_layer(self):
         """与 `backend/app/services/item_templates.py::_truthy` 同一口径。"""

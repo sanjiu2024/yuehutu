@@ -42,6 +42,8 @@ NEW_TOOLS: Dict[str, Dict[str, Any]] = {
                           'path': '/api/shop/{account_id}/sub-accounts'},
     'shop_cs_routing': {'module': 'shop', 'fn': 'cs_routing', 'verb': 'get',
                         'path': '/api/shop/{account_id}/cs-routing'},
+    'quick_reply_list': {'module': 'quick_reply', 'fn': 'list_groups', 'verb': 'get',
+                         'path': '/api/quick-reply/{account_id}/groups'},
     'datacenter_overview': {'module': 'datacenter', 'fn': 'overview', 'verb': 'get',
                             'path': '/api/datacenter/{account_id}/overview'},
     'datacenter_fans': {'module': 'datacenter', 'fn': 'fans', 'verb': 'get',
@@ -385,6 +387,25 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
     'sub_account_update_password': {
         'module': 'sub_accounts', 'fn': 'update_password', 'confirm': True,
         'method': 'POST', 'path': '/api/sub-accounts/{account_id}/{sub_id}/password'},
+    # ---- 话术 / 快捷回复写（第三十七批：6 条都会真的改动平台上的快捷回复）----
+    'quick_reply_group_create': {
+        'module': 'quick_reply', 'fn': 'create_group', 'confirm': True,
+        'method': 'POST', 'path': '/api/quick-reply/{account_id}/groups'},
+    'quick_reply_group_update': {
+        'module': 'quick_reply', 'fn': 'update_group', 'confirm': True,
+        'method': 'POST', 'path': '/api/quick-reply/{account_id}/groups/{group_id}'},
+    'quick_reply_group_delete': {
+        'module': 'quick_reply', 'fn': 'delete_group', 'confirm': True,
+        'method': 'POST', 'path': '/api/quick-reply/{account_id}/groups/{group_id}/delete'},
+    'quick_reply_phrase_create': {
+        'module': 'quick_reply', 'fn': 'create_phrase', 'confirm': True,
+        'method': 'POST', 'path': '/api/quick-reply/{account_id}/phrases'},
+    'quick_reply_phrase_update': {
+        'module': 'quick_reply', 'fn': 'update_phrase', 'confirm': True,
+        'method': 'POST', 'path': '/api/quick-reply/{account_id}/phrases/{content_id}'},
+    'quick_reply_phrase_delete': {
+        'module': 'quick_reply', 'fn': 'delete_phrase', 'confirm': True,
+        'method': 'POST', 'path': '/api/quick-reply/{account_id}/phrases/{content_id}/delete'},
 }
 
 WRITE_TOOL_NAMES = list(WRITE_TOOLS)
@@ -475,6 +496,17 @@ _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
         'account_id': 'acc-x', 'group_id': 'g1', 'confirm': False},
     # ---- 店铺资料 ----
     'shop_profile_update_nick': {'account_id': 'acc-x', 'nick': '月狐兔_', 'confirm': False},
+    'quick_reply_group_create': {'account_id': 'acc-x', 'group_name': '常用', 'confirm': False},
+    'quick_reply_group_update': {
+        'account_id': 'acc-x', 'group_id': 'g1', 'group_name': '常用', 'confirm': False},
+    'quick_reply_group_delete': {'account_id': 'acc-x', 'group_id': 'g1', 'confirm': False},
+    'quick_reply_phrase_create': {
+        'account_id': 'acc-x', 'group_id': 'g1', 'content': '在的', 'confirm': False},
+    'quick_reply_phrase_update': {
+        'account_id': 'acc-x', 'group_id': 'g1', 'content_id': 'c1',
+        'content': '在的', 'confirm': False},
+    'quick_reply_phrase_delete': {
+        'account_id': 'acc-x', 'group_id': 'g1', 'content_id': 'c1', 'confirm': False},
     'shop_profile_update_desc': {'account_id': 'acc-x', 'desc': '测试简介', 'confirm': False},
     'shop_profile_update_avatar': {
         'account_id': 'acc-x', 'avatar_url': 'https://example.com/a.png', 'confirm': False},

@@ -142,7 +142,12 @@ WRITE_PREFIX = ('trade_write_', 'trade_address_', 'promotion_write_', 'qualifica
                 'security_appeal_submit', 'security_appeal_urge',
                 # 草稿箱：只加两条**完整写工具名**。故意不加 'drafts_'，
                 # 那会把只读的 drafts_list / drafts_get 一起误判成写工具。
-                'drafts_delete', 'drafts_batch_delete')
+                'drafts_delete', 'drafts_batch_delete',
+                # 话术 / 快捷回复：同样只加六条**完整写工具名**。故意不加 'quick_reply_'，
+                # 那会把只读的 quick_reply_list 一起误判成写工具。
+                'quick_reply_group_create', 'quick_reply_group_update',
+                'quick_reply_group_delete', 'quick_reply_phrase_create',
+                'quick_reply_phrase_update', 'quick_reply_phrase_delete')
 write_names = [n for n in specs if n.startswith(WRITE_PREFIX) and n != 'promotion_write_actions']
 print(f'write_tools={len(write_names)}')
 for s in T.TOOL_SPECS:

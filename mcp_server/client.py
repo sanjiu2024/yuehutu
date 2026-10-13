@@ -204,6 +204,36 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'method': 'POST', 'path': '/api/chats/{conversation_id}/mode',
         'path_params': ['conversation_id'], 'body': ['mode'],
     },
+    # ---- 话术 / 快捷回复（1 读 + 6 写；写的那六条会真的改动平台上的快捷回复）----
+    'quick_reply_list': {
+        'method': 'GET', 'path': '/api/quick-reply/{account_id}/groups',
+        'path_params': ['account_id'],
+    },
+    'quick_reply_group_create': {
+        'method': 'POST', 'path': '/api/quick-reply/{account_id}/groups',
+        'path_params': ['account_id'], 'body': ['group_name', 'confirm'],
+    },
+    'quick_reply_group_update': {
+        'method': 'POST', 'path': '/api/quick-reply/{account_id}/groups/{group_id}',
+        'path_params': ['account_id', 'group_id'], 'body': ['group_name', 'confirm'],
+    },
+    'quick_reply_group_delete': {
+        'method': 'POST', 'path': '/api/quick-reply/{account_id}/groups/{group_id}/delete',
+        'path_params': ['account_id', 'group_id'], 'body': ['confirm'],
+    },
+    'quick_reply_phrase_create': {
+        'method': 'POST', 'path': '/api/quick-reply/{account_id}/phrases',
+        'path_params': ['account_id'], 'body': ['group_id', 'content', 'confirm'],
+    },
+    'quick_reply_phrase_update': {
+        'method': 'POST', 'path': '/api/quick-reply/{account_id}/phrases/{content_id}',
+        'path_params': ['account_id', 'content_id'],
+        'body': ['group_id', 'content', 'confirm'],
+    },
+    'quick_reply_phrase_delete': {
+        'method': 'POST', 'path': '/api/quick-reply/{account_id}/phrases/{content_id}/delete',
+        'path_params': ['account_id', 'content_id'], 'body': ['group_id', 'confirm'],
+    },
     'orders_list': {
         'method': 'GET', 'path': '/api/orders',
         'query': ['account_id', 'status', 'limit'],

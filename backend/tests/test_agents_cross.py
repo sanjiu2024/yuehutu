@@ -487,6 +487,10 @@ class MasterChatTest(unittest.TestCase):
             # ---- 草稿箱（前两条只读；后两条会真的删掉闲鱼上的草稿，required 必含 confirm）----
             'drafts_list', 'drafts_get', 'drafts_delete', 'drafts_batch_delete',
             'chats_list', 'chats_read', 'chats_send', 'chats_set_mode',
+            # ---- 话术 / 快捷回复（前一条只读；后六条会真的改动平台上的快捷回复）----
+            'quick_reply_list',
+            'quick_reply_group_create', 'quick_reply_group_update', 'quick_reply_group_delete',
+            'quick_reply_phrase_create', 'quick_reply_phrase_update', 'quick_reply_phrase_delete',
             'orders_list', 'orders_deliver',
             'risk_status', 'risk_clear',
             'providers_list', 'providers_upsert',
@@ -570,6 +574,10 @@ class MasterChatTest(unittest.TestCase):
             'items_batch_offline', 'items_batch_delete', 'items_quick_edit',
             'trade_order_address_agree', 'trade_order_address_refuse',
             'shop_cs_routing_rule_save', 'shop_cs_group_save', 'shop_cs_group_delete',
+            'trade_order_address_agree', 'trade_order_address_refuse',
+            'shop_cs_routing_rule_save', 'shop_cs_group_save', 'shop_cs_group_delete',
+            'quick_reply_group_create', 'quick_reply_group_update', 'quick_reply_group_delete',
+            'quick_reply_phrase_create', 'quick_reply_phrase_update', 'quick_reply_phrase_delete',
     'shop_profile_update_nick',
     'shop_profile_update_desc',
     'shop_profile_update_avatar',
