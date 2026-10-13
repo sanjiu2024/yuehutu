@@ -2503,6 +2503,15 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `scripts/ui_smoke.py --port 18491` → **`UI SMOKE ALL OK (29/29 页通过)`**（`quick-reply` 467 字符）；
 > `scripts/contrast_audit.py --port 18501 --threshold 4.0` → `[dark] 0/29`、`[light] 0/29`、`NON_GET=[]`；
 > `scripts/a11y_audit.py --port 18503` → 三类问题全 0、`焦点不可见的页面：[]`、`NON_GET=[]`。
+> 重打包（`build_exe.ps1 -SkipFrontend`，exe **10,103,783 B / 2026-10-13 13:14:00**，
+> `--port 18400` `/api/health` 200 `frozen:true`）后打包版复验全绿：
+> `probe_write_gate.py` → **`GATE FAILURES: 0 / 47`**（含 6 条话术写端点）；
+> `packaged_ui_smoke.py` → **29/29 页**（`quick-reply` 464 字符）；`check_assets.py` →
+> `ASSETS_MATCH=True`（`index-C-5jTLtH.css` `80a0c271f4d3`、`index-d3X2Qg1j.js` `92e1771e0198`）；
+> `scripts/contrast_audit.py --threshold 4.0` → `[dark] 0/29`、`[light] 0/29`、`NON_GET=[]`；
+> `scripts/a11y_audit.py` → 三类问题全 0、`焦点不可见的页面：[]`、`NON_GET=[]`。
+> **真机只读**：`qr_read_probe.py`（打 18400、只发 GET）→ `GET /api/quick-reply/2217970177348/groups`
+> **200**、`groups: []`、`count: 0`、`warnings: []`（接口名与调用形状被平台接受；真的空列表）。
 
 ## 四、已验证 / 未验证（诚实边界）
 
@@ -2637,8 +2646,12 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   47 条里含这 6 条）、界面上不点最终确认就零写请求」。**没验到**：平台是否接受
   `{groupName,operateType}` / `{groupId,contentId,operateType}` 这套 payload、
   `groupInfo.groupId` / `contentInfo.contentId` 的真实回显形状、「平台收了但不回显 id」那条分支
-  （`no_group_id` / `no_content_id`）、列表接口的真实 `groups` 结构。原因是账号
-  `2217970177348` 在那一刻的 `login_state` 是 `need_relogin`（列表接口真机也只跑到 409）。
+  （`no_group_id` / `no_content_id`）、有分组时列表接口的真实 `groups` 结构与字段名。
+  **列表接口已经在真机上通了**：账号 `2217970177348` 重新扫码（`login_state='active'`）后，打包版
+  只读探针（`C:\Users\Administrator\.dsh-tmp\qr_read_probe.py`，桌面密钥换 token、只发 GET）拿到
+  `GET /api/quick-reply/2217970177348/groups` → **200**、`groups: []`、`count: 0`、**`warnings: []`**
+  ⇒ 接口名与「不带参数」的调用形状被平台接受、账号有这一族的权限，且这是**真的空列表**
+  （不是「键没认出来」——那会回 `groups: null` + `list_key_missing` warning）。
   分组/短语表格在真机上的渲染、批量选择、删除确认框也没有人工鼠标点过。
 - **数据总览页四张经营卡片没有取到过真数据**（第三十五批）：真机只读探针
   （`C:\Users\Administrator\.dsh-tmp\cards_read_probe.py`，打打包版 18400、桌面密钥换 token、只发 GET）
