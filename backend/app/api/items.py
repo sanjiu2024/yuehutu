@@ -157,6 +157,13 @@ def publish_item_for_account(account_id: str, payload: Dict[str, Any] = Body(...
     return _envelope(items.publish_item(account_id, payload))
 
 
+@router.post('/{account_id}/publish/precheck')
+def publish_precheck_for_account(account_id: str, payload: Dict[str, Any] = Body(...),
+                                 user=Depends(current_user)):
+    """发布前预检（**只读**）：跑到分类推荐为止，不注册分类路径、不发布。"""
+    return _envelope(items.publish_precheck(account_id, payload))
+
+
 @router.get('/{account_id}/operation-logs')
 def operation_logs_for_account(
     account_id: str,

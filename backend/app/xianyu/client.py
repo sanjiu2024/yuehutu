@@ -672,6 +672,89 @@ class XianyuClient:
             item_id = str(data.get('itemId') or data.get('item_id') or '')
         return {'item_id': item_id, 'itemId': item_id, 'raw': data}
 
+    async def publish_precheck(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """发布前预检（**只读**）：图片准备 → 违禁词预检 → 分类推荐，到此为止。
+
+        这是 ``publish_item`` 的**前半段**，故意**不调用** ``CARDS_API``（注册
+        分类路径）与 ``PUBLISH_API``（发布）—— 只有这两个才是有副作用的那一步。
+        真发布是唯一一条不敢在真机上试的写链路；预检让它的前半段可验证、也让
+        用户在真发之前先看到违禁词命中与分类推荐结果。
+
+        返回 ``{'ready', 'steps', 'warnings', 'payload', 'category'}``：
+        ``payload`` 就是真发布时会提交的那份载荷（**只是不提交**）。
+        """
+        payload = payload or {}
+        title = str(payload.get('title') or '').strip()
+        if not title:
+            raise XianyuError('发布缺少标题')
+        raw_images = payload.get('images')
+        if isinstance(raw_images, str):
+            raw_images = [raw_images]
+        images = await self._publish_images(list(raw_images or []))
+        if not images:
+            raise XianyuError('至少需要一张图片')
+
+        steps: List[Dict[str, Any]] = [
+            {'step': 'images', 'ok': True, 'detail': f'{len(images)} 张图片已准备好'},
+        ]
+        warnings: List[str] = []
+
+        bad_words_ok = True
+        try:
+            await self.check_bad_words(title)
+        except XianyuError as exc:
+            bad_words_ok = False
+            steps.append({'step': 'bad_words', 'ok': False, 'detail': str(exc)})
+        else:
+            steps.append({'step': 'bad_words', 'ok': True, 'detail': None})
+
+        description = payload.get('description') or payload.get('desc') or ''
+        transport, card_list = await self.recommend_category(title, description, images)
+        cards = len(card_list or [])
+        category_ok = bool(transport or card_list)
+        if category_ok:
+            name = ''
+            if isinstance(transport, dict):
+                name = str(transport.get('channelCateName') or '')
+            steps.append({'step': 'category', 'ok': True,
+                          'detail': f'推荐分类：{name or "（平台没给类目名）"}，分类路径 {cards} 条'})
+        else:
+            steps.append({'step': 'category', 'ok': True, 'detail': None})
+            warnings.append('分类推荐没返回结果：真发布时会退回默认分类「其他闲置」，不阻断。')
+
+        channel_cate_id = payload.get('channel_cate_id')
+        channel_cate_name = payload.get('channel_cate_name')
+        tb_cat_id = payload.get('tb_cat_id') or payload.get('category_id')
+        user_picked = bool(channel_cate_id and channel_cate_name)
+        label = build_label_ext(
+            None if user_picked else transport,
+            channel_cate_id, channel_cate_name, tb_cat_id,
+        )
+        body = build_publish_payload(
+            title=title,
+            price=payload.get('price'),
+            desc=description,
+            orig_price=payload.get('original_price', payload.get('orig_price')),
+            images=images,
+            label_ext=label,
+            quantity=payload.get('stock', payload.get('quantity', 1)),
+            free_shipping=payload.get('free_shipping', True),
+            addr=payload.get('addr'),
+        )
+        return {
+            'ready': bad_words_ok,
+            'steps': steps,
+            'warnings': warnings,
+            'payload': body,
+            'category': {
+                'ok': category_ok,
+                'cards': cards,
+                'channel_cate_id': label.get('channelCateId'),
+                'channel_cate_name': label.get('channelCateName'),
+                'tb_cat_id': label.get('tbCatId'),
+            },
+        }
+
     async def edit_item(self, item_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """编辑商品：**取回原表单 → 只打目标字段的补丁 → 提交**。
 

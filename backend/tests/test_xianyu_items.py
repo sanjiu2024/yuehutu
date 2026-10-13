@@ -750,6 +750,120 @@ class PublishItemCallTest(ProtocolCase):
         ])
 
 
+class PublishPrecheckCallTest(ProtocolCase):
+    """发布前预检：**只跑发布流程的前半段**，绝不注册分类路径、绝不发布。
+
+    真发布是唯一一条不敢在真机上试的写链路；预检让前半段可验证。这里最要紧的
+    断言是「CARDS_API / PUBLISH_API 一次都没被调用」—— 一旦有人把预检实现成
+    「先发一次再说」，这两条断言会立刻红。
+    """
+
+    def stub(self, published_id: str = '700001'):
+        return {
+            'mtop.taobao.idleitem.badwords.prepubcheck': {'pass': True},
+            CATEGORY_RECOMMEND_API: {
+                'transportData': {'channelCateId': '201459411', 'channelCateName': '其他闲置',
+                                  'tbCatId': '50014945'},
+                'cardList': [{'cardId': 'c1'}],
+            },
+            CARDS_API: {'ok': True},
+            PUBLISH_API: {'itemId': published_id},
+        }
+
+    def test_precheck_runs_only_the_read_prefix(self):
+        client, stub = make_client(self.stub())
+        result = run(client.publish_precheck({
+            'title': 'iPhone 13', 'price': 2500, 'description': '成色好',
+            'stock': 2, 'images': ['https://img.alicdn.com/a.jpg'],
+        }))
+        self.assertEqual(stub.apis(), [
+            'mtop.taobao.idleitem.badwords.prepubcheck',
+            CATEGORY_RECOMMEND_API,
+        ])
+        self.assertTrue(result['ready'])
+        self.assertEqual([s['step'] for s in result['steps']],
+                         ['images', 'bad_words', 'category'])
+        self.assertTrue(all(s['ok'] for s in result['steps']))
+        self.assertEqual(result['category']['cards'], 1)
+        self.assertEqual(result['category']['channel_cate_id'], '201459411')
+        self.assertEqual(result['warnings'], [])
+
+    def test_precheck_never_registers_cards_or_publishes(self):
+        client, stub = make_client(self.stub())
+        result = run(client.publish_precheck({
+            'title': 'iPhone 13', 'price': 2500,
+            'images': ['https://img.alicdn.com/a.jpg'],
+        }))
+        self.assertNotIn(CARDS_API, stub.apis())
+        self.assertNotIn(PUBLISH_API, stub.apis())
+        # 预检摆出的就是「真发布时会提交的那份载荷」，但 uniqueCode 只在真发前才生成
+        self.assertNotIn('uniqueCode', result['payload'])
+        self.assertEqual(result['payload']['itemTextDTO']['title'], 'iPhone 13')
+
+    def test_precheck_payload_equals_publish_payload(self):
+        """同一份入参：预检的载荷与真发布的载荷**逐键相同**（除 uniqueCode）。"""
+        payload = {'title': 'iPhone 13', 'price': 2500, 'description': '成色好',
+                   'stock': 2, 'images': ['https://img.alicdn.com/a.jpg']}
+        client, stub = make_client(self.stub())
+        precheck = run(client.publish_precheck(dict(payload)))
+        client2, stub2 = make_client(self.stub())
+        run(client2.publish_item(dict(payload)))
+        published = [c for c in stub2.calls if c['api'] == PUBLISH_API][0]['payload']
+        published.pop('uniqueCode', None)
+        self.assertEqual(precheck['payload'], published)
+
+    def test_bad_words_hit_makes_ready_false_and_is_reported_per_step(self):
+        stub = MtopStub(self.stub(), fail_ret={
+            'mtop.taobao.idleitem.badwords.prepubcheck':
+                'FAIL_BIZ_BADWORD::标题含有违禁词',
+        })
+        client = XianyuClient(COOKIE, transport=httpx.MockTransport(stub))
+        result = run(client.publish_precheck({'title': '违禁词', 'price': 1,
+                                              'images': ['https://img/a.jpg']}))
+        self.assertFalse(result['ready'])
+        steps = {s['step']: s for s in result['steps']}
+        self.assertTrue(steps['images']['ok'])
+        self.assertFalse(steps['bad_words']['ok'])
+        self.assertIn('违禁词', steps['bad_words']['detail'])
+        # 命中违禁词也必须继续跑分类推荐（预检要一次把问题全摆出来），但绝不发布
+        self.assertEqual(stub.apis(), [
+            'mtop.taobao.idleitem.badwords.prepubcheck',
+            CATEGORY_RECOMMEND_API,
+        ])
+
+    def test_category_failure_is_a_warning_not_a_block(self):
+        """分类推荐失败不阻断发布（退回默认分类）⇒ 预检也不该把它算成不 ready。"""
+        responses = self.stub()
+        responses.pop(CATEGORY_RECOMMEND_API)
+        client, stub = make_client(responses)
+        result = run(client.publish_precheck({'title': '正常商品', 'price': 1,
+                                              'images': ['https://img/a.jpg']}))
+        self.assertTrue(result['ready'])
+        self.assertFalse(result['category']['ok'])
+        self.assertEqual(result['category']['cards'], 0)
+        self.assertTrue(any('默认分类' in w for w in result['warnings']))
+        self.assertNotIn(PUBLISH_API, stub.apis())
+
+    def test_user_picked_category_wins_over_recommendation(self):
+        client, _stub = make_client(self.stub())
+        result = run(client.publish_precheck({
+            'title': 'x', 'price': 1, 'images': ['https://img/a.jpg'],
+            'channel_cate_id': '111', 'channel_cate_name': '数码',
+        }))
+        self.assertEqual(result['category']['channel_cate_id'], '111')
+        # itemCatDTO.catId 是 tbCatId（不是渠道分类 id），渠道分类在 channelCatId
+        self.assertEqual(result['payload']['itemCatDTO']['channelCatId'], '111')
+        self.assertEqual(result['payload']['itemCatDTO']['catName'], '数码')
+
+    def test_precheck_requires_title_and_image(self):
+        client, stub = make_client(self.stub())
+        with self.assertRaises(XianyuError):
+            run(client.publish_precheck({'price': 1, 'images': ['https://img/a.jpg']}))
+        with self.assertRaises(XianyuError):
+            run(client.publish_precheck({'title': 'x', 'price': 1}))
+        self.assertEqual(stub.apis(), [])
+
+
 class EditItemCallTest(ProtocolCase):
     """I3：编辑真签名 `edit_item(item_id, payload)`，且必须取回→打补丁→提交。"""
 

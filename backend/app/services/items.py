@@ -1421,3 +1421,101 @@ def publish_item(account_id: str, payload: Dict[str, Any]) -> Any:
     if item_id:
         _publish_updated(account_id, [item_id], 'publish')
     return {'item_id': item_id, 'raw': value}
+
+
+PRECHECK_NOTE = '预检只跑到「分类推荐」为止：不会注册分类路径，更不会发布。'
+
+
+def publish_precheck(account_id: str, payload: Dict[str, Any]) -> Any:
+    """发布前预检（**只读**）：图片准备 → 违禁词预检 → 分类推荐，到此为止。
+
+    与 `publish_item` 共用同一段协议层代码，但**不调用**发布与注册分类路径那两步。
+    因此这里**不落库、不播事件**（没有商品被创建），只记一条审计。
+    """
+    if not account_id:
+        return common.fail('account_id 不能为空', 'bad_request')
+    if not isinstance(payload, dict) or not payload:
+        return common.fail('payload 不能为空', 'bad_request')
+    if not str(payload.get('title') or '').strip():
+        return common.fail('标题不能为空', 'invalid_fields')
+    raw_images = payload.get('images')
+    if isinstance(raw_images, str):
+        raw_images = [raw_images] if raw_images.strip() else []
+    if not (raw_images or []):
+        return common.fail('至少需要一张图片', 'invalid_fields')
+
+    client, err = common.get_client(account_id)
+    if client is None:
+        common.log_operation(account_id, 'publish_precheck', '', False, (err or {}).get('message', ''))
+        return err or common.not_ready()
+
+    status, value = common.call_method(client, ('publish_precheck',), payload)
+    problem = common.call_failed(status, value)
+    if problem is not None:
+        problem = platform_errors.decorate(problem, value)
+        common.log_operation(account_id, 'publish_precheck', '', False, problem.get('message', ''))
+        return problem
+
+    value = value if isinstance(value, dict) else {}
+    steps = value.get('steps') if isinstance(value.get('steps'), list) else []
+    warnings = [str(entry) for entry in (value.get('warnings') or [])]
+    ready = bool(value.get('ready'))
+    common.log_operation(account_id, 'publish_precheck', '', True,
+                         {'ready': ready, 'title': payload.get('title')})
+    return {
+        'account_id': account_id,
+        'ready': ready,
+        'steps': steps,
+        'payload': value.get('payload'),
+        'category': value.get('category'),
+        'warnings': warnings,
+        'note': PRECHECK_NOTE,
+        'fetched_at': time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime()),
+        'source': 'platform',
+    }
+
+
+# ---------------- 工具面适配（主管 AI / MCP 的扁平参数 → 服务面签名）----------------
+# **为什么适配层放在服务层**：`backend/tests/test_agents_tools_workbench.py:807` 那条
+# 对账会拿 `_SERVICE_TARGETS` 每个目标函数的签名去比工具 spec 的 `properties`，两边
+# 参数名必须完全一致 —— 参数名不同就得有这么一层；放在工具层会让那条对账永远过不去。
+
+
+def edit_from_args(account_id: str, item_id: str, price: Any = None, title: Any = None,
+                   description: Any = None, stock: Any = None, images: Any = None) -> Any:
+    """工具 `items_edit` 的扁平参数 → `update_item(item_id, fields)`。"""
+    fields: Dict[str, Any] = {}
+    for key, value in (('price', price), ('title', title), ('description', description),
+                       ('stock', stock), ('images', images)):
+        if value is not None:
+            fields[key] = value
+    return update_item(item_id, fields, account_id)
+
+
+def _publish_payload(title: Any, price: Any, description: Any, images: Any,
+                     category_id: Any) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {'title': title, 'price': price}
+    for key, value in (('description', description), ('images', images),
+                       ('category_id', category_id)):
+        if value is not None:
+            payload[key] = value
+    return payload
+
+
+def publish_from_args(account_id: str, title: Any, price: Any, description: Any = None,
+                      images: Any = None, category_id: Any = None) -> Any:
+    """工具 `items_publish` 的扁平参数 → `publish_item(account_id, payload)`。"""
+    return publish_item(account_id,
+                        _publish_payload(title, price, description, images, category_id))
+
+
+def publish_precheck_from_args(account_id: str, title: Any, price: Any, description: Any = None,
+                               images: Any = None, category_id: Any = None) -> Any:
+    """工具 `items_listing_precheck` 的扁平参数 → `publish_precheck(account_id, payload)`。"""
+    return publish_precheck(account_id,
+                            _publish_payload(title, price, description, images, category_id))
+
+
+def batch_edit_from_args(account_id: str, item_ids: Any, patch: Any) -> Any:
+    """工具 `items_batch_edit` 的 `patch` → `batch_update(item_ids, fields)`。"""
+    return batch_update(item_ids or [], patch or {}, account_id)

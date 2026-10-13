@@ -51,6 +51,8 @@ class FakeClient:
         self.details = {}
         #: 用例可覆盖列表响应（例如模拟「列表不带库存」的真机情况）
         self.list_result = None
+        #: 用例可覆盖预检响应
+        self.precheck_result = None
 
     def list_items(self, page_number: int = 1, page_size: int = 20, max_pages: int = 25):
         self.calls.append(('list_items', page_number, page_size, max_pages))
@@ -80,6 +82,24 @@ class FakeClient:
     def publish_item(self, payload: dict):
         self.calls.append(('publish_item', payload))
         return {'item_id': 'NEW1'}
+
+    def publish_precheck(self, payload: dict):
+        self.calls.append(('publish_precheck', payload))
+        if isinstance(self.precheck_result, BaseException):
+            raise self.precheck_result
+        if self.precheck_result is not None:
+            return self.precheck_result
+        return {
+            'ready': True,
+            'steps': [
+                {'step': 'images', 'ok': True, 'detail': '1 张图片已准备好'},
+                {'step': 'bad_words', 'ok': True, 'detail': None},
+                {'step': 'category', 'ok': True, 'detail': '推荐分类：其他闲置，分类路径 1 条'},
+            ],
+            'warnings': [],
+            'payload': {'publishScene': 'mainPublish'},
+            'category': {'ok': True, 'cards': 1, 'channel_cate_id': '201459411'},
+        }
 
     def downshelf(self, item_id: str):
         self.calls.append(('downshelf', item_id))
@@ -1090,6 +1110,109 @@ class StockPatchTest(ItemsServiceTest):
         self.assertEqual(stats['inventory_value'], 200.0)
 
 
+class PublishPrecheckTest(ItemsServiceTest):
+    """发布前预检：**只读** —— 不落库、不播事件，只记一条审计。
+
+    最要紧的一条断言是「协议层只被调了 `publish_precheck`」：一旦有人把它实现成
+    「先真发一次看结果」，这里立刻红。
+    """
+
+    PAYLOAD = {'title': '新商品', 'price': 12.5, 'images': ['https://img/a.jpg']}
+
+    def test_precheck_returns_steps_without_creating_anything(self):
+        install_fake_protocol(self.client)
+        result = items.publish_precheck('acc1', dict(self.PAYLOAD))
+        self.assertNotIn('success', result)
+        self.assertTrue(result['ready'])
+        self.assertEqual([s['step'] for s in result['steps']],
+                         ['images', 'bad_words', 'category'])
+        self.assertEqual(result['category']['cards'], 1)
+        self.assertEqual(result['source'], 'platform')
+        self.assertIn('不会注册分类路径', result['note'])
+        self.assertTrue(result['fetched_at'])
+
+        # 只调了预检这一个协议层方法（没有 publish_item）
+        self.assertEqual([c[0] for c in self.client.calls], ['publish_precheck'])
+        # 没有商品被创建
+        self.assertEqual(db.query('SELECT * FROM items'), [])
+        # 审计留痕，且算成功
+        logs = db.query("SELECT * FROM operation_logs WHERE action = 'publish_precheck'")
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0]['success'], 1)
+
+    def test_precheck_does_not_publish_events(self):
+        install_fake_protocol(self.client)
+        seen = []
+        original = events.publish
+        events.publish = lambda topic, payload=None: seen.append(topic)  # type: ignore[assignment]
+        try:
+            items.publish_precheck('acc1', dict(self.PAYLOAD))
+        finally:
+            events.publish = original  # type: ignore[assignment]
+        self.assertEqual([t for t in seen if t.startswith('items.')], [])
+
+    def test_precheck_reports_a_bad_word_hit(self):
+        install_fake_protocol(self.client)
+        self.client.precheck_result = {
+            'ready': False,
+            'steps': [
+                {'step': 'images', 'ok': True, 'detail': '1 张图片已准备好'},
+                {'step': 'bad_words', 'ok': False, 'detail': '标题含违禁词: 假货'},
+                {'step': 'category', 'ok': True, 'detail': None},
+            ],
+            'warnings': [],
+            'payload': {},
+            'category': {'ok': True, 'cards': 0},
+        }
+        result = items.publish_precheck('acc1', dict(self.PAYLOAD))
+        self.assertFalse(result['ready'])
+        steps = {s['step']: s for s in result['steps']}
+        self.assertFalse(steps['bad_words']['ok'])
+        self.assertIn('违禁词', steps['bad_words']['detail'])
+
+    def test_precheck_validation_happens_before_touching_the_client(self):
+        install_fake_protocol(self.client)
+        for payload, code, message in (
+            ({}, 'bad_request', 'payload 不能为空'),
+            ({'price': 1, 'images': ['https://img/a.jpg']}, 'invalid_fields', '标题不能为空'),
+            ({'title': 'x', 'price': 1}, 'invalid_fields', '至少需要一张图片'),
+            ({'title': 'x', 'price': 1, 'images': []}, 'invalid_fields', '至少需要一张图片'),
+        ):
+            with self.subTest(payload=payload):
+                result = items.publish_precheck('acc1', payload)
+                self.assertFalse(result['success'])
+                self.assertEqual(result['code'], code)
+                self.assertIn(message, result['message'])
+        self.assertEqual(self.client.calls, [])
+
+    def test_precheck_requires_account(self):
+        result = items.publish_precheck('', dict(self.PAYLOAD))
+        self.assertFalse(result['success'])
+        self.assertEqual(result['code'], 'bad_request')
+
+    def test_precheck_not_ready_when_protocol_missing(self):
+        block_protocol()
+        try:
+            result = items.publish_precheck('acc1', dict(self.PAYLOAD))
+        finally:
+            unblock_protocol()
+        self.assertFalse(result['success'])
+        self.assertEqual(result['code'], 'xianyu_not_ready')
+        logs = db.query("SELECT * FROM operation_logs WHERE action = 'publish_precheck'")
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0]['success'], 0)
+
+    def test_precheck_platform_failure_is_decorated_and_logged(self):
+        self.client.precheck_result = RealXianyuError('发布失败，请稍后重试吧~')
+        install_fake_protocol(self.client)
+        result = items.publish_precheck('acc1', dict(self.PAYLOAD))
+        self.assertFalse(result['success'])
+        logs = db.query("SELECT * FROM operation_logs WHERE action = 'publish_precheck'")
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0]['success'], 0)
+        self.assertTrue(result['message'])
+
+
 class FakeClientSignatureTest(unittest.TestCase):
     """**假协议层必须和真协议层同签名**（I6 的回归锁）。
 
@@ -1100,7 +1223,8 @@ class FakeClientSignatureTest(unittest.TestCase):
     """
 
     #: 服务层会真的去调的协议层方法（不是全量 API，只锁会被误写的这些）
-    CHECKED = ('list_items', 'publish_item', 'edit_item', 'downshelf', 'reshelf', 'set_status')
+    CHECKED = ('list_items', 'publish_item', 'publish_precheck', 'edit_item', 'downshelf',
+               'reshelf', 'set_status')
 
     def test_fake_client_signatures_match_real(self):
         for name in self.CHECKED:

@@ -62,6 +62,20 @@ class FakeClient:
         self.calls.append(('publish_item', payload))
         return {'item_id': 'NEW1', 'itemId': 'NEW1', 'raw': {'itemId': 'NEW1'}}
 
+    async def publish_precheck(self, payload: dict) -> Dict[str, Any]:
+        self.calls.append(('publish_precheck', payload))
+        return {
+            'ready': True,
+            'steps': [
+                {'step': 'images', 'ok': True, 'detail': '1 张图片已准备好'},
+                {'step': 'bad_words', 'ok': True, 'detail': None},
+                {'step': 'category', 'ok': True, 'detail': '推荐分类：其他闲置，分类路径 1 条'},
+            ],
+            'warnings': [],
+            'payload': {'publishScene': 'mainPublish'},
+            'category': {'ok': True, 'cards': 1},
+        }
+
     async def edit_item(self, item_id: str, payload: dict) -> Dict[str, Any]:
         self.calls.append(('edit_item', item_id, payload))
         return {'itemId': item_id, 'success': True}
@@ -512,6 +526,36 @@ class ItemsApiTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 503, resp.text)
         self.assertEqual(resp.json()['code'], 'xianyu_not_ready')
         self.assertEqual(updates(), [])
+
+    def test_publish_precheck_route_is_read_only(self):
+        """预检路由：200 + 分步结果，且**不创建商品、不发 items.updated**。"""
+        fake = FakeClient(ACC)
+        install_fake_protocol(fake)
+        resp = self.client.post(f'/api/items/{ACC}/publish/precheck',
+                                json={'title': '新商品', 'price': 10,
+                                      'images': ['https://img/a.jpg']},
+                                headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertTrue(data['ready'])
+        self.assertEqual([s['step'] for s in data['steps']],
+                         ['images', 'bad_words', 'category'])
+        self.assertIn('不会注册分类路径', data['note'])
+        self.assertEqual([c[0] for c in fake.calls], ['publish_precheck'])
+        self.assertEqual(updates(), [])
+        self.assertEqual(db.query('SELECT * FROM items'), [])
+
+    def test_publish_precheck_route_validates_fields(self):
+        install_fake_protocol(FakeClient(ACC))
+        resp = self.client.post(f'/api/items/{ACC}/publish/precheck',
+                                json={'price': 10}, headers=self.headers)
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertEqual(resp.json()['code'], 'invalid_fields')
+
+    def test_publish_precheck_route_needs_auth(self):
+        resp = self.client.post(f'/api/items/{ACC}/publish/precheck',
+                                json={'title': 'x', 'images': ['https://img/a.jpg']})
+        self.assertEqual(resp.status_code, 401, resp.text)
 
     def test_publish_route_emits_items_updated(self):
         install_fake_protocol(FakeClient(ACC))
