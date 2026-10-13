@@ -1149,7 +1149,13 @@ POST /api/items/{account_id}/publish/precheck
   channel_cate_id, channel_cate_name, tb_cat_id}, warnings[], note, fetched_at, source:'platform'}`；
   `note` 固定「预检只跑到「分类推荐」为止：不会注册分类，更不会发布。」。
   错误：400 `invalid_fields`（标题为空 / 没有图片）、400 `bad_request`（payload 为空 / 缺 account_id）、
-  409 `verification_required`、502 `protocol_error`、503 `xianyu_not_ready`。
+  404 `not_found`（账号不存在）、409 `verification_required`、502 `protocol_error`、503 `xianyu_not_ready`。
+  **账号前置检查走 `services.trade._client`**（不存在 → 404，没 Cookie / 需重登 → 409）：
+  打包版探针曾抓到「账号 id 打错回 503 `xianyu_not_ready`」——前端整页显示「后端未就绪」、
+  主管 AI 也会以为「过会儿重试就好」，而账号 id 打错重试一万次也不会好（第 44 批补）。
+  界面口径：发布弹窗的「发布前预检」按钮走同一个载荷构造函数（`buildPayload`），
+  步骤名翻中文（认不出的原样显示），三种状态分开说（全过 / 有步骤没过 / 平台没返回步骤），
+  **预检不挡发布**。
   `payload.itemCatDTO.catId` = **tbCatId**（channel cate id 在 `itemCatDTO.channelCatId`）。
   只读接口，**无 confirm**；只记一条 `publish_precheck` 审计，不写任何业务表、不发事件。
 

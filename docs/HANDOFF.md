@@ -2945,11 +2945,24 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `_SERVICE_TARGETS` 122、`_HANDLERS` 134。
 > 诚实边界：**预检本身一次真机请求都没发过**（只有离线单测）；它是只读的，
 > 既不注册分类也不发布，所以「真发布能不能成功」仍未验证。
+> **第 44 批补（打包版探针抓到的真缺陷）**：`C:\Users\Administrator\.dsh-tmp\fp44_packaged_probe.py`
+> 打 18400（只用不存在的账号 `9999999999999`，零平台请求）时发现「账号 id 打错」回的是
+> **503 `xianyu_not_ready`** 而不是 404 —— 根因是预检直接用 `common.get_client`，它把
+> 「账号不存在」和「账号没 Cookie」**都**报成 503。修法：预检改用 `services.trade._client`
+> （不存在 → 404 `not_found`，没 Cookie / 需重登 → 409），与 trade / drafts / fans_price /
+> disputes / im_actions 同口径；`test_services_items.py` 的 `PublishPrecheckTest` 与
+> `test_items_api.py` 补上「账号要在库里」的夹具与两条 404 断言。
+> 界面口径：发布弹窗加「发布前预检」按钮（`frontend/src/pages/Items.tsx` 的 `runPrecheck`
+> + `PRECHECK_STEP_LABELS` + `buildPayload` 抽成一处），三种状态分开说、**预检不挡发布**；
+> `items.css` 新增 `.it-precheck*` 十个类（只用既有变量、零 emoji）。
+> 复验：`cd frontend && npx tsc --noEmit` EXIT=0；`npx vite build` EXIT=0
+> （`index-70l17fQf.js` 685,250 B / `index-aeg2IrM1.css` 152,425 B）；
+> 全量 `backend/tests/run_all.py` → **`TOTAL 59  PASS 59  FAIL 0  CASES 2368  SKIPPED 2`**。
 
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**59 个测试文件、2366 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**59 个测试文件、2368 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
