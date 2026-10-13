@@ -43,6 +43,11 @@ ROUTE_MODULES: List[str] = [
     # `items` 里的 `GET /api/items/{account_id}/{item_id}` 抢先匹配，把字面量 `stats`
     # 当成 item_id（真机探针实测：挂错顺序 → 404「商品不存在: probe_acc/stats」）。
     'item_stats',
+    # `fans_price` 与 `items` 同前缀（`/api/items/{account_id}/{item_id}/fans-price`）。
+    # 它是**四段路径**，不会被 `items` 的三段 `GET /api/items/{account_id}/{item_id}`
+    # 抢先匹配（跟 `item_stats` 那个真事故不同），但照旧排在 `items` 之前 ——
+    # 以后要是有人往里加三段路径，顺序已经是对的。
+    'fans_price',
     'items',
     'chats',
     'uploads',
