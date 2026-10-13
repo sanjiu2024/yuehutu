@@ -2883,6 +2883,24 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 04-leave-confirm-dark,05-card-modal-dark,06-card-confirm-dark,07-chats-light}.png`。
 > 诚实边界：**三条写接口一次真机请求都没发过**（会真的改平台上会话归属/状态）；
 > `target_uid` 的真机形状也没有样例（客服列表接口在本机账号回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`）。
+> 重打包（`build_exe.ps1 -SkipFrontend`，exe **10,175,166 B / 2026-10-14 02:20:32**，
+> `--port 18400` `/api/health` 200 `frozen:true`）后打包版六项复验全绿：
+> `probe_write_gate.py`（已扩到 **64 个写端点**）→ **`GATE FAILURES: 0 / 64`**（3 条会话接管写未确认
+> 一律 400 `confirmation_required`，确认腿 400 `invalid_fields`）；`packaged_ui_smoke.py` → **29/29 页**；
+> `check_assets.py` → `ASSETS_MATCH=True`（`index-Csa2uoAK.js` / `index-CaWemXNE.css` 各 remote=local）；
+> `scripts/contrast_audit.py --threshold 4.0` → `[dark] 0/29`、`[light] 0/29`、`NON_GET=[]`；
+> `scripts/a11y_audit.py` → 三类问题全 0、焦点环全可见、`NON_GET=[]`；
+> **打包版会话接管只读探针** `C:\Users\Administrator\.dsh-tmp\im43_packaged_probe.py`
+> （**零平台请求**：账号用不存在的 `9999999999999`，只打「未确认 / 缺字段」这类本地就拦下的路径）
+> → `PROBLEMS []` 九条：四条未确认（含 `confirm:false`）400 `confirmation_required`、
+> 缺 `target_uid` 400 `invalid_fields`、两个会话 id 都不传 400 `invalid_fields`、
+> `conversation_id` 指向不存在的账号 404 `not_found`。
+> 顺带钉下一个方法码口径（新发现，已写进探针注释）：打包版对「**GET 打到只有 POST 的路径**」
+> 统一回 **404 `route_not_found`**（不是 405）——`/` 上托管前端的 `StaticFiles` 挂载先匹配上并回 404，
+> 再被统一信封包装；`GET /api/im/{acc}/cards`、`/sessions/leave`、`/api/disputes/{acc}/cid-1/urge`
+> 三条实测一致，前端把它当「后端未就绪」空态。**能用的 GET 路径不受影响**：
+> `GET /api/im/{acc}/blacklist` 回业务码 400 `invalid_fields`、`GET /api/disputes/{acc}/cid-1/messages`
+> 回 404 `not_found`。
 
 ## 四、已验证 / 未验证（诚实边界）
 
@@ -2935,9 +2953,9 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   packaged_ui_smoke.py`，复用 `scripts/ui_smoke.py::run_browser` 但不启后端、直接打
   `127.0.0.1:18400` 与**真实 `%APPDATA%` 数据目录**，截图 `logs/packaged_ui_smoke/`）。
   与上一条的区别：上一条跑的是源码 + 临时库，这一条跑的是**用户手上那个 exe**。
-- **打包版 confirm 闸门 60 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
-  （`confirmation_required` / `confirm_required`），**`GATE FAILURES: 0 / 60`**（探针随批次扩过：
-  19 → 22 → 26 → 28 → 30 → 33 → 41 → 47 → 52 → 53 → 56 → 60）；确认那一腿**故意换成不存在的
+- **打包版 confirm 闸门 64 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
+  （`confirmation_required` / `confirm_required`），**`GATE FAILURES: 0 / 64`**（探针随批次扩过：
+  19 → 22 → 26 → 28 → 30 → 33 → 41 → 47 → 52 → 53 → 56 → 60 → 61 → 64）；确认那一腿**故意换成不存在的
   账号**（`SAFE_ACC`），闸门放行后本地查库直接 404 `not_found` / 400 `invalid_fields` / 409 —— 既证明闸门放行，
   又保证**零平台请求**（2026-10-12 00:35 之前那版拿真账号打过，三条写请求真到了闲鱼，见第二十五批 161）。
   第 32 批新增八条（`shop.profile_{nick,desc,avatar}` / `sub.{create,delete,mobile,roles,password}`）：
@@ -2947,6 +2965,9 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   第 39 批新增一条物流写（`logistics.resend`）。
   第 40 批新增三条 IM 写（`im.blacklist_add` / `im.blacklist_remove` / `im.card_send`）：
   未确认 400 `confirmation_required`，确认腿 400 `invalid_fields`（账号用的是不存在的那个）。
+  第 43 批新增三条会话接管写（`im.session_deliver` / `im.session_leave` / `im.session_rejoin`）：
+  未确认与 `confirm:false` 都 400 `confirmation_required`，确认腿 400 `invalid_fields`；
+  同一批的只读探针还钉下「GET 打到只有 POST 的路径 → 404 `route_not_found`」这条方法码口径。
 - **真实浏览器实时刷新 2/2 阶段通过**（`scripts/live_refresh_smoke.py`）：后端写账号
   备注 / 新增提示词后，页面在 0.21 秒内自己更新，且 `navigation` 计数不变。
 - **真后端 + 真 `XianyuClient` + `httpx.MockTransport` 逐条打商品接口**（不碰真平台）：
