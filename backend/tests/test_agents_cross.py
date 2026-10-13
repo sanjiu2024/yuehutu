@@ -555,6 +555,10 @@ class MasterChatTest(unittest.TestCase):
             # ---- 改收货地址审批（1 读 + 2 写；读那条故意不是写名字的前缀）----
             'trade_order_address_request',
             'trade_order_address_agree', 'trade_order_address_refuse',
+            # ---- 第三十八批：关单 / 延时 / 提醒 / 运费退款 / 撤销投诉（1 读 + 5 写）----
+            'trade_close_reasons',
+            'trade_close_order', 'trade_delay_confirm', 'trade_remind_confirm',
+            'trade_postage_refund_pay', 'trade_complain_revoke',
             'master_chat',
         ]
         self.assertEqual(tools.TOOL_NAMES, expected)
@@ -588,6 +592,8 @@ class MasterChatTest(unittest.TestCase):
     'sub_account_update_password',
             'drafts_delete', 'drafts_batch_delete',
             'security_appeal_submit', 'security_appeal_submit_cro', 'security_appeal_urge',
+            'trade_close_order', 'trade_delay_confirm', 'trade_remind_confirm',
+            'trade_postage_refund_pay', 'trade_complain_revoke',
         ]
         for name in write_tools:
             spec = tools.get_tool(name)

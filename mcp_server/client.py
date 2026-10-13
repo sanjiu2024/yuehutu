@@ -652,6 +652,42 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'path_params': ['account_id', 'order_id'],
         'body': ['deliver_id', 'confirm'],
     },
+    'trade_close_reasons': {
+        'method': 'GET',
+        'path': '/api/trade/{account_id}/orders/{order_id}/close-reasons',
+        'path_params': ['account_id', 'order_id'],
+        'query': [],
+    },
+    'trade_close_order': {
+        'method': 'POST',
+        'path': '/api/trade/{account_id}/orders/{order_id}/close',
+        'path_params': ['account_id', 'order_id'],
+        'body': ['close_reason', 'confirm'],
+    },
+    'trade_delay_confirm': {
+        'method': 'POST',
+        'path': '/api/trade/{account_id}/orders/{order_id}/delay',
+        'path_params': ['account_id', 'order_id'],
+        'body': ['order_ids', 'days', 'confirm'],
+    },
+    'trade_remind_confirm': {
+        'method': 'POST',
+        'path': '/api/trade/{account_id}/orders/{order_id}/remind',
+        'path_params': ['account_id', 'order_id'],
+        'body': ['order_ids', 'remind_all', 'confirm'],
+    },
+    'trade_postage_refund_pay': {
+        'method': 'POST',
+        'path': '/api/trade/{account_id}/refunds/{refund_id}/postage-pay',
+        'path_params': ['account_id', 'refund_id'],
+        'body': ['order_id', 'pay_type', 'amount', 'confirm'],
+    },
+    'trade_complain_revoke': {
+        'method': 'POST',
+        'path': '/api/trade/{account_id}/complaints/{complain_id}/revoke',
+        'path_params': ['account_id', 'complain_id'],
+        'body': ['confirm'],
+    },
 }
 
 # 动词式别名（task-6 任务卡里的写法）→ 规范名

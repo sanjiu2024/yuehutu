@@ -325,6 +325,26 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
         'module': 'trade_write', 'fn': 'order_address_refuse', 'confirm': True,
         'method': 'POST',
         'path': '/api/trade/{account_id}/orders/{order_id}/modify-address/refuse'},
+    # ---- 第三十八批：订单页的关单 / 延时 / 提醒 / 运费退款 / 撤销投诉（1 读 + 5 写）----
+    'trade_close_reasons': {
+        'module': 'trade_write', 'fn': 'close_reasons', 'confirm': False,
+        'method': 'GET',
+        'path': '/api/trade/{account_id}/orders/{order_id}/close-reasons'},
+    'trade_close_order': {
+        'module': 'trade_write', 'fn': 'close_order', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/{order_id}/close'},
+    'trade_delay_confirm': {
+        'module': 'trade_write', 'fn': 'delay_confirm', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/{order_id}/delay'},
+    'trade_remind_confirm': {
+        'module': 'trade_write', 'fn': 'remind_confirm', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/{order_id}/remind'},
+    'trade_postage_refund_pay': {
+        'module': 'trade_write', 'fn': 'postage_refund_pay', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/refunds/{refund_id}/postage-pay'},
+    'trade_complain_revoke': {
+        'module': 'trade_write', 'fn': 'complain_revoke', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/complaints/{complain_id}/revoke'},
     # ---- 安全中心申诉：1 个只读表单 + 3 个会真的提交 ----
     'security_appeal_form': {
         'module': 'security_write', 'fn': 'appeal_form', 'confirm': False,
@@ -406,6 +426,22 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
     'quick_reply_phrase_delete': {
         'module': 'quick_reply', 'fn': 'delete_phrase', 'confirm': True,
         'method': 'POST', 'path': '/api/quick-reply/{account_id}/phrases/{content_id}/delete'},
+    # ---- 第三十八批：订单页 5 条写 ----
+    'trade_close_order': {
+        'module': 'trade_write', 'fn': 'close_order', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/{order_id}/close'},
+    'trade_delay_confirm': {
+        'module': 'trade_write', 'fn': 'delay_confirm', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/{order_id}/delay'},
+    'trade_remind_confirm': {
+        'module': 'trade_write', 'fn': 'remind_confirm', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/{order_id}/remind'},
+    'trade_postage_refund_pay': {
+        'module': 'trade_write', 'fn': 'postage_refund_pay', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/refunds/{refund_id}/postage-pay'},
+    'trade_complain_revoke': {
+        'module': 'trade_write', 'fn': 'complain_revoke', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/complaints/{complain_id}/revoke'},
 }
 
 WRITE_TOOL_NAMES = list(WRITE_TOOLS)
@@ -521,6 +557,17 @@ _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
         'account_id': 'acc-x', 'sub_id': '9001', 'role_ids': '11', 'confirm': False},
     'sub_account_update_password': {
         'account_id': 'acc-x', 'sub_id': '9001', 'password': 'abc12345', 'confirm': False},
+    # ---- 第三十八批：订单页 5 条写，带全必填字段但 confirm=False ----
+    'trade_close_order': {
+        'account_id': 'acc-x', 'order_id': 'o1', 'close_reason': '买家不想要了', 'confirm': False},
+    'trade_delay_confirm': {
+        'account_id': 'acc-x', 'order_ids': 'o1', 'days': '3', 'confirm': False},
+    'trade_remind_confirm': {
+        'account_id': 'acc-x', 'order_ids': 'o1', 'confirm': False},
+    'trade_postage_refund_pay': {
+        'account_id': 'acc-x', 'order_id': 'o1', 'refund_id': 'r1', 'confirm': False},
+    'trade_complain_revoke': {
+        'account_id': 'acc-x', 'complain_id': 'c1', 'confirm': False},
 }
 
 

@@ -147,7 +147,11 @@ WRITE_PREFIX = ('trade_write_', 'trade_address_', 'promotion_write_', 'qualifica
                 # 那会把只读的 quick_reply_list 一起误判成写工具。
                 'quick_reply_group_create', 'quick_reply_group_update',
                 'quick_reply_group_delete', 'quick_reply_phrase_create',
-                'quick_reply_phrase_update', 'quick_reply_phrase_delete')
+                'quick_reply_phrase_update', 'quick_reply_phrase_delete',
+                # 第三十八批：订单页 5 条写（只读的 trade_close_reasons 故意不在，
+                # 它名字里没有写动作，靠**完整写工具名**而不是 'trade_' 宽前缀。）
+                'trade_close_order', 'trade_delay_confirm', 'trade_remind_confirm',
+                'trade_postage_refund_pay', 'trade_complain_revoke')
 write_names = [n for n in specs if n.startswith(WRITE_PREFIX) and n != 'promotion_write_actions']
 print(f'write_tools={len(write_names)}')
 for s in T.TOOL_SPECS:

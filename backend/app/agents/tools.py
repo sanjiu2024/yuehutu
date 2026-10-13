@@ -2200,6 +2200,128 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---- 第三十八批：订单页的关单 / 延时 / 提醒 / 运费退款 / 撤销投诉（1 读 + 5 写）----
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_close_reasons',
+            'description': '拿「关闭订单」的原因候选（**只读**）。官方关单弹窗先调它，'
+                           '把平台返回的原因列表当选项。平台没给列表时返回 null，'
+                           '**不要自己编一个原因**。account_id、order_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '订单 id'},
+                },
+                'required': ['account_id', 'order_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_close_order',
+            'description': '关闭订单（卖家侧关单）。**不可撤销**，关掉交易就结束了；'
+                           '官方原话提醒「确认关闭后，请确保已和买家协商达成一致，'
+                           '否则您将面临投诉或赔偿」。原因先用 trade_close_reasons 拿，'
+                           '别自己编。'
+                           + _WRITE_HINT + 'account_id、order_id、close_reason 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '订单 id'},
+                    'close_reason': {'type': 'string', 'description': '关单原因（来自 trade_close_reasons）'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'order_id', 'close_reason', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_delay_confirm',
+            'description': '延长买家的收货时间（给买家更多时间确认收货，不至于急着申请退款）。'
+                           'days 只认官方那四档：3 / 5 / 7 / 10。order_ids 收数组，也收逗号串。'
+                           + _WRITE_HINT + 'account_id、order_ids、days 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_ids': {'type': 'string', 'description': '订单 id 列表（逗号分隔）'},
+                    'days': {'type': 'string', 'description': '延长天数，只能是 3/5/7/10'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'order_ids', 'days', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_remind_confirm',
+            'description': '提醒买家确认收货。order_ids 收数组，也收逗号串；'
+                           'remind_all=true 表示平台侧的「全部提醒」（官方也有这个开关）。'
+                           + _WRITE_HINT + 'account_id、order_ids 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_ids': {'type': 'string', 'description': '订单 id 列表（逗号分隔）'},
+                    'remind_all': {'type': 'boolean', 'description': '是否用平台的「全部提醒」开关'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'order_ids', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_postage_refund_pay',
+            'description': '支付运费退款 —— **真的付钱**（从支付宝或保证金扣）。'
+                           'amount 只是给你念给卖家听的金额，平台请求里不带它。'
+                           + _WRITE_HINT + 'account_id、order_id、refund_id 必填；'
+                           'pay_type 取 alipay（默认）/ deposit。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '订单 id'},
+                    'refund_id': {'type': 'string', 'description': '退款单 id'},
+                    'pay_type': {'type': 'string', 'description': 'alipay（默认）或 deposit'},
+                    'amount': {'type': 'string', 'description': '退款金额（元，只用于确认与审计）'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'order_id', 'refund_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_complain_revoke',
+            'description': '撤销投诉申请（撤销自己发起的那条投诉）。'
+                           + _WRITE_HINT + 'account_id、complain_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'complain_id': {'type': 'string', 'description': '投诉单 id'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'complain_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 主管 AI（只给 MCP 侧） ----------------
     {
         'type': 'function',
@@ -2534,6 +2656,12 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'trade_order_address_request': ['trade_write', 'order_address_info'],
     'trade_order_address_agree': ['trade_write', 'order_address_agree'],
     'trade_order_address_refuse': ['trade_write', 'order_address_refuse'],
+    'trade_close_reasons': ['trade_write', 'close_reasons'],
+    'trade_close_order': ['trade_write', 'close_order'],
+    'trade_delay_confirm': ['trade_write', 'delay_confirm'],
+    'trade_remind_confirm': ['trade_write', 'remind_confirm'],
+    'trade_postage_refund_pay': ['trade_write', 'postage_refund_pay'],
+    'trade_complain_revoke': ['trade_write', 'complain_revoke'],
     # ---- 话术 / 快捷回复（1 读 + 6 写）----
     'quick_reply_list': ['quick_reply', 'list_groups'],
     'quick_reply_group_create': ['quick_reply', 'create_group'],
@@ -2753,6 +2881,12 @@ _HANDLERS = {
     'trade_order_address_request': lambda a: _dispatch_service('trade_order_address_request', a),
     'trade_order_address_agree': lambda a: _dispatch_service('trade_order_address_agree', a),
     'trade_order_address_refuse': lambda a: _dispatch_service('trade_order_address_refuse', a),
+    'trade_close_reasons': lambda a: _dispatch_service('trade_close_reasons', a),
+    'trade_close_order': lambda a: _dispatch_service('trade_close_order', a),
+    'trade_delay_confirm': lambda a: _dispatch_service('trade_delay_confirm', a),
+    'trade_remind_confirm': lambda a: _dispatch_service('trade_remind_confirm', a),
+    'trade_postage_refund_pay': lambda a: _dispatch_service('trade_postage_refund_pay', a),
+    'trade_complain_revoke': lambda a: _dispatch_service('trade_complain_revoke', a),
     # ---- 话术 / 快捷回复 ----
     'quick_reply_list': lambda a: _dispatch_service('quick_reply_list', a),
     'quick_reply_group_create': lambda a: _dispatch_service('quick_reply_group_create', a),
