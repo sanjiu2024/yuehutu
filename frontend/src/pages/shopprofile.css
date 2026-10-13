@@ -1,0 +1,132 @@
+/* 店铺资料页（第三十二批）。只新增 sp- 前缀的选择器，不动任何既有 class。 */
+
+.sp-body {
+  display: flex;
+  gap: var(--sp-4, 16px);
+  align-items: flex-start;
+  padding: var(--sp-3, 12px) 0;
+}
+
+.sp-avatar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2, 8px);
+  align-items: center;
+  width: 120px;
+  flex: none;
+}
+
+.sp-avatar-img {
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+}
+
+.sp-avatar-none {
+  width: 96px;
+  height: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius);
+  border: 1px dashed var(--border);
+  background: var(--bg-soft);
+  color: var(--text-mute);
+  font-size: var(--fs-18, 18px);
+}
+
+.sp-avatar-hint {
+  font-size: var(--fs-12, 12px);
+  color: var(--text-mute);
+  text-align: center;
+}
+
+.sp-grid {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--sp-2, 8px) var(--sp-4, 16px);
+}
+
+.sp-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: var(--sp-2, 8px) var(--sp-3, 12px);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+}
+
+.sp-k {
+  font-size: var(--fs-12, 12px);
+  color: var(--text-mute);
+}
+
+.sp-v {
+  font-size: var(--fs-14, 14px);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sp-v-wrap {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.sp-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2, 8px);
+}
+
+.sp-input {
+  width: 100%;
+  padding: var(--sp-2, 8px) var(--sp-3, 12px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  color: var(--text);
+  font-size: var(--fs-14, 14px);
+  font-family: inherit;
+  resize: vertical;
+}
+
+.sp-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.45);
+}
+
+.sp-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2, 8px);
+  margin-top: var(--sp-2, 8px);
+}
+
+.sp-fact {
+  display: block;
+  margin-top: 4px;
+  font-size: var(--fs-13, 13px);
+  word-break: break-all;
+}
+
+@media (max-width: 820px) {
+  .sp-body {
+    flex-direction: column;
+  }
+
+  .sp-avatar {
+    width: auto;
+    flex-direction: row;
+    align-items: center;
+  }
+}

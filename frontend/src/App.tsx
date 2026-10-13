@@ -26,6 +26,7 @@ import { EvaluationsPage } from './pages/Evaluations'
 import { ComplaintsPage } from './pages/Complaints'
 import { ReturnAddressesPage } from './pages/ReturnAddresses'
 import { SubAccountsPage } from './pages/SubAccounts'
+import { ShopProfilePage } from './pages/ShopProfile'
 import { CsRoutingPage } from './pages/CsRouting'
 import { DataOverviewPage } from './pages/DataOverview'
 import { FansPage } from './pages/Fans'
@@ -97,8 +98,9 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
   {
     title: '小铺',
     items: [
-      { key: 'sub-accounts', label: '子账号', icon: 'user', desc: '子账号与权限' },
-      { key: 'cs-routing', label: '客服分流', icon: 'send', desc: '客服分组与分流规则' },
+      { key: 'shop-profile', label: '店铺资料', icon: 'settings', desc: '店铺昵称 / 简介 / 头像（可改，需确认）' },
+      { key: 'sub-accounts', label: '子账号', icon: 'user', desc: '子账号与权限（表格只读，写操作需确认）' },
+      { key: 'cs-routing', label: '客服分流', icon: 'send', desc: '客服分组与分流规则（可改，需确认）' },
     ],
   },
   {
@@ -356,6 +358,7 @@ function Shell() {
             {page === 'complaints' && <ComplaintsPage />}
             {page === 'return-addresses' && <ReturnAddressesPage />}
             {page === 'sub-accounts' && <SubAccountsPage />}
+            {page === 'shop-profile' && <ShopProfilePage />}
             {page === 'cs-routing' && <CsRoutingPage />}
             {page === 'data-overview' && <DataOverviewPage />}
             {page === 'fans' && <FansPage />}

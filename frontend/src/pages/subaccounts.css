@@ -1,0 +1,62 @@
+/* 子账号写操作面板（第三十二批）。只新增 sa- 前缀选择器，不动 shop.css / styles.css。 */
+
+.sa-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2, 8px);
+}
+
+.sa-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2, 8px);
+}
+
+.sa-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sa-input {
+  width: 100%;
+  padding: var(--sp-2, 8px) var(--sp-3, 12px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  color: var(--text);
+  font-size: var(--fs-14, 14px);
+  font-family: inherit;
+}
+
+.sa-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.45);
+}
+
+.sa-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2, 8px) var(--sp-3, 12px);
+  padding: var(--sp-2, 8px) var(--sp-3, 12px);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.sa-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2, 8px);
+  margin-top: var(--sp-2, 8px);
+}
+
+.sa-fact {
+  display: block;
+  margin-top: 4px;
+  font-size: var(--fs-13, 13px);
+  word-break: break-all;
+}

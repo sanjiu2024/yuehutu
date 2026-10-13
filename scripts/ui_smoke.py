@@ -51,6 +51,7 @@ PAGES = [
     ('complaints', '投诉'),
     ('return-addresses', '退货地址'),
     ('sub-accounts', '子账号'),
+    ('shop-profile', '店铺资料'),
     ('cs-routing', '客服分流'),
     ('data-overview', '数据总览'),
     ('fans', '粉丝数据'),
