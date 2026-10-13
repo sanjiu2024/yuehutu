@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""IM 会话操作服务：拉黑状态（只读）+ 拉黑买家 / 解除拉黑 / 发商品卡片（写）。
+"""IM 会话操作服务：拉黑状态（只读）+ 拉黑买家 / 解除拉黑 / 发商品卡片 / 转交会话 /
+结束会话 / 重新发起聊天（写）。
 
 协议层见 `xianyu/im_actions.py`（官方 IM bundle 静态取证，零平台请求）。这里只做三件事：
 拼请求、把平台返回翻成人能看的结果、把写操作的三步顺序钉死。
@@ -231,11 +232,14 @@ def blacklist_status(account_id: str, session_id: Any,
 
 
 def _write(action: str, label: str, account_id: str, audit: str,
-           confirm: Any, **kwargs: Any) -> Dict[str, Any]:
-    """三条写接口共用的一条路：确认 → 字段校验 → 建客户端 → 发 → 判回执 → 记日志 + 播事件。
+           confirm: Any, parser: Any = None, **kwargs: Any) -> Dict[str, Any]:
+    """六条写接口共用的一条路：确认 → 字段校验 → 建客户端 → 发 → 判回执 → 记日志 + 播事件。
 
     `session_id` / `conversation_id` 在**字段校验**那一步归一成平台 cid（见 `_resolve_session`），
     归一失败就当作字段问题直接返回，不会走到建客户端。
+
+    `parser` 默认用 `proto.parse_action`（只判信封）；会话接管族传
+    `proto.parse_session_action`（多认一层「平台自己说 success=false」）。
     """
     problem = _confirm_gate(label, confirm)
     if problem is not None:
@@ -256,7 +260,7 @@ def _write(action: str, label: str, account_id: str, audit: str,
     if proto.envelope_error(value):
         return _platform_failure(value, api, f'平台没有接受这次{label}')
 
-    parsed = proto.parse_action(value)
+    parsed = (parser or proto.parse_action)(value)
     if not parsed['saved']:
         # 业务层拒绝（信封 success=True 但 code 不是 success）时，把**平台那句原话**透出去：
         # `_platform_failure` 只在客户端信封失败时才有原文，这里把业务原文当兜底文案传进去。
@@ -282,6 +286,14 @@ def _write(action: str, label: str, account_id: str, audit: str,
     }
     if 'itemId' in data:
         payload['item_id'] = data['itemId']
+    if 'targetUid' in data:
+        payload['target_uid'] = data['targetUid']
+    # 会话接管族多一层平台回执：`data.success`（三态）与平台回显的 sessionId。
+    # 只在该族出现（`parse_action` 不产这两个键），所以用存在性判断而不是动作白名单。
+    if 'platform_success' in parsed:
+        payload['platform_success'] = parsed['platform_success']
+    if parsed.get('returned_session_id'):
+        payload['returned_session_id'] = parsed['returned_session_id']
     return _stamp(payload)
 
 
@@ -313,3 +325,40 @@ def send_item_card(account_id: str, session_id: Any, item_id: Any,
     return _write('card_send', '发送商品卡片', account_id, 'im_card_send',
                   confirm, session_id=session_id, item_id=item_id,
                   conversation_id=conversation_id)
+
+
+def session_deliver(account_id: str, target_uid: Any, session_id: Any = None,
+                    confirm: Any = None, conversation_id: Any = None) -> Dict[str, Any]:
+    """把会话**转交**给指定客服（`mtop.taobao.idlemessage.customer.deliver.session`，版本 1.0）。
+
+    `target_uid` 取自客服列表（`GET /api/shop/{account_id}/cs-routing` 的 `agents[]`），
+    服务层**不做格式猜测**，只要求非空（见协议层 `_target_uid`）。
+    """
+    return _write('session_deliver', '转交会话', account_id, 'im_session_deliver',
+                  confirm, parser=proto.parse_session_action,
+                  session_id=session_id, conversation_id=conversation_id,
+                  target_uid=target_uid)
+
+
+def session_leave(account_id: str, session_id: Any = None, confirm: Any = None,
+                  conversation_id: Any = None) -> Dict[str, Any]:
+    """**结束**当前会话（`mtop.taobao.idlemessage.customer.leave.session`，版本 1.0）。"""
+    return _write('session_leave', '结束会话', account_id, 'im_session_leave',
+                  confirm, parser=proto.parse_session_action,
+                  session_id=session_id, conversation_id=conversation_id)
+
+
+def session_rejoin(account_id: str, session_id: Any = None, confirm: Any = None,
+                   conversation_id: Any = None) -> Dict[str, Any]:
+    """重新发起聊天（`mtop.taobao.idlemessage.customer.rejoin.session`，版本 1.0）。
+
+    这一条**有真回执**：平台回 `data.success` 布尔，所以把它透成
+    `platform_success`（三态），`success=false` 时 `saved` 也会是 `False`。
+    """
+    result = _write('session_rejoin', '重新发起聊天', account_id, 'im_session_rejoin',
+                    confirm, parser=proto.parse_session_action,
+                    session_id=session_id, conversation_id=conversation_id)
+    if result.get('action') == 'session_rejoin':
+        # 与「拉黑 / 解除」同一条纪律：动作成功才补这个便于前端说话的名
+        result['rejoined'] = True
+    return result

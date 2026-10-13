@@ -82,6 +82,21 @@ ACTION_BIZ_FAIL = {
 #: 真机原文：卖家工作台无权限。
 NO_PERMISSION = {'success': False, 'message': 'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问',
                  'ret': ['FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问']}
+#: 转交 / 结束会话：官方只看信封就提示成功（业务体里没有 `success` 布尔）。
+SESSION_OK = {
+    'success': True, 'data': {'code': 'success'},
+    'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功'],
+}
+#: 重新发起聊天：官方带真回执 `data.success` 与平台回显的 sessionId。
+REJOIN_OK = {
+    'success': True, 'data': {'success': True, 'sessionId': 'cid-9'},
+    'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功'],
+}
+#: 重新发起但平台自己说没成功（信封 success=True 也不行）。
+REJOIN_SAYS_FALSE = {
+    'success': True, 'data': {'success': False, 'message': '会话已结束'},
+    'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功'],
+}
 
 #: 三条写路由 + 各自的接口名（confirm 由用例单独塞）。
 WRITE_ROUTES: List[tuple] = [
@@ -90,6 +105,16 @@ WRITE_ROUTES: List[tuple] = [
      proto.BLACKLIST_REMOVE_API),
     ('POST', f'{BASE}/{ACC}/cards', {'session_id': SESSION, 'item_id': '9001'},
      proto.CARD_SEND_API),
+]
+
+#: 会话接管的三条写路由（第 43 批）：转交 / 结束 / 重新发起。
+SESSION_WRITE_ROUTES: List[tuple] = [
+    ('POST', f'{BASE}/{ACC}/sessions/transfer',
+     {'session_id': SESSION, 'target_uid': '8888'}, proto.SESSION_DELIVER_API),
+    ('POST', f'{BASE}/{ACC}/sessions/leave', {'session_id': SESSION},
+     proto.SESSION_LEAVE_API),
+    ('POST', f'{BASE}/{ACC}/sessions/rejoin', {'session_id': SESSION},
+     proto.SESSION_REJOIN_API),
 ]
 
 FALSE_LIKE = ('false', 'FALSE', ' false ', 'no', 'yes', '0', 0, '', None, 2, [], {})
@@ -164,6 +189,9 @@ def full_client(**overrides: Any) -> FakeImClient:
         proto.BLACKLIST_ADD_API: ACTION_OK,
         proto.BLACKLIST_REMOVE_API: ACTION_OK,
         proto.CARD_SEND_API: ACTION_OK,
+        proto.SESSION_DELIVER_API: SESSION_OK,
+        proto.SESSION_LEAVE_API: SESSION_OK,
+        proto.SESSION_REJOIN_API: REJOIN_OK,
     }
     payloads.update(overrides)
     return FakeImClient(payloads)
@@ -194,12 +222,20 @@ class ImActionsProtocolTest(unittest.TestCase):
 
     def test_whitelist_has_three_writes_and_one_read(self):
         self.assertEqual(proto.READ_APIS, (proto.BLACKLIST_QUERY_API,))
-        self.assertEqual(proto.ACTIONS, ('blacklist_add', 'blacklist_remove', 'card_send'))
+        self.assertEqual(proto.ACTIONS, ('blacklist_add', 'blacklist_remove', 'card_send',
+                                         'session_deliver', 'session_leave',
+                                         'session_rejoin'))
         for action, spec in proto.WRITE_APIS.items():
             self.assertIn(spec['api'], proto.ALL_APIS, action)
             self.assertTrue(spec['evidence'], action)
             self.assertTrue(spec['data'], action)
             self.assertIn(spec['version'], ('1.0', '2.0'), action)
+
+    def test_blacklist_family_stays_three_plus_one(self):
+        """第 43 批加的会话接管族不许混进拉黑族的口径。"""
+        self.assertEqual(proto.BLACKLIST_ADD_API, 'mtop.taobao.idlemessage.pc.blacklist.add')
+        self.assertEqual(proto.WRITE_VERSIONS[proto.BLACKLIST_ADD_API], '2.0')
+        self.assertNotIn(proto.SESSION_DELIVER_API, proto.READ_APIS)
 
     def test_assert_write_rejects_read_api(self):
         for api in proto.WRITE_API_SET:
@@ -637,7 +673,10 @@ class ImRoutesTest(unittest.TestCase):
         self.assertIn(('/api/im/{account_id}/blacklist', 'POST'), pairs)
         self.assertIn(('/api/im/{account_id}/blacklist/remove', 'POST'), pairs)
         self.assertIn(('/api/im/{account_id}/cards', 'POST'), pairs)
-        self.assertEqual(len(im_api.router.routes), 4)
+        self.assertIn(('/api/im/{account_id}/sessions/transfer', 'POST'), pairs)
+        self.assertIn(('/api/im/{account_id}/sessions/leave', 'POST'), pairs)
+        self.assertIn(('/api/im/{account_id}/sessions/rejoin', 'POST'), pairs)
+        self.assertEqual(len(im_api.router.routes), 7)
 
     def test_main_registers_the_module(self):
         import backend.app.main as app_main
@@ -751,6 +790,211 @@ class ImConversationIdTest(ImActionsPageTest):
         self.assertEqual(resp.status_code, 400, resp.text)
         self.assertEqual(resp.json()['code'], 'invalid_fields')
         self.assertEqual(self.fake.calls, [])
+
+class ImSessionProtocolTest(unittest.TestCase):
+    """会话接管族协议层：接口名、版本、载荷、严格确认、回执三态。"""
+
+    def test_api_names_are_verbatim(self):
+        self.assertEqual(proto.SESSION_DELIVER_API,
+                         'mtop.taobao.idlemessage.customer.deliver.session')
+        self.assertEqual(proto.SESSION_LEAVE_API,
+                         'mtop.taobao.idlemessage.customer.leave.session')
+        self.assertEqual(proto.SESSION_REJOIN_API,
+                         'mtop.taobao.idlemessage.customer.rejoin.session')
+
+    def test_three_actions_are_white_listed_writes(self):
+        for action in ('session_deliver', 'session_leave', 'session_rejoin'):
+            self.assertIn(action, proto.WRITE_APIS)
+            self.assertIn(action, proto.ACTIONS)
+        # 只读集合里不许混进这三条
+        for api in (proto.SESSION_DELIVER_API, proto.SESSION_LEAVE_API,
+                    proto.SESSION_REJOIN_API):
+            self.assertNotIn(api, proto.READ_APIS)
+
+    def test_deliver_payload_is_verbatim(self):
+        api, data, version = proto.session_deliver_request(SESSION, '8888', confirm=True)
+        self.assertEqual(api, proto.SESSION_DELIVER_API)
+        self.assertEqual(data, {'sessionId': SESSION, 'targetUid': '8888'})
+        self.assertEqual(version, '1.0')
+
+    def test_leave_and_rejoin_carry_only_the_session_id(self):
+        for builder in (proto.session_leave_request, proto.session_rejoin_request):
+            _api, data, version = builder(SESSION, confirm=True)
+            self.assertEqual(data, {'sessionId': SESSION})
+            self.assertEqual(version, '1.0')
+
+    def test_confirm_is_identity_not_truthiness(self):
+        for bad in ('true', '1', 1, 'yes', False, None):
+            with self.assertRaises(proto.WriteNotConfirmed):
+                proto.session_leave_request(SESSION, confirm=bad)
+            with self.assertRaises(proto.WriteNotConfirmed):
+                proto.session_deliver_request(SESSION, '8888', confirm=bad)
+
+    def test_blank_target_uid_is_rejected(self):
+        for bad in ('', '   ', None):
+            with self.assertRaises(ValueError):
+                proto.session_deliver_request(SESSION, bad, confirm=True)
+
+    def test_too_long_target_uid_is_rejected(self):
+        with self.assertRaises(ValueError):
+            proto.session_deliver_request(
+                SESSION, 'u' * (proto.TARGET_UID_MAX + 1), confirm=True)
+
+    def test_deliver_without_a_target_is_rejected(self):
+        # `target_uid` 是位置参数：漏传就是编程错误（TypeError），不是 400。
+        with self.assertRaises(TypeError):
+            proto.request_of('session_deliver', confirm=True, session_id=SESSION)
+
+    def test_parse_session_action_reads_the_receipt(self):
+        parsed = proto.parse_session_action(REJOIN_OK)
+        self.assertTrue(parsed['saved'])
+        self.assertIs(parsed['platform_success'], True)
+        self.assertEqual(parsed['returned_session_id'], 'cid-9')
+        self.assertEqual(parsed['platform_message'], '')
+
+    def test_platform_says_false_wins_over_the_envelope(self):
+        parsed = proto.parse_session_action(REJOIN_SAYS_FALSE)
+        self.assertFalse(parsed['saved'])
+        self.assertIs(parsed['platform_success'], False)
+        self.assertIn('会话已结束', parsed['platform_message'])
+
+    def test_missing_receipt_key_is_none_not_false(self):
+        parsed = proto.parse_session_action(SESSION_OK)
+        self.assertTrue(parsed['saved'])
+        self.assertIsNone(parsed['platform_success'])
+        self.assertIsNone(parsed['returned_session_id'])
+
+    def test_envelope_failure_is_not_saved(self):
+        self.assertFalse(proto.parse_session_action(NO_PERMISSION)['saved'])
+
+
+class ImSessionWriteTest(ImActionsPageTest):
+    """会话接管三条写：载荷、审计、事件、闸门、失败都不留痕。"""
+
+    def setUp(self):
+        super().setUp()
+        db.execute('DELETE FROM messages')
+        db.execute('DELETE FROM conversations')
+
+    def seed_conversation(self, account_id: str = ACC, peer: str = 'buyer-1',
+                          cid: str = '') -> int:
+        row_id = int(db.execute(
+            'INSERT INTO conversations(account_id, peer_user_id, peer_nickname) '
+            'VALUES(?,?,?)', (account_id, peer, '买家')))
+        if cid:
+            db.execute(
+                'INSERT INTO messages(conversation_id, direction, sender, content, meta) '
+                'VALUES(?,?,?,?,?)',
+                (row_id, 'in', 'buyer', '你好',
+                 json.dumps({'cid': cid}, ensure_ascii=False)))
+        return row_id
+
+    def test_deliver_happy_path(self):
+        before = len(self.topics(0))
+        data = self.ok_data(f'{BASE}/{ACC}/sessions/transfer',
+                            {'session_id': SESSION, 'target_uid': '8888', 'confirm': True})
+        self.assertTrue(data['saved'])
+        self.assertEqual(data['action'], 'session_deliver')
+        self.assertEqual(data['session_id'], SESSION)
+        self.assertEqual(data['target_uid'], '8888')
+        self.assertEqual(data['submitted'], {'sessionId': SESSION, 'targetUid': '8888'})
+        self.assertIsNone(data['platform_success'])
+        call = self.fake.call_of(proto.SESSION_DELIVER_API)
+        self.assertEqual(call['data'], {'sessionId': SESSION, 'targetUid': '8888'})
+        self.assertEqual(call['v'], '1.0')
+        self.assertEqual([row['action'] for row in self.operations()], ['im_session_deliver'])
+        self.assertIn('chats.changed', self.topics(before))
+
+    def test_leave_happy_path(self):
+        data = self.ok_data(f'{BASE}/{ACC}/sessions/leave',
+                            {'session_id': SESSION, 'confirm': True})
+        self.assertTrue(data['saved'])
+        self.assertEqual(data['action'], 'session_leave')
+        self.assertEqual(self.fake.call_of(proto.SESSION_LEAVE_API)['v'], '1.0')
+        self.assertEqual([row['action'] for row in self.operations()], ['im_session_leave'])
+
+    def test_rejoin_reports_the_platform_receipt(self):
+        data = self.ok_data(f'{BASE}/{ACC}/sessions/rejoin',
+                            {'session_id': SESSION, 'confirm': True})
+        self.assertTrue(data['saved'])
+        self.assertTrue(data['rejoined'])
+        self.assertIs(data['platform_success'], True)
+        self.assertEqual(data['returned_session_id'], 'cid-9')
+        self.assertEqual([row['action'] for row in self.operations()], ['im_session_rejoin'])
+
+    def test_false_like_confirms_never_send(self):
+        for _method, route, body, _api in SESSION_WRITE_ROUTES:
+            for bad in FALSE_LIKE:
+                self.fake.calls.clear()
+                resp = self.post(route, dict(body, confirm=bad))
+                self.assertEqual(resp.status_code, 400, '%s confirm=%r' % (route, bad))
+                self.assertEqual(resp.json()['code'], 'confirmation_required')
+                self.assertEqual(self.fake.calls, [], route)
+
+    def test_string_true_confirm_sends(self):
+        data = self.ok_data(f'{BASE}/{ACC}/sessions/leave',
+                            {'session_id': SESSION, 'confirm': 'true'})
+        self.assertTrue(data['saved'])
+
+    def test_blank_target_uid_is_400_and_sends_nothing(self):
+        resp = self.post(f'{BASE}/{ACC}/sessions/transfer',
+                         {'session_id': SESSION, 'target_uid': '  ', 'confirm': True})
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertEqual(resp.json()['code'], 'invalid_fields')
+        self.assertIn('转交目标客服', resp.json()['message'])
+        self.assertEqual(self.fake.calls, [])
+
+    def test_neither_id_is_400(self):
+        for _method, route, body, _api in SESSION_WRITE_ROUTES:
+            resp = self.post(route, {'confirm': True})
+            self.assertEqual(resp.status_code, 400, route)
+            self.assertEqual(resp.json()['code'], 'invalid_fields')
+            self.assertEqual(self.fake.calls, [], route)
+
+    def test_platform_says_false_is_502_without_log_or_event(self):
+        self.fake.payloads[proto.SESSION_REJOIN_API] = REJOIN_SAYS_FALSE
+        before = len(self.topics(0))
+        resp = self.post(f'{BASE}/{ACC}/sessions/rejoin',
+                         {'session_id': SESSION, 'confirm': True})
+        self.assertEqual(resp.status_code, 502, resp.text)
+        self.assertIn('会话已结束', resp.text)
+        self.assertEqual(self.operations(), [])
+        self.assertEqual(self.topics(before), [])
+
+    def test_platform_refusal_is_502_and_keeps_login_state(self):
+        self.fake.payloads[proto.SESSION_LEAVE_API] = NO_PERMISSION
+        resp = self.post(f'{BASE}/{ACC}/sessions/leave',
+                         {'session_id': SESSION, 'confirm': True})
+        self.assertEqual(resp.status_code, 502, resp.text)
+        self.assertIn('无权限访问', resp.text)
+        self.assertEqual(self.operations(), [])
+        self.assertEqual(self.login_state(), 'active')
+
+    def test_session_expiry_is_409(self):
+        self.fake.errors[proto.SESSION_REJOIN_API] = SessionExpiredError('过期了')
+        resp = self.post(f'{BASE}/{ACC}/sessions/rejoin',
+                         {'session_id': SESSION, 'confirm': True})
+        self.assertEqual(resp.status_code, 409, resp.text)
+        self.assertEqual(self.login_state(), 'need_relogin')
+
+    def test_only_one_platform_call_per_action(self):
+        for _method, route, body, api in SESSION_WRITE_ROUTES:
+            self.fake.calls.clear()
+            self.ok_data(route, dict(body, confirm=True))
+            self.assertEqual(self.fake.apis(), [api], route)
+
+    def test_conversation_id_also_works_for_sessions(self):
+        row_id = self.seed_conversation(cid='cid-from-db')
+        data = self.ok_data(f'{BASE}/{ACC}/sessions/leave',
+                            {'conversation_id': row_id, 'confirm': True})
+        self.assertTrue(data['saved'])
+        self.assertEqual(self.fake.call_of(proto.SESSION_LEAVE_API)['data'],
+                         {'sessionId': 'cid-from-db'})
+
+    def test_log_detail_carries_the_session_id(self):
+        self.ok_data(f'{BASE}/{ACC}/sessions/leave',
+                     {'session_id': SESSION, 'confirm': True})
+        self.assertIn(SESSION, str(self.operations()[0]['detail']))
 
 
 if __name__ == '__main__':

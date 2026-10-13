@@ -1,8 +1,8 @@
-"""IM 会话操作接口（官方闲鱼客服工作台「会话 → 拉黑买家 / 发商品卡片」）。
+"""IM 会话操作接口（官方闲鱼客服工作台「会话 → 拉黑买家 / 发商品卡片 / 转交 / 结束 / 重新发起」）。
 
 为什么单开 `/api/im` 而不并进 `/api/chats`：`/api/chats` 那一族是**消息通道**的只读视图
 （会话列表、历史消息、同步），路径里全是 `chats`；这一族是**对某个会话做一件事**
-（拉黑 / 解除 / 发卡片），协议来源也不同模块（`xianyu/im_actions.py`），
+（拉黑 / 解除 / 发卡片 / 转交 / 结束 / 重新发起），协议来源也不同模块（`xianyu/im_actions.py`），
 路径分开后 AI 工具与前端一眼能对上，也不会让「消息通道」那组接口混进写操作。
 
 **写操作全部要显式 `confirm=true`**：未确认时一个平台请求都不会发（由
@@ -64,4 +64,37 @@ def send_item_card(account_id: str, body: Dict[str, Any] = Body(default={}),
     """给买家发商品卡片（写，`confirm=true` 才发）。"""
     return _envelope(im_actions.send_item_card(
         account_id, body.get('session_id'), body.get('item_id'),
+        confirm=body.get('confirm'), conversation_id=body.get('conversation_id')))
+
+
+# ------------------------------------------------------------------ 客服会话接管族（第 43 批）
+
+
+@router.post('/{account_id}/sessions/transfer')
+def session_deliver(account_id: str, body: Dict[str, Any] = Body(default={}),
+                    user: Any = Depends(current_user)):
+    """把会话转交给指定客服（写，`confirm=true` 才发）。
+
+    `target_uid` 取自客服列表：`GET /api/shop/{account_id}/cs-routing` 的 `agents[].uid`。
+    """
+    return _envelope(im_actions.session_deliver(
+        account_id, body.get('target_uid'), session_id=body.get('session_id'),
+        confirm=body.get('confirm'), conversation_id=body.get('conversation_id')))
+
+
+@router.post('/{account_id}/sessions/leave')
+def session_leave(account_id: str, body: Dict[str, Any] = Body(default={}),
+                  user: Any = Depends(current_user)):
+    """结束当前会话（写，`confirm=true` 才发）。官方弹窗文案「确认结束当前会话？」。"""
+    return _envelope(im_actions.session_leave(
+        account_id, session_id=body.get('session_id'),
+        confirm=body.get('confirm'), conversation_id=body.get('conversation_id')))
+
+
+@router.post('/{account_id}/sessions/rejoin')
+def session_rejoin(account_id: str, body: Dict[str, Any] = Body(default={}),
+                   user: Any = Depends(current_user)):
+    """重新发起聊天（写，`confirm=true` 才发）。回执里带平台的 `data.success`（三态）。"""
+    return _envelope(im_actions.session_rejoin(
+        account_id, session_id=body.get('session_id'),
         confirm=body.get('confirm'), conversation_id=body.get('conversation_id')))

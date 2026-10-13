@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
-"""IM 会话操作（官方闲鱼客服工作台的会话级动作）：拉黑状态查询 / 拉黑买家 / 解除拉黑 / 给买家发商品卡片。
+"""IM 会话操作（官方闲鱼客服工作台的会话级动作）：拉黑状态查询 / 拉黑买家 / 解除拉黑 /
+给买家发商品卡片 / 转交会话 / 结束会话 / 重新发起聊天。
 
 **接口来源（静态 bundle 反解，零风控）**：官方 IM 微应用
-`https://g.alicdn.com/idle-pc/p-im-index/…/js/index.js`（3,071,011 B，单行压缩 JS）。
-本地副本 `C:\\Users\\Administrator\\.dsh-tmp\\bundle_scan\\js_006_p_im_index.js`，**证据用字符偏移**。
+`https://g.alicdn.com/idle-pc/p-im-index/…/js/index.js`（3,071,011 B，单行压缩 JS），
+本地副本 `C:\\Users\\Administrator\\.dsh-tmp\\bundle_scan\\js_006_p_im_index.js`；
+第 43 批的会话接管族来自**卖家工作台** bundle
+`C:\\Users\\Administrator\\.dsh-tmp\\seller_scan\\js_008_vendors.js`（5,857,382 B）。
+**证据一律用字符偏移**。
 
 **为什么单独开一个模块**：`backend/app/xianyu/im.py` 管的是**消息通道**（WebSocket 收消息、
-历史消息、发文本），这三条是**会话级动作**（对某个会话做一件事），调用点、参数形状、版本号
+历史消息、发文本），这几条是**会话级动作**（对某个会话做一件事），调用点、参数形状、版本号
 都与消息通道无关；混进 `im.py` 会让「消息通道」那个文件既管长连接又管写操作。
 
 **版本号必须按动作分别传**（这是本模块最容易被抄错的地方）：
@@ -14,10 +18,18 @@
 * `blacklist.add` → **2.0**（只有它是 2.0）
 * `blacklist.remove` → **1.0**
 * `message.card.send` → **1.0**
+* `customer.deliver.session` / `customer.leave.session` / `customer.rejoin.session` → **1.0**
 
 所以构造器统一返回 **三元组 `(api, data, version)`**（`xianyu/logistics.py` 那一族是二元组，
 因为那一族三条全是 `v:"1.0"`）。服务层照返回值原样发
 `common.call_method(client, ('mtop',), api, data, v=version)`。
+
+**两条「同一件事、两套 mtop」的坑（写下来免得以后抄错）**：
+* 发卡片：本模块 `message.card.send` 用 `{sessionId, itemId}`（IM bundle 的**商品卡片**）；
+  卖家工作台 bundle 里同一个 api 还有一处 `{orderId, sessionId}`（@1905901 附近的
+  **订单卡片**）。我们做的是商品卡片，订单卡片那条没有页面入口证据，**没实现**。
+* 关单/延迟确认：本模块不做；`backend/app/xianyu/trade_write.py` 用的是卖家工作台那套
+  （`trade.merchant.close.by.seller` v2.0 等），IM bundle 里的同族名字形状不同，**故意不用**。
 
 **`sessionId` 原样透传，不替平台加/去 `@goofish` 后缀**：官方 IM 前端在 6 处把展示用的会话 id
 做了 `replace('@goofish','')`，但从这些静态代码看不出 mtop 入参要的是带后缀还是不带后缀
@@ -25,8 +37,8 @@
 「去掉首尾空白」，不做任何后缀变换；真实形状等一次真机只读调用确认。
 （消息通道那边是另一回事：`backend/app/xianyu/im.py` 的 WS 帧确实用 `_with_goofish` 补后缀。）
 
-**未验证边界**：一次真机请求都没发过（第 40 批的验证红线是「零平台写请求」）。
-四条接口的参数形状与成功判据全部来自 bundle 静态证据。
+**未验证边界**：一次真机请求都没发过（第 40/43 批的验证红线是「零平台写请求」）。
+七条接口的参数形状与成功判据全部来自 bundle 静态证据。
 """
 from __future__ import annotations
 
@@ -51,8 +63,24 @@ BLACKLIST_REMOVE_API = 'mtop.taobao.idlemessage.pc.blacklist.remove'
 #: data:{sessionId, itemId}}`，官方失败 toast「发送商品卡片失败」。
 CARD_SEND_API = 'mtop.taobao.idlemessage.message.card.send'
 
+#: 把会话**转交**给指定客服（写）。版本 1.0：`{api:"mtop.taobao.idlemessage.customer.deliver.session",
+#: v:"1.0", data:{sessionId, targetUid}}`；官方那个按钮的图标 alt 就是「转交」，
+#: `targetUid` 来自客服列表（`mtop.taobao.idlemessage.customers.info.get` → `data.customers[].customerUid`，
+#: 我们已在 `backend/app/xianyu/shop.py::CS_AGENT_LIST_API` 实现）。
+SESSION_DELIVER_API = 'mtop.taobao.idlemessage.customer.deliver.session'
+
+#: **结束**当前会话（写）。版本 1.0：`data:{sessionId}`；官方弹窗标题「确认结束当前会话？」。
+SESSION_LEAVE_API = 'mtop.taobao.idlemessage.customer.leave.session'
+
+#: 重新发起聊天（写）。版本 1.0：`data:{sessionId}`；官方成功 toast「重新发起聊天成功」，
+#: 并且**判的是业务体里的 `data.success` 布尔**（不是只看信封）——这一族里唯一有回执的。
+SESSION_REJOIN_API = 'mtop.taobao.idlemessage.customer.rejoin.session'
+
 #: 会话 id 的长度上限（我们自己的防呆，官方没有明文校验）。
 SESSION_ID_MAX = 128
+
+#: 客服 uid 的长度上限（同上；官方 `targetUid` 是数字串）。
+TARGET_UID_MAX = 64
 
 #: 写能力登记。`data` 是真实字段形状，`version` 是该接口的版本号（**逐条不同，别抄**），
 #: `evidence` 是 bundle 字符偏移 + 调用点原文片段。
@@ -74,6 +102,28 @@ WRITE_APIS: Dict[str, Dict[str, str]] = {
         'version': '1.0',
         'data': '{sessionId, itemId}',
         'evidence': 'bundle 同族包装，失败 toast「发送商品卡片失败」',
+    },
+    'session_deliver': {
+        'api': SESSION_DELIVER_API,
+        'version': '1.0',
+        'data': '{sessionId, targetUid}',
+        'evidence': ('bundle js_008_vendors.js @2030569 `xO(sessionId, targetUid)`：'
+                     '`{api:"…customer.deliver.session", v:"1.0", data:{sessionId:eu, targetUid:ef}}`；'
+                     '同处 @2030560 前一行就是拉客服列表 `customers.info.get`；按钮图标 alt「转交」'),
+    },
+    'session_leave': {
+        'api': SESSION_LEAVE_API,
+        'version': '1.0',
+        'data': '{sessionId}',
+        'evidence': ('bundle js_008_vendors.js @2036368：`{api:"…customer.leave.session", v:"1.0", '
+                     'data:{sessionId:eu}}`；官方弹窗标题「确认结束当前会话？」'),
+    },
+    'session_rejoin': {
+        'api': SESSION_REJOIN_API,
+        'version': '1.0',
+        'data': '{sessionId}',
+        'evidence': ('bundle js_008_vendors.js @1229870 `th(eu)` → `data:eu`，调用点 @1230857 '
+                     '`th({sessionId:ef})`，成功 toast「重新发起聊天成功」，回执读 `data.success`'),
     },
 }
 
@@ -157,6 +207,21 @@ def _item_id(value: Any) -> str:
     return text
 
 
+def _target_uid(value: Any) -> str:
+    """转交目标（客服 uid）：只去首尾空白。
+
+    **刻意不做数字校验**：官方 `targetUid` 是数字串，但那是客服账号的 uid，
+    我们手里没有权威的格式定义（多账号、多端都一样），猜格式会把能用的值挡在门外。
+    留空才报错 —— 「谁都没指定就转交」一定是调用方的错。
+    """
+    text = _text(value).strip()
+    if not text:
+        raise ValueError('转交目标客服不能为空（targetUid 取自客服列表）')
+    if len(text) > TARGET_UID_MAX:
+        raise ValueError(f'转交目标客服太长了（超过 {TARGET_UID_MAX} 个字符）')
+    return text
+
+
 # --------------------------------------------------------------------------- 请求构造
 
 
@@ -188,12 +253,40 @@ def card_send_request(session_id: Any, item_id: Any, *,
     return api, {'sessionId': _session_id(session_id), 'itemId': _item_id(item_id)}, WRITE_VERSIONS[api]
 
 
+def session_deliver_request(session_id: Any, target_uid: Any, *,
+                            confirm: Any = None) -> Tuple[str, Dict[str, Any], str]:
+    """把会话转交给指定客服：`{sessionId, targetUid}`，版本 1.0。"""
+    _need_confirm(confirm)
+    api = assert_write(SESSION_DELIVER_API)
+    return api, {'sessionId': _session_id(session_id),
+                 'targetUid': _target_uid(target_uid)}, WRITE_VERSIONS[api]
+
+
+def session_leave_request(session_id: Any, *,
+                          confirm: Any = None) -> Tuple[str, Dict[str, Any], str]:
+    """结束当前会话：`{sessionId}`，版本 1.0。"""
+    _need_confirm(confirm)
+    api = assert_write(SESSION_LEAVE_API)
+    return api, {'sessionId': _session_id(session_id)}, WRITE_VERSIONS[api]
+
+
+def session_rejoin_request(session_id: Any, *,
+                           confirm: Any = None) -> Tuple[str, Dict[str, Any], str]:
+    """重新发起聊天：`{sessionId}`，版本 1.0。"""
+    _need_confirm(confirm)
+    api = assert_write(SESSION_REJOIN_API)
+    return api, {'sessionId': _session_id(session_id)}, WRITE_VERSIONS[api]
+
+
 def request_of(action: str, **kwargs: Any) -> Tuple[str, Dict[str, Any], str]:
     """按动作名拼请求（服务层只在这里做一次动作 → 构造器的映射）。"""
     builders = {
         'blacklist_add': blacklist_add_request,
         'blacklist_remove': blacklist_remove_request,
         'card_send': card_send_request,
+        'session_deliver': session_deliver_request,
+        'session_leave': session_leave_request,
+        'session_rejoin': session_rejoin_request,
     }
     builder = builders.get(_text(action).strip())
     if builder is None:
@@ -292,3 +385,30 @@ def parse_action(raw: Any) -> Dict[str, Any]:
         'body_keys': sorted(str(key) for key in body),
         'found': bool(body),
     }
+
+
+def parse_session_action(raw: Any) -> Dict[str, Any]:
+    """会话接管族的回执：比 `parse_action` 多认一层「平台自己说成没成功」。
+
+    这一族里 `rejoin` 的回执是 `data.success`（布尔，官方据此弹「重新发起聊天成功」），
+    所以这里把 `success` 解析成三态 `platform_success`：
+    - `True` / `False` = 平台明确说了；
+    - `None` = 平台没有这个键（**不猜**）。
+
+    只要平台明确说 `false`，就算失败（信封成功也不行）——「平台说没成功」比
+    「信封看起来没报错」更权威。`platform_message` 也**只在失败时**有内容。
+    """
+    parsed = parse_action(raw)
+    body = _body(decode_payload(raw))
+    success, success_key = _first_key(body, ('success', 'succeed', 'result'))
+    platform_success = _as_bool(success)
+    if platform_success is False and parsed['saved']:
+        parsed['saved'] = False
+        parsed['platform_message'] = (
+            _text(body.get('message') or body.get('msg')) or '平台返回 success=false（这次操作没有生效）')
+    returned, returned_key = _first_key(body, ('sessionId', 'session_id'))
+    parsed['platform_success'] = platform_success
+    parsed['platform_success_key'] = success_key
+    parsed['returned_session_id'] = _text(returned) or None
+    parsed['returned_session_id_key'] = returned_key
+    return parsed
