@@ -1,4 +1,8 @@
-"""超级擦亮只读服务：首页、账户余额、日期指标。"""
+"""超级擦亮只读服务：首页、账户余额、日期指标、资金明细。
+
+资金明细（流水 / 充值详情 / 提现详情）也全是**只读查询**：官方 bundle 里不存在
+「发起充值 / 发起提现」的 mtop 接口，钱的实际划转在支付宝侧完成。
+"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -7,6 +11,14 @@ from typing import Any, Dict, Optional
 from ..core import db
 from ..xianyu import client as client_mod
 from . import common
+
+# 官方「资金明细」页的流水类型筛选（bundle 常量 KX），0=全部。
+OPERATE_TYPES = {0: '全部', 1: '现金', 2: '礼金', 3: '红包'}
+
+# 状态短标签取自官方 bundle 的枚举表（长文案是官方写死的，我们只给短标签；
+# 未知状态码一律 None，不猜）。
+RECHARGE_STATUS = {'ING': '支付中', 'SUCCESS': '充值成功', 'FAIL': '充值失败'}
+WITHDRAW_STATUS = {'ING': '提现中', 'SUCCESS': '提现成功', 'FAIL': '提现失败'}
 
 
 def _text(value: Any) -> str:
@@ -143,3 +155,111 @@ def account(account_id: str, start: str = '', end: str = '') -> Dict[str, Any]:
     return {'account_id': account_id, 'period': {'from': dates[0], 'to': dates[1]},
             'account': card, 'settle': settle,
             'fetched_at': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'), 'source': 'platform'}
+
+
+def _int_arg(label: str, value: Any, allowed=None):
+    """整数参数校验（空值给 0）；返回 ``(值, 失败)``。"""
+    raw = _text(value).strip()
+    if not raw:
+        return 0, None
+    try:
+        number = int(raw)
+    except (TypeError, ValueError):
+        return None, common.fail(f'{label}必须是整数', 'invalid_fields')
+    if number < 0:
+        return None, common.fail(f'{label}不能是负数', 'invalid_fields')
+    if allowed is not None and number not in allowed:
+        return None, common.fail(f'{label}只能是 {"/".join(str(x) for x in allowed)}', 'invalid_fields')
+    return number, None
+
+
+def _stamp() -> str:
+    return datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+
+
+def funds(account_id: str, start: str = '', end: str = '', page: str = '', size: str = '',
+          account_type: str = '', operate_type: str = '') -> Dict[str, Any]:
+    """资金流水明细（只读）。平台没给列表键时 ``funds=None`` + 中文 warning，不造数据。"""
+    params, failure = _page(start, end, page, size)
+    if failure:
+        return failure
+    account_type_value, failure = _int_arg('账号类型', account_type)
+    if failure:
+        return failure
+    operate_type_value, failure = _int_arg('流水类型', operate_type, allowed=sorted(OPERATE_TYPES))
+    if failure:
+        return failure
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+    payload, failure = _call(client, 'ad_account_log', params[0], params[1], params[2], params[3],
+                             account_type_value, operate_type_value)
+    if failure:
+        return failure
+    warnings = []
+    entries = payload.get('result') if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        entries = None
+        warnings.append('平台没有返回流水列表（result），这一页当空处理，请点「刷新」重试')
+    total = payload.get('total') if isinstance(payload, dict) else None
+    if not isinstance(total, int) or isinstance(total, bool):
+        total = None
+    return {'account_id': account_id, 'period': {'from': params[0], 'to': params[1]},
+            'page': params[2], 'page_size': params[3],
+            'account_type': account_type_value, 'operate_type': operate_type_value,
+            'operate_type_text': OPERATE_TYPES.get(operate_type_value),
+            'funds': entries, 'total': total, 'warnings': warnings,
+            'fetched_at': _stamp(), 'source': 'platform'}
+
+
+def fund_operations(account_id: str, account_type: str = '') -> Dict[str, Any]:
+    """账号类型下平台允许的操作项（官方用它决定流水行给不给详情入口）。"""
+    account_type_value, failure = _int_arg('账号类型', account_type)
+    if failure:
+        return failure
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+    payload, failure = _call(client, 'ad_log_operates', account_type_value)
+    if failure:
+        return failure
+    operations = payload.get('result') if isinstance(payload, dict) else None
+    warnings = []
+    if not isinstance(operations, list):
+        operations = None
+        warnings.append('平台没有返回可操作项列表（result）')
+    return {'account_id': account_id, 'account_type': account_type_value,
+            'operations': operations, 'warnings': warnings,
+            'fetched_at': _stamp(), 'source': 'platform'}
+
+
+def _order_detail(account_id: str, order_id: str, method: str, status_key: str,
+                  labels: Dict[str, str], kind: str) -> Dict[str, Any]:
+    order = _text(order_id).strip()
+    if not order:
+        return common.fail(f'{kind}订单号不能为空', 'invalid_fields')
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+    payload, failure = _call(client, method, order)
+    if failure:
+        return failure
+    detail = payload if isinstance(payload, dict) else None
+    warnings = [] if detail is not None else [f'平台没有返回这条{kind}单的详情']
+    status = _text(detail.get(status_key)).strip() if detail else ''
+    return {'account_id': account_id, 'order_id': order, 'detail': detail,
+            'status': status or None, 'status_text': labels.get(status) if status else None,
+            'warnings': warnings, 'fetched_at': _stamp(), 'source': 'platform'}
+
+
+def recharge_detail(account_id: str, order_id: str) -> Dict[str, Any]:
+    """充值详情（只读）。状态短标签来自官方枚举表，未知状态给 null。"""
+    return _order_detail(account_id, order_id, 'ad_recharge_detail', 'rechargeStatus',
+                         RECHARGE_STATUS, '充值')
+
+
+def withdraw_detail(account_id: str, order_id: str) -> Dict[str, Any]:
+    """提现详情（只读）。状态短标签来自官方枚举表，未知状态给 null。"""
+    return _order_detail(account_id, order_id, 'ad_withdraw_detail', 'status',
+                         WITHDRAW_STATUS, '提现')
+

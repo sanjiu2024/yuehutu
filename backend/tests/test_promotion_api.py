@@ -94,6 +94,21 @@ SEC_VIOLATIONS = {'data': [{'punishId': 187988498827, 'punishTitle': '发布违�
                             'punishResult': '删除商品,闲鱼违规通知', 'point': 0,
                             'punishTime': 1758988454000, 'appealTimeLimit': 0}],
                   'totalCount': 3, 'hasNext': False}
+#: 资金明细族（`idle.ad.bp.account.log.query` / `recharge.query` / `withdraw.query`）
+AD_FUNDS = {'result': [{'orderId': 'RC20260901000001', 'operatorType': 'RECHARGE',
+                        'amountOfYuan': '100.00', 'createTime': '20260901120000',
+                        'accountType': 1},
+                       {'orderId': 'WD20260902000002', 'operatorType': 'WITHDRAW',
+                        'amountOfYuan': '50.00', 'createTime': '20260902120000',
+                        'accountType': 1}],
+            'total': 2}
+AD_OPERATIONS = {'result': ['RECHARGE', 'WITHDRAW']}
+AD_RECHARGE = {'rechargeStatus': 'SUCCESS', 'rechargeOrderNo': 'RC20260901000001',
+               'channelTradeNo': '2026090122001', 'rechargeType': '支付宝网银充值',
+               'rechargeCreateTime': '2026-09-01 12:00:00',
+               'rechargeCompleteTime': '2026-09-01 12:00:05'}
+AD_WITHDRAW = {'status': 'ING', 'sourceAccount': '推广账户', 'alipayAccount': 'y****@aliyun.com',
+               'operator': '月狐兔_', 'remark': '', 'withdrawTime': '2026-09-02 12:00:00'}
 
 
 class SessionExpiredError(RuntimeError):
@@ -139,6 +154,20 @@ class FakePromotionClient:
 
     async def ad_settle(self, start: str, end: str) -> Any:
         return self._answer('ad_settle', start, end)
+
+    async def ad_account_log(self, start: str, end: str, page_no: int = 1, page_size: int = 10,
+                             account_type: int = 0, operate_type: int = 0) -> Any:
+        return self._answer('ad_account_log', start, end, page_no, page_size,
+                            account_type, operate_type)
+
+    async def ad_log_operates(self, account_type: int = 0) -> Any:
+        return self._answer('ad_log_operates', account_type)
+
+    async def ad_recharge_detail(self, order_id: str) -> Any:
+        return self._answer('ad_recharge_detail', order_id)
+
+    async def ad_withdraw_detail(self, order_id: str) -> Any:
+        return self._answer('ad_withdraw_detail', order_id)
 
     async def security_score(self) -> Any:
         return self._answer('security_score')
@@ -188,6 +217,10 @@ def full_client(**overrides: Any) -> FakePromotionClient:
         'ad_campaign_metrics': AD_PLANS,
         'ad_item_metrics': AD_ITEMS,
         'ad_settle': AD_SETTLE,
+        'ad_account_log': AD_FUNDS,
+        'ad_log_operates': AD_OPERATIONS,
+        'ad_recharge_detail': AD_RECHARGE,
+        'ad_withdraw_detail': AD_WITHDRAW,
         'security_score': SEC_SCORE,
         'security_violations': SEC_VIOLATIONS,
     }
@@ -362,7 +395,8 @@ class PromotionApiTest(ReadOnlyPageTest):
     def test_promotion_routes_are_read_only(self):
         seed_account()
         for method in ('post', 'put', 'patch', 'delete'):
-            for path in ('overview', 'campaigns', 'reports', 'account'):
+            for path in ('overview', 'campaigns', 'reports', 'account', 'funds',
+                         'fund-operations', 'recharge/RC1', 'withdraw/WD1'):
                 resp = getattr(self.client, method)(
                     f'{PROMO_BASE}/{ACC}/{path}', headers=self.headers)
                 self.assertEqual(resp.status_code, 405, f'{method} {path}: {resp.text}')
@@ -372,6 +406,155 @@ class PromotionApiTest(ReadOnlyPageTest):
         seed_account()
         resp = self.get(f'{PROMO_BASE}/{ACC}/overview', headers={})
         self.assertIn(resp.status_code, (401, 403), resp.text)
+
+
+class PromotionFundsTest(ReadOnlyPageTest):
+    """资金明细族（流水 / 可操作项 / 充值详情 / 提现详情）——**全是只读查询**。"""
+
+    def test_funds_pass_dates_and_filters_to_platform(self):
+        seed_account()
+        data = self.ok_data(f'{PROMO_BASE}/{ACC}/funds',
+                            '?start=20260901&end=20260902&page=2&size=50&account_type=1&operate_type=3')
+        self.assertEqual(self.fake.args_of('ad_account_log'),
+                         ('20260901', '20260902', 2, 50, 1, 3))
+        self.assertEqual(data['page'], 2)
+        self.assertEqual(data['page_size'], 50)
+        self.assertEqual(data['operate_type_text'], '红包')
+
+    def test_funds_default_filters_are_zero(self):
+        seed_account()
+        data = self.ok_data(f'{PROMO_BASE}/{ACC}/funds')
+        args = self.fake.args_of('ad_account_log')
+        self.assertEqual(args[2:], (1, 20, 0, 0))
+        self.assertEqual(data['operate_type_text'], '全部')
+
+    def test_funds_keep_platform_rows_verbatim(self):
+        seed_account()
+        data = self.ok_data(f'{PROMO_BASE}/{ACC}/funds')
+        self.assertEqual(data['funds'], AD_FUNDS['result'])
+        self.assertEqual(data['total'], 2)
+        self.assertEqual(data['source'], 'platform')
+        self.assertEqual(data['warnings'], [])
+
+    def test_funds_missing_result_key_is_null_with_warning(self):
+        """平台没给 result 时不能假装是空数组——给 null + 人话。"""
+        seed_account()
+        self.fake.payloads['ad_account_log'] = {'total': 0}
+        data = self.ok_data(f'{PROMO_BASE}/{ACC}/funds')
+        self.assertIsNone(data['funds'])
+        self.assertEqual(data['total'], 0)
+        self.assertTrue(data['warnings'], data)
+
+    def test_funds_total_missing_is_null_not_zero(self):
+        seed_account()
+        self.fake.payloads['ad_account_log'] = {'result': []}
+        data = self.ok_data(f'{PROMO_BASE}/{ACC}/funds')
+        self.assertEqual(data['funds'], [])
+        self.assertIsNone(data['total'])
+
+    def test_funds_reject_bad_operate_type(self):
+        seed_account()
+        body = self.fail(f'{PROMO_BASE}/{ACC}/funds', '?operate_type=9')
+        self.assertEqual(body['code'], 'invalid_fields')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_funds_reject_non_integer_and_negative_filters(self):
+        seed_account()
+        for query in ('?account_type=abc', '?account_type=-1', '?operate_type=1.5'):
+            body = self.fail(f'{PROMO_BASE}/{ACC}/funds', query)
+            self.assertEqual(body['code'], 'invalid_fields', query)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_funds_reject_invalid_date(self):
+        seed_account()
+        body = self.fail(f'{PROMO_BASE}/{ACC}/funds', '?start=2026')
+        self.assertEqual(body['code'], 'invalid_fields')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_fund_operations_return_list(self):
+        seed_account()
+        data = self.ok_data(f'{PROMO_BASE}/{ACC}/fund-operations', '?account_type=102')
+        self.assertEqual(data['operations'], AD_OPERATIONS['result'])
+        self.assertEqual(self.fake.args_of('ad_log_operates'), (102,))
+
+    def test_fund_operations_missing_result_is_null_with_warning(self):
+        seed_account()
+        self.fake.payloads['ad_log_operates'] = {}
+        data = self.ok_data(f'{PROMO_BASE}/{ACC}/fund-operations')
+        self.assertIsNone(data['operations'])
+        self.assertTrue(data['warnings'], data)
+
+    def test_recharge_detail_maps_status_label(self):
+        seed_account()
+        data = self.ok_data(f'{PROMO_BASE}/{ACC}/recharge/RC20260901000001')
+        self.assertEqual(data['detail'], AD_RECHARGE)
+        self.assertEqual(data['status'], 'SUCCESS')
+        self.assertEqual(data['status_text'], '充值成功')
+        self.assertEqual(self.fake.args_of('ad_recharge_detail'), ('RC20260901000001',))
+
+    def test_withdraw_detail_maps_status_label(self):
+        seed_account()
+        data = self.ok_data(f'{PROMO_BASE}/{ACC}/withdraw/WD20260902000002')
+        self.assertEqual(data['status'], 'ING')
+        self.assertEqual(data['status_text'], '提现中')
+        self.assertEqual(self.fake.args_of('ad_withdraw_detail'), ('WD20260902000002',))
+
+    def test_unknown_status_has_no_label(self):
+        """未知状态码给 null，不猜文案。"""
+        seed_account()
+        self.fake.payloads['ad_recharge_detail'] = {'rechargeStatus': 'WEIRD'}
+        data = self.ok_data(f'{PROMO_BASE}/{ACC}/recharge/RC1')
+        self.assertEqual(data['status'], 'WEIRD')
+        self.assertIsNone(data['status_text'])
+
+    def test_blank_order_id_is_rejected_without_calling_platform(self):
+        seed_account()
+        body = self.fail(f'{PROMO_BASE}/{ACC}/recharge/%20')
+        self.assertEqual(body['code'], 'invalid_fields')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_missing_detail_payload_is_null_with_warning(self):
+        seed_account()
+        self.fake.payloads['ad_withdraw_detail'] = None
+        data = self.ok_data(f'{PROMO_BASE}/{ACC}/withdraw/WD1')
+        self.assertIsNone(data['detail'])
+        self.assertIsNone(data['status'])
+        self.assertTrue(data['warnings'], data)
+
+    def test_platform_refusal_is_502_and_keeps_login_state(self):
+        seed_account()
+        self.fake.errors['ad_recharge_detail'] = RuntimeError(
+            'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问')
+        body = self.fail(f'{PROMO_BASE}/{ACC}/recharge/RC1', status=502)
+        self.assertEqual(body['code'], 'protocol_error')
+        self.assertIn('无权限访问', body['message'])
+        row = db.query_one('SELECT login_state FROM account_credentials WHERE account_id = ?', (ACC,))
+        self.assertEqual(row['login_state'], 'active')
+
+    def test_funds_missing_cookie_is_409_and_never_calls_platform(self):
+        seed_account(cookie='')
+        body = self.fail(f'{PROMO_BASE}/{ACC}/funds', status=409)
+        self.assertEqual(body['code'], 'verification_required')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_funds_unknown_account_is_404(self):
+        body = self.fail(f'{PROMO_BASE}/nobody/funds', status=404)
+        self.assertEqual(body['code'], 'not_found')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_funds_session_expired_marks_need_relogin(self):
+        seed_account()
+        self.fake.errors['ad_account_log'] = SessionExpiredError(
+            'FAIL_SYS_SESSION_EXPIRED::Session过期')
+        body = self.fail(f'{PROMO_BASE}/{ACC}/funds', status=409)
+        self.assertEqual(body['code'], 'verification_required')
+        row = db.query_one('SELECT login_state FROM account_credentials WHERE account_id = ?', (ACC,))
+        self.assertEqual(row['login_state'], 'need_relogin')
+
+    def test_funds_payload_carries_fetched_at(self):
+        seed_account()
+        data = self.ok_data(f'{PROMO_BASE}/{ACC}/funds')
+        self.assertRegex(str(data.get('fetched_at')), r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$')
 
 
 class SecurityCenterApiTest(ReadOnlyPageTest):

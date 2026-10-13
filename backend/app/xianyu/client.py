@@ -119,7 +119,10 @@ FINANCE_INVOICE_REQUEST_API = 'mtop.idle.finance.invoice.request.list.query'
 FINANCE_PURCHASER_API = 'mtop.idle.finance.invoice.purchaser.info.get'
 FINANCE_SPM = 'a21ybx.im.0.0'
 
-# 超级擦亮只读接口：参数形状由官方微应用抓包确认；不包含充值、提现、投放写操作。
+# 超级擦亮只读接口：参数形状由官方微应用 bundle 取证确认。
+# 充值/提现**只有查询**接口：钱的实际划转在支付宝侧完成，官方 bundle 里不存在
+# 「发起充值 / 发起提现」的 mtop 接口（`account.log.operates` 也只是查询可操作项），
+# 所以这一族里没有任何资金写操作可做。
 AD_HOME_API = 'mtop.taobao.idle.ad.home'
 AD_MEMBER_DATA_API = 'mtop.taobao.idle.ad.member.data.query'
 AD_ACCOUNT_CARD_API = 'mtop.taobao.idle.ad.bp.account.card.query'
@@ -127,6 +130,10 @@ AD_CAMPAIGN_SEARCH_API = 'mtop.taobao.idle.ad.campaign.search'
 AD_CAMPAIGN_DATA_API = 'mtop.taobao.idle.ad.campaign.data.batch.query'
 AD_ITEM_DATA_API = 'mtop.taobao.idle.ad.item.data.batch.query'
 AD_SETTLE_API = 'mtop.taobao.idle.ad.bp.settle.settle.query'
+AD_LOG_API = 'mtop.taobao.idle.ad.bp.account.log.query'
+AD_LOG_OPERATES_API = 'mtop.taobao.idle.ad.bp.account.log.operates'
+AD_RECHARGE_API = 'mtop.taobao.idle.ad.bp.account.recharge.query'
+AD_WITHDRAW_API = 'mtop.taobao.idle.ad.bp.account.withdraw.query'
 AD_SPM = 'a21ybx.im.0.0'
 
 
@@ -930,6 +937,31 @@ class XianyuClient:
         return await self._ad_json(AD_SETTLE_API, {
             'startDate': str(start_date), 'endDate': str(end_date),
         })
+
+    async def ad_account_log(self, start_date: str, end_date: str, page: int = 1, size: int = 10,
+                             account_type: int = 0, operate_type: int = 0) -> Optional[Dict[str, Any]]:
+        """资金流水明细（官方「资金明细」页）：响应形如 ``{result: [...], total: n}``。
+
+        官方调用点原文：``{pageNum,pageSize,startDate,endDate,accountType,operateType}``；
+        ``operateType`` 0=全部 / 1=现金 / 2=礼金 / 3=红包。
+        """
+        return await self._ad_json(AD_LOG_API, {
+            'pageNum': int(page), 'pageSize': int(size),
+            'startDate': str(start_date), 'endDate': str(end_date),
+            'accountType': int(account_type), 'operateType': int(operate_type),
+        })
+
+    async def ad_log_operates(self, account_type: int = 0) -> Optional[Dict[str, Any]]:
+        """账号类型下的「可操作项」列表：官方用它决定流水行给不给详情入口。"""
+        return await self._ad_json(AD_LOG_OPERATES_API, {'accountType': int(account_type)})
+
+    async def ad_recharge_detail(self, order_id: str) -> Optional[Dict[str, Any]]:
+        """充值详情：官方调用点 ``{orderId}``（响应含 ``rechargeStatus``/``rechargeOrderNo``）。"""
+        return await self._ad_json(AD_RECHARGE_API, {'orderId': str(order_id)})
+
+    async def ad_withdraw_detail(self, order_id: str) -> Optional[Dict[str, Any]]:
+        """提现详情：官方调用点 ``{orderId}``（响应含 ``status``/``sourceAccount``）。"""
+        return await self._ad_json(AD_WITHDRAW_API, {'orderId': str(order_id)})
 
     async def _ad_json(self, api: str, body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """`idle.ad.*` 统一把业务参数塞进 ``requestJson`` 字符串。"""
