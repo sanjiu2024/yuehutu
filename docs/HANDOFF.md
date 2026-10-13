@@ -83,8 +83,8 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 97 modules transformed.
-   frontend/dist/assets/index-Bdka8w6F.js (624.98 kB, gzip 196.32 kB)
-   frontend/dist/assets/index-D7fWlboC.css (152.59 kB, gzip 24.01 kB)
+   frontend/dist/assets/index-BHJSXv64.js (624.98 kB, gzip 196.32 kB)
+   frontend/dist/assets/index-B011Gghx.css (152.64 kB, gzip 24.02 kB)
 ```
 
 ```text
@@ -3013,6 +3013,18 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 >   各一次、`refuse_posts []`（只开确认框、不点确认）、3 个原因复选框渲染正确、确认框含原因与「1 张凭证图」；
 >   截图 `logs/cp45_panel_shots/{01-write-panel-dark,02-compensate-tab-dark,03-compensate-loaded-dark,
 >   04-compensate-confirm-dark,05-compensate-light}.png`。
+> - 重打包（`build_exe.ps1 -SkipFrontend`，exe **10,189,021 B / 2026-10-14 04:55:56**，
+>   `--port 18400` `/api/health` 200 `frozen:true`）后打包版复验全绿：
+>   `probe_write_gate.py`（已含这条写端点，**65 个**）→ **`GATE FAILURES: 0 / 65`**；
+>   `packaged_ui_smoke.py` → **29/29 页**；`check_assets.py` → `ASSETS_MATCH=True`
+>   （`index-BHJSXv64.js` remote=local=`27ae7af68529`、`index-B011Gghx.css` remote=local=`c0fb43b5148b`）；
+>   `scripts/contrast_audit.py --threshold 4.0` → `[dark] BAD_PAGES 0/29`、`[light] BAD_PAGES 0/29`、`NON_GET=[]`；
+>   `scripts/a11y_audit.py` → 无可访问名字的按钮 0、没标签的输入框 0、无 alt 图片 0、焦点不可见页面 `[]`。
+> - **打包版只读探针**（`C:\Users\Administrator\.dsh-tmp\cp45_packaged_probe.py`，只用不存在的账号
+>   `9999999999999`，**零平台请求**）→ `PROBLEMS: []` 十条：两个只读 GET 对未知账号都 404 `not_found`；
+>   拒绝赔付不带 `confirm` / `confirm:false` 都 400 `confirmation_required`；
+>   带 `confirm:true` 但缺字段、缺原因、`confirm:'true'` 字符串都 400 `invalid_fields`（**字段校验早于建客户端**）；
+>   未知路径与「GET 打到只写路径」都 404 `route_not_found`（对照，证明确实是路由在、不是没进包）。
 > - **诚实边界**：这条写接口**一次真机请求都没发过**（拒绝赔付会真的改动平台上的维权单据，不能为了验证去动用户的单子）；
 >   两条只读接口也**没有真机响应样例**（本机账号对赔付族接口可能无权限）。只验到：路由注册、
 >   body 被端点接受、`confirm` 闸门拦得住假确认值、界面不点最终确认就零写请求。
@@ -3070,9 +3082,9 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   packaged_ui_smoke.py`，复用 `scripts/ui_smoke.py::run_browser` 但不启后端、直接打
   `127.0.0.1:18400` 与**真实 `%APPDATA%` 数据目录**，截图 `logs/packaged_ui_smoke/`）。
   与上一条的区别：上一条跑的是源码 + 临时库，这一条跑的是**用户手上那个 exe**。
-- **打包版 confirm 闸门 64 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
-  （`confirmation_required` / `confirm_required`），**`GATE FAILURES: 0 / 64`**（探针随批次扩过：
-  19 → 22 → 26 → 28 → 30 → 33 → 41 → 47 → 52 → 53 → 56 → 60 → 61 → 64）；确认那一腿**故意换成不存在的
+- **打包版 confirm 闸门 65 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
+  （`confirmation_required` / `confirm_required`），**`GATE FAILURES: 0 / 65`**（探针随批次扩过：
+  19 → 22 → 26 → 28 → 30 → 33 → 41 → 47 → 52 → 53 → 56 → 60 → 61 → 64 → 65）；确认那一腿**故意换成不存在的
   账号**（`SAFE_ACC`），闸门放行后本地查库直接 404 `not_found` / 400 `invalid_fields` / 409 —— 既证明闸门放行，
   又保证**零平台请求**（2026-10-12 00:35 之前那版拿真账号打过，三条写请求真到了闲鱼，见第二十五批 161）。
   第 32 批新增八条（`shop.profile_{nick,desc,avatar}` / `sub.{create,delete,mobile,roles,password}`）：
