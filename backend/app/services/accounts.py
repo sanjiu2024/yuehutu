@@ -179,3 +179,33 @@ def refresh_missing_profiles(accounts: Iterable[Dict[str, Any]]) -> int:
                          daemon=True).start()
         spawned += 1
     return spawned
+
+
+def relogin(account_id: str) -> Dict[str, Any]:
+    """把账号置为「需重新登录」并清掉旧 Cookie。
+
+    **为什么要有服务层这一份**：这段逻辑原来只写在路由
+    `backend/app/api/accounts.py:396 relogin_account` 里，于是主管 AI 的
+    `accounts_relogin` 工具（`_SERVICE_TARGETS` 里没有条目、`backend.app.services`
+    里也没有同名函数）一调就回「业务模块还没实现 accounts_relogin()」。抽到服务层
+    后路由与 AI 走同一条路，不会再各写一份。
+
+    只做服务层该做的四件事：清 Cookie、置 `need_relogin`、重置风控、记审计 + 发事件。
+    **不碰二维码**：扫码必须由用户在「账号」页里做（`POST /api/accounts/{id}/relogin`
+    会在这之后顺手开一个扫码会话并回 ticket/二维码，那是路由层的编排）。
+    """
+    if not account_id:
+        return common.fail('account_id 不能为空', 'bad_request')
+    if store.get_account(account_id) is None:
+        return common.fail(f'账号不存在: {account_id}', 'not_found')
+    # 清 Cookie 与置状态必须成对：只置状态不清 Cookie，旧 Cookie 还「看着可用」，
+    # 下一次调用又会拿它去撞一次平台风控。
+    store.set_cookie(account_id, '', xianyu_user_id=account_id,
+                     login_state=store.STATE_NEED_RELOGIN)
+    store.mark_need_relogin(account_id, '用户手动触发重新登录')
+    from ..xianyu import risk as risk_mod  # 局部导入：避免模块级循环依赖
+    risk_mod.registry.reset(account_id)
+    store.log_operation(account_id, 'relogin', success=True)
+    common.publish('accounts.changed',
+                   {'account_id': account_id, 'login_state': store.STATE_NEED_RELOGIN})
+    return {'id': account_id, 'login_state': store.STATE_NEED_RELOGIN}

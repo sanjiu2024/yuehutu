@@ -58,6 +58,8 @@ NEW_TOOLS: Dict[str, Dict[str, Any]] = {
                         'path': '/api/disputes/{account_id}/{conversation_id}/unread'},
     'items_fans_price': {'module': 'fans_price', 'fn': 'read', 'verb': 'get',
                          'path': '/api/items/{account_id}/{item_id}/fans-price'},
+    'items_listing_precheck': {'module': 'items', 'fn': 'publish_precheck_from_args', 'verb': 'post',
+                              'path': '/api/items/{account_id}/publish/precheck'},
     'datacenter_overview': {'module': 'datacenter', 'fn': 'overview', 'verb': 'get',
                             'path': '/api/datacenter/{account_id}/overview'},
     'datacenter_fans': {'module': 'datacenter', 'fn': 'fans', 'verb': 'get',
@@ -185,6 +187,36 @@ class ToolRegistryTest(unittest.TestCase):
         """有工具名没 handler = 调用时直接抛 KeyError。"""
         missing = [n for n in tools.TOOL_NAMES if n not in tools._HANDLERS]
         self.assertEqual(missing, [], f'这些工具没有 handler: {missing}')
+
+    def test_every_tool_resolves_a_service_target(self) -> None:
+        """**有 handler 不等于分派得通**：handler 只是 lambda，真正找函数靠
+        `_SERVICE_TARGETS`；表里没有条目时 `_resolve_service` 会退到「表外」分支去
+        `getattr(backend.app.services, 工具名)`，找不到就回「业务模块还没实现 xxx()」。
+
+        第 44 批就是靠这条口径查出 8 个工具（`accounts_relogin` / `items_edit` /
+        `items_publish` / `items_batch_edit` / `items_sync` / `chats_send` /
+        `chats_set_mode` / `orders_deliver`）在主管 AI 路径上**一调就失败** ——
+        之前只有 `NEW_TOOL_NAMES`（第 56 批那批）被查过，老工具没人查。
+
+        判定口径：**凡是在源码里按名字调用过 `_dispatch_service('xxx', ...)` 的工具，
+        都必须有一条能解析的 `_SERVICE_TARGETS`**。老工具（accounts_list / items_list /
+        chats_read / risk_status / …）的 handler 是自己直接调 service 的自定义函数，
+        不经过这张表，所以不在检查范围内。
+        """
+        import inspect
+        import re
+        src = inspect.getsource(tools)
+        dispatched = set(re.findall(r"_dispatch_service\(\s*'([A-Za-z_][A-Za-z0-9_]*)'", src))
+        self.assertTrue(dispatched, '没找到任何按名字分派的调用点，正则或代码结构变了')
+        broken = []
+        for name in sorted(dispatched):
+            with self.subTest(name=name):
+                target, error = tools._resolve_service(name)
+                if target is None or error:
+                    broken.append('%s: %s' % (name, error))
+                else:
+                    self.assertTrue(callable(target), f'{name} 解析出来不是函数')
+        self.assertEqual(broken, [], f'这些工具在主管 AI 路径上分派不到 service: {broken}')
 
 
 class SchemaShapeTest(unittest.TestCase):
@@ -862,6 +894,46 @@ class WriteToolDispatchTest(unittest.TestCase):
         self.assertEqual(seen, [False], '工具层自己短路了，没把 confirm 透传给服务层')
         self.assertEqual(result.get('result'), {'from': 'service-spy'},
                          '工具层改写了服务层的返回值')
+
+    def test_dispatch_gap_tools_reach_their_service(self) -> None:
+        """第 44 批修掉的那 8 个工具：每个都必须**真的调到**服务层函数。
+
+        修之前它们的 `_HANDLERS` 是 `lambda a: _dispatch_service('xxx', a)`，而
+        `_SERVICE_TARGETS` 里没有 `xxx` ⇒ `_resolve_service` 退到表外分支找不到
+        `backend.app.services.xxx`，返回 `{'ok': False, 'error': '业务模块还没实现 xxx()'}`。
+        用间谍替换真函数，能区分「真的调到了」与「又回了一句人话」。
+        """
+        calls = {
+            'accounts_relogin': ({'account_id': 'acc-x'},
+                                 'backend.app.services.accounts.relogin'),
+            'items_edit': ({'account_id': 'acc-x', 'item_id': 'it-1', 'price': 9.9},
+                           'backend.app.services.items.edit_from_args'),
+            'items_publish': ({'account_id': 'acc-x', 'title': 't', 'price': 9.9},
+                              'backend.app.services.items.publish_from_args'),
+            'items_batch_edit': ({'account_id': 'acc-x', 'item_ids': ['it-1'],
+                                  'patch': {'price_set': 9.9}},
+                                 'backend.app.services.items.batch_edit_from_args'),
+            'items_sync': ({'account_id': 'acc-x'}, 'backend.app.services.items.sync_items'),
+            'chats_send': ({'conversation_id': 1, 'content': '在的'},
+                           'backend.app.services.chats.send_from_args'),
+            'chats_set_mode': ({'conversation_id': 1, 'mode': 'auto'},
+                               'backend.app.services.chats.set_mode'),
+            'orders_deliver': ({'order_id': 'o1', 'company': '顺丰', 'tracking_no': 'SF1'},
+                               'backend.app.services.orders.update_shipment'),
+        }
+        for name, (args, path) in calls.items():
+            seen = []
+
+            def spy(**kwargs):
+                seen.append(kwargs)
+                return {'from': 'service-spy'}
+
+            with self.subTest(name=name), mock.patch(path, spy):
+                result = asyncio.run(tools.call_tool(name, dict(args)))
+            self.assertEqual(len(seen), 1, f'{name} 没有调到 {path}（分派又断了）')
+            self.assertEqual(result.get('ok'), True, f'{name} 分派失败: {result}')
+            self.assertEqual(result.get('result'), {'from': 'service-spy'},
+                             f'{name} 的返回值被改写了')
 
     def test_unknown_tool_is_not_silently_ok(self) -> None:
         result = asyncio.run(tools.call_tool('trade_write_nope', {'account_id': 'a', 'confirm': True}))

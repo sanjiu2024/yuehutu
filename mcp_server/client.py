@@ -162,6 +162,13 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'path_params': ['account_id'],
         'body': ['title', 'price', 'description', 'images', 'category_id', 'stock', 'original_price'],
     },
+    # 发布前预检：只读，但走 POST（body 是那份表单）——**不带 confirm**，
+    # 带了会被 confirm 闸门拦下，只读工具不该要点头。
+    'items_listing_precheck': {
+        'method': 'POST', 'path': '/api/items/{account_id}/publish/precheck',
+        'path_params': ['account_id'],
+        'body': ['title', 'price', 'description', 'images', 'category_id'],
+    },
     'items_batch_edit': {
         'method': 'POST', 'path': '/api/items/{account_id}/batch-edit',
         'path_params': ['account_id'], 'body': ['item_ids', 'patch'],

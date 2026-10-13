@@ -400,14 +400,13 @@ async def relogin_account(account_id: str, user=Depends(current_user)) -> Dict[s
     两件事一起做：① 把登录态标成 ``need_relogin`` 并清掉旧 Cookie —— 否则旧
     Cookie 还「看着可用」，下次调用又会拿它去撞一次风控；② 立刻开一个新的扫码
     会话，把 ticket 与二维码直接回给前端，用户不用再点一次「扫码添加账号」。
+
+    ① 交给 `services/accounts.relogin`（主管 AI 的 `accounts_relogin` 工具走同一个
+    函数，不再各写一份）；这里只负责 ② 与 HTTP 形状。
     """
     if store.get_account(account_id) is None:
         raise _not_found(account_id)
-    store.set_cookie(account_id, '', xianyu_user_id=account_id,
-                     login_state=store.STATE_NEED_RELOGIN)
-    store.mark_need_relogin(account_id, '用户手动触发重新登录')
-    risk_mod.registry.reset(account_id)
-    store.log_operation(account_id, 'relogin', success=True)
+    accounts_service.relogin(account_id)
     try:
         data = await qr_login.start_qr_login()
     except Exception as exc:

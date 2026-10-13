@@ -170,6 +170,26 @@ TOOL_SPECS: List[Dict[str, Any]] = [
     {
         'type': 'function',
         'function': {
+            'name': 'items_listing_precheck',
+            'description': '发布前预检（只读，不会发布；account_id 必传，不传就不知道预检哪个账号）。会真的去闲鱼跑一遍「图片准备 → 违禁词预检 → 分类推荐」，把真正发布时会提交的载荷和推荐类目摆出来，用来先看会不会被拦、类目选得对不对。不会注册分类、不会发布。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '预检哪个账号'},
+                    'title': {'type': 'string', 'description': '商品标题'},
+                    'price': {'type': 'number', 'description': '售价（元）'},
+                    'description': {'type': 'string', 'description': '商品描述，可省略'},
+                    'images': {'type': 'array', 'items': {'type': 'string'}, 'description': '图片 URL 列表，可省略'},
+                    'category_id': {'type': 'string', 'description': '类目 id，可省略'},
+                },
+                'required': ['account_id', 'title', 'price'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
             'name': 'items_batch_edit',
             'description': '批量改价/改标题。用户说「把某几个商品都降 10 块」这类批量操作时用。',
             'parameters': {
@@ -3033,6 +3053,20 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     # ---- 粉丝价（1 读 + 1 写；写是整份替换，会真的改平台上三组粉丝价）----
     'items_fans_price': ['fans_price', 'read'],
     'items_set_fans_price': ['fans_price', 'set_prices'],
+    # ---- 第 44 批补：下面这些工具以前只在 _HANDLERS 里按名字分派，而 _SERVICE_TARGETS
+    # 没有条目 ⇒ `_resolve_service` 退到「表外」分支去找 `backend.app.services.<工具名>`，
+    # 全都解析不到，主管 AI 一调就得到「业务模块还没实现 xxx()」。这里补上真目标；
+    # 参数形状与服务层不一致的（items_edit / items_publish / items_batch_edit /
+    # chats_send）另配整形 handler，见 _picked 那一段。----
+    'accounts_relogin': ['accounts', 'relogin'],
+    'items_edit': ['items', 'edit_from_args'],
+    'items_publish': ['items', 'publish_from_args'],
+    'items_batch_edit': ['items', 'batch_edit_from_args'],
+    'items_sync': ['items', 'sync_items'],
+    'chats_send': ['chats', 'send_from_args'],
+    'chats_set_mode': ['chats', 'set_mode'],
+    'orders_deliver': ['orders', 'update_shipment'],
+    'items_listing_precheck': ['items', 'publish_precheck_from_args'],
     # ---- 草稿箱（2 读 + 2 写；写的那两条会真的删掉平台上的草稿）----
     'drafts_list': ['drafts', 'list_drafts'],
     'drafts_get': ['drafts', 'draft_detail'],
@@ -3183,6 +3217,7 @@ _HANDLERS = {
     'items_get': _items_get,
     'items_edit': lambda a: _dispatch_service('items_edit', a),
     'items_publish': lambda a: _dispatch_service('items_publish', a),
+    'items_listing_precheck': lambda a: _dispatch_service('items_listing_precheck', a),
     'items_batch_edit': lambda a: _dispatch_service('items_batch_edit', a),
     'items_sync': lambda a: _dispatch_service('items_sync', a),
     'chats_list': _chats_list,

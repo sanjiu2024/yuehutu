@@ -1600,3 +1600,8 @@ def attach_im_session(session: Any, account_id: str) -> Any:
 
     register(im_handler_for(account_id))
     return session
+
+
+def send_from_args(conversation_id: Any, content: str) -> Any:
+    """工具 `chats_send` 的 `content` → `send_manual(conversation_id, text)`。"""
+    return send_manual(conversation_id, content)
