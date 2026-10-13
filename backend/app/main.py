@@ -99,6 +99,13 @@ ROUTE_MODULES: List[str] = [
     # `GET /{account_id}/guess`（query 传单号）与 `POST /{account_id}/orders/{order_id}/resend`
     # 路径不重叠。
     'logistics',
+    # IM 会话操作（拉黑状态只读 1 + 拉黑 / 解除 / 发商品卡片 3 写）：
+    # `/api/im/{account_id}/...`。**独立前缀**，故意不并进 `/api/chats`：
+    # 那边是消息通道的只读视图（会话列表 / 历史消息 / 同步），这一族是对某个会话做一件事，
+    # 源码在 `xianyu/im_actions.py`。只读侧 `GET /{account_id}/blacklist` 与
+    # `POST /{account_id}/blacklist`、`/{account_id}/blacklist/remove`、`/{account_id}/cards`
+    # 方法与路径都不重叠（`/remove` 是 POST，不会被 GET 抢先）。
+    'im_actions',
 ]
 
 PLACEHOLDER = """<!doctype html>
