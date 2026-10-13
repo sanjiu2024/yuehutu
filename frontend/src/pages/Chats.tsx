@@ -17,16 +17,19 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { api, errorText, isNotReady } from '../api'
-import { AsyncBox, Badge, Switch, useToast } from '../components'
+import { AsyncBox, Badge, ConfirmDialog, Field, Modal, Switch, useToast } from '../components'
 import {
   IconBox,
   IconChat,
+  IconCheck,
   IconExternal,
   IconImage,
   IconInfo,
   IconRefresh,
   IconSend,
+  IconShield,
   IconSparkle,
+  IconTag,
   IconUser,
   IconWarn,
   IconXCircle,
@@ -57,6 +60,32 @@ const MODES: Array<{ value: string; label: string; desc: string }> = [
 
 /** 列表/面板里的实时刷新订阅的 topic（后端真实 topic 名）。 */
 const LIVE_TOPICS = ['chats.message', 'chats.mode_changed', 'chats.ai_reply', 'items.updated', 'risk.changed']
+
+/**
+ * 会话级写操作（第 40 批）的返回形状。
+ *
+ * `is_in_black` **可能是 `null`**：平台没返回这个键（比如没权限）时后端不补 `false`
+ * ——「平台没说」和「没拉黑」是两件事，界面上必须分开说。
+ */
+interface ImBlacklistResult {
+  account_id: string
+  session_id: string
+  is_in_black: boolean | null
+  show_black_list: boolean | null
+  api: string
+  warnings: string[]
+  fetched_at: string
+  source: string
+}
+
+interface ImActionResult {
+  action: string
+  saved: boolean
+  deleted?: boolean
+  item_id?: string
+  session_id?: string
+  warnings?: string[]
+}
 
 /**
  * 买家显示名。
@@ -627,6 +656,27 @@ function ChatWindow({
 
   const list = messages.data?.messages ?? []
   const name = peerName(conversation)
+  /**
+   * 拉黑状态（第 40 批）。
+   *
+   * 用 `conversation_id`（本地行 id）而不是平台 cid —— `conversations` 表里没有 cid 列，
+   * 前端拿不到，由后端从最新一条消息的 `meta.cid` 解析。
+   */
+  const blacklist = useAsync<ImBlacklistResult>(
+    () =>
+      api.get<ImBlacklistResult>(`/api/im/${conversation.account_id}/blacklist`, {
+        conversation_id: conversation.id,
+      }),
+    [conversation.id, conversation.account_id, tick],
+    true,
+    ['chats.changed'],
+  )
+  const [imBusy, setImBusy] = useState('')
+  const [confirmKind, setConfirmKind] = useState<'' | 'add' | 'remove'>('')
+  const [cardOpen, setCardOpen] = useState(false)
+  const [cardItemId, setCardItemId] = useState('')
+  /** `true`/`false`/`null`（平台没说）/`undefined`（还没查出来）。 */
+  const blackState = blacklist.data ? blacklist.data.is_in_black : undefined
   /** 用户是不是停在底部（往上翻历史时别把他拽回来）。 */
   const stickRef = useRef(true)
 
@@ -729,6 +779,70 @@ function ChatWindow({
     }
   }
 
+  /**
+   * 会话级写操作的**唯一出口**。
+   *
+   * 三件事一次做对：① 一定带 `confirm: true`（后端只认显式确认，`'false'` 这种字符串会被
+   * 判成没确认）；② 一律带 `conversation_id`，平台 cid 由后端解析；③ 失败原样把后端
+   * 的中文说明弹出来（平台无权限 ≠ 掉线，不能笼统说「请重新登录」）。
+   */
+  const runImWrite = async (path: string, body: Record<string, unknown>, okText: string) => {
+    setImBusy(path)
+    try {
+      const result = await api.post<ImActionResult>(path, { ...body, confirm: true })
+      if (result && result.saved === false) {
+        toast.error((result.warnings || [])[0] || '平台没有确认这次操作')
+      } else {
+        toast.success(okText)
+      }
+      setConfirmKind('')
+      setCardOpen(false)
+      refresh()
+      onRefreshList()
+    } catch (err) {
+      toast.error(errorText(err))
+    } finally {
+      setImBusy('')
+    }
+  }
+
+  const imBase = `/api/im/${conversation.account_id}`
+
+  const toggleBlacklist = () => {
+    if (blackState === true) {
+      void runImWrite(`${imBase}/blacklist/remove`, { conversation_id: conversation.id }, '已解除拉黑')
+    } else {
+      void runImWrite(`${imBase}/blacklist`, { conversation_id: conversation.id }, '已拉黑这个买家')
+    }
+  }
+
+  const openCard = () => {
+    // 默认填当前会话关联的商品；没有就留空，让用户自己填（不编 id）
+    setCardItemId((conversation.item_id || '').trim())
+    setCardOpen(true)
+  }
+
+  const sendCard = () => {
+    const itemId = cardItemId.trim()
+    if (!itemId) return
+    void runImWrite(
+      `${imBase}/cards`,
+      { conversation_id: conversation.id, item_id: itemId },
+      '商品卡片已发出',
+    )
+  }
+
+  const blackHint =
+    blacklist.error
+      ? `拉黑状态没查到：${blacklist.error}`
+      : blackState === true
+        ? '这个买家已在你的拉黑名单里'
+        : blackState === false
+          ? '这个买家没有被拉黑'
+          : blacklist.loading
+            ? '正在查拉黑状态…'
+            : '平台没有返回拉黑状态（可能这个账号没有该权限），仍可以尝试拉黑'
+
   const mode = modeLabel(conversation.mode)
   // 发图/发语音/打电话 只能在闲鱼官方页面做；没有真实商品 id 就禁用（不编地址）。
   const officialUrl = officialItemUrl(conversation.item_id)
@@ -764,6 +878,21 @@ function ChatWindow({
                   <IconUser size={13} /> {accountName}
                 </span>
               )}
+              {(blacklist.data || blacklist.error) && (
+                <span
+                  className={`ch-sub-item${blackState === true ? ' ch-sub-warn' : ''}`}
+                  title={blackHint}
+                >
+                  <IconShield size={13} />
+                  {blacklist.error
+                    ? '拉黑状态没查到'
+                    : blackState === true
+                      ? '已拉黑'
+                      : blackState === false
+                        ? '未拉黑'
+                        : '拉黑状态：平台未返回'}
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -783,6 +912,22 @@ function ChatWindow({
               </button>
             ))}
           </div>
+          <button
+            className={`btn sm${blackState === true ? ' ghost' : ' danger'}`}
+            onClick={() => setConfirmKind(blackState === true ? 'remove' : 'add')}
+            disabled={Boolean(imBusy)}
+            title={blackHint}
+          >
+            <IconShield size={14} /> {blackState === true ? '解除拉黑' : '拉黑买家'}
+          </button>
+          <button
+            className="btn sm ghost"
+            onClick={openCard}
+            disabled={Boolean(imBusy)}
+            title="把这个商品以卡片形式发给买家（会真的发一条消息）"
+          >
+            <IconTag size={14} /> 发商品卡片
+          </button>
           <button className="btn sm ghost" onClick={refresh}>
             <IconRefresh size={14} /> 刷新
           </button>
@@ -960,6 +1105,49 @@ function ChatWindow({
           note={viewer.note}
           onClose={() => setViewer(null)}
         />
+      )}
+
+      {confirmKind && (
+        <ConfirmDialog
+          title={confirmKind === 'add' ? `拉黑「${name}」？` : `解除对「${name}」的拉黑？`}
+          message={
+            confirmKind === 'add'
+              ? '拉黑后对方不能再给你发消息，会真的改平台上的拉黑名单。'
+              : '解除后对方可以重新给你发消息，会真的改平台上的拉黑名单。'
+          }
+          confirmText={confirmKind === 'add' ? '拉黑' : '解除拉黑'}
+          danger={confirmKind === 'add'}
+          busy={Boolean(imBusy)}
+          onConfirm={toggleBlacklist}
+          onCancel={() => setConfirmKind('')}
+        />
+      )}
+
+      {cardOpen && (
+        <Modal
+          title="发商品卡片"
+          onClose={() => setCardOpen(false)}
+          footer={
+            <>
+              <button className="btn ghost" onClick={() => setCardOpen(false)}>
+                取消
+              </button>
+              <button className="btn primary" onClick={sendCard} disabled={Boolean(imBusy) || !cardItemId.trim()}>
+                <IconCheck size={14} /> {imBusy ? '发送中…' : '发送'}
+              </button>
+            </>
+          }
+        >
+          <Field label="商品 id" tip="默认填当前会话关联的商品；也可以改成别的商品 id（不猜 id）">
+            <input
+              type="text"
+              value={cardItemId}
+              onChange={(e) => setCardItemId(e.target.value)}
+              placeholder="例如 812345678901"
+            />
+          </Field>
+          <p className="ch-im-hint">发出去就是给对方的一条真实消息，发完不能撤回。</p>
+        </Modal>
       )}
     </>
   )

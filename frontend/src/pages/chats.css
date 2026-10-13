@@ -776,6 +776,20 @@
   }
 }
 
+/* ---------------- 会话级写操作（第 40 批：拉黑 / 发商品卡片） ---------------- */
+
+/* 「已拉黑」在头部小字里也要一眼看出来（颜色与徽章一致） */
+.ch-head-sub .ch-sub-warn {
+  color: var(--danger);
+}
+
+.ch-im-hint {
+  margin: 10px 0 0;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
 /* ---------------- 窄屏 ---------------- */
 
 @media (max-width: 1000px) {
