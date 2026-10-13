@@ -62,8 +62,8 @@
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_ai44_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 59  PASS 59  FAIL 0  CASES 2366  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_cp45_full&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 59  PASS 59  FAIL 0  CASES 2412  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -75,7 +75,7 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_xianyu_log
 ```text
 cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_mcp_server.py"
 -> Ran 65 tests ... OK        （含 RouteParamAlignmentTest：MCP 路由参数 ↔ 真实端点签名、
-                                WriteToolConfirmGateTest：63 条写路由不带 confirm 一律零 HTTP 请求）
+                                WriteToolConfirmGateTest：64 条写路由不带 confirm 一律零 HTTP 请求）
 ```
 
 ```text
@@ -83,20 +83,20 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 97 modules transformed.
-   frontend/dist/assets/index-Csa2uoAK.js (618.85 kB, gzip 194.39 kB)
-   frontend/dist/assets/index-CaWemXNE.css (151.30 kB, gzip 23.84 kB)
+   frontend/dist/assets/index-Bdka8w6F.js (624.98 kB, gzip 196.32 kB)
+   frontend/dist/assets/index-D7fWlboC.css (152.59 kB, gzip 24.01 kB)
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon44&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=134 master=133 routes=135 targets=122 handlers=134
-   write_tools=63  route_checked=135
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon45&& C:\Python310\python.exe scripts\reconcile_tools.py"
+-> specs=137 master=136 routes=138 targets=125 handlers=137
+   write_tools=64  route_checked=138
    RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
    （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18481"
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18493"
 -> UI SMOKE ALL OK  (29/29 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
    截图目录：logs/ui_smoke
 ```
@@ -2975,10 +2975,52 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 截图 `logs/fp44_panel_shots/{01-publish-modal-dark,02-precheck-result-dark,03-page-dark}.png`。
 > （`console` 里 `ERR_NAME_NOT_RESOLVED` 是假图床 URL 的预期产物，不是缺陷。）
 
+### 第四十五批：赔付 / 维权（拒绝赔付）读 + 写（263~267）
+
+263. **选题**：写覆盖审计在 362 个 bundle mtop 名里仍有 24 条「像写操作」没做；赔付族里的
+     `compensate.service.refuse`（拒绝赔付）是官方卖家工作台维权详情页的真实动作，且**不碰钱**
+     （同族的 `compensate.service.pay` 是真的付钱，故意不做）。
+264. **协议层**（`backend/app/xianyu/compensate.py`，新增）：三个平台接口逐字 ——
+     `mtop.taobao.idle.merchant.compensate.service.detail.query`（**带 `valueType=string`**）、
+     `mtop.taobao.idle.merchant.compensate.service.refuse.render`（`data.module.reasonChoices` 是字符串数组）、
+     `mtop.taobao.idle.merchant.compensate.service.refuse`（`{orderId, serviceCode, sellerRefuseReason: JSON串,
+     refuseProofs: JSON串, isManual}`）。金额单位是**分**：`amount` 原样、`amount_yuan` 换算，
+     拿不到一律 `null`；凭证与拒绝原因都必填（官方原话「请上传凭证」，说明 ≤200 字）。
+265. **服务层与路由**（`backend/app/services/trade_write.py` 三个函数 + `backend/app/api/trade_write.py` 三条路由）：
+     `GET …/orders/{order_id}/compensations/{service_code}`（详情）、
+     `GET …/compensations/{service_code}/reasons`（拒绝原因候选）、
+     `POST …/orders/{order_id}/compensations/{service_code}/refuse`（拒绝赔付）。
+     三层顺序仍是 确认 → 字段校验 → 建客户端；账号前置检查复用 `services.trade._client`（账号不存在 404、凭据问题 409）。
+266. **AI 侧**：3 个工具（2 只读 + 1 写）+ 3 条 MCP 路由；对账
+     `specs=137 master=136 routes=138 targets=125 handlers=137 / write_tools=64 / route_checked=138`。
+267. **界面**：订单页写面板新增「赔付维权」标签（第 15 个写端点）—— 先点「读取详情与原因」（两个只读 GET）再选原因，
+     没选原因时提交按钮禁用；确认框逐条列出原因、说明与凭证张数；唯一写出口仍是 `postWrite`（`confirm: true` 字面量）。
+     顺手修掉一个真缺陷：`.tr-field input` 的 `min-width:150px` 会把原因复选框撑成一整列（截图里看得见）⇒
+     `.tr-comp-item input` 收回到 14px。
+
+> **第四十五批证据链**：
+> - bundle 证据：`C:\Users\Administrator\.dsh-tmp\seller_scan\js_008_vendors.js`（5,857,382 字符）里
+>   `compensate.service.refuse` 的调用点逐字为
+>   `eM({orderId, serviceCode, sellerRefuseReason: JSON.stringify({reasonChoices:[…], reasonDesc}),
+>   refuseProofs: JSON.stringify(urls), isManual})`，`refuse.render` 给 `reasonChoices` 当选项。
+>   `compensate.service.pay` 需要 `authToken`，而手上只有 `REFUND_PC` / `DEPOSIT_PC` 两个 scene 的证据 ⇒ **故意不做**。
+> - 离线自检：`C:\Users\Administrator\.dsh-tmp\check_cp45.py` → `CHECKS=49 PROBLEMS=0`（构造器逐字、确认严格性、
+>   校验文案、解析三态与四类失败）。
+> - 单测：`backend/tests/test_trade_write_api.py` **118 条**（+45：协议形状 / 只读三态 / 假确认值遍历 /
+>   字段校验早于凭据检查 / 写成功与四类失败）；三个 AI 侧测试文件 `Ran 132 tests ... OK`；
+>   全量 `TOTAL 59  PASS 59  FAIL 0  CASES 2412  SKIPPED 2`。
+> - 界面取证：`C:\Users\Administrator\.dsh-tmp\cp45_panel_shots.py` → `PROBLEMS []`：三个 GET（列表 / 详情 / 原因）
+>   各一次、`refuse_posts []`（只开确认框、不点确认）、3 个原因复选框渲染正确、确认框含原因与「1 张凭证图」；
+>   截图 `logs/cp45_panel_shots/{01-write-panel-dark,02-compensate-tab-dark,03-compensate-loaded-dark,
+>   04-compensate-confirm-dark,05-compensate-light}.png`。
+> - **诚实边界**：这条写接口**一次真机请求都没发过**（拒绝赔付会真的改动平台上的维权单据，不能为了验证去动用户的单子）；
+>   两条只读接口也**没有真机响应样例**（本机账号对赔付族接口可能无权限）。只验到：路由注册、
+>   body 被端点接受、`confirm` 闸门拦得住假确认值、界面不点最终确认就零写请求。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**59 个测试文件、2368 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**59 个测试文件、2412 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -3004,7 +3046,7 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   从 `共 95 条` 变成 `共 56 条`（= 两个在售账号的 45 + 11），页面里再也搜不到 `3998190171`，
   只读探针（真 Edge）`has_deleted_account: false`、`page_errors: []`。
 - 真实 HTTP：只读 17 条 + 写路径 11 条（早期探针）；打包版接口面现在
-  `/openapi.json` = **194 条路径 / 211 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
+  `/openapi.json` = **198 条路径 / 215 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
   第三十二批 +10 条店铺资料/子账号；第三十三批 +4 条推广资金明细；第三十四批 +1 条商品数据；第三十五批 +1 条经营卡片；
   第三十六批 +1 条客服明细表 `GET /api/datacenter/{account_id}/cs/{kind}`；
   第三十七批 +6 条话术 `/api/quick-reply/*`（7 个操作）；第三十八批 +6 条订单处理
@@ -3013,7 +3055,9 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   第四十批 +3 条 IM 会话操作 `/api/im/{account_id}/{blacklist,blacklist/remove,cards}`（4 个操作）；
   第四十一批 +6 条纠纷协商 `/api/disputes/*`（7 个操作）；第四十二批 +1 条粉丝价
    `GET|POST /api/items/{account_id}/{item_id}/fans-price`（2 个操作）；
-  第四十三批 +3 条会话接管 `/api/im/{account_id}/sessions/{transfer,leave,rejoin}`），
+  第四十三批 +3 条会话接管 `/api/im/{account_id}/sessions/{transfer,leave,rejoin}`；
+   第四十四批 +1 条发布前预检 `POST /api/items/{account_id}/publish/precheck`；
+   第四十五批 +3 条赔付 / 维权 `/api/trade/{account_id}/{orders/{order_id}/compensations/{service_code},compensations/{service_code}/reasons,orders/{order_id}/compensations/{service_code}/refuse}`），
   均结构化信封、无 500。
 - **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 134 / `MASTER_TOOLS` 133 /
   `TOOL_ROUTES` 134，其中 **63 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实

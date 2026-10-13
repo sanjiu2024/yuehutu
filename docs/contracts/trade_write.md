@@ -25,7 +25,7 @@
    `platform_errors.explain`，**不会**把账号写成 `need_relogin`。只有平台真的回
    `SESSION_EXPIRED`（`common._is_session_expired` 按类名/文案认）才会标掉线。
 
-## 1. HTTP（19 个 POST + 3 个只读 GET，全部要求登录）
+## 1. HTTP（20 个 POST + 5 个只读 GET，全部要求登录）
 
 | 方法 | 路径 | body | 说明 |
 | --- | --- | --- | --- |
@@ -400,10 +400,62 @@ IM 侧 `C:\Users\Administrator\.dsh-tmp\bundle_scan\js_006_p_im_index.js`（3,07
 
 ### 10.3 测试与未验证
 
-`backend/tests/test_trade_write_api.py` **74 条**（第 38 批 +30：`ConfirmGateBypassTest` + `CloseAndDelayTest`）；
+`backend/tests/test_trade_write_api.py` **118 条**（第 38 批 +30：`ConfirmGateBypassTest` + `CloseAndDelayTest`）；
 `backend/tests/test_security_write_api.py` **22 条**（+1 条假确认值遍历）。
 
 **未验证**：这五条写接口**一次真机请求都没发过**（关单/延时/提醒/付运费/撤诉都会真的改动真实订单或真的扣钱，
 不能为了验证去动用户的订单）。只验到：路由注册（`openapi` 178 路径 / 192 操作）、body 被端点接受、
 `confirm` 闸门拦得住假确认值、界面上不点最终确认就零写请求、`close-reasons` 只读接口的真机响应形状。
 
+## 11. 赔付 / 维权（**读 + 写**）：拒绝赔付
+
+### 11.1 只读：详情与拒绝原因候选
+
+| 用途 | HTTP | 平台接口 | 版本 |
+| --- | --- | --- | --- |
+| 赔付详情 | `GET /api/trade/{account_id}/orders/{order_id}/compensations/{service_code}` | `mtop.taobao.idle.merchant.compensate.service.detail.query` | v1.0（**带 `valueType=string`**） |
+| 拒绝原因候选 | `GET /api/trade/{account_id}/compensations/{service_code}/reasons` | `mtop.taobao.idle.merchant.compensate.service.refuse.render` | v1.0 |
+
+详情响应 `data.{account_id, order_id, service_code, found, service_info, elements, amount, amount_yuan,
+title, desc, warnings, fetched_at, source}`；`found=false` 表示**平台没给出这笔赔付**（不是「没有问题」）。
+**金额单位是分**：`amount` 原样透出，`amount_yuan` 是换算后的元，两个都可能为 `null`（**不补 0**）。
+
+原因响应 `data.{account_id, service_code, reason_choices, reason_desc, warnings, fetched_at, source}`；
+`reason_choices` 三态：有值 / `[]`（平台明确回空数组）/ `null`（平台没返回那个键，**不是「没有原因」**）。
+
+### 11.2 写：拒绝赔付
+
+`POST /api/trade/{account_id}/orders/{order_id}/compensations/{service_code}/refuse`，平台接口
+`mtop.taobao.idle.merchant.compensate.service.refuse` v1.0。请求体：
+
+```json
+{
+  "reason_choices": ["商品无质量问题"],
+  "reason_desc": "说明（≤200 字，可空）",
+  "proof_urls": ["https://.../1.png"],
+  "is_manual": false,
+  "confirm": true
+}
+```
+
+后端把它拼成官方形状：`{orderId, serviceCode, sellerRefuseReason: "{\"reasonChoices\":[...],\"reasonDesc\":\"...\"}",
+refuseProofs: "[\"https://.../1.png\"]", isManual}`（两个 JSON 串都用紧凑分隔符）。
+
+规则：
+- `confirm` 必须**字面量 `true`**（三层顺序仍是 确认 → 字段校验 → 建客户端）；
+- `reason_choices` **至少一个**（候选只能来自 `reasons` 接口，我们不编）；数组与逗号串都收；
+- `proof_urls` **至少一张**（官方硬要求「请上传凭证」）；
+- `reason_desc` 超过 200 字 → 400 `invalid_fields`；
+- 平台 `data.success === false` → 502 `protocol_error` 并把 `platform_message` 透出（不谎报成功）。
+
+响应 `data.{action: 'compensate_refuse', saved, order_id, service_code, submitted, warnings, fetched_at}`；
+成功记一条 `operation_logs`（action `trade_compensate_refuse`），不落库、不发 `items.*` 事件。
+
+### 11.3 测试与未验证
+
+`backend/tests/test_trade_write_api.py` 新增 45 条（协议形状 / 只读三态 / 确认闸门遍历假确认值 /
+字段校验早于凭据检查 / 写成功与四类失败），全文件 **118 条**。
+
+**未验证**：这条写接口**一次真机请求都没发过** —— 拒绝赔付会真的改动平台上的维权单据，不能为了验证去动用户的单子。
+只验到：路由注册、body 被端点接受、`confirm` 闸门拦得住假确认值、界面不点最终确认就零写请求。
+另有两条只读接口的真机响应形状也**没有**样例（本机账号对赔付族接口可能无权限）。

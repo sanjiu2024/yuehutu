@@ -1175,6 +1175,26 @@ POST /api/items/{account_id}/publish/precheck
 只读工具的**名字**里不许出现 `publish/delete/edit/update/create/remove/set_/send/sync` ⇒ 预检工具叫
 `items_listing_precheck`。
 
+【第 45 批 /api/trade 的赔付 / 维权（拒绝赔付）】
+- 三条路由：`GET /api/trade/{account_id}/orders/{order_id}/compensations/{service_code}`（详情，只读）、
+  `GET /api/trade/{account_id}/compensations/{service_code}/reasons`（拒绝原因候选，只读）、
+  `POST /api/trade/{account_id}/orders/{order_id}/compensations/{service_code}/refuse`（拒绝赔付，写）。
+- 平台接口逐字：`mtop.taobao.idle.merchant.compensate.service.detail.query`（这条**带 `valueType=string`**）、
+  `mtop.taobao.idle.merchant.compensate.service.refuse.render`（`data.module.reasonChoices` 是字符串数组）、
+  `mtop.taobao.idle.merchant.compensate.service.refuse`（请求体
+  `{orderId, serviceCode, sellerRefuseReason: JSON 串, refuseProofs: JSON 串, isManual}`，
+  其中 `sellerRefuseReason` 是 `{"reasonChoices":[...],"reasonDesc":"..."}`）。
+- 金额单位是**分**：`amount` 原样给（分），`amount_yuan` 是元；拿不到一律 `null`，**绝不补 0**。
+- 拒绝原因**三态**：有值 / `[]`（平台明确回空数组）/ `null`（平台没返回那个键）——
+  最后一个**不是**「没有原因」，界面要分开说。
+- **凭证必填**（官方原话「请上传凭证」）：`proof_urls` 至少一张；拒绝说明最多 200 字。
+- 错误码：400 `confirmation_required` / 400 `invalid_fields` / 404 `not_found` / 409 `verification_required` /
+  502 `protocol_error` / 503 `xianyu_not_ready`；平台 `data.success === false` 也走 502 并把平台原话透出。
+- **故意不做**：`compensate.service.pay` —— 那是真的付钱，而 `authToken` 只有 `REFUND_PC` / `DEPOSIT_PC`
+  两个 scene 的证据，赔付场景没有 ⇒ 不猜、不做。
+- 界面口径：写面板「赔付维权」标签；先点「读取详情与原因」（两个只读 GET）再选原因；
+  没选原因时提交按钮禁用；确认框逐条列出原因、说明与凭证张数；唯一写出口 `postWrite`（`confirm: true` 字面量）。
+
 【写接口的三条硬口径（所有 *_write 一律遵守）】
 1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /
    `confirm_required`），**一次平台请求都不发**；
@@ -1182,13 +1202,13 @@ POST /api/items/{account_id}/publish/precheck
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 134 条 / `MASTER_TOOLS` 133 条（去掉 `master_chat` 防递归），
-其中 **63 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 135 条。五方对账（specs / master / routes / service targets / handlers）
+【AI 侧】`TOOL_SPECS` 137 条 / `MASTER_TOOLS` 136 条（去掉 `master_chat` 防递归），
+其中 **64 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
+`mcp_server/client.py::TOOL_ROUTES` 138 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=134 master=133 routes=135 targets=122 handlers=134 / write_tools=63 / route_checked=135 / RECON OK
+-> specs=137 master=136 routes=138 targets=125 handlers=137 / write_tools=64 / route_checked=138 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`
