@@ -1051,6 +1051,38 @@ POST /api/logistics/{account_id}/orders/{order_id}/resend      {mail_no,cp_code,
        -- AI 侧 4 个工具：`im_blacklist_status`（只读、无 `confirm`）+ `im_blacklist_add` /
        --   `im_blacklist_remove` / `im_card_send`（都要 `confirm`）。
 
+【第 41 批 /api/disputes —— 纠纷协商（联系纠纷小二：3 读 + 4 写）】
+   GET  /api/disputes/{account_id}/conversation?order_id=&refund_id=&dispute_id=
+   GET  /api/disputes/{account_id}/{conversation_id}/messages?begin_time=
+   GET  /api/disputes/{account_id}/{conversation_id}/unread
+   POST /api/disputes/{account_id}/{conversation_id}/messages        {text, confirm}
+   POST /api/disputes/{account_id}/{conversation_id}/messages/image  {url, ext?, width?, height?,
+                                                                     alt_text?, thumb_url?, send_key?, confirm}
+   POST /api/disputes/{account_id}/{conversation_id}/urge            {confirm}
+   POST /api/disputes/{account_id}/{conversation_id}/mark-read       {msg_id, sequence, confirm}
+       -- **这里的 `{conversation_id}` 是纠纷会话 id（平台 `conversationId`），不是买家 IM 会话**
+       --   （买家 IM 走上面那条 `/api/im`）。三个单号至少给一个；都不给 → 400 `invalid_fields`。
+       -- 平台接口（全部 v1.0，bundle 逐字）：`mtop.taobao.idle.shop.dispute.message.get.conversation`、
+       --   `…message.query.history`、`…message.query.unread.list`、`…message.send`
+       --   （`{conversationId, sceneType:'userActive', content: JSON 串, contentType:'PLAIN_TEXT'|'IMAGE'}`）、
+       --   `…message.mark.read`（`{conversationId, msgId, sequence: 整数}`）。
+       --   `content` 用 `json.dumps(ensure_ascii=False, separators=(',',':'))` 贴近官方 `JSON.stringify`；
+       --   文字上限 2000 字；id 上限 128；图片 `ext` 缺省 `JPG`、`thumbURL` 缺省取原图、`sendKey` 始终带。
+       -- 只读三态：`messages` 是数组 = 真的这些留言；`null` + warning（`dispute_messages_missing` /
+       --   `dispute_unread_missing`）= 平台没给列表键（**不代表没有**）；`has_more` 在 `messages is None`
+       --   时也是 `null`。平台没给 `currentTime` → `dispute_current_time_missing`。
+       -- 取会话时平台没给 `conversationId` → **502**（不是 200 带空串）：拿不到会话 id 后面全做不了。
+       -- 写成功返回 `{action, saved, conversation_id, msg_id, sequence, tips, submitted, warnings}`；
+       --   平台接受但没回 `msgId`/`sequence` → `dispute_no_echo` warning（**不是失败**），此时两个字段是
+       --   `null`，**不许拿本地数字冒充平台序号**。
+       -- 四条写成功后记 `operation_logs`（`dispute_send_text`/`dispute_send_image`/`dispute_urge`/
+       --   `dispute_mark_read`）并播 `disputes.changed`。
+       -- 只读路径的平台拒绝**不降级**：真机见过 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED` / `NO_PERMISSION`
+       --   ⇒ 如实 502 + 人话（把「没权限」装成「没有留言」是假数据）。
+       -- AI 侧 7 个工具：`disputes_conversation` / `disputes_messages` / `disputes_unread`（只读）+
+       --   `disputes_send_text` / `disputes_send_image` / `disputes_urge` / `disputes_mark_read`（写）。
+       -- 详见 `docs/contracts/disputes.md`。
+
 【写接口的三条硬口径（所有 *_write 一律遵守）】
 1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /
    `confirm_required`），**一次平台请求都不发**；
@@ -1058,13 +1090,13 @@ POST /api/logistics/{account_id}/orders/{order_id}/resend      {mail_no,cp_code,
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 121 条 / `MASTER_TOOLS` 120 条（去掉 `master_chat` 防递归），
-其中 **55 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 122 条。五方对账（specs / master / routes / service targets / handlers）
+【AI 侧】`TOOL_SPECS` 128 条 / `MASTER_TOOLS` 127 条（去掉 `master_chat` 防递归），
+其中 **59 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
+`mcp_server/client.py::TOOL_ROUTES` 129 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=121 master=120 routes=122 targets=101 handlers=121 / write_tools=55 / route_checked=122 / RECON OK
+-> specs=128 master=127 routes=129 targets=108 handlers=128 / write_tools=59 / route_checked=129 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`
