@@ -264,6 +264,37 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'method': 'POST', 'path': '/api/im/{account_id}/cards',
         'path_params': ['account_id'], 'body': ['session_id', 'conversation_id', 'item_id', 'confirm'],
     },
+    # ---- 纠纷协商（联系纠纷小二：3 读 + 4 写；写的那四条会真的发到平台）----
+    'disputes_conversation': {
+        'method': 'GET', 'path': '/api/disputes/{account_id}/conversation',
+        'path_params': ['account_id'], 'query': ['order_id', 'refund_id', 'dispute_id'],
+    },
+    'disputes_messages': {
+        'method': 'GET', 'path': '/api/disputes/{account_id}/{conversation_id}/messages',
+        'path_params': ['account_id', 'conversation_id'], 'query': ['begin_time'],
+    },
+    'disputes_unread': {
+        'method': 'GET', 'path': '/api/disputes/{account_id}/{conversation_id}/unread',
+        'path_params': ['account_id', 'conversation_id'],
+    },
+    'disputes_send_text': {
+        'method': 'POST', 'path': '/api/disputes/{account_id}/{conversation_id}/messages',
+        'path_params': ['account_id', 'conversation_id'], 'body': ['text', 'confirm'],
+    },
+    'disputes_send_image': {
+        'method': 'POST', 'path': '/api/disputes/{account_id}/{conversation_id}/messages/image',
+        'path_params': ['account_id', 'conversation_id'],
+        'body': ['url', 'ext', 'width', 'height', 'alt_text', 'thumb_url', 'confirm'],
+    },
+    'disputes_urge': {
+        'method': 'POST', 'path': '/api/disputes/{account_id}/{conversation_id}/urge',
+        'path_params': ['account_id', 'conversation_id'], 'body': ['confirm'],
+    },
+    'disputes_mark_read': {
+        'method': 'POST', 'path': '/api/disputes/{account_id}/{conversation_id}/mark-read',
+        'path_params': ['account_id', 'conversation_id'],
+        'body': ['msg_id', 'sequence', 'confirm'],
+    },
     'orders_list': {
         'method': 'GET', 'path': '/api/orders',
         'query': ['account_id', 'status', 'limit'],

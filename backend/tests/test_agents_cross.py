@@ -563,6 +563,9 @@ class MasterChatTest(unittest.TestCase):
             'logistics_resend_consign',
             'im_blacklist_status', 'im_blacklist_add', 'im_blacklist_remove',
             'im_card_send',
+
+            'disputes_conversation', 'disputes_messages', 'disputes_unread',
+            'disputes_send_text', 'disputes_send_image', 'disputes_urge', 'disputes_mark_read',
             'master_chat',
         ]
         self.assertEqual(tools.TOOL_NAMES, expected)
@@ -600,6 +603,7 @@ class MasterChatTest(unittest.TestCase):
             'trade_postage_refund_pay', 'trade_complain_revoke',
             'logistics_resend_consign',
             'im_blacklist_add', 'im_blacklist_remove', 'im_card_send',
+            'disputes_send_text', 'disputes_send_image', 'disputes_urge', 'disputes_mark_read',
         ]
         for name in write_tools:
             spec = tools.get_tool(name)

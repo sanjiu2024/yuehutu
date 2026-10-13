@@ -50,6 +50,12 @@ NEW_TOOLS: Dict[str, Dict[str, Any]] = {
                                'path': '/api/logistics/{account_id}/guess'},
     'im_blacklist_status': {'module': 'im_actions', 'fn': 'blacklist_status', 'verb': 'get',
                             'path': '/api/im/{account_id}/blacklist'},
+    'disputes_conversation': {'module': 'disputes', 'fn': 'conversation', 'verb': 'get',
+                              'path': '/api/disputes/{account_id}/conversation'},
+    'disputes_messages': {'module': 'disputes', 'fn': 'history', 'verb': 'get',
+                          'path': '/api/disputes/{account_id}/{conversation_id}/messages'},
+    'disputes_unread': {'module': 'disputes', 'fn': 'unread', 'verb': 'get',
+                        'path': '/api/disputes/{account_id}/{conversation_id}/unread'},
     'datacenter_overview': {'module': 'datacenter', 'fn': 'overview', 'verb': 'get',
                             'path': '/api/datacenter/{account_id}/overview'},
     'datacenter_fans': {'module': 'datacenter', 'fn': 'fans', 'verb': 'get',
@@ -254,6 +260,18 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
     'im_card_send': {
         'module': 'im_actions', 'fn': 'send_item_card', 'confirm': True,
         'method': 'POST', 'path': '/api/im/{account_id}/cards'},
+    'disputes_send_text': {
+        'module': 'disputes', 'fn': 'send_text', 'confirm': True,
+        'method': 'POST', 'path': '/api/disputes/{account_id}/{conversation_id}/messages'},
+    'disputes_send_image': {
+        'module': 'disputes', 'fn': 'send_image', 'confirm': True,
+        'method': 'POST', 'path': '/api/disputes/{account_id}/{conversation_id}/messages/image'},
+    'disputes_urge': {
+        'module': 'disputes', 'fn': 'urge', 'confirm': True,
+        'method': 'POST', 'path': '/api/disputes/{account_id}/{conversation_id}/urge'},
+    'disputes_mark_read': {
+        'module': 'disputes', 'fn': 'mark_read', 'confirm': True,
+        'method': 'POST', 'path': '/api/disputes/{account_id}/{conversation_id}/mark-read'},
     'logistics_resend_consign': {
         'module': 'logistics', 'fn': 'resend_consign', 'confirm': True,
         'method': 'POST', 'path': '/api/logistics/{account_id}/orders/{order_id}/resend'},
@@ -472,6 +490,16 @@ _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
         'account_id': 'acc-x', 'session_id': 'cid-1', 'confirm': False},
     'im_card_send': {
         'account_id': 'acc-x', 'session_id': 'cid-1', 'item_id': 'it-1',
+        'confirm': False},
+    'disputes_send_text': {
+        'account_id': 'acc-x', 'conversation_id': 'cid-1', 'text': '你好', 'confirm': False},
+    'disputes_send_image': {
+        'account_id': 'acc-x', 'conversation_id': 'cid-1', 'url': 'https://a/y.png',
+        'confirm': False},
+    'disputes_urge': {
+        'account_id': 'acc-x', 'conversation_id': 'cid-1', 'confirm': False},
+    'disputes_mark_read': {
+        'account_id': 'acc-x', 'conversation_id': 'cid-1', 'msg_id': 'm-1', 'sequence': 3,
         'confirm': False},
     'logistics_resend_consign': {
         'account_id': 'acc-x', 'order_id': 't1', 'mail_no': 'SF123', 'cp_code': 'SF',

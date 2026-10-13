@@ -2457,6 +2457,142 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---- 纠纷协商（联系纠纷小二：3 读 + 4 写；写的那四条会真的发到平台）----
+    {
+        'type': 'function',
+        'function': {
+            'name': 'disputes_conversation',
+            'description': ('取（或创建）某个订单 / 退款单 / 纠纷单的纠纷会话，拿到 conversationId。'
+                            '三个单号至少给一个；account_id 必填。'),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '账号 id'},
+                    'order_id': {'type': 'string', 'description': '订单号（与另外两个至少给一个）'},
+                    'refund_id': {'type': 'string', 'description': '退款单号'},
+                    'dispute_id': {'type': 'string', 'description': '纠纷单号'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'disputes_messages',
+            'description': ('拉纠纷会话的历史留言（最多一页 20 条）。'
+                            '翻页把上一页返回的 current_time 当 begin_time 传回来；account_id 必填。'),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '账号 id'},
+                    'conversation_id': {'type': 'string', 'description': '纠纷会话 id（conversationId）'},
+                    'begin_time': {'type': 'string', 'description': '上一页的 current_time，首页不传'},
+                },
+                'required': ['account_id', 'conversation_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'disputes_unread',
+            'description': '看纠纷会话里还没读的留言；account_id 与 conversation_id 都必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '账号 id'},
+                    'conversation_id': {'type': 'string', 'description': '纠纷会话 id（conversationId）'},
+                },
+                'required': ['account_id', 'conversation_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'disputes_send_text',
+            'description': ('给纠纷会话发一条文字留言（写操作，会真的发到平台给小二看）。'
+                            + _WRITE_HINT),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '账号 id'},
+                    'conversation_id': {'type': 'string', 'description': '纠纷会话 id（conversationId）'},
+                    'text': {'type': 'string', 'description': '要发的文字（不超过 2000 字）'},
+                    'confirm': {'type': 'boolean', 'description': '必须为 true 才真的执行（confirm=true）'},
+                },
+                'required': ['account_id', 'conversation_id', 'text', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'disputes_send_image',
+            'description': ('给纠纷会话发一张图举证（写操作，会真的发到平台）。'
+                            'url 得是平台能取到的地址（本机上传接口给的就是）。'
+                            + _WRITE_HINT),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '账号 id'},
+                    'conversation_id': {'type': 'string', 'description': '纠纷会话 id（conversationId）'},
+                    'url': {'type': 'string', 'description': '图片地址（平台能取到的 URL）'},
+                    'ext': {'type': 'string', 'description': '扩展名，缺省 JPG'},
+                    'width': {'type': 'integer', 'description': '宽度，缺省 0'},
+                    'height': {'type': 'integer', 'description': '高度，缺省 0'},
+                    'alt_text': {'type': 'string', 'description': '图片说明'},
+                    'thumb_url': {'type': 'string', 'description': '缩略图地址，缺省用原图'},
+                    'confirm': {'type': 'boolean', 'description': '必须为 true 才真的执行（confirm=true）'},
+                },
+                'required': ['account_id', 'conversation_id', 'url', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'disputes_urge',
+            'description': ('催办这个纠纷单（写操作）：会给小二发一句固定的「催促处理维权」。'
+                            + _WRITE_HINT),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '账号 id'},
+                    'conversation_id': {'type': 'string', 'description': '纠纷会话 id（conversationId）'},
+                    'confirm': {'type': 'boolean', 'description': '必须为 true 才真的执行（confirm=true）'},
+                },
+                'required': ['account_id', 'conversation_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'disputes_mark_read',
+            'description': ('把纠纷会话里某条留言标记成已读（写操作）。'
+                            'msg_id 与 sequence 都来自留言列表。' + _WRITE_HINT),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '账号 id'},
+                    'conversation_id': {'type': 'string', 'description': '纠纷会话 id（conversationId）'},
+                    'msg_id': {'type': 'string', 'description': '留言的 msgId'},
+                    'sequence': {'type': 'integer', 'description': '留言的序号（必须是整数）'},
+                    'confirm': {'type': 'boolean', 'description': '必须为 true 才真的执行（confirm=true）'},
+                },
+                'required': ['account_id', 'conversation_id', 'msg_id', 'sequence', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 主管 AI（只给 MCP 侧） ----------------
     {
         'type': 'function',
@@ -2813,7 +2949,14 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'im_blacklist_add': ['im_actions', 'blacklist_add'],
     'im_blacklist_remove': ['im_actions', 'blacklist_remove'],
     'im_card_send': ['im_actions', 'send_item_card'],
-}
+
+    'disputes_conversation': ['disputes', 'conversation'],
+    'disputes_messages': ['disputes', 'history'],
+    'disputes_unread': ['disputes', 'unread'],
+    'disputes_send_text': ['disputes', 'send_text'],
+    'disputes_send_image': ['disputes', 'send_image'],
+    'disputes_urge': ['disputes', 'urge'],
+    'disputes_mark_read': ['disputes', 'mark_read'],}
 
 # 有额外位置参数（不是直接透传 args 的）在这里补上固定值
 _SERVICE_FIXED_ARGS: Dict[str, Dict[str, Any]] = {
@@ -3046,7 +3189,14 @@ _HANDLERS = {
     'im_blacklist_add': lambda a: _dispatch_service('im_blacklist_add', a),
     'im_blacklist_remove': lambda a: _dispatch_service('im_blacklist_remove', a),
     'im_card_send': lambda a: _dispatch_service('im_card_send', a),
-}
+
+    'disputes_conversation': lambda a: _dispatch_service('disputes_conversation', a),
+    'disputes_messages': lambda a: _dispatch_service('disputes_messages', a),
+    'disputes_unread': lambda a: _dispatch_service('disputes_unread', a),
+    'disputes_send_text': lambda a: _dispatch_service('disputes_send_text', a),
+    'disputes_send_image': lambda a: _dispatch_service('disputes_send_image', a),
+    'disputes_urge': lambda a: _dispatch_service('disputes_urge', a),
+    'disputes_mark_read': lambda a: _dispatch_service('disputes_mark_read', a),}
 
 
 async def call_tool(name: str, args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
