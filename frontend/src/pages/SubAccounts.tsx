@@ -1,8 +1,10 @@
 /**
- * 小铺 → 子账号管理（**只读**）。
+ * 小铺 → 子账号管理（**列表只读 + 写操作面板**）。
  *
- * 契约见 `docs/contracts/shop.md`（task-51 冻结）：
- *  - `GET /api/shop/{account_id}/sub-accounts?page=&size=`
+ * 契约见 `docs/contracts/shop.md`（task-51 冻结只读侧，第三十二批补写侧）：
+ *  - `GET  /api/shop/{account_id}/sub-accounts?page=&size=`
+ *  - `GET  /api/sub-accounts/{account_id}/roles`
+ *  - `POST /api/sub-accounts/{account_id}`（新建）与 `…/{sub_id}/{delete,mobile,roles,password}`
  *
  * 两条不能破的口径：
  *  1. **平台没给的字段是 `null`，一律显示 `-`，绝不补 0**。0 是真实值（该账号真机
@@ -10,7 +12,10 @@
  *  2. **无权限 ≠ 掉线**：`quota` / `roles` 对该账号是 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`
  *     （账号对这个业务没权限），后端给 `null` + 中文 warning，**不会**把账号打成
  *     `need_relogin`。页面必须把 warning 显示出来，别让用户以为要重新扫码。
- *  3. **本页没有任何写操作**。注册/删除子账号、改手机号/密码/角色在官方工作台做。
+ *  3. **写操作都在「子账号写操作」面板里，每个动作都要二次确认**（第三十二批接上）：
+ *     新建 / 删除 / 改手机号 / 改岗位 / 改密码。确认前不发任何平台请求；密码只发明文到
+ *     本机后端，加密在服务端用 `sub.account.sub.pk` 的公钥做（RSAES-PKCS1-v1_5）。
+ *     列表本身仍然只读，不会在表格里就地改数据。
  *
  * `items[]` 是平台 `list` 原样透传（不重命名、不补字段）——真机该账号列表为空，
  * 行字段名没有真机样例，所以这里按 bundle 线索渲染常见列、其余塞进「原始字段」抽屉，
