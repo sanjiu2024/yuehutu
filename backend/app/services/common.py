@@ -100,7 +100,14 @@ def log_operation(
     detail: Any = '',
     kind: Optional[str] = None,
 ) -> int:
-    """写一条 operation_logs。`kind` 是任务卡里的叫法，等价于表里的 `action`。"""
+    """写一条 operation_logs。`kind` 是任务卡里的叫法，等价于表里的 `action`。
+
+    **故意不校验账号是否存在**：审计行是「我们尝试做过什么」的记录，不是「账号存在」的证明。
+    真实的写路径上账号不存在会先被 `_client` 拦成 404 `not_found`，所以不会产生行；
+    闸门探针故意用不存在的 `9999999999999` 时会在库里留下 `success=0` +
+    detail「账号 … 不存在」的行 —— 这是探针留痕，不是业务写操作（曾经试过在这里按
+    `accounts` 表挡掉，结果把「商品存在但账号行缺失」这类正常调用也一起挡了，故回退）。
+    """
     if isinstance(detail, (dict, list)):
         detail = json.dumps(detail, ensure_ascii=False)
     return db.execute(
