@@ -93,6 +93,12 @@ ROUTE_MODULES: List[str] = [
     # 集合级 `POST /{account_id}/groups`、`POST /{account_id}/phrases` 与
     # `/{group_id}/delete`、`/{content_id}/delete` 路径不重叠。
     'quick_reply',
+    # 物流（快递公司列表 / 运单号认公司，只读 2 + 修改运单号 1 写）：
+    # `/api/logistics/{account_id}/...`。**独立前缀**，故意不并进 `/api/trade`：
+    # 两个读接口是平台侧字典（跟订单表无关），写只有一条，源码在 `xianyu/logistics.py`。
+    # `GET /{account_id}/guess`（query 传单号）与 `POST /{account_id}/orders/{order_id}/resend`
+    # 路径不重叠。
+    'logistics',
 ]
 
 PLACEHOLDER = """<!doctype html>
