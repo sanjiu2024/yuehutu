@@ -62,8 +62,8 @@
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_promo_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 54  PASS 54  FAIL 0  CASES 1782  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_cm_full&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 54  PASS 54  FAIL 0  CASES 1827  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -82,15 +82,15 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_mcp_server
 cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
--> BUILD_EXIT=0   ✓ 92 modules transformed.
-   frontend/dist/assets/index-BghE5P7m.js (615.15 kB, gzip 191.8 kB)
-   frontend/dist/assets/index-BAUr5YpJ.css (139.92 kB, gzip 22.1 kB)
+-> BUILD_EXIT=0   ✓ 94 modules transformed.
+   frontend/dist/assets/index-CaV4g4Pd.js (624.76 kB, gzip 178.0 kB)
+   frontend/dist/assets/index-DotwG7pK.css (141.94 kB, gzip 22.5 kB)
 ```
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon_shop&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=98 master=97 routes=99 targets=78 handlers=98
-   write_tools=40  route_checked=99
+-> specs=99 master=98 routes=100 targets=79 handlers=99
+   write_tools=40  route_checked=100
    RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
    （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
 ```
@@ -2224,18 +2224,73 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > **`ASSETS_MATCH=True`**；`C:\Users\Administrator\.dsh-tmp\funds_tab_shots.py`（只点「资金明细」标签，
 > 不点任何确认）→ `PROBLEMS: []`、`page errors: []`、**非 GET 请求 0 条**。
 
+### 第三十四批：商品数据页（官方最后一个没复刻的叶子页，只读）（198~202）
+
+- **动机（覆盖审计）**：把官方菜单树（`logs/seller_discover/menu.json` 的 `accessiblePathList`，
+  7 组 19 个叶子页）与我们已复刻的 27 页逐条对照，**只剩 `/seller-data/commodity`（商品数据）
+  没有对应页面** —— 它一直在官方「数据」组里，而我们的数据组只有总览/粉丝/客服三页。
+- **取证（零平台请求）**：全部来自本地 bundle 副本 `logs/seller_discover/datacenter_main.js`
+  （4,168,486 字符，官方 `idle-seller-data` 微应用）：
+  - 列表 `mtop.alibaba.idle.seller.pc.datacompass.item.list`（`data:{...}`，响应读
+    `e.data.data.list` + `e.data.data.total`）；列定义
+    `…pc.datacompass.item.indicators`（响应 `e.data.data[].subFields[]`，拍平成
+    `{name,title,type}`，官方还把它缓存进 `localStorage['commodityColumns']`）。
+  - **调用参数逐个钉住**：`{selectedSellerId, tabType, dateRange, ms, dateType, categoryInfoStr,
+    itmName, itmId, isDpStk, mktActId, page, pageSize, orderBy, order}`；`dateRange` 只在自定义
+    区间时给（`join('|')`）、`ms` 只在按月时给、`categoryInfoStr` 是**JSON 字符串**、
+    `pageSize` 官方给 10/20/50、排序 `orderBy`=列名 + `order`=asc/desc。
+  - **官方渲染规则**：第一行该列的值 `< 1` 时整列渲染成「原样数字 + `%`」（**不乘 100**）——
+    我们照抄，并在列头 `title` 里写明，避免用户以为是我们算错。
+  - 官方这一页的**导出/下载**接口（`…export.item.list` 一族 + 轮询 `excel.url.get`）
+    **故意不做**：它把整份数据导成本地文件，属于数据外带，要单独评估。
+- **4 处落盘**：
+  - 协议层 `backend/app/xianyu/datacenter.py`：`COMMODITY_LIST_API` / `COMMODITY_INDICATORS_API`
+    + `commodity_request()` / `parse_commodity_list()` / `parse_commodity_columns()`。
+  - 服务层 `backend/app/services/datacenter.py`：`commodity(account_id, start, end, item_id,
+    item_name, page, size, order_by, order)`（**默认区间是今天**，跟官方一致，与另外三页
+    「今天往前 7 天」故意不同；`items`/`columns` 拿不到给 `null`、`total`/`pages` 认不出给 `null`）。
+  - 路由 `GET /api/datacenter/{account_id}/commodity`（挂载在既有的 `datacenter` 模块里）。
+  - AI 侧 1 个只读工具 `datacenter_commodity`（无 `confirm`）+ 1 条 MCP GET 路由
+    （query 8 个键：`start/end/item_id/item_name/page/size/order_by/order`）。
+- **UI**：新增第 28 页「商品数据」（`frontend/src/pages/CommodityData.tsx` + `commodity.css`，
+  `cm-` 前缀，94 modules）：账号选择 + 日期（今天/近 7 天/近 30 天）+ 商品 ID/标题筛选 +
+  **动态列**（列名与列数都由平台给，我们不自造）+ 列头点击排序（升/降/取消三态）+
+  本地分页（10/20/50）+ 商品信息列 sticky 在最左（缩略图 + 标题 + 商品 ID）。
+  三个「诚实」分支：`items === null`（平台没返回行）与 `items: []`（真的没有商品）文案分开；
+  `columns` 缺失/空数组时退回「按第一行的键显示」并说明「这些列头是字段名，不是官方中文标题」；
+  拿不到的单元格显示 `-` 并压暗，与真实的 0 在视觉上分开。
+
+> **第三十四批证据链**：`backend/tests/test_datacenter_api.py` → **`Ran 89 tests ... OK`**
+> （新增 `CommodityTest` 18 条：默认今天、8 个 query 透传、`items=null` 与 `items=[]` 的区别、
+> `total=0` 保留而缺失给 null、`columns` 缺失/空、页码与 size 越界 400 且零平台调用、
+> 平台拒绝 502 且 `login_state` 仍 active、无 Cookie 409、未知账号 404、路由挂载形状）；
+> `python -m unittest backend.tests.test_agents_cross backend.tests.test_mcp_server
+> backend.tests.test_agents_tools_workbench` → **`Ran 130 tests in 3.645s OK`**（`UNITS_EXIT=0`）；
+> `scripts/reconcile_tools.py` → `specs=99 master=98 routes=100 targets=79 handlers=99`、
+> `write_tools=40`（本批只加只读工具）、`route_checked=100`、**`RECON OK`**；
+> `backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_cm_full`）→
+> **`TOTAL 54  PASS 54  FAIL 0  CASES 1827  SKIPPED 2`**；
+> `create_app().openapi()` → **164 条路径 / 177 个操作**（第三十三批 163 条）；
+> `cd frontend && npx tsc --noEmit` → `TSC_EXIT=0`；`npm run build` → `BUILD_EXIT=0`
+> （94 modules、`index-CaV4g4Pd.js 624764` / `index-DotwG7pK.css 141937`）；
+> `scripts/ui_smoke.py --port 18471` → **`UI SMOKE ALL OK (28/28 页通过)`**；
+> `scripts/contrast_audit.py --port 18473 --threshold 4.0` → **`[dark] BAD_PAGES 0/28`、
+> `[light] BAD_PAGES 0/28`**、`NON_GET_API_REQUESTS=[]`；
+> `scripts/a11y_audit.py --port 18475` → 无可访问名字的按钮 0 / 没有标签的输入框 0 /
+> 无 alt 的图片 0 / 焦点环全部可见、`NON_GET_API_REQUESTS=[]`。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**54 个测试文件、1782 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**54 个测试文件、1827 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
 - **UI 细节有两个可重跑的审计脚本**（`scripts/contrast_audit.py`、`scripts/a11y_audit.py`）：
-  27 页 × 深/浅两套主题的文字对比度全部 ≥4.0:1；无可访问名字的按钮 0、没有标签的
+  28 页 × 深/浅两套主题的文字对比度全部 ≥4.0:1；无可访问名字的按钮 0、没有标签的
   输入框 0、无 alt 的图片 0、焦点环全部可见；两者整轮都是 `NON_GET_API_REQUESTS=[]`。
   打包版实测（不带 `--port`，打的就是 18400 上那份）：`[dark] BAD_PAGES 0/27`、
-  `[light] BAD_PAGES 0/27`。
+  `[light] BAD_PAGES 0/27`（第三十四批把新页加进清单后是 0/28）。
   另有第三十批那个一次性扫描（`C:\Users\Administrator\.dsh-tmp\scan_markdown2.py`：
   按 tokenize 取非 docstring 字符串，找用户可见的字面 `**` 与反引号）—— 它抓到 6 处并已修，
   但**没入仓**（一次性核对用，重跑价值低）。
@@ -2253,17 +2308,17 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   从 `共 95 条` 变成 `共 56 条`（= 两个在售账号的 45 + 11），页面里再也搜不到 `3998190171`，
   只读探针（真 Edge）`has_deleted_account: false`、`page_errors: []`。
 - 真实 HTTP：只读 17 条 + 写路径 11 条（早期探针）；打包版接口面现在
-  `/openapi.json` = **146 条路径 / 159 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
-  本批客服分流三条 POST 与它共用 `/api/shop` 前缀，`/api/shop` 组由 2 条变 5 条），
+  `/openapi.json` = **164 条路径 / 177 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
+  第三十二批 +10 条店铺资料/子账号；第三十三批 +4 条推广资金明细；第三十四批 +1 条商品数据），
   均结构化信封、无 500。
-- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 84 / `MASTER_TOOLS` 83 /
-  `TOOL_ROUTES` 85，其中 **32 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
+- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 99 / `MASTER_TOOLS` 98 /
+  `TOOL_ROUTES` 100，其中 **40 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
   FastAPI 端点接受 → `RECON OK`。MCP 端到端冒烟（真起 `mcp_server/server.py` 子进程打打包版）
   `tools/list` 返回 63 个工具（该数字早于后面几批新增的工具）。
-- **真实浏览器逐页冒烟 26/26 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
+- **真实浏览器逐页冒烟 28/28 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
   临时数据目录，逐页断言未白屏、未掉回登录页、无 JS 报错，截图在 `logs/ui_smoke/`）。
   它抓到了后端全绿时仍然「UI 完全不可用」的登录死循环。
-- **打包版（frozen exe）逐页冒烟 26/26 页通过**（`C:\Users\Administrator\.dsh-tmp\
+- **打包版（frozen exe）逐页冒烟 28/28 页通过**（`C:\Users\Administrator\.dsh-tmp\
   packaged_ui_smoke.py`，复用 `scripts/ui_smoke.py::run_browser` 但不启后端、直接打
   `127.0.0.1:18400` 与**真实 `%APPDATA%` 数据目录**，截图 `logs/packaged_ui_smoke/`）。
   与上一条的区别：上一条跑的是源码 + 临时库，这一条跑的是**用户手上那个 exe**。

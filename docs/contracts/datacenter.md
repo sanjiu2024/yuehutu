@@ -1,4 +1,4 @@
-# 数据组（数据总览 / 粉丝数据 / 客服数据）只读契约
+# 数据组（数据总览 / 商品数据 / 粉丝数据 / 客服数据）只读契约
 
 > 本文件是 `backend/app/xianyu/datacenter.py` / `backend/app/services/datacenter.py` /
 > `backend/app/api/datacenter.py` 的对外契约，**只覆盖只读能力**。
@@ -13,7 +13,11 @@
 >   从里面抽出 56 个 mtop token（调用形态 `xge({api, v:'1.0', data:{...}})`），
 >   其中 **46 个是真 API 名**（`mtop.alibaba.*` 44 + `mtop.taobao.*` 2；datacompass 族 39），
 >   另 10 个是 `mtop.config.*` / `mtop.request` 这类模块路径。
-> - **契约测试**：`backend/tests/test_datacenter_api.py`（44 用例，样本即真机原文形状）。
+> - **契约测试**：`backend/tests/test_datacenter_api.py`（89 用例，样本即真机原文形状）。
+>
+> 商品数据页（`/seller-data/commodity`，2026-10-13 加）的额外证据：官方菜单树
+> `logs/seller_discover/menu.json` 里这一页是**我们最后一个没复刻的官方叶子页**；
+> 接口与列定义来自同一份官方 bundle 的静态提取（零平台请求，见 §3.1）。
 
 ## 0. 一句话结论
 
@@ -43,6 +47,7 @@
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/datacenter/{account_id}/overview` | 数据总览：曝光 / 访问 / 浏览 / 在线商品 / 询单 |
+| GET | `/api/datacenter/{account_id}/commodity` | 商品数据：一行一个商品 + 平台给的指标列（官方「商品数据」页） |
 | GET | `/api/datacenter/{account_id}/fans` | 粉丝数据：总数 / 新增 / 流失 / 活跃 / 订单 / 买家 + 画像洞察 |
 | GET | `/api/datacenter/{account_id}/customer-service` | 客服数据：询单人数 / 询单量 / 3 分钟响应率 / 平均响应时长 / 未回复 / 满意度 |
 
@@ -67,8 +72,28 @@
 `fetched_at`（`YYYY-MM-DD HH:MM:SS`，UTC）。
 
 `kind == 'fans'` 时另有 `insights`（画像列表，认不出为 `null`）。
+`kind == 'commodity'` 时另有 `items` / `columns` / `total` / `page` / `size` / `pages`（见 §1.3）。
 响应里出现「像指标但一个别名都没命中」的字段名时，另有 `unrecognized_keys`（最多 8 个）——
 这是**字段名猜错时的自证**，不是错误。
+
+### 1.3 商品数据页（`kind == 'commodity'`）的额外约定
+
+- Query 除 `start`/`end` 外还有 `item_id`（精确）、`item_name`（模糊）、`page`（从 1）、
+  `size`（10 / 20 / 50，缺省 20）、`order_by`、`order`（`asc` / `desc`）。
+  非法值（页码 < 1、`size` 不在枚举、`order` 不是 asc/desc）→ `400 invalid_fields`，**一次平台都不打**。
+- **默认区间是「今天」**（`start == end == 今天`），跟官方这一页的默认一致 ——
+  与总览/粉丝/客服的「今天往前 7 天」**故意不同**，别统一。
+- `columns` 是**平台给的列定义**（`[{name, title, type}]`），我们**不翻译、不补列**：
+  列名和单位都是平台说了算。平台没给（或给了空数组）时是 `null` / `[]`，
+  前端退回「按第一行的键显示」并明确告知「这些列头是字段名，不是官方中文标题」。
+- `items` 是**一行一个商品**（`itmId` / `itmName` / `itmPicUrl` + 各指标列）。
+  **`items === null` 表示平台没返回行**（没权限 / 服务繁忙），与 `items: []`（真的没有商品）
+  是两件事，文案必须分开。
+- `total` / `pages` 认不出就是 `null`，**不补 0**；`total` 真的是 0 时原样保留 0。
+- **官方渲染规则**（从 bundle 抄的，不是我们发明的）：**第一行该列的值 `< 1` 时，整列渲染成
+  「原样数字 + `%`」**（官方不做乘 100）。前端照抄，并在列头提示里说明。
+- 只读：官方这一页有「导出/下载」接口（`…datacompas.export.item.list` 一族，轮询取文件 URL），
+  **本批故意不做** —— 它会把整份数据导到本地文件，属于数据外带，需要单独评估。
 
 ## 2. 指标键（前端只能依赖这些键）
 
