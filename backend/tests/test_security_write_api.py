@@ -256,6 +256,25 @@ class SecurityWriteApiTest(unittest.TestCase):
         self.assertEqual(payload.get('code'), 'confirmation_required')
         self.assertEqual(self.fake.apis(), [])
 
+    def test_false_like_strings_are_never_taken_as_a_nod(self) -> None:
+        """★ 第三十八批真 bug 的回归：`bool('false')` 是 `True`、`not 'false'` 是 `False`。
+
+        路由层曾经用 `bool(body.get('confirm'))` 改写、服务层曾经用裸的 `if not confirm:`，
+        两条路都会把字符串 `"false"` 当成点头。现在路由**原样透传**、服务层一律 `_truthy()`。
+        """
+        cases = [
+            ('/appeal/submit', {'parameter': {'formId': 'F-1'}}),
+            ('/appeal/cro/submit', {'punish_id': 987, 'proof_items': [{'code': 'appealDesc'}]}),
+            ('/appeal/urge', {'punish_id': 987}),
+        ]
+        for path, body in cases:
+            for value in ('false', 'FALSE', ' false ', 'no', 'yes', '0', 0, '', None, 2):
+                with self.subTest(path=path, confirm=value):
+                    payload = self.fail(f'/api/security-center/{ACC}{path}',
+                                        dict(body, confirm=value))
+                    self.assertEqual(payload.get('code'), 'confirmation_required')
+        self.assertEqual(self.fake.apis(), [], '假确认时一个平台请求都不许发')
+
     def test_protocol_layer_also_refuses_without_confirm(self) -> None:
         with self.assertRaises(proto.WriteNotConfirmed):
             proto.appeal_submit_request({'formId': 'F-1'})

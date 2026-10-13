@@ -38,7 +38,7 @@ def appeal_submit(account_id: str,
                   user=Depends(current_user)):
     """提交申诉（安全中心 pc 弹窗）。需要 `confirm: true`。"""
     return _envelope(security_write.appeal_submit(
-        account_id, body.get('parameter'), confirm=bool(body.get('confirm')),
+        account_id, body.get('parameter'), confirm=body.get('confirm'),
     ))
 
 
@@ -49,7 +49,7 @@ def appeal_submit_cro(account_id: str,
     """提交申诉（复核 cro 流程）。需要 `confirm: true`。"""
     return _envelope(security_write.appeal_submit_cro(
         account_id, body.get('punish_id'), body.get('proof_items'),
-        confirm=bool(body.get('confirm')),
+        confirm=body.get('confirm'),
     ))
 
 
@@ -59,5 +59,5 @@ def appeal_urge(account_id: str,
                 user=Depends(current_user)):
     """申诉催办（加急处理）。需要 `confirm: true`。"""
     return _envelope(security_write.appeal_urge(
-        account_id, body.get('punish_id'), confirm=bool(body.get('confirm')),
+        account_id, body.get('punish_id'), confirm=body.get('confirm'),
     ))

@@ -37,6 +37,20 @@ def _confirm_required(action: str) -> Dict[str, Any]:
     )
 
 
+def _truthy(value: Any) -> bool:
+    """只有字面量 `True` / `'true'` / `1` 才算确认。
+
+    与 `services/trade_write.py::_truthy`、`services/items.py::_truthy`、
+    `mcp_server/client.py::_truthy` 同一口径 —— 三条路（HTTP / 主管 AI / MCP）必须对
+    「什么算点头」有完全一样的判断。`bool('false')` 是 True、`not 'false'` 是 False，
+    所以既不能用 `bool()`、也不能用裸的 confirm 真假判断。
+    """
+    if value is True:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() == 'true'
+    return value == 1
+
 def _missing(*pairs: Tuple[str, Any]) -> Optional[Dict[str, Any]]:
     """必填校验：空串/纯空白/None 都算缺失。"""
     for label, value in pairs:
@@ -149,7 +163,7 @@ def appeal_submit(account_id: str, parameter: Any, *, confirm: bool = False) -> 
 
     `parameter` 是表单值：`dict` 会序列化成 JSON 字符串，`str` 原样透传。
     """
-    if not confirm:
+    if not _truthy(confirm):
         return _confirm_required('提交申诉')
     failure = _missing(('申诉表单内容', parameter))
     if failure:
@@ -165,7 +179,7 @@ def appeal_submit(account_id: str, parameter: Any, *, confirm: bool = False) -> 
 def appeal_submit_cro(account_id: str, punish_id: Any, proof_items: Any, *,
                       confirm: bool = False) -> Dict[str, Any]:
     """提交申诉（复核 cro 流程）：`parameter = JSON.stringify({punishId, proofItems})`。"""
-    if not confirm:
+    if not _truthy(confirm):
         return _confirm_required('提交申诉（复核流程）')
     failure = _missing(('处罚单号', punish_id), ('申诉凭证', proof_items))
     if failure:
@@ -180,7 +194,7 @@ def appeal_submit_cro(account_id: str, punish_id: Any, proof_items: Any, *,
 
 def appeal_urge(account_id: str, punish_id: Any, *, confirm: bool = False) -> Dict[str, Any]:
     """催办（加急处理）：`data:{punishId:Number(...)}`。"""
-    if not confirm:
+    if not _truthy(confirm):
         return _confirm_required('申诉催办')
     failure = _missing(('处罚单号', punish_id))
     if failure:
