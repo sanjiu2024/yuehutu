@@ -62,8 +62,8 @@
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_shop_full2&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 54  PASS 54  FAIL 0  CASES 1762  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_promo_full&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 54  PASS 54  FAIL 0  CASES 1782  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -82,15 +82,15 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_mcp_server
 cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
--> BUILD_EXIT=0   ✓ 89 modules transformed.
-   frontend/dist/assets/index-DAKrof5s.js (608.06 kB, gzip 189.6 kB)
+-> BUILD_EXIT=0   ✓ 92 modules transformed.
+   frontend/dist/assets/index-BghE5P7m.js (615.15 kB, gzip 191.8 kB)
    frontend/dist/assets/index-BAUr5YpJ.css (139.92 kB, gzip 22.1 kB)
 ```
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon_shop&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=94 master=93 routes=95 targets=74 handlers=94
-   write_tools=40  route_checked=95
+-> specs=98 master=97 routes=99 targets=78 handlers=98
+   write_tools=40  route_checked=99
    RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
    （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
 ```
@@ -2180,10 +2180,47 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `index-DAKrof5s.js 608061` / `index-BAUr5YpJ.css 139919`）；
 > `scripts/ui_smoke.py --port 18451` → **`UI SMOKE ALL OK (27/27 页通过)`**。
 
+### 第三十三批：推广资金明细（流水 / 可操作项 / 充值详情 / 提现详情，全部只读）（192~197）
+
+- **动机**：用户截图里有「充值 / 提现 / 账户流水」入口，而官方工作台把这些放在超级擦亮微应用里。
+  先按老规矩**只从本地 bundle 取证**（`C:\Users\Administrator\.dsh-tmp\find_recharge.py`、
+  `recharge_payloads.py`、`recharge_detail_fields.py`，零平台请求）。
+- **取证结论（决定了这一批的边界）**：`mtop.taobao.idle.ad.bp.account.{recharge,withdraw}.query`、
+  `bp.account.log.query`、`bp.account.log.operates`、`bp.settle.settle.query` 全是**查询**；
+  **整个 bundle 里不存在「发起充值 / 发起提现」的 mtop 接口**（`log.operates` 也只是「查询可操作项」）
+  ⇒ 钱的实际划转在支付宝侧完成，本工作台**只查询、不下单**，这一批零资金写风险。
+- **4 条 HTTP（全 GET）**：`/api/promotion/{account_id}/funds`、`/fund-operations`、
+  `/recharge/{order_id}`、`/withdraw/{order_id}`。
+  - `funds` 走 `bp.account.log.query`（payload 是 `{requestJson}`，官方默认 `pageNum=1`/`pageSize=10`、
+    日期取近 7 天、`accountType=0`、`operateType=0`）；`operate_type` 只认 0/1/2/3
+    （全部 / 现金 / 礼金 / 红包），越界 400 `invalid_fields`。
+  - **`funds` 拿不到列表时是 `null` 而不是 `[]`** —— 前端据此显示「既不是『没有流水』也不是 0」的告警，
+    这是本项目「null ≠ 0」口径在列表上的延伸（`[]` 会被用户读成「确实没有」）。
+  - 充值/提现详情各自映射官方状态枚举（ING/SUCCESS/FAIL）的中文原话，`detail` 原样带回平台字段。
+- **4 个 AI 工具（全只读，无 confirm）**：`promotion_funds` / `promotion_fund_operations` /
+  `promotion_recharge_detail` / `promotion_withdraw_detail`；`TOOL_SPECS` 94 → **98**、
+  `MASTER_TOOLS` 93 → **97**、`TOOL_ROUTES` 95 → **99**，写工具仍是 **40**（本批一个写接口都没加）。
+- **UI**：`frontend/src/pages/Promotion.tsx` 加第 5 个标签「资金明细」（类型筛选 + 本地分页 + 流水表 +
+  逐行「查看详情」弹窗）；`account` 标签上那句「平台没有网页版下单接口」的说明改成指向新标签。
+  新增 `flowTime()` 把平台的 `20260901120000` 显示成 `2026-09-01 12:00:00`（认不出来原样显示，不猜）。
+
+> **第三十三批证据链**：`backend/tests/test_promotion_api.py` → **`Ran 45 tests ... OK`**（新增
+> `PromotionFundsTest` 20 条，含 `funds=null` 与 `funds=[]` 的区别、`operate_type` 越界 400、
+> 空 `order_id` 400 且零平台请求）；`python -m unittest backend.tests.test_promotion_api
+> backend.tests.test_agents_cross backend.tests.test_mcp_server backend.tests.test_agents_tools_workbench`
+> → **`Ran 175 tests in 4.472s OK`**（`UNITS_EXIT=0`）；
+> `backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_promo_full`）→
+> **`TOTAL 54  PASS 54  FAIL 0  CASES 1782  SKIPPED 2`**；`scripts/reconcile_tools.py` →
+> `specs=98 master=97 routes=99 targets=78 handlers=98`、`write_tools=40`、`route_checked=99`、**`RECON OK`**；
+> `create_app().openapi()` → **163 条路径**，4 条新路由全在；
+> `cd frontend && npx tsc --noEmit` → `TSC_EXIT=0`；`npm run build` → `BUILD_EXIT=0`（92 modules、
+> `index-BghE5P7m.js 615151` / `index-BAUr5YpJ.css 139919`）；
+> `scripts/ui_smoke.py --port 18461` → **`UI SMOKE ALL OK (27/27 页通过)`**。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**54 个测试文件、1762 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**54 个测试文件、1782 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -2302,6 +2339,13 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   `cwd=C:\Windows` + 显式清空 `PYTHONPATH` 仍能 `initialize` 并列出 21 个工具。
 
 **未验证（不要当成已完成）**
+- **推广资金明细的 4 条只读接口没能在真机上跑通**（第三十三批）：探针脚本
+  `C:\Users\Administrator\.dsh-tmp\funds_read_probe.py`（拷真实数据目录到临时根 → 从源码起后端 →
+  桌面密钥换 token → **只发 GET**）打过去时，账号 `2217970177348` 已经是
+  `login_state=need_relogin` ⇒ 四条都停在 409 `verification_required`（这是**正确行为**：
+  没有一次平台请求被发出）。所以「平台是否接受 `{requestJson}` 里的 `pageNum`/`pageSize`/
+  日期区间」「`data.result` 的字段名」目前只有 bundle 证据，等用户重新扫码后才能真机复核。
+  空 `order_id` 的 400 `invalid_fields` 由单元测试覆盖（路径里留空段会先被路由判 404，属预期）。
 - **客服分流的写接口一次真机请求都没发过**（第三十一批）：三条 POST（规则保存 /
   分组保存 / 分组删除）只验到「路由已注册 + body 被端点接受 + confirm 闸门拦得住 +
   界面上不点最终确认就一个写请求都不发」；平台是否接受 `HH:MM` 的 `serviceTime`、

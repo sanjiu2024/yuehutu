@@ -639,6 +639,29 @@ GET    /api/promotion/{account_id}/overview?start=YYYYMMDD&end=YYYYMMDD
 GET    /api/promotion/{account_id}/campaigns?start=&end=&page=1&size=20
 GET    /api/promotion/{account_id}/reports?  （计划报表 + 商品报表，参数同上）
 GET    /api/promotion/{account_id}/account?start=&end=
+GET    /api/promotion/{account_id}/funds?start=&end=&page=1&size=10&account_type=0&operate_type=0
+GET    /api/promotion/{account_id}/fund-operations?account_type=0
+GET    /api/promotion/{account_id}/recharge/{order_id}
+GET    /api/promotion/{account_id}/withdraw/{order_id}
+      -- 资金明细（第三十三批，**全部只读**）：官方 bundle 里**不存在**「发起充值 / 发起提现」的
+      --   mtop 接口（`bp.account.log.operates` 也只是「查询可操作项」）⇒ 钱的实际划转在支付宝侧
+      --   完成，本工作台只查询、不下单，因此这一批**零资金写风险**。
+      -- funds -> {success:true,data:{account_id,period:{from,to},page,page_size,operate_type,
+      --     operate_type_text,total,funds,warnings,fetched_at,source}}
+      --   `funds` 来自 `bp.account.log.query`（`{requestJson}`），平台 `data.result[]` 原样 +
+      --   `data.total`；**拿不到列表时 `funds` 是 `null` 而不是 `[]`**（前端显示「既不是没有流水
+      --   也不是 0」的告警），`amountOfYuan` 是**元字符串**原样，`createTime` 形如 `20260901120000`。
+      --   `operate_type` 只认 0/1/2/3（全部/现金/礼金/红包），越界 400 `invalid_fields`。
+      -- fund-operations -> {...,operations}（`bp.account.log.operates`，只读；平台没回给 `null`）
+      -- recharge/{order_id} -> {...,order_id,status,status_text,detail,warnings}；`detail` 是
+      --   `bp.account.recharge.query` 的 `data` 原样（`rechargeOrderNo`/`channelTradeNo`/
+      --   `rechargeType`/`rechargeCreateTime`/`rechargeCompleteTime`），状态枚举 ING/SUCCESS/FAIL
+      --   的中文由服务层给（平台原话：「您还未支付」/「充值已到账，可在支付宝中查看扣款明细」/
+      --   「充值失败，请刷新后尝试重新充值」）。
+      -- withdraw/{order_id} -> 同上，接口 `bp.account.withdraw.query`（`sourceAccount`/
+      --   `alipayAccount`/`operator`/`remark`/`withdrawTime`/`expirePacketAmountOfYuan`），
+      --   状态原话：「正在提现中，请稍后至支付宝余额中查收」/「提现已到账，请至支付宝余额中查收」。
+      -- 两条详情 GET 的 `order_id` 为空 → 400 `invalid_fields`（零平台请求）。
 GET    /api/security-center/{account_id}
       -- 「超级擦亮（推广）」与「安全中心」页（第十八批）：**全部只读**。
       --   没有任何写接口 —— 充值、提现、申诉、上传资质、创建/暂停/修改擦亮计划一律不做
@@ -897,13 +920,13 @@ POST /api/drafts/{account_id}/batch-delete           {draft_ids,confirm}
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 94 条 / `MASTER_TOOLS` 93 条（去掉 `master_chat` 防递归），
+【AI 侧】`TOOL_SPECS` 98 条 / `MASTER_TOOLS` 97 条（去掉 `master_chat` 防递归），
 其中 **40 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 95 条。五方对账（specs / master / routes / service targets / handlers）
+`mcp_server/client.py::TOOL_ROUTES` 99 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=94 master=93 routes=95 targets=74 handlers=94 / write_tools=40 / route_checked=95 / RECON OK
+-> specs=98 master=97 routes=99 targets=78 handlers=98 / write_tools=40 / route_checked=99 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`
