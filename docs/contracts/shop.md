@@ -183,3 +183,77 @@
 - 官方的 `routingRules` / `csGroupInfos` **回显形状**没有真机样例，所以 `rule` /
   `group_id` 拿不到时一律 `null` + warning，不做猜测。
 
+
+
+---
+
+## 5. 店铺资料（读 + 写，第三十二批）
+
+### 5.1 接口
+
+```text
+GET  /api/shop/{account_id}/profile
+     -> {account_id,user_nick,shop_desc,user_avatar,industry,alipay_account,
+         business_type,pro_shop_valid_time,raw,warnings,source,fetched_at}
+POST /api/shop/{account_id}/profile/nick    {nick,confirm}
+POST /api/shop/{account_id}/profile/desc    {desc,confirm}
+POST /api/shop/{account_id}/profile/avatar  {avatar_url,confirm}
+     -> {account_id,action,api,saved,nick|desc|avatar_url,platform_message,warnings,fetched_at,source}
+```
+
+- 平台 mtop：`mtop.alibaba.idle.shop.manage.detail` / `...nick.update` / `...desc.update` / `...avatar.update`（v1.0）。
+- 官方读侧返回**扁平**结构（`userNick`/`shopDesc`/`userAvatar`/`industry`/`alipayAccount`/`businessType`/`proShopValidTime`），
+  不是嵌套；我们的 `payload_of` 也兼容「外面包一层 `data`」。
+- 官方写侧成功判据是 `result.success`，失败读 `result.data.message` —— 与子账号族（看 `code`/`msg`）**不是同一套**，
+  所以协议层按动作分别判。
+- 校验（官方 bundle 原文）：昵称 `trim` 后 4~12 字；头像必须 `http(s)://`；简介非空（官方没有长度上限）。
+- 平台没返回的字段一律 `null`（服务层 7 个键都显式给），前端显示「-」；`raw` 是平台原样 payload，键名不翻译。
+- 写入成功**平台不回显整份资料** ⇒ 服务层不回填本地值，前端重新拉一次只读接口。
+
+### 5.2 测试与未验证
+
+`backend/tests/test_shop_profile_api.py`（47 用例）：协议层纯函数、读、确认闸门、字段校验先于凭据、
+写 happy path、失败路径、路由形状。
+
+- **一次真机写请求都没发过**（昵称/简介/头像的写入权限与回显形状未知；只读侧 `shop.manage.detail`
+  在真机是 200 有数据）。
+- 头像是「给地址」，本机不上传文件；`shop.manage.sms.send` / `phone.update` / `verify.update`（实名材料）
+  **故意没做**（要短信验证码 / 上传资质，风险与形状都未验证）。
+
+---
+
+## 6. 子账号（读 + 写，第三十二批）
+
+### 6.1 接口
+
+```text
+GET  /api/sub-accounts/{account_id}/roles          -> {account_id,roles,total,warnings,api,fetched_at,source}
+POST /api/sub-accounts/{account_id}                     {nick,mobile,custom_name?,role_ids,password,confirm}
+POST /api/sub-accounts/{account_id}/{sub_id}/delete      {confirm}
+POST /api/sub-accounts/{account_id}/{sub_id}/mobile      {mobile,confirm}
+POST /api/sub-accounts/{account_id}/{sub_id}/roles       {role_ids,confirm}
+POST /api/sub-accounts/{account_id}/{sub_id}/password    {password,confirm}
+```
+
+- 平台 mtop（v1.0）：`...platform.user.role.list`（读）、
+  `...platform.common.sub.account.register`、`...platform.sub.account.{delete,mobilephone.update,role.update,password.update}`、
+  `...platform.sub.account.sub.pk`（取加密公钥）。
+- `role_ids` 收**整数数组或逗号串**（含中文逗号）—— UI 传数组、AI 工具传串，两条路都要能用。
+- 校验（官方 bundle 原文）：手机号 `^1[3-9]\d{9}$`（先去掉空格与横线；**裸整数也接受**，11 位不丢精度）；
+  密码 `^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,15}$`；昵称非空；岗位去重保序、上限 50。
+- **密码在服务端加密**：`sub.account.sub.pk` 拿 `{publicKey, cryptoKey}`，用纯 Python 实现
+  RSAES-PKCS1-v1_5（`backend/app/xianyu/sub_account.py::encrypt_password`，`secrets` 造非零填充）
+  加密后提交；**前端明文发给本机后端**，日志 / 返回值 / 事件里都不含密码。
+  公钥拿不到 ⇒ 502 且**零提交**（不会拿明文去试）。
+- 平台没回显 `subId` ⇒ `sub_id: null` + 中文 warning，不造 id。
+- 写成功一律 `log_operation(account_id, 'sub_account_*', …, kind=None)`（**不要传 `kind`**：
+  `log_operation` 的 action 列取 `kind or action`，传了会把审计名盖成 `shop`）+ `publish('shop.changed')`。
+
+### 6.2 测试与未验证
+
+`backend/tests/test_sub_accounts_api.py`（63 用例）：协议层（含内嵌 1024 位测试密钥、解回明文校验）、
+读、确认闸门、字段校验先于凭据、写 happy path（含「密码不出现在响应/日志里」）、失败路径、路由形状。
+
+- **一次真机写请求都没发过**；只读侧 `sub.account.info.list` / `user.role.list` 对该账号是
+  `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（没权限，不是 bug）。
+- 岗位列表 `roleId`/`roleName` 的真机形状未知 ⇒ `roles: null` + warning，不造空数组。

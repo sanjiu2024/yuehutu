@@ -713,6 +713,26 @@ GET /api/notifications/{account_id}        -- ⚠ 前缀是 /api/notifications�
 POST /api/shop/{account_id}/cs-routing/rule   {distribution_method,repeat_customer,offline_message,specified_account_id?,specified_account_nick?,service_time?,confirm}
 POST /api/shop/{account_id}/cs-groups         {operate_type:create|update,group_id?,group_name,mode,specified_type?,specified_type_name?,type_data?,customer_uids?,confirm}
 POST /api/shop/{account_id}/cs-groups/delete  {group_id,confirm}
+GET  /api/shop/{account_id}/profile
+POST /api/shop/{account_id}/profile/nick      {nick,confirm}
+POST /api/shop/{account_id}/profile/desc      {desc,confirm}
+POST /api/shop/{account_id}/profile/avatar    {avatar_url,confirm}
+GET  /api/sub-accounts/{account_id}/roles
+POST /api/sub-accounts/{account_id}                   {nick,mobile,custom_name?,role_ids,password,confirm}
+POST /api/sub-accounts/{account_id}/{sub_id}/delete    {confirm}
+POST /api/sub-accounts/{account_id}/{sub_id}/mobile    {mobile,confirm}
+POST /api/sub-accounts/{account_id}/{sub_id}/roles     {role_ids,confirm}
+POST /api/sub-accounts/{account_id}/{sub_id}/password  {password,confirm}
+       -- 店铺资料族（`mtop.alibaba.idle.shop.manage.*`）：官方读侧是**扁平**结构、
+          写侧成功判据看 `result.success`（失败读 `result.data.message`）；
+          昵称 4~12 字、头像必须 http(s)、简介非空；平台没给的字段一律 null。
+       -- 子账号族（`...platform.sub.account.*`）：成功判据看 `data.code == 'success'`（失败读 `msg`）；
+          `role_ids` 收整数数组或逗号串；手机号 `^1[3-9]\d{9}$`、密码字母+数字 8~15 位；
+          **密码由本机服务端用 `sub.account.sub.pk` 的公钥做 RSAES-PKCS1-v1_5 加密后提交**
+          （前端发明文，日志/响应/事件都不含密码；拿不到公钥就 502 且零提交）；
+          平台没回显 subId → null + warning，不造 id。
+       -- 三条 profile 写 + 五条子账号写都在闸门内（`confirm` 原样交服务层判）；
+          两条只读（`/profile`、`/roles`）**故意没有 confirm**。
        -- 两条 mtop：`...customer.routing.rule.operate`、`...customer.group.operate`（v1.0，
           `routingRules` / `serviceRange` / `customers` 都是 **JSON 字符串**）；
           `repeat_customer` 是**枚举字符串**（与 distribution_method 同一套 4 值，不是布尔）；
@@ -877,13 +897,13 @@ POST /api/drafts/{account_id}/batch-delete           {draft_ids,confirm}
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 84 条 / `MASTER_TOOLS` 83 条（去掉 `master_chat` 防递归），
-其中 **32 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 85 条。五方对账（specs / master / routes / service targets / handlers）
+【AI 侧】`TOOL_SPECS` 94 条 / `MASTER_TOOLS` 93 条（去掉 `master_chat` 防递归），
+其中 **40 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
+`mcp_server/client.py::TOOL_ROUTES` 95 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=84 master=83 routes=85 targets=64 handlers=84 / write_tools=32 / route_checked=85 / RECON OK
+-> specs=94 master=93 routes=95 targets=74 handlers=94 / write_tools=40 / route_checked=95 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`
