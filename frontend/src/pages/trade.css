@@ -610,6 +610,21 @@ tbody tr.tr-detail-row {
   line-height: 1.7;
 }
 
+/* ---- 第三十八批：写面板里的「平台关单原因」那一格（只读拉取 + 选择/手填）---- */
+
+.tr-write-reasons {
+  grid-column: 1 / -1;
+  gap: var(--sp-2);
+}
+
+.tr-write-reasons > select {
+  max-width: 420px;
+}
+
+.tr-write-reasons .notice {
+  margin: 0;
+}
+
 @media (max-width: 820px) {
   .tr-head {
     flex-direction: column;

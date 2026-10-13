@@ -16,9 +16,10 @@
  *     不能假装成全库搜索。
  *
  * 6. **列表是只读的，写操作是另一组端点**（`docs/contracts/trade_write.md`）：发货 / 改价 /
- *    退款处理 / 评价 / 投诉共 8 个 POST，全部走本页的「交易写操作」面板，每个都要
- *    `ConfirmDialog` 二次确认，且 `confirm` 只能传字面量 `true` —— 前端不做「默认执行」。
- *    未确认时后端返回 400 `confirmation_required`，一个平台请求都不发。
+ *    退款处理 / 运费退款 / 评价 / 投诉 / 关单 / 延长收货 / 提醒确认收货 / 撤销投诉共 13 个 POST，
+ *    全部走本页的「交易写操作」面板，每个都要 `ConfirmDialog` 二次确认，且 `confirm` 只能传
+ *    字面量 `true` —— 前端不做「默认执行」。未确认时后端返回 400 `confirmation_required`，
+ *    一个平台请求都不发。
  */
 
 import { Fragment, useMemo, useState, type ReactNode } from 'react'
@@ -27,8 +28,8 @@ import { AsyncBox, Badge, ConfirmDialog, Field, Modal, Notice, useToast } from '
 import { useAsync } from '../hooks/useAsync'
 import { formatTime } from '../format'
 import {
-  IconCheckCircle, IconChevronDown, IconChevronRight, IconEdit, IconLink, IconRefresh, IconSend,
-  IconShield, IconSparkle, IconWarn,
+  IconCheckCircle, IconChevronDown, IconChevronRight, IconClock, IconEdit, IconLink, IconRefresh,
+  IconSend, IconShield, IconSparkle, IconWarn,
 } from '../icons'
 import type { Account } from '../types'
 import './trade.css'
@@ -532,8 +533,14 @@ export type WriteKind =
   | 'rate'
   | 'complain-refuse'
   | 'complain-proof'
+  // ---- 第三十八批：官方卖家工作台订单页的另外 5 个写操作 ----
+  | 'close'
+  | 'delay'
+  | 'remind'
+  | 'postage-pay'
+  | 'complain-revoke'
 
-type WriteGroup = 'ship' | 'price' | 'refund' | 'rate' | 'complain'
+type WriteGroup = 'order' | 'ship' | 'price' | 'refund' | 'rate' | 'complain'
 
 /** 打开写面板时带的预填：订单行的「发货 / 改价」按钮会把 order_id 带进来。 */
 export interface WriteDraft {
@@ -567,6 +574,16 @@ function splitList(value: string): string[] {
   return value.split(/[\n,，;；]+/).map((item) => item.trim()).filter(Boolean)
 }
 
+/**
+ * 延时 / 提醒这两个批量写操作：`order_ids` **留空就不发这个键**（后端用路径里那一个订单号），
+ * 而不是发一个空数组 —— 平台侧空列表是「什么都没选」，跟「就用这一单」不是一回事。
+ */
+function withOrderIds(body: Record<string, unknown>, raw: string): Record<string, unknown> {
+  const ids = splitList(raw)
+  if (ids.length > 0) body.order_ids = ids
+  return body
+}
+
 /** 确认框里回显令牌一类的敏感值：只留前 4 位。 */
 function masked(name: string, value: string): string {
   if (/token|secret|cookie/i.test(name) && value.length > 4) return `${value.slice(0, 4)}…（${value.length} 位）`
@@ -577,9 +594,18 @@ function masked(name: string, value: string): string {
 function writeSummary(data: Record<string, unknown>): string {
   const parts: string[] = []
   if (data.total_num !== undefined || data.success_num !== undefined) {
-    parts.push(`平台回执：总数 ${num(data.total_num)} / 成功 ${num(data.success_num)} / 失败 ${num(data.fail_num)}`)
+    // 延时 / 提醒这类批量写：平台回 `data.module.{totalNum,successNum,failOrderInfos}`，
+    // 三个都可能是 null（不是 0）。失败明细只报条数，具体原因在返回值里。
+    const failed = Array.isArray(data.fail_order_infos)
+      ? String(data.fail_order_infos.length)
+      : num(data.fail_num)
+    parts.push(`平台回执：总数 ${num(data.total_num)} / 成功 ${num(data.success_num)} / 失败 ${failed}`)
   }
   if (data.rate_success !== undefined) parts.push(`平台评价结果：${data.rate_success ? '成功' : '失败'}`)
+  if (data.pay_type !== undefined || data.amount !== undefined) {
+    parts.push(`付款方式 ${String(data.pay_type ?? '-')} / 金额 ${num(data.amount)}`)
+  }
+  if (data.saved === false) parts.push('平台没有回显成功标记，请刷新核对')
   return parts.join(' · ')
 }
 
@@ -597,6 +623,12 @@ interface WriteExtra {
   rate: string
   anonymous: boolean
   proofKind: string
+  /** 延时天数（只认 3/5/7/10，官方那四档）。 */
+  delayDays: string
+  /** 运费退款的付款方式：alipay（默认）/ deposit。 */
+  payType: string
+  /** 提醒确认收货里的「全部提醒」开关。 */
+  remindAll: boolean
 }
 
 interface WriteFormSpec {
@@ -604,7 +636,7 @@ interface WriteFormSpec {
   action: string
   desc: ReactNode
   fields: WriteFieldSpec[]
-  extras?: 'rate' | 'proof-kind'
+  extras?: 'rate' | 'proof-kind' | 'close-reason' | 'delay-days' | 'pay-type' | 'remind-all'
   path: (accountId: string, value: (name: string) => string) => string
   body: (value: (name: string) => string, extra: WriteExtra) => Record<string, unknown>
   /** 额外校验：返回非空文案表示不通过（必填项由 `required` 统一判）。 */
@@ -764,9 +796,128 @@ const WRITE_SPECS: Record<WriteKind, WriteFormSpec> = {
       kind: extra.proofKind,
     }),
   },
+
+  /* ---- 第三十八批：官方卖家工作台订单页的另外 5 个写操作（证据见 docs/contracts/trade_write.md）---- */
+
+  close: {
+    title: '关闭订单',
+    action: '关闭订单',
+    desc: (
+      <>
+        平台接口 <code>mtop.taobao.idle.trade.merchant.close.by.seller</code> v2.0。
+        官方原文提醒：<strong>确认关闭后，请确保已和买家协商达成一致，否则您将面临投诉或赔偿</strong>。
+        原因可以点上面的「拉取平台原因」拿，平台没给就手填一个（平台只要求非空）。
+      </>
+    ),
+    fields: [
+      { name: 'order_id', label: '订单号', required: true, placeholder: '订单号' },
+      {
+        name: 'close_reason',
+        label: '关单原因',
+        required: true,
+        placeholder: '从平台原因里选，或自己填一个',
+        hint: '原样发给平台；不确定就先拉一次平台原因，别自己编。',
+      },
+    ],
+    extras: 'close-reason',
+    path: (accountId, value) => idPath(accountId, value, 'order_id', 'orders/{id}/close'),
+    body: (value) => ({ close_reason: value('close_reason').trim() }),
+  },
+
+  delay: {
+    title: '延长收货时间',
+    action: '延长收货',
+    desc: (
+      <>
+        平台接口 <code>mtop.taobao.idle.trade.merchant.batch.delay.confirm</code>。官方文案：
+        延长收货时间可以让买家有更多时间来「确认收货」，而不会急于去申请退款。
+        天数平台只认 <strong>3 / 5 / 7 / 10</strong> 四档（换算成秒在后端做一次）。
+      </>
+    ),
+    fields: [
+      { name: 'order_id', label: '订单号（路径里那一个）', required: true, placeholder: '订单号' },
+      {
+        name: 'order_ids',
+        label: '一起延时的其它订单号',
+        multiline: true,
+        placeholder: '留空就只处理上面那一个；也可以一行一个或逗号分隔',
+        hint: '平台收的是 orderIdList，逗号串由后端拼；留空时后端用路径里那一个。',
+      },
+    ],
+    extras: 'delay-days',
+    path: (accountId, value) => idPath(accountId, value, 'order_id', 'orders/{id}/delay'),
+    body: (value, extra) => withOrderIds({ days: extra.delayDays }, value('order_ids')),
+  },
+
+  remind: {
+    title: '提醒买家确认收货',
+    action: '提醒确认收货',
+    desc: (
+      <>
+        平台接口 <code>mtop.taobao.idle.trade.merchant.batch.remind.confirm</code>。
+        「全部提醒」是官方那个开关（<code>remindAllOrder</code>），默认不勾。
+      </>
+    ),
+    fields: [
+      { name: 'order_id', label: '订单号（路径里那一个）', required: true, placeholder: '订单号' },
+      {
+        name: 'order_ids',
+        label: '一起提醒的其它订单号',
+        multiline: true,
+        placeholder: '留空就只提醒上面那一个；也可以一行一个或逗号分隔',
+      },
+    ],
+    extras: 'remind-all',
+    path: (accountId, value) => idPath(accountId, value, 'order_id', 'orders/{id}/remind'),
+    body: (value, extra) => withOrderIds({ remind_all: extra.remindAll }, value('order_ids')),
+  },
+
+  'postage-pay': {
+    title: '支付运费退款（真的付钱）',
+    action: '支付运费退款',
+    desc: (
+      <>
+        平台接口 <code>mtop.taobao.idle.merchant.postage.refund.pay</code>：
+        <strong>这是真的从支付宝或保证金里扣钱</strong>，不是只改本地记录。
+        「退款金额」只是给人看的（平台请求里不带它），别把它当成改价。
+      </>
+    ),
+    fields: [
+      { name: 'order_id', label: '订单号', required: true, placeholder: '订单号' },
+      { name: 'refund_id', label: '退款单号', required: true, placeholder: '退款列表里的 refund_id' },
+      { name: 'amount', label: '退款金额（元，只用于确认与审计）', placeholder: '可选，例如 12.00' },
+    ],
+    extras: 'pay-type',
+    path: (accountId, value) => idPath(accountId, value, 'refund_id', 'refunds/{id}/postage-pay'),
+    body: (value, extra) => {
+      const body: Record<string, unknown> = {
+        order_id: value('order_id').trim(),
+        pay_type: extra.payType,
+      }
+      if (value('amount').trim()) body.amount = value('amount').trim()
+      return body
+    },
+  },
+
+  'complain-revoke': {
+    title: '撤销投诉申请',
+    action: '撤销投诉',
+    desc: (
+      <>
+        平台接口 <code>mtop.taobao.idle.cco.shop.complain.apply.revoke</code>：撤销自己发起的那条投诉。
+        平台以 <code>data.success</code> 判成败，失败原因取 <code>data.failReason</code>。
+      </>
+    ),
+    fields: [
+      { name: 'complain_id', label: '投诉单号', required: true, placeholder: '投诉单号' },
+    ],
+    path: (accountId, value) => idPath(accountId, value, 'complain_id', 'complaints/{id}/revoke'),
+    body: () => ({}),
+  },
 }
 
 const WRITE_TABS: Array<{ key: WriteGroup; label: string; icon: ReactNode }> = [
+  { key: 'order', label: '订单处理', icon: <IconClock size={14} /> },
   { key: 'ship', label: '发货', icon: <IconSend size={14} /> },
   { key: 'price', label: '改价', icon: <IconEdit size={14} /> },
   { key: 'refund', label: '退款处理', icon: <IconCheckCircle size={14} /> },
@@ -775,13 +926,27 @@ const WRITE_TABS: Array<{ key: WriteGroup; label: string; icon: ReactNode }> = [
 ]
 
 const WRITE_MODES: Partial<Record<WriteGroup, Array<{ value: WriteKind; label: string }>>> = {
+  order: [
+    { value: 'close', label: '关闭订单' },
+    { value: 'delay', label: '延长收货时间' },
+    { value: 'remind', label: '提醒确认收货' },
+  ],
   ship: [{ value: 'ship', label: '自己联系物流' }, { value: 'ship-dummy', label: '无需物流' }],
-  refund: [{ value: 'refund-agree', label: '同意退款' }, { value: 'refund-refuse', label: '拒绝退款' }],
-  complain: [{ value: 'complain-refuse', label: '投诉拒绝' }, { value: 'complain-proof', label: '投诉举证' }],
+  refund: [
+    { value: 'refund-agree', label: '同意退款' },
+    { value: 'refund-refuse', label: '拒绝退款' },
+    { value: 'postage-pay', label: '支付运费退款（真的付钱）' },
+  ],
+  complain: [
+    { value: 'complain-refuse', label: '投诉拒绝' },
+    { value: 'complain-proof', label: '投诉举证' },
+    { value: 'complain-revoke', label: '撤销投诉申请' },
+  ],
 }
 
 /** 没有子模式的 tab（改价 / 评价）点一下要直接切到它唯一的那个端点，不能留在上一个 kind。 */
 const GROUP_DEFAULT_KIND: Record<WriteGroup, WriteKind> = {
+  order: 'close',
   ship: 'ship',
   price: 'adjust-price',
   refund: 'refund-agree',
@@ -790,9 +955,10 @@ const GROUP_DEFAULT_KIND: Record<WriteGroup, WriteKind> = {
 }
 
 function groupOf(kind: WriteKind): WriteGroup {
+  if (kind === 'close' || kind === 'delay' || kind === 'remind') return 'order'
   if (kind === 'ship' || kind === 'ship-dummy') return 'ship'
   if (kind === 'adjust-price') return 'price'
-  if (kind === 'refund-agree' || kind === 'refund-refuse') return 'refund'
+  if (kind === 'refund-agree' || kind === 'refund-refuse' || kind === 'postage-pay') return 'refund'
   if (kind === 'rate') return 'rate'
   return 'complain'
 }
@@ -821,6 +987,15 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
   const [rate, setRate] = useState('-1')
   const [anonymous, setAnonymous] = useState(false)
   const [proofKind, setProofKind] = useState(PROOF_KINDS[0].value)
+  const [delayDays, setDelayDays] = useState('3')
+  const [payType, setPayType] = useState('alipay')
+  const [remindAll, setRemindAll] = useState(false)
+  // 关单原因（只读）：官方关单弹窗先调 `trade.order.close.reason.get` 把原因当选项。
+  const [reasonsBusy, setReasonsBusy] = useState(false)
+  const [reasonsError, setReasonsError] = useState('')
+  // `null` = 平台没返回原因列表键（**不是「没有原因」**），`[]` = 平台明确回了一个空数组。
+  const [reasons, setReasons] = useState<string[] | null>(null)
+  const [reasonsFetched, setReasonsFetched] = useState(false)
   const [asking, setAsking] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -843,6 +1018,10 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
   function switchTo(next: WriteKind) {
     setKind(next)
     setError('')
+    // 关单原因和订单号绑定：换动作就作废，免得把上一个订单的原因带过去。
+    setReasons(null)
+    setReasonsFetched(false)
+    setReasonsError('')
   }
 
   /**
@@ -880,11 +1059,48 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
     setVerifyBusy(false)
   }
 
+  /**
+   * 拉一次「关单原因」候选（`GET …/orders/{id}/close-reasons`，**只读**）。
+   *
+   * 三种结果必须分开说：拿到数组就是选项；拿到**空数组**是「平台明确说这个订单没有可选原因」；
+   * 拿到 `null` 是「平台没返回原因列表键」—— 那时只能手填，而且要说清楚不是「没有原因」。
+   */
+  async function fetchCloseReasons() {
+    const orderId = value('order_id').trim()
+    if (!orderId) {
+      setReasonsError('先填「订单号」，原因是按订单问的。')
+      return
+    }
+    setReasonsBusy(true)
+    setReasonsError('')
+    try {
+      const data = await api.get<Record<string, unknown>>(
+        `/api/trade/${encodeURIComponent(accountId)}/orders/${encodeURIComponent(orderId)}/close-reasons`,
+      )
+      const list = Array.isArray(data?.close_reasons)
+        ? data.close_reasons.map((item) => String(item)).filter(Boolean)
+        : null
+      setReasons(list)
+      setReasonsFetched(true)
+      if (list && list.length > 0 && !value('close_reason').trim()) {
+        setValue('close_reason', list[0])
+      }
+    } catch (err) {
+      setReasons(null)
+      setReasonsFetched(false)
+      setReasonsError(errorText(err) || '拉取关单原因失败，后端没有给出原因')
+    }
+    setReasonsBusy(false)
+  }
+
   async function submit() {
     setAsking(false)
     setBusy(true)
     setError('')
-    const outcome = await postWrite(spec.path(accountId, value), spec.body(value, { rate, anonymous, proofKind }))
+    const outcome = await postWrite(
+      spec.path(accountId, value),
+      spec.body(value, { rate, anonymous, proofKind, delayDays, payType, remindAll }),
+    )
     setBusy(false)
     if (!outcome.ok) {
       // 后端 message 原样展示（含平台原文）：既进 toast，也留在面板里方便复制。
@@ -1046,6 +1262,82 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
                 </select>
               </label>
             )}
+
+            {spec.extras === 'close-reason' && (
+              <div className="tr-field tr-write-reasons">
+                <span>
+                  平台关单原因
+                  <code className="tr-write-name">trade.order.close.reason.get</code>
+                </span>
+                <span className="tr-write-inline">
+                  <button className="btn ghost sm" onClick={fetchCloseReasons} disabled={reasonsBusy || busy}>
+                    <IconRefresh size={14} /> {reasonsBusy ? '正在拉取…' : '拉取平台原因'}
+                  </button>
+                  <span className="tr-sub">只读接口，不会改动任何东西。</span>
+                </span>
+                {reasonsFetched && reasons && reasons.length > 0 && (
+                  <select
+                    aria-label="平台关单原因"
+                    value={reasons.includes(value('close_reason')) ? value('close_reason') : ''}
+                    onChange={(event) => setValue('close_reason', event.target.value)}
+                  >
+                    <option value="">（从平台原因里选一个）</option>
+                    {reasons.map((item) => <option key={item} value={item}>{item}</option>)}
+                  </select>
+                )}
+                {reasonsFetched && reasons && reasons.length === 0 && (
+                  <Notice kind="warn">
+                    平台明确回了一个<strong>空数组</strong>：这个订单现在没有可选原因。
+                    要么先别关单，要么手填一个原因（平台只要求非空）。
+                  </Notice>
+                )}
+                {reasonsFetched && reasons === null && (
+                  <Notice kind="warn">
+                    平台<strong>没有返回原因列表键</strong>（这<strong>不是</strong>「没有原因」）。
+                    我们不替你编原因：可以手填一个，或者去官方卖家工作台看当前可选值。
+                  </Notice>
+                )}
+                {reasonsError ? <Notice kind="warn">{reasonsError}</Notice> : null}
+              </div>
+            )}
+
+            {spec.extras === 'delay-days' && (
+              <label className="tr-field">
+                <span>延长天数<code className="tr-write-name">days</code></span>
+                <select value={delayDays} onChange={(event) => setDelayDays(event.target.value)}>
+                  {['3', '5', '7', '10'].map((day) => (
+                    <option key={day} value={day}>{day} 天</option>
+                  ))}
+                </select>
+                <span className="tr-sub">平台只认这四档；换算成秒（×86400）在后端做一次。</span>
+              </label>
+            )}
+
+            {spec.extras === 'pay-type' && (
+              <label className="tr-field">
+                <span>付款方式<code className="tr-write-name">pay_type</code></span>
+                <select value={payType} onChange={(event) => setPayType(event.target.value)}>
+                  <option value="alipay">alipay（支付宝，默认）</option>
+                  <option value="deposit">deposit（保证金）</option>
+                </select>
+                <span className="tr-sub">这是真的扣款，不是只改本地记录。</span>
+              </label>
+            )}
+
+            {spec.extras === 'remind-all' && (
+              <label className="tr-field tr-write-check">
+                <span>全部提醒<code className="tr-write-name">remind_all</code></span>
+                <span className="tr-write-inline">
+                  <input
+                    type="checkbox"
+                    checked={remindAll}
+                    onChange={(event) => setRemindAll(event.target.checked)}
+                  />
+                  用平台的「全部提醒」开关
+                </span>
+                <span className="tr-sub">不勾就是只提醒上面填的订单。</span>
+              </label>
+            )}
           </div>
 
           {blocked && (
@@ -1071,6 +1363,18 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
               <p style={{ marginTop: 0 }}>
                 这次操作会<strong>真的改动闲鱼平台上的订单数据，不可撤销</strong>；成功后本页列表会自动刷新。
               </p>
+              {kind === 'close' && (
+                <p>
+                  官方原文提醒：<strong>确认关闭后，请确保已和买家协商达成一致，否则您将面临投诉或赔偿</strong>。
+                </p>
+              )}
+              {kind === 'postage-pay' && (
+                <p>
+                  <strong>这一步是真的付钱</strong>：平台会从
+                  {payType === 'deposit' ? '保证金' : '支付宝'}
+                  里扣款给买家，不是只改本地记录。
+                </p>
+              )}
               <ul className="tr-write-facts">
                 <li>接口 <code>{path}</code></li>
                 {spec.fields.filter((field) => value(field.name).trim() !== '').map((field) => (
@@ -1080,6 +1384,9 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
                 ))}
                 {spec.extras === 'rate' && <li>rate：{rate} · anonymous：{anonymous ? '是' : '否'}</li>}
                 {spec.extras === 'proof-kind' && <li>kind：{proofKind}</li>}
+                {spec.extras === 'delay-days' && <li>days：{delayDays}（delayTime = {delayDays} × 86400 秒）</li>}
+                {spec.extras === 'pay-type' && <li>pay_type：{payType}</li>}
+                {spec.extras === 'remind-all' && <li>remind_all：{remindAll ? '是' : '否'}</li>}
               </ul>
               <p style={{ marginBottom: 0 }} className="tr-sub">
                 提交时 <code>confirm</code> 是字面量 <code>true</code>；未确认时后端不会向平台发任何请求。
@@ -1623,6 +1930,14 @@ export function OrdersPage() {
             >
               <IconEdit size={13} /> 改价
             </button>
+            <button
+              className="btn sm danger"
+              disabled={!accountId || !orderId}
+              title="订单处理：关闭订单 / 延长收货时间 / 提醒确认收货 —— 三个都会真的改动平台数据"
+              onClick={() => setWrite({ kind: 'close', orderId })}
+            >
+              <IconClock size={13} /> 订单处理
+            </button>
             {row.in_refund ? (
               <button
                 className="btn sm danger"
@@ -1660,7 +1975,8 @@ export function OrdersPage() {
         title="订单"
         desc={
           <>
-            已卖出的订单与状态 · 列表只读，写操作（发货 / 改价 / 退款 / 评价 / 投诉）都要二次确认
+            已卖出的订单与状态 · 列表只读，写操作（关单 / 延时 / 提醒 / 发货 / 改价 / 退款 / 运费退款 /
+            评价 / 投诉 / 撤销投诉）都要二次确认
             {data?.fetched_at ? ` · 更新于 ${when(data.fetched_at)}` : ''}
             {data?.api ? ` · 平台接口 ${data.api}` : ''}
           </>
@@ -1677,8 +1993,8 @@ export function OrdersPage() {
           <button
             className="btn sm danger"
             disabled={!accountId}
-            title={accountId ? '8 个写端点都在这个面板里，每次都要二次确认' : '先选一个账号'}
-            onClick={() => setWrite({ kind: 'ship' })}
+            title={accountId ? '13 个写端点都在这个面板里，每次都要二次确认' : '先选一个账号'}
+            onClick={() => setWrite({ kind: 'close' })}
           >
             <IconShield size={14} /> 交易写操作
           </button>
