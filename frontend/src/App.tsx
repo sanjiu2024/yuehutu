@@ -43,6 +43,7 @@ import { AgentsPage } from './pages/Agents'
 import { MasterPage } from './pages/Master'
 import { ProvidersPage } from './pages/Providers'
 import { PromptsPage } from './pages/Prompts'
+import { QuickReplyPage } from './pages/QuickReply'
 import { RiskPage } from './pages/Risk'
 import type { SystemInfo } from './types'
 
@@ -78,6 +79,7 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
       { key: 'accounts', label: '账号', icon: 'user', desc: '扫码登录、账号状态与手动验证', ownHeader: true },
       { key: 'items', label: '商品', icon: 'box', desc: '商品列表、编辑、批量下架/删除与快捷改价改库存' },
       { key: 'chats', label: '会话', icon: 'chat', desc: '买家会话与人工接管' },
+      { key: 'quick-reply', label: '话术', icon: 'chat', desc: '快捷回复：分组 + 短语的增删改（写操作要二次确认）' },
     ],
   },
   {
@@ -354,6 +356,7 @@ function Shell() {
             {page === 'accounts' && <AccountsPage />}
             {page === 'items' && <ItemsPage />}
             {page === 'chats' && <ChatsPage />}
+            {page === 'quick-reply' && <QuickReplyPage />}
             {page === 'orders' && <OrdersPage />}
             {page === 'refunds' && <RefundsPage />}
             {page === 'evaluations' && <EvaluationsPage />}

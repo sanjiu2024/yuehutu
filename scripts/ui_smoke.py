@@ -69,6 +69,7 @@ PAGES = [
     ('providers', 'AI 配置'),
     ('prompts', '提示词'),
     ('risk', '风控'),
+    ('quick-reply', '话术'),
 ]
 
 BOUNDARY_TEXT = '这个页面出了点问题'

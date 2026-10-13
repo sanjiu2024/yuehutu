@@ -74,6 +74,7 @@ PAGES = [
     ("data-overview", "数据总览"), ("fans", "粉丝数据"), ("cs-data", "客服数据"),
     ("commodity", "商品数据"),
     ("notifications", "通知中心"), ("shop-profile", "店铺资料"),
+    ("quick-reply", "话术"),
 ]
 
 CHECK = r"""() => {

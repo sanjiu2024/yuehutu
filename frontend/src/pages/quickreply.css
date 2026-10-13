@@ -1,0 +1,251 @@
+/* 「话术」页（task-86）。全部规则限定在 qr- 前缀下，不重定义任何既有选择器。
+   颜色/间距一律用 styles.css 的令牌变量，浅色主题自动跟着走。 */
+
+.qr-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-4);
+}
+
+.qr-head-text {
+  min-width: 0;
+}
+
+.qr-head-text h3 {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-1);
+  font-size: var(--fs-14);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.qr-sub {
+  margin: 0;
+  max-width: 62ch;
+  font-size: var(--fs-12);
+  line-height: 1.7;
+  color: var(--text-dim);
+}
+
+.qr-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.qr-select {
+  min-width: 160px;
+  max-width: 240px;
+  height: 30px;
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-12);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.qr-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-4);
+  margin-bottom: var(--sp-3);
+  font-size: var(--fs-11);
+  color: var(--text-mute);
+}
+
+.qr-meta-item b {
+  font-weight: 500;
+  color: var(--text-dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.qr-warn {
+  margin: var(--sp-1) 0 0;
+  padding-left: 18px;
+}
+
+.qr-warn li {
+  font-size: var(--fs-12);
+  line-height: 1.7;
+}
+
+.qr-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.qr-group {
+  padding: var(--sp-3);
+}
+
+.qr-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.qr-group-name {
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 24ch;
+}
+
+.qr-group-count {
+  padding: 1px var(--sp-2);
+  font-size: var(--fs-11);
+  color: var(--text-mute);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-pill);
+}
+
+.qr-group-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+
+.qr-na {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-12);
+  line-height: 1.7;
+  color: var(--text-mute);
+}
+
+.qr-phrases {
+  list-style: none;
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.qr-phrase {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+
+.qr-phrase-text {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-12);
+  line-height: 1.7;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qr-phrase-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex: none;
+}
+
+.qr-input,
+.qr-textarea {
+  width: 100%;
+  padding: var(--sp-2);
+  font-size: var(--fs-13);
+  font-family: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.qr-textarea {
+  resize: vertical;
+  line-height: 1.7;
+}
+
+.qr-count {
+  margin-top: var(--sp-1);
+  text-align: right;
+  font-size: var(--fs-11);
+  color: var(--text-mute);
+}
+
+.qr-readonly {
+  padding: var(--sp-2);
+  font-size: var(--fs-13);
+  color: var(--text-dim);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+
+.qr-note {
+  margin: var(--sp-3) 0 0;
+  font-size: var(--fs-12);
+  line-height: 1.7;
+  color: var(--text-dim);
+}
+
+.qr-lines {
+  display: grid;
+  grid-template-columns: minmax(96px, auto) 1fr;
+  gap: var(--sp-1) var(--sp-3);
+  margin-top: var(--sp-3);
+  padding: var(--sp-3);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-12);
+}
+
+.qr-line {
+  display: contents;
+}
+
+.qr-line > span {
+  color: var(--text-mute);
+}
+
+.qr-line > b {
+  font-weight: 500;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 820px) {
+  .qr-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .qr-group-actions {
+    margin-left: 0;
+  }
+
+  .qr-phrase {
+    flex-wrap: wrap;
+  }
+
+  .qr-phrase-text {
+    white-space: normal;
+  }
+}
