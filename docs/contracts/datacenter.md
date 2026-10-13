@@ -13,7 +13,7 @@
 >   从里面抽出 56 个 mtop token（调用形态 `xge({api, v:'1.0', data:{...}})`），
 >   其中 **46 个是真 API 名**（`mtop.alibaba.*` 44 + `mtop.taobao.*` 2；datacompass 族 39），
 >   另 10 个是 `mtop.config.*` / `mtop.request` 这类模块路径。
-> - **契约测试**：`backend/tests/test_datacenter_api.py`（89 用例，样本即真机原文形状）。
+> - **契约测试**：`backend/tests/test_datacenter_api.py`（139 用例，样本即真机原文形状）。
 >
 > 商品数据页（`/seller-data/commodity`，2026-10-13 加）的额外证据：官方菜单树
 > `logs/seller_discover/menu.json` 里这一页是**我们最后一个没复刻的官方叶子页**；
@@ -50,8 +50,9 @@
 | GET | `/api/datacenter/{account_id}/commodity` | 商品数据：一行一个商品 + 平台给的指标列（官方「商品数据」页） |
 | GET | `/api/datacenter/{account_id}/fans` | 粉丝数据：总数 / 新增 / 流失 / 活跃 / 订单 / 买家 + 画像洞察 |
 | GET | `/api/datacenter/{account_id}/customer-service` | 客服数据：询单人数 / 询单量 / 3 分钟响应率 / 平均响应时长 / 未回复 / 满意度 |
+| GET | `/api/datacenter/{account_id}/card/{kind}` | 经营卡片：`kind` ∈ `trade` / `seller` / `repurchase` / `refund`（官方数据总览页那四张卡） |
 
-- 三个端点都要求登录（`Depends(current_user)`），响应走全局信封
+- 五个端点都要求登录（`Depends(current_user)`），响应走全局信封
   `{success: true, data: {...}}` / `{success: false, message, code, login_state?}`。
 - Query：`start`、`end`，都是 `YYYYMMDD`；缺省为「今天往前 7 天」（`start=今天-6`、`end=今天`）。
   非法值（`2026-10-04` / 开始晚于结束 / 位数不对 / 非数字）一律 `400 invalid_fields`，
@@ -94,6 +95,32 @@
   「原样数字 + `%`」**（官方不做乘 100）。前端照抄，并在列头提示里说明。
 - 只读：官方这一页有「导出/下载」接口（`…datacompas.export.item.list` 一族，轮询取文件 URL），
   **本批故意不做** —— 它会把整份数据导到本地文件，属于数据外带，需要单独评估。
+
+### 1.4 经营卡片（`kind == 'card'`）的额外约定
+
+官方「数据总览」页在核心指标下面还有四张卡，各是一个独立接口。我们**照抄这个结构**：
+
+| `kind` | 平台接口 | 卡片标题 |
+| --- | --- | --- |
+| `trade` | `mtop.alibaba.idle.seller.pc.datacompass.flow.detail` | 交易数据 |
+| `seller` | `mtop.alibaba.idle.seller.pc.datacompass.singleuser.seller.summary` | 经营概况 |
+| `repurchase` | `mtop.alibaba.idle.seller.pc.datacompass.singleuser.repurchase.summary` | 复购 |
+| `refund` | `mtop.alibaba.idle.seller.pc.datacompass.refund.summary` | 退款概览 |
+
+- Query 只有 `start` / `end`（`YYYYMMDD`，缺省「今天往前 7 天」）；`kind` 不在上表枚举里
+  → `400 invalid_fields`，**一次平台都不打**。
+- 响应：`{account_id, kind, title, period: {from, to}, metrics[], banner[], series[],
+  promotion, extra, real_date_range, warnings[], source: "platform", fetched_at}`。
+- **一次一张卡**（四个独立请求，不是一次拿四张）：某一张没权限/平台报错时，
+  只有那一张显示错误与 warning，另外三张照常显示。
+- **指标名以平台为准**：`label` 为 `null` 时前端显示平台字段名（`platform_name`），
+  **绝不自己编中文名** —— 平台新增指标时编出来的名字会骗人。`metrics` 里每项
+  `{key, label, platform_name, value, ratio, ratio_format, cycle, last}`。
+- 平台没给的值是 `null`，前端显示「-」，**不补 0**；`metrics`/`banner`/`series` 拿不到一律 `[]`
+  （这一张没有数据），`real_date_range` 拿不到是 `null`。
+- `extra` 是**没登记过的字段**原样带出（不翻译、不丢），前端折叠在「平台原始字段」里；
+  `series` 的点用 `points: [{date, value}]`，前端画折线时**跳过非数字点**（不插 0，插 0 会画出假的谷底）。
+- 只读：这四张卡官方都只有查询接口，我们没有任何写方法（`test_routes_are_read_only` 锁死）。
 
 ## 2. 指标键（前端只能依赖这些键）
 

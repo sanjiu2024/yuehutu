@@ -780,6 +780,16 @@ GET /api/datacenter/{account_id}/commodity?start=&end=&item_id=&item_name=&page=
        --   官方这一页的导出/下载接口（…export.item.list 一族）**故意不做**（数据外带，需单独评估）。
 GET /api/datacenter/{account_id}/fans?start=&end=
 GET /api/datacenter/{account_id}/customer-service?start=&end=
+GET /api/datacenter/{account_id}/card/{kind}?start=&end=
+       -- 「经营卡片」四张（第三十五批）：kind ∈ trade / seller / repurchase / refund，
+       --   对应 flow.detail / singleuser.seller.summary / singleuser.repurchase.summary / refund.summary。
+       --   **一次一张卡**：某张没权限/平台报错只影响那一张，另外三张照常显示（官方页面结构如此）。
+       --   响应多出 title / metrics / banner / series / promotion / extra / real_date_range：
+       --     指标名**以平台为准**（label 为 null 时显示平台字段名 platform_name），**不自己编中文**；
+       --     平台没给的值是 null（前端显示「-」，不补 0）；metrics/banner/series 拿不到一律 []；
+       --     `extra` 是没登记过的字段原样带出（不翻译、不丢），前端折叠在「平台原始字段」里；
+       --     `series[].points` 是非数字点可跳过的折线点，前端画线时**不插 0**（插 0 会画出假谷底）。
+       --   kind 不在枚举里 → 400 invalid_fields，一次平台都不打。
 
 【读 + 写 · 运费模版】`docs/contracts/item_templates.md`
 GET  /api/item-templates/{account_id}?page=&size=&template_name=
@@ -930,13 +940,13 @@ POST /api/drafts/{account_id}/batch-delete           {draft_ids,confirm}
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 99 条 / `MASTER_TOOLS` 98 条（去掉 `master_chat` 防递归），
+【AI 侧】`TOOL_SPECS` 100 条 / `MASTER_TOOLS` 99 条（去掉 `master_chat` 防递归），
 其中 **40 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 100 条。五方对账（specs / master / routes / service targets / handlers）
+`mcp_server/client.py::TOOL_ROUTES` 101 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=99 master=98 routes=100 targets=79 handlers=99 / write_tools=40 / route_checked=100 / RECON OK
+-> specs=100 master=99 routes=101 targets=80 handlers=100 / write_tools=40 / route_checked=101 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`

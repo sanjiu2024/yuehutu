@@ -62,8 +62,8 @@
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_cm_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 54  PASS 54  FAIL 0  CASES 1827  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_card_full&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 54  PASS 54  FAIL 0  CASES 1877  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -83,21 +83,21 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 94 modules transformed.
-   frontend/dist/assets/index-CaV4g4Pd.js (624.76 kB, gzip 178.0 kB)
-   frontend/dist/assets/index-DotwG7pK.css (141.94 kB, gzip 22.5 kB)
+   frontend/dist/assets/index-C43KMt5l.js (574.12 kB, gzip 179.36 kB)
+   frontend/dist/assets/index-CMIURv5_.css (143.35 kB, gzip 22.73 kB)
 ```
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon_shop&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=99 master=98 routes=100 targets=79 handlers=99
-   write_tools=40  route_checked=100
+-> specs=100 master=99 routes=101 targets=80 handlers=100
+   write_tools=40  route_checked=101
    RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
    （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18451"
--> UI SMOKE ALL OK  (27/27 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18481"
+-> UI SMOKE ALL OK  (28/28 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
    截图目录：logs/ui_smoke
 ```
 
@@ -2279,10 +2279,58 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `scripts/a11y_audit.py --port 18475` → 无可访问名字的按钮 0 / 没有标签的输入框 0 /
 > 无 alt 的图片 0 / 焦点环全部可见、`NON_GET_API_REQUESTS=[]`。
 
+### 第三十五批：数据总览页四张经营卡片（只读）（203~207）
+
+- **动机**：第三十四批把官方菜单树的 19 个叶子页对齐完，但**数据总览页本身只做了「核心指标」一块**——
+  官方这一页在核心指标下面还有四张卡（交易数据 / 经营概况 / 复购 / 退款概览），各是一个独立接口。
+  本批照抄官方结构补齐这四张，**全部只读**。
+- **取证**（`logs/seller_discover/datacenter_main.js`，静态提取，零平台请求）：
+  `mtop.alibaba.idle.seller.pc.datacompass.flow.detail`（交易数据，偏移 4077870）、
+  `…singleuser.seller.summary`（经营概况，4062125）、`…singleuser.repurchase.summary`（复购，4067298）、
+  `…refund.summary`（退款概览，4099924）。四张卡**共用同一套入参形状**
+  （`{dateRange: customDate ? dates.join('|') : undefined, dateType, selectedSellerId, ms}`），
+  与商品数据页那套（`dateRange`/`ms` 条件拼接）同源。
+  另注：`platform.datacompass.refund.summary`（4121925）只出现在一个**调试面板**里
+  （旁边是 `platform.account.mock.cancel`、写死 `selectedSellerId:"1001"`/`ms:"202506"`）⇒ **不是真页面，不做**；
+  `platform.datacompass.refund.item.list`（退款原因分析表格）是真页面，**留给后续批次**。
+- **协议层**（`backend/app/xianyu/datacenter.py`）：`CARD_APIS`（四个 kind → api）、`CARD_KINDS`、
+  `CARD_TITLES`、`SELLER_LABELS`/`SELLER_LABELS_SINGLE`/`REPURCHASE_LABELS`/`REFUND_LABELS`（官方中文标题表，
+  逐字抄自 bundle）、`card_dates()`、`card_request()`、`card_labels()`、`parse_card(payload, kind, labels)`
+  与 `async def card(client, kind, start, end, seller_id)`。
+- **服务层**（`backend/app/services/datacenter.py`）：`CARD_KINDS`、`_card_dates`（区间校验，非法 400 且零平台调用）、
+  `_wrap_card`（`metrics`/`banner`/`series` 拿不到一律 `[]`；平台没登记过的字段进 `extra` 原样带出）、
+  `card(account_id, kind, start, end)`。**一次一张卡**：某张没权限/报错只影响那一张，
+  另外三张照常显示（官方页面结构如此，前端也用四个独立 `useAsync`）。
+- **HTTP**：新增 `GET /api/datacenter/{account_id}/card/{kind}`（`kind` 不在枚举 → 400 `invalid_fields`）。
+- **AI 侧**：新增只读工具 `datacenter_card`（无 `confirm`）+ MCP 路由
+  `GET /api/datacenter/{account_id}/card/{kind}`（path_params `account_id`/`kind`，query `start`/`end`）。
+- **UI**：`frontend/src/pages/DataOverview.tsx` 在核心指标卡下面加「经营卡片」区（四个 `CardBlock`，
+  `dc-opcards` 网格；指标名**以平台为准**——`label` 为 null 时显示平台字段名，**不自己编中文**；
+  平台没给的值显示「-」不补 0；折线跳过非数字点**不插 0**，插 0 会画出假的谷底；
+  未登记字段折叠在「平台原始字段」里）+ `datacenter.css` 追加 `dc-opcard`/`dc-spark`/`dc-metric-row` 等规则。
+
+> **第三十五批证据链**：`backend/tests/test_datacenter_api.py` → **`Ran 139 tests ... OK`**
+> （新增 `CardTest`：四个 kind 的接口名与标题、区间校验 400 且零平台调用、`kind` 非法 400、
+> 指标名回落平台字段名、`extra` 原样带出、`metrics`/`banner`/`series` 缺失给 `[]`、
+> `real_date_range` 给 null、平台拒绝 502 且 `login_state` 仍 active、无 Cookie 409、
+> 未知账号 404、路由挂载形状）；
+> `python -m unittest backend.tests.test_agents_cross backend.tests.test_mcp_server
+> backend.tests.test_agents_tools_workbench` → **`Ran 130 tests OK`**（`UNITS_EXIT=0`）；
+> `scripts/reconcile_tools.py` → `specs=100 master=99 routes=101 targets=80 handlers=100`、
+> `write_tools=40`（本批只加只读工具）、`route_checked=101`、**`RECON OK`**；
+> `backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_card_full`）→
+> **`TOTAL 54  PASS 54  FAIL 0  CASES 1877  SKIPPED 2`**；
+> `create_app().openapi()` → 5 条 `/api/datacenter/*`（含新 `card/{kind}`）；
+> `cd frontend && npx tsc --noEmit` → `TSC_EXIT=0`；`npm run build` → `BUILD_EXIT=0`
+> （94 modules、`index-C43KMt5l.js 629169` / `index-CMIURv5_.css 143354`）；
+> `scripts/ui_smoke.py --port 18481` → **`UI SMOKE ALL OK (28/28 页通过)`**
+> （`data-overview` 653 字符，截图里四张卡各带自己的错误提示 —— 演示账号无 Cookie，
+> **四张卡的错误是彼此独立的**，页面没有因此空白）。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**54 个测试文件、1827 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**54 个测试文件、1877 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -2308,11 +2356,11 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   从 `共 95 条` 变成 `共 56 条`（= 两个在售账号的 45 + 11），页面里再也搜不到 `3998190171`，
   只读探针（真 Edge）`has_deleted_account: false`、`page_errors: []`。
 - 真实 HTTP：只读 17 条 + 写路径 11 条（早期探针）；打包版接口面现在
-  `/openapi.json` = **164 条路径 / 177 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
-  第三十二批 +10 条店铺资料/子账号；第三十三批 +4 条推广资金明细；第三十四批 +1 条商品数据），
+  `/openapi.json` = **165 条路径 / 178 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
+  第三十二批 +10 条店铺资料/子账号；第三十三批 +4 条推广资金明细；第三十四批 +1 条商品数据；第三十五批 +1 条经营卡片），
   均结构化信封、无 500。
-- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 99 / `MASTER_TOOLS` 98 /
-  `TOOL_ROUTES` 100，其中 **40 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
+- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 100 / `MASTER_TOOLS` 99 /
+  `TOOL_ROUTES` 101，其中 **40 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
   FastAPI 端点接受 → `RECON OK`。MCP 端到端冒烟（真起 `mcp_server/server.py` 子进程打打包版）
   `tools/list` 返回 63 个工具（该数字早于后面几批新增的工具）。
 - **真实浏览器逐页冒烟 28/28 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
@@ -2404,6 +2452,14 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   `cwd=C:\Windows` + 显式清空 `PYTHONPATH` 仍能 `initialize` 并列出 21 个工具。
 
 **未验证（不要当成已完成）**
+- **数据总览页四张经营卡片没在真机上取到过数据**（第三十五批）：四条只读接口
+  （`flow.detail` / `singleuser.seller.summary` / `singleuser.repurchase.summary` / `refund.summary`）
+  的接口名、入参形状与**官方中文指标标题**都只有 bundle 静态证据 + 单元测试；
+  账号 `2217970177348` 当前是 `login_state=need_relogin`，任何真机请求都会停在 409
+  （这是正确行为，不会去打平台）。所以「平台回的 `bannerDataList` / `graphDataList` /
+  `promotionInfoList` 真实字段名是否与 bundle 一致」「四个 kind 里哪几个这个账号有权限」
+  目前未知 —— 重新扫码后应先跑只读探针，再看 UI。前端截图里四张卡各带自己的错误提示，
+  证明**错误是彼此独立的**（页面不会因为一张卡失败而空白），但那张截图是演示账号（无 Cookie）。
 - **推广资金明细的 4 条只读接口没能在真机上跑通**（第三十三批）：探针脚本
   `C:\Users\Administrator\.dsh-tmp\funds_read_probe.py`（拷真实数据目录到临时根 → 从源码起后端 →
   桌面密钥换 token → **只发 GET**）打过去时，账号 `2217970177348` 已经是
