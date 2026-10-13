@@ -598,3 +598,277 @@ async def commodity(client: Any, start: str = '', end: str = '', seller_id: str 
         'errors': errors,
         'raw': raw,
     }
+
+
+# ---------------------------------------------------------------------------
+#: 数据总览页的四张「经营卡片」：官方是四个独立接口，但共用同一套入参形状
+#: （`datacenter_main.js` 偏移 4077870 / 4062125 / 4067298 / 4099924 四处调用点）：
+#:
+#: ```js
+#: {dateRange: 'customDate' === f ? dates.join('|') : undefined,
+#:  dateType: f || 'recent1d', selectedSellerId: t,
+#:  ms: 'month' === f ? dates[0] : undefined}
+#: ```
+#:
+#: 注意这跟本模块前面三个接口（`date_data` 用 `month` + `ms` + `date`）**不是一套**：
+#: 官方自己在这两处写法就不一样（商品数据页与这四张卡片用 `customDate` + `dateRange`，
+#: 总览/粉丝/客服三页用 `month` + `ms` + `date`）。我们照抄各自的写法，不强行统一 ——
+#: 统一会让其中一边发出平台不认的参数。
+CARD_TRADE_API = 'mtop.alibaba.idle.seller.pc.datacompass.flow.detail'
+CARD_SELLER_API = 'mtop.alibaba.idle.seller.pc.datacompass.singleuser.seller.summary'
+CARD_REPURCHASE_API = 'mtop.alibaba.idle.seller.pc.datacompass.singleuser.repurchase.summary'
+CARD_REFUND_API = 'mtop.alibaba.idle.seller.pc.datacompass.refund.summary'
+CARD_APIS: Dict[str, str] = {
+    'trade': CARD_TRADE_API,
+    'seller': CARD_SELLER_API,
+    'repurchase': CARD_REPURCHASE_API,
+    'refund': CARD_REFUND_API,
+}
+CARD_KINDS: Tuple[str, ...] = ('trade', 'seller', 'repurchase', 'refund')
+#: 官方页面上的卡片标题（逐字抄，不自己起名）
+CARD_TITLES: Dict[str, str] = {
+    'trade': '交易数据',
+    'seller': '经营概况',
+    'repurchase': '复购',
+    'refund': '退款概览',
+}
+
+#: 官方指标中文标签表 —— `h_t`（bundle 偏移 4052415，全部账号口径）
+SELLER_LABELS: Dict[str, str] = {
+    'payAmt': '支付金额（元）',
+    'payOrdCnt': '支付订单数',
+    'aov': '笔单价',
+    'showUv': '商品曝光人数',
+    'ipvUv': '商品浏览人数',
+    'payByrCnt': '成交人数',
+    'vstPv': '商品访问次数',
+    'vstUv': '商品访问人数',
+    'showPv': '商品曝光次数',
+    'ipv': '商品浏览次数',
+    'rfdOrdCnt': '发起退款笔数',
+    'rfdAmt': '发起退款金额（元）',
+}
+#: `v_t`（bundle 偏移 4057997，单个账号口径）—— 我们永远只查一个账号，实际用的是这张
+SELLER_LABELS_SINGLE: Dict[str, str] = {
+    'vstPv': '商品访问次数',
+    'vstUv': '商品访问人数',
+    'showPv': '商品曝光次数',
+    'showUv': '商品曝光人数',
+    'ipv': '商品浏览次数',
+    'ipvUv': '商品浏览人数',
+    'payOrdCnt': '支付笔数',
+    'payAmt': '支付金额（元）',
+    'rfdOrdCnt': '发起退款笔数',
+    'rfdAmt': '发起退款金额（元）',
+    'rpr': '复购率',
+    'rptOrdCnt': '复购订单数',
+    'rptByrCnt': '复购人数',
+}
+#: 复购卡的标签表 `x`（bundle 偏移 4065877）
+REPURCHASE_LABELS: Dict[str, str] = {
+    'rpr': '复购率',
+    'rptOrdCnt': '复购订单数',
+    'rptByrCnt': '复购人数',
+}
+#: 退款概览卡的标题是官方**写死**在构造点（bundle 偏移 4099924 起）里的，逐字抄；
+#: `crtRfdRate`/`crtDsptRate`/`succRfdRate` 的官方标题分别是「退款发起率」「维权发起率」
+#: 「退款完结率」，`dealingRfdCntRate` 是「处理中的笔数占比」。
+REFUND_LABELS: Dict[str, str] = {
+    'crtRfdCnt': '发起退款笔数',
+    'crtRfdRate': '退款发起率',
+    'crtRfdAmt': '退款金额（元）',
+    'crtDsptCnt': '维权笔数',
+    'crtDsptRate': '维权发起率',
+    'crtDsptAmt': '维权金额（元）',
+    'succRfdCnt': '成功退款笔数',
+    'succRfdRate': '退款完结率',
+    'succRfdAmt': '退款金额（元）',
+    'dealingRfdCnt': '处理中的退款笔数',
+    'dealingRfdCntRate': '处理中的笔数占比',
+    'dealingRfdAmt': '退款金额（元）',
+}
+
+
+def card_dates(start: str = '', end: str = '') -> Tuple[str, List[str]]:
+    """四张卡片的时间入参：给了区间 → `('customDate', [start, end])`；否则今天。"""
+    if start or end:
+        return COMMODITY_DATE_CUSTOM, [start or end, end or start]
+    return DATE_TYPE_DAY, []
+
+
+def card_request(date_type: str = DATE_TYPE_DAY, dates: Optional[List[str]] = None,
+                 seller_id: str = '') -> Dict[str, Any]:
+    """构造四张卡片的入参（键名逐字照 bundle；空值**不放键**，等价于官方的 `undefined`）。
+
+    官方那份 `data:{...}` 里有 `dateRange: undefined` / `ms: undefined`，经
+    `JSON.stringify` 会整键消失，所以这里只在对应 `dateType` 下才放键 —— 少放键与
+    「放一个空串」在平台上不是一回事。
+    """
+    payload: Dict[str, Any] = {'dateType': date_type or DATE_TYPE_DAY}
+    if seller_id:
+        payload['selectedSellerId'] = str(seller_id)
+    if date_type == COMMODITY_DATE_CUSTOM and dates:
+        payload['dateRange'] = '|'.join(dates)
+    if date_type == DATE_TYPE_MONTH and dates:
+        payload['ms'] = dates[0]
+    return payload
+
+
+def card_labels(kind: str, seller_id: str = '') -> Dict[str, str]:
+    """这一张卡片该用哪张官方标签表。
+
+    交易数据卡（`flow.detail`）没有独立标签表，它的指标名与经营概况是同一套平台名
+    （`payAmt`/`payOrdCnt`/`aov`/`rfdAmt` …），所以复用经营概况的表；表里没有的键
+    返回 `label=None`，前端显示平台字段名 —— **不猜中文**。
+    """
+    if kind == 'refund':
+        return dict(REFUND_LABELS)
+    if kind == 'repurchase':
+        return dict(REPURCHASE_LABELS)
+    return dict(SELLER_LABELS_SINGLE if seller_id else SELLER_LABELS)
+
+
+def _metric_entry(key: str, value: Any, labels: Dict[str, str]) -> Dict[str, Any]:
+    """把一个平台指标变成我们的条目。**绝不造值**：拿不到就是 `None`。
+
+    平台的指标对象形如 `{name, data, ratioFormat, dataFormat, cycle, lastDataFormat}`；
+    也有直接给标量的（`flow.detail` 的部分键）。两种都收，原样保留能拿到的部分。
+    """
+    entry: Dict[str, Any] = {
+        'key': key,
+        'label': labels.get(key),
+        'value': None,
+        'ratio': None,
+        'ratio_format': None,
+        'cycle': None,
+        'last': None,
+        'platform_name': None,
+        'raw': value,
+    }
+    if isinstance(value, dict):
+        name = value.get('name')
+        entry['platform_name'] = name if isinstance(name, str) and name.strip() else None
+        data = value.get('data')
+        if _is_number(data) or isinstance(data, str):
+            entry['value'] = data
+        for field, target in (('ratioFormat', 'ratio'), ('dataFormat', 'ratio_format'),
+                              ('cycle', 'cycle'), ('lastDataFormat', 'last')):
+            raw = value.get(field)
+            if isinstance(raw, str) and raw.strip():
+                entry[target] = raw
+    elif _is_number(value) or isinstance(value, str):
+        entry['value'] = value
+    return entry
+
+
+def _card_body(payload: Any) -> Dict[str, Any]:
+    """卡片响应体：`_mtop` 已经剥掉客户端外层信封，所以这里是 `{extendInfo, data}`。"""
+    if isinstance(payload, dict):
+        body = payload.get('data')
+        if isinstance(body, dict):
+            return body
+    return {}
+
+
+def _bench_series(body: Dict[str, Any], labels: Dict[str, str]) -> List[Dict[str, Any]]:
+    """`graphDataList` → 每个指标一条折线（官方每行是 `{ds, <指标名>: 值}`）。"""
+    bench = body.get('graphBannerBenchData')
+    if not isinstance(bench, dict):
+        return []
+    rows = bench.get('graphDataList')
+    if not isinstance(rows, list):
+        return []
+    order: List[str] = []
+    points: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        date = row.get('ds')
+        for key, value in row.items():
+            if key == 'ds':
+                continue
+            if key not in points:
+                points[key] = []
+                order.append(key)
+            if _is_number(value) or isinstance(value, str):
+                points[key].append({'date': date, 'value': value})
+    return [{'key': key, 'label': labels.get(key), 'points': points[key]} for key in order]
+
+
+def _banner_entries(body: Dict[str, Any], labels: Dict[str, str]) -> List[Dict[str, Any]]:
+    """`graphBannerBenchData.bannerDataList` → 卡片顶部那排指标（官方按 `name` 认）。"""
+    bench = body.get('graphBannerBenchData')
+    if not isinstance(bench, dict):
+        return []
+    rows = bench.get('bannerDataList')
+    if not isinstance(rows, list):
+        return []
+    entries: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = row.get('name')
+        if not isinstance(key, str) or not key.strip():
+            continue
+        entries.append(_metric_entry(key, row, labels))
+    return entries
+
+
+def parse_card(payload: Any, kind: str, labels: Dict[str, str]) -> Dict[str, Any]:
+    """解析四张卡片中的一张。字段拿不到就是 `None`/空列表，**不补 0、不编标题**。
+
+    - `seller` / `repurchase`：`graphBannerBenchData.bannerDataList`（顶部指标）+
+      `graphDataList`（折线）+ 可选 `promotionInfoList`（经营概况的推广位，原样透传）。
+    - `trade`：`data` 里除 `itemFlowTransferData` 外的键当指标，`itemFlowTransferData`
+      原样透传（官方把它交给另一个子组件渲染）。
+    - `refund`：`data` 里的每个键都是一个指标对象。
+    """
+    body = _card_body(payload)
+    labels = dict(labels or {})
+    banner = _banner_entries(body, labels)
+    series = _bench_series(body, labels)
+    metrics: List[Dict[str, Any]] = []
+    extra: Dict[str, Any] = {}
+    if kind == 'refund':
+        for key, value in body.items():
+            metrics.append(_metric_entry(key, value, labels))
+    else:
+        for key, value in body.items():
+            if key == 'graphBannerBenchData':
+                continue
+            if isinstance(value, (dict, list)):
+                # 不是「一个指标」的东西（`itemFlowTransferData`、`promotionInfoList` …）
+                # 原样放进 `extra`：既不当指标渲染，也不丢掉 —— 平台加字段时能看见。
+                extra[key] = value
+                continue
+            metrics.append(_metric_entry(key, value, labels))
+    promotion = body.get('promotionInfoList')
+    return {
+        'kind': kind,
+        'title': CARD_TITLES.get(kind, kind),
+        'api': CARD_APIS.get(kind, ''),
+        'metrics': metrics,
+        'banner': banner,
+        'series': series,
+        'promotion': promotion if isinstance(promotion, list) else None,
+        'extra': extra,
+        'real_date_range': _real_date_range(payload),
+        'found': bool(body),
+    }
+
+
+async def card(client: Any, kind: str = 'trade', start: str = '', end: str = '',
+               seller_id: str = '') -> Dict[str, Any]:
+    """四张经营卡片（**只读**）。`kind` 不认识时抛 `ValueError`（服务层转 400）。"""
+    if kind not in CARD_APIS:
+        raise ValueError('不支持的数据卡片：%s（可选 %s）' % (kind, '/'.join(CARD_KINDS)))
+    date_type, dates = card_dates(start, end)
+    request = card_request(date_type=date_type, dates=dates, seller_id=seller_id)
+    payload = await _mtop(client, CARD_APIS[kind], dict(request))
+    parsed = parse_card(payload, kind, card_labels(kind, seller_id))
+    parsed.update({
+        'date_type': date_type,
+        'dates': dates,
+        'raw': payload,
+    })
+    return parsed

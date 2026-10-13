@@ -137,6 +137,59 @@ def commodity_payload(rows: Any = COMMODITY_PAYLOAD, columns: Any = COMMODITY_IN
     }
 
 
+#: 经营概况卡的真实响应形状（`singleuser.seller.summary`）：顶部指标在
+#: `graphBannerBenchData.bannerDataList`、折线在 `graphDataList`，指标名是平台字段名。
+CARD_SELLER_PAYLOAD = {
+    'extendInfo': {'realDateRange': ['2026-10-13', '2026-10-13']},
+    'data': {
+        'graphBannerBenchData': {
+            'bannerDataList': [
+                {'name': 'vstPv', 'data': 124, 'ratioFormat': '+3.2%', 'dataFormat': '12.4%'},
+                {'name': 'payAmt', 'data': 40.11, 'cycle': '日环比'},
+                # 平台新增了一个我们不认识的指标名：**不猜中文**，label 给 None
+                {'name': 'brandNewMetric', 'data': 7},
+            ],
+            'graphDataList': [
+                {'ds': '20261012', 'vstPv': 100},
+                {'ds': '20261013', 'vstPv': 124},
+            ],
+        },
+        'promotionInfoList': [{'bizId': 1, 'amountOfYuan': '33.58'}],
+    },
+}
+#: 退款概览卡：`data` 里每个键都是一个指标对象（不是 graphBanner 结构）
+CARD_REFUND_PAYLOAD = {
+    'data': {
+        'crtRfdCnt': {'name': 'crtRfdCnt', 'data': 2, 'ratioFormat': '-1'},
+        'succRfdRate': {'name': 'succRfdRate', 'data': '50%'},
+    },
+}
+
+
+def card_payload(kind: str = 'seller', payload: Any = None, found: bool = True,
+                 date_type: str = datacenter_proto.DATE_TYPE_DAY,
+                 dates: Optional[List[str]] = None,
+                 errors: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """把「平台原始响应」拼成协议层 `card()` 的返回形状（**真解析函数参与**）。
+
+    `found=False` 用来模拟「平台改了字段名，body 是空的」：此时指标/折线全空，服务层
+    要额外给一条 warning —— 空列表与「结构都没有」是两件事。
+    """
+    parsed = datacenter_proto.parse_card(
+        CARD_SELLER_PAYLOAD if payload is None else payload, kind,
+        datacenter_proto.card_labels(kind, 'seller-id'),
+    )
+    parsed.update({
+        'date_type': date_type,
+        'dates': list(dates or []),
+        'errors': errors or {},
+        'raw': {},
+    })
+    if not found:
+        parsed.update({'found': False, 'metrics': [], 'banner': [], 'series': []})
+    return parsed
+
+
 class SessionExpiredError(RuntimeError):
     """与协议层同名：`common._is_session_expired` 按**类名**认登录态过期，不看文案。"""
 
@@ -210,6 +263,21 @@ class FakeDataCenterProtocol:
                             item_id, item_name, is_dp_stk, mkt_act_id, page, page_size,
                             order_by, order)
 
+    async def card(self, client: Any, kind: str = 'trade', start: str = '', end: str = '',
+                   seller_id: str = '') -> Any:
+        """与真协议层同样**从 start/end 推导** `date_type` / `dates`。
+
+        假协议层若回一份写死的 `dates`，服务层就会以为「调用方没给日期」，
+        于是区间显示成今天 —— 那种假绿会把真 bug 藏起来。
+        """
+        answer = self._answer('card', client, kind, start, end, seller_id)
+        if isinstance(answer, dict):
+            date_type, dates = datacenter_proto.card_dates(start, end)
+            answer = dict(answer)
+            answer['date_type'] = date_type
+            answer['dates'] = list(dates)
+        return answer
+
     def args_of(self, name: str) -> tuple:
         for call in self.calls:
             if call[0] == name:
@@ -241,6 +309,7 @@ def install_fake_protocol(protocol: FakeDataCenterProtocol) -> FakeXianyuClient:
     module.fans = protocol.fans  # type: ignore[attr-defined]
     module.customer_service = protocol.customer_service  # type: ignore[attr-defined]
     module.commodity = protocol.commodity  # type: ignore[attr-defined]
+    module.card = protocol.card  # type: ignore[attr-defined]
     sys.modules['backend.app.xianyu.datacenter'] = module
     return client
 
@@ -288,6 +357,7 @@ def full_protocol(**overrides: Any) -> FakeDataCenterProtocol:
         'customer_service': {'metrics': datacenter_proto.extract_metrics(CS_PAYLOAD, datacenter_proto.CS_METRICS),
                              'real_date_range': None, 'suspect_keys': [], 'errors': {}},
         'commodity': commodity_payload(),
+        'card': card_payload(),
     }
     payloads.update(overrides)
     return FakeDataCenterProtocol(payloads)
@@ -362,7 +432,8 @@ class DataCenterApiTest(unittest.TestCase):
         from backend.app import main as app_main  # noqa: PLC0415 - 真 app 只在这里需要
         with TestClient(app_main.create_app()) as real:
             for path in (f'{BASE}/{ACC}/overview', f'{BASE}/{ACC}/fans',
-                         f'{BASE}/{ACC}/customer-service', f'{BASE}/{ACC}/commodity'):
+                         f'{BASE}/{ACC}/customer-service', f'{BASE}/{ACC}/commodity',
+                         f'{BASE}/{ACC}/card/seller'):
                 for method in ('post', 'put', 'patch', 'delete'):
                     resp = getattr(real, method)(path, headers=self.headers)
                     self.assertEqual(resp.status_code, 405, f'{method} {path}: {resp.text}')
@@ -1011,6 +1082,192 @@ class CommodityTest(DataCenterApiTest):
         paths = app_main.create_app().openapi().get('paths', {})
         self.assertIn(f'{BASE}/{{account_id}}/commodity', paths)
         self.assertIn('get', paths[f'{BASE}/{{account_id}}/commodity'])
+
+
+class CardTest(DataCenterApiTest):
+    """数据总览页四张「经营卡片」的协议 + 服务 + HTTP 口径。
+
+    与前面几页的两点不同（都是官方页面行为）：默认区间是**今天**（`recent1d`，且**不带**
+    `dateRange`）、入参用 `dateRange`（`|` 连接）而不是 `date`。指标名与中文标题都以平台
+    为准 —— 平台新增一个我们不认识的指标名时，`label` 必须是 `None`（界面显示平台字段名），
+    绝不能猜一个中文出来。
+    """
+
+    # -- 协议层：入参形状（官方 bundle 逐字） ----------------------------
+
+    def test_request_matches_the_official_payload(self):
+        payload = datacenter_proto.card_request(seller_id='221')
+        self.assertEqual(payload, {'dateType': datacenter_proto.DATE_TYPE_DAY,
+                                   'selectedSellerId': '221'})
+        # 官方的 dateRange / ms 是 `undefined`：`JSON.stringify` 会让整键消失 ⇒ 不放键
+        self.assertNotIn('dateRange', payload)
+        self.assertNotIn('ms', payload)
+
+    def test_custom_range_uses_pipe_and_month_uses_ms(self):
+        payload = datacenter_proto.card_request(
+            date_type=datacenter_proto.COMMODITY_DATE_CUSTOM,
+            dates=['20261001', '20261013'], seller_id='221')
+        self.assertEqual(payload['dateRange'], '20261001|20261013')
+        self.assertNotIn('ms', payload)
+        monthly = datacenter_proto.card_request(date_type=datacenter_proto.DATE_TYPE_MONTH,
+                                                dates=['202610'], seller_id='221')
+        self.assertEqual(monthly['ms'], '202610')
+        self.assertNotIn('dateRange', monthly)
+
+    def test_dates_default_to_today_without_a_range(self):
+        self.assertEqual(datacenter_proto.card_dates('', ''),
+                         (datacenter_proto.DATE_TYPE_DAY, []))
+        self.assertEqual(datacenter_proto.card_dates('20261001', ''),
+                         (datacenter_proto.COMMODITY_DATE_CUSTOM, ['20261001', '20261001']))
+
+    def test_labels_come_from_the_official_tables(self):
+        self.assertEqual(datacenter_proto.card_labels('refund')['crtRfdRate'], '退款发起率')
+        self.assertEqual(datacenter_proto.card_labels('repurchase')['rptOrdCnt'], '复购订单数')
+        # 单个账号口径用的是 v_t 那张表（支付笔数），不是全部账号的 h_t（支付订单数）
+        self.assertEqual(datacenter_proto.card_labels('seller', '221')['payOrdCnt'], '支付笔数')
+        self.assertEqual(datacenter_proto.card_labels('seller', '')['payOrdCnt'], '支付订单数')
+
+    def test_parse_card_reads_banner_and_series(self):
+        parsed = datacenter_proto.parse_card(
+            CARD_SELLER_PAYLOAD, 'seller', datacenter_proto.card_labels('seller', '221'))
+        self.assertEqual([m['key'] for m in parsed['banner']], ['vstPv', 'payAmt', 'brandNewMetric'])
+        self.assertEqual(parsed['banner'][0]['value'], 124)
+        self.assertEqual(parsed['banner'][0]['ratio'], '+3.2%')
+        self.assertEqual(parsed['banner'][0]['ratio_format'], '12.4%')
+        self.assertEqual(parsed['banner'][1]['cycle'], '日环比')
+        self.assertEqual([s['key'] for s in parsed['series']], ['vstPv'])
+        self.assertEqual(parsed['series'][0]['points'],
+                         [{'date': '20261012', 'value': 100}, {'date': '20261013', 'value': 124}])
+        self.assertEqual(parsed['promotion'], [{'bizId': 1, 'amountOfYuan': '33.58'}])
+        self.assertEqual(parsed['real_date_range'], ['2026-10-13', '2026-10-13'])
+
+    def test_unknown_metric_keeps_the_platform_name_without_a_label(self):
+        parsed = datacenter_proto.parse_card(
+            CARD_SELLER_PAYLOAD, 'seller', datacenter_proto.card_labels('seller', '221'))
+        unknown = parsed['banner'][2]
+        self.assertIsNone(unknown['label'], '不认识的指标名绝不能猜中文')
+        self.assertEqual(unknown['platform_name'], 'brandNewMetric')
+        self.assertEqual(unknown['value'], 7)
+
+    def test_parse_card_refund_reads_flat_metric_objects(self):
+        parsed = datacenter_proto.parse_card(
+            CARD_REFUND_PAYLOAD, 'refund', datacenter_proto.card_labels('refund'))
+        self.assertEqual([m['key'] for m in parsed['metrics']], ['crtRfdCnt', 'succRfdRate'])
+        self.assertEqual(parsed['metrics'][0]['label'], '发起退款笔数')
+        self.assertEqual(parsed['metrics'][0]['ratio'], '-1')
+        self.assertEqual(parsed['metrics'][1]['value'], '50%')
+        self.assertEqual(parsed['banner'], [])
+
+    def test_parse_card_missing_body_is_not_found(self):
+        parsed = datacenter_proto.parse_card({}, 'trade', datacenter_proto.card_labels('trade'))
+        self.assertFalse(parsed['found'])
+        self.assertEqual((parsed['metrics'], parsed['banner'], parsed['series']), ([], [], []))
+        self.assertIsNone(parsed['real_date_range'])
+
+    def test_trade_card_keeps_item_flow_transfer_data_apart(self):
+        payload = {'data': {'payAmt': 12, 'itemFlowTransferData': {'a': 1}}}
+        parsed = datacenter_proto.parse_card(payload, 'trade',
+                                             datacenter_proto.card_labels('trade'))
+        self.assertEqual([m['key'] for m in parsed['metrics']], ['payAmt'])
+        self.assertEqual(parsed['extra'], {'itemFlowTransferData': {'a': 1}})
+
+    def test_metric_entry_never_invents_a_value(self):
+        entry = datacenter_proto._metric_entry('k', {'name': 'k'}, {})
+        self.assertIsNone(entry['value'])
+        self.assertIsNone(entry['ratio'])
+        self.assertIsNone(entry['label'])
+
+    def test_unknown_kind_raises(self):
+        with self.assertRaises(ValueError):
+            asyncio.get_event_loop().run_until_complete(
+                datacenter_proto.card(FakeMtopClient(), 'nope'))
+
+    # -- 服务层 + HTTP ---------------------------------------------------
+
+    def test_default_period_is_today_and_date_type_is_recent1d(self):
+        seed_account()
+        data = self.ok_data(f'{BASE}/{ACC}/card/seller')
+        self.assertEqual(data['kind'], 'seller')
+        self.assertEqual(data['date_type'], datacenter_proto.DATE_TYPE_DAY)
+        self.assertEqual(data['period']['from'], datetime.now().strftime('%Y%m%d'))
+        self.assertEqual(data['banner'][0]['label'], '商品访问次数')
+        self.assertEqual(data['banner'][0]['value'], 124)
+        # 协议层收到的仍是**空** start/end（线上参数是 recent1d，不带 dateRange）
+        # `args_of` 记的是 `(client, kind, start, end, seller_id)`
+        self.assertEqual(self.proto.args_of('card')[2:4], ('', ''))
+        self.assertEqual(self.proto.args_of('card')[1], 'seller')
+
+    def test_custom_range_is_passed_through_and_shown(self):
+        seed_account()
+        data = self.ok_data(f'{BASE}/{ACC}/card/trade', '?start=20261001&end=20261007')
+        self.assertEqual(data['period'], {'from': '20261001', 'to': '20261007'})
+        self.assertEqual(self.proto.args_of('card')[2:4], ('20261001', '20261007'))
+        self.assertEqual(self.proto.args_of('card')[1], 'trade')
+
+    def test_single_sided_range_is_completed(self):
+        seed_account()
+        data = self.ok_data(f'{BASE}/{ACC}/card/refund', '?start=20261001')
+        self.assertEqual(data['period'], {'from': '20261001', 'to': '20261001'})
+
+    def test_invalid_date_is_400_and_never_calls_the_platform(self):
+        seed_account()
+        body = self.fail_envelope(f'{BASE}/{ACC}/card/seller', '?start=2026')
+        self.assertEqual(body.get('code'), 'invalid_fields')
+        self.assertEqual(self.proto.calls, [])
+
+    def test_unknown_kind_is_400_and_never_calls_the_platform(self):
+        seed_account()
+        body = self.fail_envelope(f'{BASE}/{ACC}/card/nope')
+        self.assertEqual(body.get('code'), 'invalid_fields')
+        self.assertIn('trade', body.get('message', ''))
+        self.assertEqual(self.proto.calls, [])
+
+    def test_missing_body_gives_empty_lists_and_a_warning(self):
+        seed_account()
+        self.proto.payloads['card'] = card_payload(found=False)
+        data = self.ok_data(f'{BASE}/{ACC}/card/seller')
+        self.assertEqual((data['metrics'], data['banner'], data['series']), ([], [], []))
+        self.assertTrue(any('没有返回这张卡片' in w for w in data['warnings']), data['warnings'])
+
+    def test_permission_denied_is_a_human_warning_not_502(self):
+        seed_account()
+        self.proto.payloads['card'] = card_payload(errors={
+            'card': 'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问'})
+        data = self.ok_data(f'{BASE}/{ACC}/card/seller')
+        self.assertTrue(any('没有「数据」权限' in w for w in data['warnings']), data['warnings'])
+
+    def test_platform_error_is_502_with_protocol_error(self):
+        seed_account()
+        self.proto.errors['card'] = RuntimeError('mtop 调用失败')
+        body = self.fail_envelope(f'{BASE}/{ACC}/card/seller', status=502)
+        self.assertEqual(body.get('code'), 'protocol_error')
+
+    def test_session_expired_is_409_and_marks_need_relogin(self):
+        seed_account()
+        self.proto.errors['card'] = SessionExpiredError('FAIL_SYS_SESSION_EXPIRED::Session过期')
+        body = self.fail_envelope(f'{BASE}/{ACC}/card/seller', status=409)
+        self.assertEqual(body.get('code'), 'verification_required')
+        self.assertEqual(body.get('login_state'), 'need_relogin')
+
+    def test_missing_cookie_is_409_and_never_calls_the_platform(self):
+        seed_account(cookie='')
+        body = self.fail_envelope(f'{BASE}/{ACC}/card/seller', status=409)
+        self.assertEqual(body.get('code'), 'verification_required')
+        self.assertEqual(self.proto.calls, [])
+
+    def test_unknown_account_is_404(self):
+        body = self.fail_envelope(f'{BASE}/nope/card/seller', status=404)
+        self.assertEqual(body.get('code'), 'not_found')
+        self.assertEqual(self.proto.calls, [])
+
+    def test_route_is_mounted_on_the_real_app(self):
+        """挂载形状必须与测试里自挂的一致（自建 FastAPI 防不住挂载方式变化）。"""
+        remove_fake_protocol()
+        from backend.app import main as app_main  # noqa: PLC0415 - 真 app 只在这里需要
+
+        paths = app_main.create_app().openapi().get('paths', {})
+        self.assertIn(f'{BASE}/{{account_id}}/card/{{kind}}', paths)
+        self.assertIn('get', paths[f'{BASE}/{{account_id}}/card/{{kind}}'])
 
 
 if __name__ == '__main__':

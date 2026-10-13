@@ -389,3 +389,103 @@ def commodity(account_id: str, start: str = '', end: str = '', item_id: str = ''
         return common.call_failed(status, value) or common.fail(
             '商品数据接口调用失败', 'protocol_error')
     return _wrap_commodity(account_id, value, page_number, page_size)
+
+
+# ---------------------------------------------------------------------------
+# 数据总览页的四张「经营卡片」（交易数据 / 经营概况 / 复购 / 退款概览）—— 只读
+# ---------------------------------------------------------------------------
+#: 四张卡片的 kind。与协议层 `CARD_KINDS` 同序，但服务层**自己再列一份**：
+#: 契约（400 的合法值）不该由协议层的实现细节决定。
+CARD_KINDS: Tuple[str, ...] = ('trade', 'seller', 'repurchase', 'refund')
+
+WARN_CARD_EMPTY = ('平台没有返回这张卡片的数据（可能改了字段名），这一张暂时显示不出来，'
+                   '请点「刷新」重试。')
+
+
+def _card_dates(start: str, end: str):
+    """卡片的时间入参：两头都没给 → `[]`（协议层会发 `recent1d`＝今天）。
+
+    **缺一头就用另一头顶上**，与协议层 `card_dates` 逐字一致 —— 两边算法不一样的话，
+    界面上显示的区间会与真正发出去的参数对不上（那是比报错更难发现的错）。
+    """
+    a = _text(start).strip()
+    b = _text(end).strip()
+    if not a and not b:
+        return [], None
+    a = a or b
+    b = b or a
+    if len(a) != 8 or len(b) != 8 or not a.isdigit() or not b.isdigit() or a > b:
+        return None, common.fail('日期必须是 YYYYMMDD，且开始日期不能晚于结束日期', 'invalid_fields')
+    return [a, b], None
+
+
+def _wrap_card(account_id: str, kind: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """把协议层结果包成对外契约。
+
+    `metrics` / `banner` / `series` 是**列表**，认不出时给 `[]`（这一页的「有结构但没
+    条目」与「结构都没有」用 `found` 区分，`found=False` 时额外给一条 warning）。
+    """
+    warnings = _warnings(payload.get('errors') or {})
+    if not payload.get('found'):
+        warnings.append(WARN_CARD_EMPTY)
+    dates = payload.get('dates') or []
+    if not dates:
+        # 没给日期时**线上参数是 `recent1d`（不带 dateRange）**，但界面上要显示一个区间。
+        # 显示用今天、发出去的仍是不带日期的 recent1d —— 这两件事故意不同（显示值不能反过来
+        # 决定线上参数，否则会把「今天」变成 `customDate` 查询，平台行为就变了）。
+        today = datetime.now().strftime('%Y%m%d')
+        dates = [today, today]
+    return {
+        'account_id': account_id,
+        'kind': kind,
+        'title': payload.get('title'),
+        'api': payload.get('api'),
+        'period': {
+            'from': dates[0] if dates else '',
+            'to': dates[1] if len(dates) > 1 else (dates[0] if dates else ''),
+        },
+        'date_type': payload.get('date_type') or '',
+        'metrics': payload.get('metrics') or [],
+        'banner': payload.get('banner') or [],
+        'series': payload.get('series') or [],
+        'promotion': payload.get('promotion'),
+        'extra': payload.get('extra') or {},
+        'real_date_range': payload.get('real_date_range'),
+        'warnings': warnings,
+        'source': 'platform',
+        'fetched_at': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
+    }
+
+
+def card(account_id: str, kind: str = 'trade', start: str = '', end: str = '') -> Dict[str, Any]:
+    """数据总览页的一张经营卡片（只读）。
+
+    与前面三页的两点不同（都是官方页面行为）：
+
+    * **默认是「今天」**（`recent1d`），不是最近 7 天；
+    * **入参用 `dateRange`（`|` 连接）而不是 `date`** —— 官方在这四张卡片上就是另一套
+      写法，协议层照抄，服务层不统一（统一会让其中一边发出平台不认的参数）。
+
+    一次只查一张：官方页面就是四个独立请求，各自失败不影响其它三张。
+    """
+    kind = _text(kind).strip().lower()
+    if kind not in CARD_KINDS:
+        return common.fail(
+            f'不支持的数据卡片：{kind}（可选 {" / ".join(CARD_KINDS)}）', 'invalid_fields')
+    dates, failure = _card_dates(start, end)
+    if failure:
+        return failure
+    module = common.protocol_module('datacenter')
+    if module is None:
+        return common.not_ready('协议层未提供数据组接口（backend.app.xianyu.datacenter）')
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+    status, value = common.call_method(
+        _BoundProtocol(module, client), ('card',), client,
+        kind, _text(start).strip(), _text(end).strip(), account_id,
+    )
+    if status != common.CALL_OK:
+        return common.call_failed(status, value) or common.fail(
+            '数据卡片接口调用失败', 'protocol_error')
+    return _wrap_card(account_id, kind, value)
