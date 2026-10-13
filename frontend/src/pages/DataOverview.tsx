@@ -91,6 +91,197 @@ function Unrecognized({ keys }: { keys: string[] | null | undefined }) {
   )
 }
 
+/* ------------------------------------------------------------------ *
+ * 经营卡片（交易数据 / 经营概况 / 复购 / 退款概览）
+ *
+ * 官方页面把这一块做成四张卡，各自一个接口。我们照抄：
+ *  - 一次一张，各查各的 ⇒ 一张没权限不会让整页空白；
+ *  - 指标名与中文标题都以平台为准：`label` 为 null 时显示平台字段名，
+ *    **绝不自己编中文**（平台新增指标时编出来的名字会骗人）；
+ *  - 平台没给的值是 null，显示「-」，不用 0 冒充。
+ * ------------------------------------------------------------------ */
+
+interface CardMetric {
+  key?: string
+  label?: string | null
+  value?: unknown
+  ratio?: string | null
+  ratio_format?: string | null
+  cycle?: string | null
+  last?: string | null
+  platform_name?: string | null
+}
+
+interface CardPoint {
+  date?: string | null
+  value?: unknown
+}
+
+interface CardSeries {
+  key?: string
+  label?: string | null
+  points?: CardPoint[] | null
+}
+
+interface CardEnvelope {
+  kind?: string
+  title?: string | null
+  period?: { from?: string; to?: string } | null
+  metrics?: CardMetric[] | null
+  banner?: CardMetric[] | null
+  series?: CardSeries[] | null
+  promotion?: unknown
+  extra?: Record<string, unknown> | null
+  real_date_range?: unknown
+  warnings?: string[]
+  fetched_at?: string
+}
+
+const CARD_TITLES: Record<string, string> = {
+  trade: '交易数据',
+  seller: '经营概况',
+  repurchase: '复购',
+  refund: '退款概览',
+}
+
+/** 渲染顺序照官方页面：交易 → 经营概况 → 复购 → 退款概览。 */
+const CARD_ORDER = ['trade', 'seller', 'repurchase', 'refund']
+
+/** 指标的显示名：平台给了中文就用平台的，否则用平台字段名（不猜）。 */
+function metricName(metric: CardMetric): string {
+  return metric.label || metric.platform_name || metric.key || '（未命名字段）'
+}
+
+function metricValue(metric: CardMetric): string {
+  const value = metric.value
+  if (value === null || value === undefined || value === '') return '-'
+  return typeof value === 'number' ? num(value) : String(value)
+}
+
+/** 折线：值不是数字的点跳过（留空档，不插 0 —— 插 0 会画出一条假的谷底）。 */
+function sparklinePoints(points: CardPoint[] | null | undefined): string {
+  const rows = points || []
+  if (rows.length < 2) return ''
+  const values = rows.map((p) => (typeof p.value === 'number' ? p.value : Number(p.value)))
+  const usable = values.filter((v) => Number.isFinite(v))
+  if (usable.length < 2) return ''
+  const min = Math.min(...usable)
+  const max = Math.max(...usable)
+  const span = max - min || 1
+  const step = 100 / (values.length - 1)
+  return values
+    .map((v, i) => (Number.isFinite(v) ? `${(i * step).toFixed(2)},${(28 - ((v - min) / span) * 26).toFixed(2)}` : ''))
+    .filter(Boolean)
+    .join(' ')
+}
+
+function CardBlock({ accountId, kind, start, end }: { accountId: string; kind: string; start: string; end: string }) {
+  const card = useAsync<CardEnvelope>(
+    () =>
+      api.get<CardEnvelope>(`/api/datacenter/${encodeURIComponent(accountId)}/card/${kind}`, {
+        start,
+        end,
+      }),
+    [accountId, kind, start, end],
+    Boolean(accountId),
+    ['accounts.changed'],
+  )
+  const banner = card.data?.banner || []
+  const series = card.data?.series || []
+  const metrics = card.data?.metrics || []
+  const extraKeys = Object.keys(card.data?.extra || {})
+
+  return (
+    <div className="dc-opcard">
+      <div className="dc-opcard-head">
+        <span className="dc-ico">
+          <IconChart size={14} />
+        </span>
+        {card.data?.title || CARD_TITLES[kind] || kind}
+        {card.data?.period?.from && card.data?.period?.to ? (
+          <span className="dc-muted">
+            {card.data.period.from} ~ {card.data.period.to}
+          </span>
+        ) : null}
+      </div>
+      <AsyncBox loading={card.loading} error={card.error} notReady={card.notReady} onRetry={card.reload}>
+        {banner.length === 0 && series.length === 0 && metrics.length === 0 ? (
+          <div className="dc-muted">这一张暂时没有数据。</div>
+        ) : null}
+        {banner.length > 0 && (
+          <div className="dc-grid dc-grid-sm">
+            {banner.map((metric, idx) => (
+              <div className="dc-card" key={`${metric.key || idx}`} title={metric.key || ''}>
+                <div className="dc-card-label">{metricName(metric)}</div>
+                <div className={`dc-card-value${metric.value === null || metric.value === undefined ? ' dc-missing' : ''}`}>
+                  {metricValue(metric)}
+                </div>
+                {(metric.ratio || metric.last || metric.cycle) && (
+                  <div className="dc-card-sub">
+                    {[metric.cycle, metric.ratio, metric.last].filter(Boolean).join(' · ')}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {series.map((line, idx) => (
+          <div className="dc-line" key={`${line.key || idx}`}>
+            <div className="dc-line-head">
+              <span>{line.label || line.key}</span>
+              <span className="dc-muted">
+                {line.points && line.points.length > 0
+                  ? `最新 ${metricValue({ value: line.points[line.points.length - 1]?.value })}`
+                  : ''}
+              </span>
+            </div>
+            {sparklinePoints(line.points) ? (
+              <svg className="dc-spark" viewBox="0 0 100 30" preserveAspectRatio="none" role="img"
+                   aria-label={`${line.label || line.key} 折线`}>
+                <polyline points={sparklinePoints(line.points)} />
+              </svg>
+            ) : (
+              <div className="dc-muted">折线点不够（平台只给了 {line.points?.length || 0} 个点）。</div>
+            )}
+          </div>
+        ))}
+        {metrics.length > 0 && (
+          <div className="dc-metrics">
+            {metrics.map((metric, idx) => (
+              <div className="dc-metric-row" key={`${metric.key || idx}`}>
+                <span className="dc-metric-name">{metricName(metric)}</span>
+                <span className={metric.value === null || metric.value === undefined ? 'dc-missing' : ''}>
+                  {metricValue(metric)}
+                </span>
+                {(metric.ratio || metric.cycle) && (
+                  <span className="dc-muted">{[metric.cycle, metric.ratio].filter(Boolean).join(' · ')}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {(card.data?.warnings || []).map((w, idx) => (
+          <Notice key={idx} kind="warn">
+            {w}
+          </Notice>
+        ))}
+        {(extraKeys.length > 0 || Boolean(card.data?.promotion)) && (
+          <details className="dc-extra">
+            <summary>平台原始字段（不翻译、不补 0）</summary>
+            <pre className="code-block">
+              {JSON.stringify(
+                { promotion: card.data?.promotion ?? null, extra: card.data?.extra ?? {} },
+                null,
+                2,
+              )}
+            </pre>
+          </details>
+        )}
+      </AsyncBox>
+    </div>
+  )
+}
+
 export function DataOverviewPage() {
   const accounts = useAsync<Account[]>(() => api.get<Account[]>('/api/accounts'), [], true, ['accounts.changed'])
   const [picked, setPicked] = useState('')
@@ -248,6 +439,37 @@ export function DataOverviewPage() {
           </span>
           只读页：不会改任何数据，也不向平台写入。数据更新于
           {data.data?.fetched_at ? formatTime(data.data.fetched_at) : ' -'}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="dc-section-title">
+          <span className="dc-ico">
+            <IconChart size={15} />
+          </span>
+          经营卡片
+          <span className="dc-muted">四张卡各查各的，跟着上面的区间走</span>
+        </div>
+        {accountId && rangeOk ? (
+          <div className="dc-opcards">
+            {CARD_ORDER.map((kind) => (
+              <CardBlock
+                key={kind}
+                accountId={accountId}
+                kind={kind}
+                start={submitted.start}
+                end={submitted.end}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="dc-muted">先选一个账号、再给一个合法区间。</div>
+        )}
+        <div className="dc-note">
+          <span className="dc-ico">
+            <IconClock size={13} />
+          </span>
+          卡片里的指标名以平台为准：平台新增了我们没登记过的指标时，这里显示平台字段名，不会编一个中文名。
         </div>
       </div>
     </div>
