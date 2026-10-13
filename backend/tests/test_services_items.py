@@ -1119,6 +1119,20 @@ class PublishPrecheckTest(ItemsServiceTest):
 
     PAYLOAD = {'title': '新商品', 'price': 12.5, 'images': ['https://img/a.jpg']}
 
+    def setUp(self):
+        super().setUp()
+        # 预检的账号前置检查走 `services.trade._client`（不存在 → 404，没 Cookie → 409），
+        # 所以本类必须让 acc1 真的在库里；tearDown 立刻清掉，别让别的用例看到这个账号。
+        db.execute('INSERT OR REPLACE INTO accounts(id, nickname, enabled, auto_reply) '
+                   'VALUES(?,?,?,?)', ('acc1', '预检账号', 1, 1))
+        db.execute('INSERT OR REPLACE INTO account_credentials(account_id, cookie, login_state) '
+                   'VALUES(?,?,?)', ('acc1', 'cookie-ok', 'active'))
+
+    def tearDown(self):
+        db.execute('DELETE FROM account_credentials WHERE account_id = ?', ('acc1',))
+        db.execute('DELETE FROM accounts WHERE id = ?', ('acc1',))
+        super().tearDown()
+
     def test_precheck_returns_steps_without_creating_anything(self):
         install_fake_protocol(self.client)
         result = items.publish_precheck('acc1', dict(self.PAYLOAD))
@@ -1189,6 +1203,19 @@ class PublishPrecheckTest(ItemsServiceTest):
         result = items.publish_precheck('', dict(self.PAYLOAD))
         self.assertFalse(result['success'])
         self.assertEqual(result['code'], 'bad_request')
+
+    def test_precheck_unknown_account_is_404_not_not_ready(self):
+        """账号 id 打错必须回 404 `not_found`（与 trade / drafts / fans_price 同口径）。
+
+        2026-10-14 打包版探针抓到的真缺陷：原来直接用 `common.get_client`，它把「账号不存在」
+        和「账号没 Cookie」**都**报成 503 `xianyu_not_ready` ⇒ 前端整页显示「后端未就绪」、
+        主管 AI 也会以为「过会儿重试就好」，而账号 id 打错重试一万次也不会好。
+        """
+        install_fake_protocol(self.client)
+        result = items.publish_precheck('nobody-here', dict(self.PAYLOAD))
+        self.assertFalse(result['success'])
+        self.assertEqual(result['code'], 'not_found')
+        self.assertEqual(self.client.calls, [])
 
     def test_precheck_not_ready_when_protocol_missing(self):
         block_protocol()

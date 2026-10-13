@@ -531,19 +531,40 @@ class ItemsApiTest(unittest.TestCase):
         """预检路由：200 + 分步结果，且**不创建商品、不发 items.updated**。"""
         fake = FakeClient(ACC)
         install_fake_protocol(fake)
-        resp = self.client.post(f'/api/items/{ACC}/publish/precheck',
+        # 预检先查账号是否存在（`services.trade._client`：不存在 → 404）⇒ 用例里先把账号放进库；
+        # 用完立刻删掉，免得后面 `test_sync_route_not_ready_emits_nothing` 因为「库里有账号 +
+        # Cookie」而走到真协议层去构造真客户端（那会打真平台）。
+        db.execute('INSERT OR REPLACE INTO accounts(id, nickname, enabled, auto_reply) '
+                   'VALUES(?,?,?,?)', (ACC, '预检账号', 1, 1))
+        db.execute('INSERT OR REPLACE INTO account_credentials(account_id, cookie, login_state) '
+                   'VALUES(?,?,?)', (ACC, 'cookie-ok', 'active'))
+        try:
+            resp = self.client.post(f'/api/items/{ACC}/publish/precheck',
+                                    json={'title': '新商品', 'price': 10,
+                                          'images': ['https://img/a.jpg']},
+                                    headers=self.headers)
+            self.assertEqual(resp.status_code, 200, resp.text)
+            data = resp.json()['data']
+            self.assertTrue(data['ready'])
+            self.assertEqual([s['step'] for s in data['steps']],
+                             ['images', 'bad_words', 'category'])
+            self.assertIn('不会注册分类路径', data['note'])
+            self.assertEqual([c[0] for c in fake.calls], ['publish_precheck'])
+            self.assertEqual(updates(), [])
+            self.assertEqual(db.query('SELECT * FROM items'), [])
+        finally:
+            db.execute('DELETE FROM account_credentials WHERE account_id = ?', (ACC,))
+            db.execute('DELETE FROM accounts WHERE id = ?', (ACC,))
+
+    def test_publish_precheck_route_unknown_account_is_404(self):
+        """账号 id 打错 → 404 `not_found`（不是 503「后端未就绪」）。"""
+        install_fake_protocol(FakeClient(ACC))
+        resp = self.client.post('/api/items/nobody-here/publish/precheck',
                                 json={'title': '新商品', 'price': 10,
                                       'images': ['https://img/a.jpg']},
                                 headers=self.headers)
-        self.assertEqual(resp.status_code, 200, resp.text)
-        data = resp.json()['data']
-        self.assertTrue(data['ready'])
-        self.assertEqual([s['step'] for s in data['steps']],
-                         ['images', 'bad_words', 'category'])
-        self.assertIn('不会注册分类路径', data['note'])
-        self.assertEqual([c[0] for c in fake.calls], ['publish_precheck'])
-        self.assertEqual(updates(), [])
-        self.assertEqual(db.query('SELECT * FROM items'), [])
+        self.assertEqual(resp.status_code, 404, resp.text)
+        self.assertEqual(resp.json()['code'], 'not_found')
 
     def test_publish_precheck_route_validates_fields(self):
         install_fake_protocol(FakeClient(ACC))

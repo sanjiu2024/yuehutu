@@ -30,6 +30,10 @@ from loguru import logger
 from ..core import db
 from ..xianyu import item_write as proto
 from . import common, platform_errors
+# 账号前置检查只此一份（`_client`：不存在 → 404 not_found，没 Cookie / 需重登 → 409）。
+# 新接口面（trade / drafts / fans_price / disputes / im_actions）都用它 —— 预检也用，
+# 否则「账号 id 打错」会被报成 503「后端未就绪」，用户和 AI 都以为该重试。
+from .trade import _client
 
 # 中文/别名 -> items 表列名（用户口径「价格/标题/描述/库存」都要认）
 FIELD_ALIASES: Dict[str, str] = {
@@ -1444,7 +1448,7 @@ def publish_precheck(account_id: str, payload: Dict[str, Any]) -> Any:
     if not (raw_images or []):
         return common.fail('至少需要一张图片', 'invalid_fields')
 
-    client, err = common.get_client(account_id)
+    client, err = _client(account_id)
     if client is None:
         common.log_operation(account_id, 'publish_precheck', '', False, (err or {}).get('message', ''))
         return err or common.not_ready()
