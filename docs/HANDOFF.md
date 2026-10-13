@@ -62,8 +62,8 @@
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_fp42_full2&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 59  PASS 59  FAIL 0  CASES 2280  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_im43_full&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 59  PASS 59  FAIL 0  CASES 2306  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -75,7 +75,7 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_xianyu_log
 ```text
 cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_mcp_server.py"
 -> Ran 65 tests ... OK        （含 RouteParamAlignmentTest：MCP 路由参数 ↔ 真实端点签名、
-                                WriteToolConfirmGateTest：60 条写路由不带 confirm 一律零 HTTP 请求）
+                                WriteToolConfirmGateTest：63 条写路由不带 confirm 一律零 HTTP 请求）
 ```
 
 ```text
@@ -83,20 +83,20 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 97 modules transformed.
-   frontend/dist/assets/index-8xdDx-7r.js (615.75 kB, gzip 193.26 kB)
-   frontend/dist/assets/index-BX9YNMmk.css (151.22 kB, gzip 23.82 kB)
+   frontend/dist/assets/index-Csa2uoAK.js (618.85 kB, gzip 194.39 kB)
+   frontend/dist/assets/index-CaWemXNE.css (151.30 kB, gzip 23.84 kB)
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon42&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=130 master=129 routes=131 targets=110 handlers=130
-   write_tools=60  route_checked=131
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon43c&& C:\Python310\python.exe scripts\reconcile_tools.py"
+-> specs=133 master=132 routes=134 targets=113 handlers=133
+   write_tools=63  route_checked=134
    RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
    （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18471"
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18481"
 -> UI SMOKE ALL OK  (29/29 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
    截图目录：logs/ui_smoke
 ```
@@ -2831,10 +2831,63 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 诚实边界：**写接口一次真机请求都没发过**（会真的改平台上三组粉丝价）；只读接口的真机形状
 > 也没有样例（本机账号在数据域一直回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`，粉丝价属同一权限域）。
 
+### 第四十三批：客服会话接管（转交 / 结束 / 重新发起）（252~257）
+
+252. 选题来自写覆盖审计：官方卖家工作台 IM 会话头部有「转交 / 结束 / 重新发起」三个按钮
+     （`js_008_vendors.js` @2030569 / @2036368 / @1229870 的调用点与「转交」按钮 alt 为证），
+     属「小铺 → 客服」域、全是会话级写操作、**不碰钱**。同族里 `…pc.tool.remark`（会话备注）
+     **故意不做**：它要 `sessionType`，而我们既没解析也没存这个字段（`xianyu/im.py`、
+     `services/chats.py` 里 grep 为 0），猜一个值就是造假。
+253. 协议层 `backend/app/xianyu/im_actions.py`（294 → 402 行）：三条 `WRITE_APIS`
+     （`session_deliver` / `session_leave` / `session_rejoin`，**全 v1.0**）+ 构造器
+     `session_deliver_request(session_id, target_uid, *, confirm)` → `{sessionId, targetUid}`、
+     `session_leave_request` / `session_rejoin_request` → `{sessionId}`；新校验器 `_target_uid`
+     （只 strip / 非空 / ≤64，**刻意不校验数字格式**）；新解析器 `parse_session_action`：在
+     `parse_action` 之上用 `_first_key(body, ('success','succeed','result'))` 得出三态
+     `platform_success`，**平台明确说 `false` 时把 `saved` 也改成 `False`**（信封成功也不行）。
+254. 服务层 `backend/app/services/im_actions.py`：`_write(...)` 多一个 `parser` 参数（默认
+     `proto.parse_action`）；新增 `session_deliver` / `session_leave` / `session_rejoin`
+     （审计动作 `im_session_deliver` / `im_session_leave` / `im_session_rejoin`，成功才
+     `log_operation` + `publish('chats.changed')`）；三条都走既有的「确认 → 字段校验
+     （`_resolve_session`）→ 建客户端」顺序。路由层 `backend/app/api/im_actions.py` 加 3 条
+     `POST /api/im/{account_id}/sessions/{transfer,leave,rejoin}`（`confirm` 原样交服务层）。
+255. `backend/tests/test_im_actions_api.py` 54 → **90 条**（新增 `SESSION_WRITE_ROUTES` 与
+     会话接管夹具：官方形状逐字、`target_uid` 空/超长、`platform_success` 三态、rejoin 回执、
+     三条 × `FALSE_LIKE` 全 400 `confirmation_required` 且零平台调用）。
+256. **★ 界面取证抓到两个真缺陷（都在前端，已修）**：① `frontend/src/pages/Chats.tsx` 里
+     `ConfirmDialog` 渲染在**弹窗之前** —— 两者都是 `position: fixed` 且 z-index 相同，同级里
+     后渲染的盖在上面，于是点「转交」后确认框被「转交会话」弹窗盖住、**用户什么都看不到**
+     （探针里点确认框直接 30 秒超时）；② 「发商品卡片」的「发送」按钮**直接发平台**，没有二次
+     确认（全站唯一一个漏掉的写操作）。修法：确认框挪到所有弹窗**之后**并加注释说明 z 序铁律；
+     发卡片改走 `ConfirmDialog`（新增 `confirmKind='card'` 与 `confirmSpec` 分支）。
+257. 文档：`docs/CONTRACTS.md` 第 43 批契约块（含 z 序铁律）+ AI 侧计数 133 / 132 / 134（写 63）。
+
+> **第四十三批证据链**：`backend/tests/test_im_actions_api.py` → `Ran 90 tests ... OK`；
+> `backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_im43_full`）→
+> `TOTAL 59  PASS 59  FAIL 0  CASES 2306  SKIPPED 2`；
+> `python -m unittest backend.tests.test_agents_cross backend.tests.test_mcp_server
+> backend.tests.test_agents_tools_workbench` → `Ran 130 tests ... OK`；
+> `scripts/reconcile_tools.py` → `specs=133 master=132 routes=134 targets=113 handlers=133 /
+> write_tools=63 / route_checked=134 / RECON OK`；
+> `cd frontend && npx tsc --noEmit` → `TSC_EXIT=0`；`npx vite build` → `BUILD_EXIT=0`
+> （97 modules，`index-Csa2uoAK.js` 618.85 kB / `index-CaWemXNE.css` 151.30 kB）；
+> `scripts/ui_smoke.py --port 18481` → **29/29 页通过**。
+> **界面取证（`C:\Users\Administrator\.dsh-tmp\im43_panel_shots.py`，`page.route` 拦
+> `**/api/shop/*/cs-routing*` 喂假客服列表、零平台请求）**：`PROBLEMS []` —— 头部三个按钮都在；
+> 转交弹窗列出两个客服（`小甲（221111）` / `客服小乙（222222）`）；点「转交」后确认框**在弹窗之上**
+> （`转交这个会话？ | 会把和「演示买家」的会话转交给 小甲（221111）…会真的改平台上的会话归属。`）；
+> 「结束会话」确认框 `结束和「演示买家」的会话？ …会真的改平台上的会话状态。`；
+> 发卡片「发送」先弹 `给「演示买家」发商品卡片？ …发出去不能撤回。`；
+> **`im_posts []`**（只开确认框、一次写请求都没发）、`page_errors []`；截图
+> `logs/im43_panel_shots/{01-chats-dark,02-transfer-modal-dark,03-transfer-confirm-dark,
+> 04-leave-confirm-dark,05-card-modal-dark,06-card-confirm-dark,07-chats-light}.png`。
+> 诚实边界：**三条写接口一次真机请求都没发过**（会真的改平台上会话归属/状态）；
+> `target_uid` 的真机形状也没有样例（客服列表接口在本机账号回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`）。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**59 个测试文件、2280 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**59 个测试文件、2306 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -2860,7 +2913,7 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   从 `共 95 条` 变成 `共 56 条`（= 两个在售账号的 45 + 11），页面里再也搜不到 `3998190171`，
   只读探针（真 Edge）`has_deleted_account: false`、`page_errors: []`。
 - 真实 HTTP：只读 17 条 + 写路径 11 条（早期探针）；打包版接口面现在
-  `/openapi.json` = **191 条路径 / 208 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
+  `/openapi.json` = **194 条路径 / 211 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
   第三十二批 +10 条店铺资料/子账号；第三十三批 +4 条推广资金明细；第三十四批 +1 条商品数据；第三十五批 +1 条经营卡片；
   第三十六批 +1 条客服明细表 `GET /api/datacenter/{account_id}/cs/{kind}`；
   第三十七批 +6 条话术 `/api/quick-reply/*`（7 个操作）；第三十八批 +6 条订单处理
@@ -2868,12 +2921,13 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   `/api/logistics/{account_id}/{companies,guess,orders/{order_id}/resend}`；
   第四十批 +3 条 IM 会话操作 `/api/im/{account_id}/{blacklist,blacklist/remove,cards}`（4 个操作）；
   第四十一批 +6 条纠纷协商 `/api/disputes/*`（7 个操作）；第四十二批 +1 条粉丝价
-   `GET|POST /api/items/{account_id}/{item_id}/fans-price`（2 个操作）），
+   `GET|POST /api/items/{account_id}/{item_id}/fans-price`（2 个操作）；
+  第四十三批 +3 条会话接管 `/api/im/{account_id}/sessions/{transfer,leave,rejoin}`），
   均结构化信封、无 500。
-- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 130 / `MASTER_TOOLS` 129 /
-  `TOOL_ROUTES` 131，其中 **60 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
+- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 133 / `MASTER_TOOLS` 132 /
+  `TOOL_ROUTES` 134，其中 **63 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
   FastAPI 端点接受 → `RECON OK`。MCP 端到端冒烟（真起 `mcp_server/server.py` 子进程打打包版）
-  `tools/list` 返回 63 个工具（第 6 批的旧数字；`TOOL_ROUTES` 现在 131 条，本次未重跑该冒烟）。
+  `tools/list` 返回 63 个工具（第 6 批的旧数字；`TOOL_ROUTES` 现在 134 条，本次未重跑该冒烟）。
 - **真实浏览器逐页冒烟 29/29 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
   临时数据目录，逐页断言未白屏、未掉回登录页、无 JS 报错，截图在 `logs/ui_smoke/`）。
   它抓到了后端全绿时仍然「UI 完全不可用」的登录死循环。

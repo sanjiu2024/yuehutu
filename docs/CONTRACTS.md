@@ -1110,6 +1110,34 @@ POST /api/logistics/{account_id}/orders/{order_id}/resend      {mail_no,cp_code,
         --   唯一写出口是 `postFansPrice` → `postItemWrite`（`confirm: true` 字面量）。
         -- 详见 `docs/contracts/fans_price.md`。
 
+【第 43 批 /api/im 会话接管（转交 / 结束 / 重新发起）】—— 与第 40 批同前缀 `/api/im`
+```text
+POST /api/im/{account_id}/sessions/transfer  body {target_uid, session_id?, conversation_id?, confirm}
+POST /api/im/{account_id}/sessions/leave     body {session_id?, conversation_id?, confirm}
+POST /api/im/{account_id}/sessions/rejoin    body {session_id?, conversation_id?, confirm}
+        -- 平台接口（全 v1.0，`data` 逐字）：`mtop.taobao.idlemessage.customer.deliver.session` `{sessionId, targetUid}`；
+        --   `…customer.leave.session` `{sessionId}`；`…customer.rejoin.session` `{sessionId}`。
+        -- `session_id` 与 `conversation_id` 二选一（`session_id` 优先）；两个都不传 400 `invalid_fields`；
+        --   用本地会话行解析平台 cid 解析不到 → 400 `missing_cid`（先去会话页「同步历史会话」）。
+        -- `target_uid` 只能来自客服列表（`GET /api/shop/{account_id}/cs-routing` 的 `agents[].customerUid`）；
+        --   后端只 strip / 非空 / ≤64 —— **不校验数字格式**（没有权威格式定义，猜格式会把能用的值挡在门外）。
+        -- 三条都是「确认 → 字段校验 → 建客户端」；未确认 400 `confirmation_required` 且**零平台请求**。
+        -- 回执口径：这一族只有 `rejoin` 有真回执（`resp.data.success` + `resp.data.sessionId`）；
+        --   `platform_success === false` 时即使信封成功也算失败（502 `protocol_error`，带平台原话）；
+        --   平台接受但没回执 → `saved:true` + `platform_success:null`（不谎报成功也不谎报失败）。
+        -- 写成功返回 `{action, saved, target_uid?, platform_success?, returned_session_id?, warnings, fetched_at}`；
+        --   成功后记 `operation_logs`（`im_session_deliver` / `im_session_leave` / `im_session_rejoin`）并播 `chats.changed`。
+        -- 本批**故意不做** `mtop.taobao.idlemessage.pc.tool.remark`（会话备注）：它要 `sessionType`，
+        --   而我们既没解析也没存这个字段（`xianyu/im.py`、`services/chats.py` 里 grep 为 0）——猜值就是造假。
+        -- AI 侧 3 个工具（都是写、必带 `confirm`）：`im_session_transfer` / `im_session_leave` / `im_session_rejoin`。
+        -- **界面口径**：会话头部三个按钮（转交客服 / 结束会话 / 重新发起）；转交先弹选人弹窗
+        --   （客服列表**懒加载**：只在点开时查一次，订阅 `shop.changed` 静默重拉），点「转交」再弹 `ConfirmDialog`；
+        --   三种写操作都必须过确认框；唯一写出口是 `runImWrite`（`confirm: true` 字面量）。
+        -- **z 序铁律**：`ConfirmDialog` 必须渲染在**所有弹窗之后** —— 两者都是 `position: fixed` 且 z-index 相同，
+        --   同级里后渲染的盖在上面；放在前面时「转交会话」弹窗会盖住确认框，用户点「转交」后什么都看不到
+        --   （第 43 批界面取证抓到的真缺陷，已修）。
+```
+
 【写接口的三条硬口径（所有 *_write 一律遵守）】
 1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /
    `confirm_required`），**一次平台请求都不发**；
@@ -1117,13 +1145,13 @@ POST /api/logistics/{account_id}/orders/{order_id}/resend      {mail_no,cp_code,
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 130 条 / `MASTER_TOOLS` 129 条（去掉 `master_chat` 防递归），
-其中 **60 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 131 条。五方对账（specs / master / routes / service targets / handlers）
+【AI 侧】`TOOL_SPECS` 133 条 / `MASTER_TOOLS` 132 条（去掉 `master_chat` 防递归），
+其中 **63 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
+`mcp_server/client.py::TOOL_ROUTES` 134 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=130 master=129 routes=131 targets=110 handlers=130 / write_tools=60 / route_checked=131 / RECON OK
+-> specs=133 master=132 routes=134 targets=113 handlers=133 / write_tools=63 / route_checked=134 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`
