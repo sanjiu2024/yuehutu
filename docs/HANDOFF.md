@@ -2560,8 +2560,24 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `cd frontend && npx tsc --noEmit` → `TSC_EXIT=0`；`npm run build` → `BUILD_EXIT=0`（96 modules、
 > `index-oqk1Jlhv.js 595.10 kB` / `index-B4KMbKO0.css 147.41 kB`）；
 > `scripts/ui_smoke.py --port 18441` → **`UI SMOKE ALL OK (29/29 页通过)`**。
-> 闸门探针扩到 **53 个写端点**（`probe_write_gate.py` 新增 `trade.close`/`delay`/`remind`/
-> `postage_pay`/`complain_revoke`）——**尚未对重打包后的 exe 跑过**。
+> 闸门探针扩到 **52 个写端点**（`probe_write_gate.py` 新增 `trade.close`/`delay`/`remind`/
+> `postage_pay`/`complain_revoke` 五条，47 → 52）。
+> 重打包（`build_exe.ps1 -SkipFrontend`，exe **10,110,779 B / 2026-10-13 14:29:51**，
+> `--port 18400` `/api/health` 200 `frozen:true`）后打包版五项复验全绿：
+> `probe_write_gate.py` → **`GATE FAILURES: 0 / 52`**（五条新端点未确认一律 400
+> `confirmation_required`；`trade.ship_dummy` 确认腿 404 `not_found` —— 正是第 222 条缺陷修好后的样子，
+> 修之前它传 `"false"` 也会走到这一步）；`packaged_ui_smoke.py` → **29/29 页**；
+> `check_assets.py` → `ASSETS_MATCH=True`（`index-B4KMbKO0.css` `e7e1266c8ae9`、
+> `index-oqk1Jlhv.js` `4986702cf0df`）；`scripts/contrast_audit.py --threshold 4.0` →
+> `[dark] 0/29`、`[light] 0/29`、`NON_GET=[]`；`scripts/a11y_audit.py` → 三类问题全 0、
+> `焦点不可见的页面：[]`、`NON_GET=[]`。
+> **真机只读**（`close_reasons_probe.py`，打 18400、桌面密钥换 token、只发 GET）：
+> `GET /api/trade/2217970177348/orders/3317095524016013282/close-reasons` → **200**、
+> `close_reasons: ["不想卖了","宝贝已出售","买家联系不上","与买家协商一致","其他原因"]`、
+> `raw_keys: [bizOrderId, closeReasons, needDecryptKeys, needDecryptKeysV2, serverDecryptKeys, serverTime]`、
+> `warnings: []`、`source: platform` ⇒ 关单原因这条只读接口**在真账号上是通的、拿到的是官方那五个原因**；
+> 同一轮验证写闸门：`POST .../orders/1/close` + `{confirm: false}` → **400 `confirmation_required`**
+> （中文文案「关闭订单 是写操作，需要显式确认（confirm=true）后才会提交」）。
 
 ## 四、已验证 / 未验证（诚实边界）
 
@@ -2609,9 +2625,9 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   packaged_ui_smoke.py`，复用 `scripts/ui_smoke.py::run_browser` 但不启后端、直接打
   `127.0.0.1:18400` 与**真实 `%APPDATA%` 数据目录**，截图 `logs/packaged_ui_smoke/`）。
   与上一条的区别：上一条跑的是源码 + 临时库，这一条跑的是**用户手上那个 exe**。
-- **打包版 confirm 闸门 53 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
+- **打包版 confirm 闸门 52 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
   （`confirmation_required` / `confirm_required`），**`GATE FAILURES: 0 / 47`**（探针随批次扩过：
-  19 → 22 → 26 → 28 → 30 → 33 → 41 → 47 → 53；53 那版**尚未对重打包后的 exe 跑过**）；确认那一腿**故意换成不存在的
+  19 → 22 → 26 → 28 → 30 → 33 → 41 → 47 → 52）；确认那一腿**故意换成不存在的
   账号**（`SAFE_ACC`），闸门放行后本地查库直接 404 `not_found` / 400 `invalid_fields` / 409 —— 既证明闸门放行，
   又保证**零平台请求**（2026-10-12 00:35 之前那版拿真账号打过，三条写请求真到了闲鱼，见第二十五批 161）。
   第 32 批新增八条（`shop.profile_{nick,desc,avatar}` / `sub.{create,delete,mobile,roles,password}`）：
@@ -2696,12 +2712,16 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 - **订单处理的 5 个写接口一次真机请求都没发过**（第三十八批）：关单 / 延长收货 / 提醒确认收货 /
   支付运费退款 / 撤销投诉，全部会真的改动真实订单或**真的扣钱**（`postage.refund.pay` 从支付宝余额或
   保证金里扣给买家），所以不能为了验证去动用户的订单。只验到「路由注册成功（`openapi` 178 路径 /
-  192 操作）、body 被真实端点接受、`confirm` 闸门拦得住（打包版闸门探针 53 条里含这 5 条，
-  **未重打包前**是 47 条）、界面上不点最终确认就零写请求」。**没验到**：平台是否接受
+  192 操作）、body 被真实端点接受、`confirm` 闸门拦得住（打包版闸门探针 52 条里含这 5 条）、
+  界面上不点最终确认就零写请求」。**没验到**：平台是否接受
   `{tid,bizOrderId,closeReason}`（官方把同一个订单号同时塞进两个字段）/ `{orderIdList,delayTime}` /
   `{orderIdList,remindAllOrder}` / `{orderId,refundId,payType}` 这套 payload、
-  `data.module.{totalNum,successNum,failOrderInfos}` 的真实回显形状、关单原因只读接口的真实返回值
-  （`closeReasons` 数组 vs 平台没给这个键）。
+  `data.module.{totalNum,successNum,failOrderInfos}` 的真实回显形状。
+  **关单原因那条只读接口已经在真机上通了**：`close_reasons_probe.py`（打打包版 18400、只发 GET）
+  拿到 200 与官方五个原因（不想卖了 / 宝贝已出售 / 买家联系不上 / 与买家协商一致 / 其他原因），
+  `raw_keys` 里确实有 `closeReasons`，`warnings: []`、`source: platform` ⇒ 接口名、参数形状与
+  「字符串数组」的解析都被平台证实；同一轮 `POST .../orders/1/close` + `{confirm:false}` 回
+  400 `confirmation_required`，证明新路由在打包版里已挂上且闸门生效。
 - **话术（快捷回复）7 个写接口一次真机请求都没发过**（第三十七批）：只验到「路由注册成功、
   body 被真实端点接受（对账脚本逐条核 path/query/body）、`confirm` 闸门拦得住（打包版闸门探针
   47 条里含这 6 条）、界面上不点最终确认就零写请求」。**没验到**：平台是否接受

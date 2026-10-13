@@ -859,6 +859,9 @@ GET  /api/trade/{account_id}/orders/{order_id}/close-reasons
        -- **只读、故意没有 `confirm`**（登记在 `trade_write.READ_APIS`，不进 `WRITE_APIS`）。
        -- `mtop.taobao.idle.trade.order.close.reason.get` v1.0 `{bizOrderId}`；
           官方读 `data.closeReasons`（**字符串数组**，消费点 `map(r => ({label:r,value:r}))`）。
+       -- **真机已验（2026-10-13，打包版 + 账号 2217970177348）**：200 且 `reasons` 是官方那五条
+          （不想卖了 / 宝贝已出售 / 买家联系不上 / 与买家协商一致 / 其他原因），
+          `raw_keys` 含 `closeReasons`，`warnings: []`、`source: platform`。
        -- **`reasons === null`（平台没给列表键，可以手填）与 `[]`（平台明确说这个订单没有可选原因）
           是两件事**，前端文案必须分开说，不能都写成「没有原因」。
 POST /api/trade/{account_id}/orders/{order_id}/close         {close_reason,confirm}

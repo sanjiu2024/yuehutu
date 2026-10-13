@@ -353,6 +353,11 @@ IM 侧 `C:\Users\Administrator\.dsh-tmp\bundle_scan\js_006_p_im_index.js`（3,07
 - **`reasons === null` 与 `reasons === []` 是两件事**：前者是「平台没返回列表键」（可以手填），
   后者是「平台明确回了一个空数组」（这个订单现在没有可选原因）。钉它的用例在
   `backend/tests/test_trade_write_api.py::CloseAndDelayTest`。
+- **真机已验**（2026-10-13，打包版 `--port 18400` + 真账号 `2217970177348`，只发 GET）：
+  `GET /api/trade/2217970177348/orders/3317095524016013282/close-reasons` → **200**、
+  `close_reasons: ["不想卖了","宝贝已出售","买家联系不上","与买家协商一致","其他原因"]`、
+  `raw_keys: [bizOrderId, closeReasons, needDecryptKeys, needDecryptKeysV2, serverDecryptKeys, serverTime]`、
+  `warnings: []`、`source: platform` ⇒ 接口名、参数形状与「字符串数组」的解析都被平台证实。
 - 只读、**故意没有 `confirm`**，登记在 `trade_write.READ_APIS`，不进 `WRITE_APIS`（免得被写闸门误伤）。
 
 ### 10.2 五条写接口
