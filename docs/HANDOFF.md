@@ -2216,6 +2216,13 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `cd frontend && npx tsc --noEmit` → `TSC_EXIT=0`；`npm run build` → `BUILD_EXIT=0`（92 modules、
 > `index-BghE5P7m.js 615151` / `index-BAUr5YpJ.css 139919`）；
 > `scripts/ui_smoke.py --port 18461` → **`UI SMOKE ALL OK (27/27 页通过)`**。
+> **打包版复验**（`build_exe.ps1` EXIT=0 → `dist\闲鱼AI工作台\闲鱼AI工作台.exe` = 10,072,080 字节 /
+> 2026-10-13 09:12:01，`--port 18400` `/api/health` 200 `frozen:true`）：
+> `probe_write_gate.py` → **`GATE FAILURES: 0 / 41`**；`packaged_ui_smoke.py` →
+> **`PACKAGED UI SMOKE 27/27 页通过`**；`check_assets.py` → `GET /` 引用
+> `['index-BAUr5YpJ.css','index-BghE5P7m.js']`、remote=local（`9b6a69149412` / `a9173841f002`）、
+> **`ASSETS_MATCH=True`**；`C:\Users\Administrator\.dsh-tmp\funds_tab_shots.py`（只点「资金明细」标签，
+> 不点任何确认）→ `PROBLEMS: []`、`page errors: []`、**非 GET 请求 0 条**。
 
 ## 四、已验证 / 未验证（诚实边界）
 
@@ -2225,8 +2232,10 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
 - **UI 细节有两个可重跑的审计脚本**（`scripts/contrast_audit.py`、`scripts/a11y_audit.py`）：
-  26 页 × 深/浅两套主题的文字对比度全部 ≥4.0:1；无可访问名字的按钮 0、没有标签的
+  27 页 × 深/浅两套主题的文字对比度全部 ≥4.0:1；无可访问名字的按钮 0、没有标签的
   输入框 0、无 alt 的图片 0、焦点环全部可见；两者整轮都是 `NON_GET_API_REQUESTS=[]`。
+  打包版实测（不带 `--port`，打的就是 18400 上那份）：`[dark] BAD_PAGES 0/27`、
+  `[light] BAD_PAGES 0/27`。
   另有第三十批那个一次性扫描（`C:\Users\Administrator\.dsh-tmp\scan_markdown2.py`：
   按 tokenize 取非 docstring 字符串，找用户可见的字面 `**` 与反引号）—— 它抓到 6 处并已修，
   但**没入仓**（一次性核对用，重跑价值低）。
