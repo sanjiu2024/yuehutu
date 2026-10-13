@@ -1248,6 +1248,81 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---------------- 资金明细（只读） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_funds',
+            'description': '查该账号推广账户的**资金流水**（充值/提现/花费逐条明细）。用户问「钱花哪了、有没有充值记录」时用。'
+                           '平台没给的字段返回 null，不要当成 0。这一族官方只有查询接口，钱的实际划转在支付宝侧，我们不发任何资金写请求。'
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'start': {'type': 'string', 'description': '开始日期 YYYYMMDD，缺省最近 7 天'},
+                    'end': {'type': 'string', 'description': '结束日期 YYYYMMDD，缺省今天'},
+                    'page': {'type': 'integer', 'description': '分页页码，缺省 1'},
+                    'size': {'type': 'integer', 'description': '每页条数 1~50，缺省 20'},
+                    'account_type': {'type': 'integer', 'description': '账号类型，0=全部（缺省）'},
+                    'operate_type': {'type': 'integer', 'description': '流水类型：0=全部（缺省）1=现金 2=礼金 3=红包'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_fund_operations',
+            'description': '查该账号推广账户当前**允许的操作项**（官方用它决定流水行给不给详情入口）。一般用不到，'
+                           '只有在需要判断某个账号类型能做什么时才查。平台没给返回 null。account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'account_type': {'type': 'integer', 'description': '账号类型，0=全部（缺省）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_recharge_detail',
+            'description': '查一条**充值**记录的详情（状态、类型、订单号、交易流水号、发起/到账时间）。用户问「这笔充值到账了吗」时用，'
+                           'order_id 取自 promotion_funds 的 orderId。只读，不会发起充值。状态码未知时给 null，不要猜。account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '充值订单号（promotion_funds 里的 orderId）'},
+                },
+                'required': ['account_id', 'order_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_withdraw_detail',
+            'description': '查一条**提现**记录的详情（状态、来源账户、去向支付宝、操作人、备注）。用户问「这笔提现到账了吗」时用，'
+                           'order_id 取自 promotion_funds 的 orderId。只读，不会发起提现。状态码未知时给 null，不要猜。account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '提现订单号（promotion_funds 里的 orderId）'},
+                },
+                'required': ['account_id', 'order_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 安全中心（只读） ----------------
     {
         'type': 'function',
@@ -2183,6 +2258,10 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'promotion_campaigns': ['promotion', 'campaigns'],
     'promotion_reports': ['promotion', 'reports'],
     'promotion_account': ['promotion', 'account'],
+    'promotion_funds': ['promotion', 'funds'],
+    'promotion_fund_operations': ['promotion', 'fund_operations'],
+    'promotion_recharge_detail': ['promotion', 'recharge_detail'],
+    'promotion_withdraw_detail': ['promotion', 'withdraw_detail'],
     # ---- 安全中心 ----
     'security_center_status': ['security_center', 'read'],
     # ---- 营销（只读）----
@@ -2393,6 +2472,10 @@ _HANDLERS = {
     'promotion_campaigns': lambda a: _dispatch_service('promotion_campaigns', a),
     'promotion_reports': lambda a: _dispatch_service('promotion_reports', a),
     'promotion_account': lambda a: _dispatch_service('promotion_account', a),
+    'promotion_funds': lambda a: _dispatch_service('promotion_funds', a),
+    'promotion_fund_operations': lambda a: _dispatch_service('promotion_fund_operations', a),
+    'promotion_recharge_detail': lambda a: _dispatch_service('promotion_recharge_detail', a),
+    'promotion_withdraw_detail': lambda a: _dispatch_service('promotion_withdraw_detail', a),
     'security_center_status': lambda a: _dispatch_service('security_center_status', a),
     'marketing_items': lambda a: _dispatch_service('marketing_items', a),
     'marketing_tasks': lambda a: _dispatch_service('marketing_tasks', a),

@@ -519,6 +519,8 @@ class MasterChatTest(unittest.TestCase):
             'finance_income', 'finance_expense', 'finance_invoices', 'finance_purchaser',
             # ---- 推广 ----
             'promotion_overview', 'promotion_campaigns', 'promotion_reports', 'promotion_account',
+            'promotion_funds', 'promotion_fund_operations',
+            'promotion_recharge_detail', 'promotion_withdraw_detail',
             # ---- 安全中心 ----
             'security_center_status',
             # ---- 营销 ----

@@ -419,6 +419,23 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'method': 'GET', 'path': '/api/promotion/{account_id}/account',
         'path_params': ['account_id'], 'query': ['start', 'end'],
     },
+    'promotion_funds': {
+        'method': 'GET', 'path': '/api/promotion/{account_id}/funds',
+        'path_params': ['account_id'],
+        'query': ['start', 'end', 'page', 'size', 'account_type', 'operate_type'],
+    },
+    'promotion_fund_operations': {
+        'method': 'GET', 'path': '/api/promotion/{account_id}/fund-operations',
+        'path_params': ['account_id'], 'query': ['account_type'],
+    },
+    'promotion_recharge_detail': {
+        'method': 'GET', 'path': '/api/promotion/{account_id}/recharge/{order_id}',
+        'path_params': ['account_id', 'order_id'], 'query': [],
+    },
+    'promotion_withdraw_detail': {
+        'method': 'GET', 'path': '/api/promotion/{account_id}/withdraw/{order_id}',
+        'path_params': ['account_id', 'order_id'], 'query': [],
+    },
     # ---------------- 安全中心（只读）----------------
     'security_center_status': {
         'method': 'GET', 'path': '/api/security-center/{account_id}',
