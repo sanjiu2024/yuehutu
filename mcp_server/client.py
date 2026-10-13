@@ -340,6 +340,12 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'method': 'GET', 'path': '/api/datacenter/{account_id}/customer-service',
         'path_params': ['account_id'], 'query': ['start', 'end'],
     },
+    'datacenter_commodity': {
+        'method': 'GET', 'path': '/api/datacenter/{account_id}/commodity',
+        'path_params': ['account_id'],
+        'query': ['start', 'end', 'item_id', 'item_name', 'page', 'size',
+                  'order_by', 'order'],
+    },
     # ---------------- 通知（只读）----------------
     'notifications_list': {
         'method': 'GET', 'path': '/api/notifications/{account_id}',

@@ -508,6 +508,7 @@ class MasterChatTest(unittest.TestCase):
     'sub_account_update_password',
             # ---- 数据中心 ----
             'datacenter_overview', 'datacenter_fans', 'datacenter_customer_service',
+            'datacenter_commodity',
             # ---- 通知 ----
             'notifications_list',
             # ---- 运费模版 ----

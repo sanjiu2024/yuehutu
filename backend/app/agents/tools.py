@@ -933,6 +933,33 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'datacenter_commodity',
+            'description': '查该账号「商品数据」页：一行一个商品 + 平台给的指标列。'
+                           '用户问「哪个商品卖得好 / 哪个商品没人看」时用。'
+                           '默认是「今天」（官方页面默认）；指标**列名由平台决定**，原样返回、不要自己编列名。'
+                           '平台没给的行与列是 null（不是空数组），不要当成「一件商品都没有」。'
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'start': {'type': 'string', 'description': '开始日期 YYYYMMDD，不传就是今天'},
+                    'end': {'type': 'string', 'description': '结束日期 YYYYMMDD'},
+                    'item_id': {'type': 'string', 'description': '按商品 ID 精确筛选'},
+                    'item_name': {'type': 'string', 'description': '按商品标题模糊筛选'},
+                    'page': {'type': 'string', 'description': '页码，从 1 开始'},
+                    'size': {'type': 'string', 'description': '每页条数，最大 50'},
+                    'order_by': {'type': 'string', 'description': '排序字段（取指标列定义里的 name）'},
+                    'order': {'type': 'string', 'description': 'asc 或 desc'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 通知（只读） ----------------
     {
         'type': 'function',
@@ -2239,6 +2266,7 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'datacenter_overview': ['datacenter', 'overview'],
     'datacenter_fans': ['datacenter', 'fans'],
     'datacenter_customer_service': ['datacenter', 'customer_service'],
+    'datacenter_commodity': ['datacenter', 'commodity'],
     # ---- 通知 ----
     'notifications_list': ['notify', 'notifications'],
     # ---- 运费模版 ----
@@ -2457,6 +2485,7 @@ _HANDLERS = {
     'datacenter_overview': lambda a: _dispatch_service('datacenter_overview', a),
     'datacenter_fans': lambda a: _dispatch_service('datacenter_fans', a),
     'datacenter_customer_service': lambda a: _dispatch_service('datacenter_customer_service', a),
+    'datacenter_commodity': lambda a: _dispatch_service('datacenter_commodity', a),
     'notifications_list': lambda a: _dispatch_service('notifications_list', a),
     'item_templates_list': lambda a: _dispatch_service('item_templates_list', a),
     'item_templates_get': lambda a: _dispatch_service('item_templates_get', a),
