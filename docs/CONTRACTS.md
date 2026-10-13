@@ -1030,6 +1030,27 @@ POST /api/logistics/{account_id}/orders/{order_id}/resend      {mail_no,cp_code,
        -- AI 侧 3 个工具：`logistics_companies` / `logistics_guess_mailno`（只读、无 `confirm`）
        --   + `logistics_resend_consign`（要 `confirm`）。
 
+【第 40 批 /api/im —— 会话级写操作（拉黑状态 / 拉黑 / 解除 / 发商品卡片）】
+   GET  /api/im/{account_id}/blacklist?session_id=|conversation_id=
+   POST /api/im/{account_id}/blacklist          {session_id|conversation_id, confirm}
+   POST /api/im/{account_id}/blacklist/remove   {session_id|conversation_id, confirm}
+   POST /api/im/{account_id}/cards              {session_id|conversation_id, item_id, confirm}
+       -- 平台接口（**版本按动作分别传**，bundle 逐字）：`mtop.taobao.idlemessage.pc.blacklist.query`
+       --   **v1.0**、`.blacklist.add` **v2.0**、`.blacklist.remove` **v1.0**、
+       --   `mtop.taobao.idlemessage.message.card.send` **v1.0** `{sessionId, itemId}`。
+       -- 只读返回 `{account_id, session_id, is_in_black, show_black_list, api, warnings, fetched_at, source}`；
+       --   `is_in_black`/`show_black_list` **可能是 null**（平台没返回这个键）——「平台没说」与
+       --   「没拉黑」必须分开，前端也不能把 null 当 false 渲染。
+       -- 写返回 `{action, saved[, deleted][, item_id][, session_id]}`；解除拉黑多一个 `deleted:true`。
+       -- **会话标识有两条路**：`session_id` 是平台会话 id（cid）；`conversation_id` 是本地会话行 id，
+       --   由后端从最新一条消息的 `meta.cid` 解析（`conversations` 表**没有 cid 列**，见 §2）。
+       --   两个都传时以 `session_id` 为准；一个都没有 → 400 `invalid_fields`；会话不存在或属于别的账号
+       --   → 404 `not_found`；会话还没有 cid → 400 `missing_cid`（文案让用户先点「同步历史会话」）。
+       -- **不替平台加/去 `@goofish` 后缀**：库里存的是去掉后缀的 cid，原样透传（不确定性已记录）。
+       -- 平台拒绝（无权限等）→ 502 `protocol_error` 且不改 `login_state`；未确认 → 400 `confirmation_required`。
+       -- AI 侧 4 个工具：`im_blacklist_status`（只读、无 `confirm`）+ `im_blacklist_add` /
+       --   `im_blacklist_remove` / `im_card_send`（都要 `confirm`）。
+
 【写接口的三条硬口径（所有 *_write 一律遵守）】
 1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /
    `confirm_required`），**一次平台请求都不发**；
@@ -1037,13 +1058,13 @@ POST /api/logistics/{account_id}/orders/{order_id}/resend      {mail_no,cp_code,
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 117 条 / `MASTER_TOOLS` 116 条（去掉 `master_chat` 防递归），
-其中 **52 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 118 条。五方对账（specs / master / routes / service targets / handlers）
+【AI 侧】`TOOL_SPECS` 121 条 / `MASTER_TOOLS` 120 条（去掉 `master_chat` 防递归），
+其中 **55 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
+`mcp_server/client.py::TOOL_ROUTES` 122 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=117 master=116 routes=118 targets=97 handlers=117 / write_tools=52 / route_checked=118 / RECON OK
+-> specs=121 master=120 routes=122 targets=101 handlers=121 / write_tools=55 / route_checked=122 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`

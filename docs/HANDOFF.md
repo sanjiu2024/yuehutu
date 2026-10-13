@@ -62,8 +62,8 @@
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_lg_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 56  PASS 56  FAIL 0  CASES 2072  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_im40_full&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 57  PASS 57  FAIL 0  CASES 2136  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -75,7 +75,7 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_xianyu_log
 ```text
 cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_mcp_server.py"
 -> Ran 65 tests ... OK        （含 RouteParamAlignmentTest：MCP 路由参数 ↔ 真实端点签名、
-                                WriteToolConfirmGateTest：52 条写路由不带 confirm 一律零 HTTP 请求）
+                                WriteToolConfirmGateTest：55 条写路由不带 confirm 一律零 HTTP 请求）
 ```
 
 ```text
@@ -83,14 +83,14 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 96 modules transformed.
-   frontend/dist/assets/index-D0-oMDFd.js (599.15 kB, gzip 187.57 kB)
-   frontend/dist/assets/index-DpVg3Xto.css (147.53 kB, gzip 23.35 kB)
+   frontend/dist/assets/index-ASnrPafL.js (601.33 kB, gzip 188.39 kB)
+   frontend/dist/assets/index-DtLJInxc.css (147.66 kB, gzip 23.36 kB)
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon39&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=117 master=116 routes=118 targets=97 handlers=117
-   write_tools=52  route_checked=118
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon40&& C:\Python310\python.exe scripts\reconcile_tools.py"
+-> specs=121 master=120 routes=122 targets=101 handlers=121
+   write_tools=55  route_checked=122
    RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
    （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
 ```
@@ -2642,10 +2642,68 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 状态行写「平台认出：顺丰速运（SF），已自动选中。」、缺必填项提示随之变成「还缺必填项：订单号」；
 > 截图 `logs/order_ship_shots/{01,02}-{dark,light}-*.png`。
 
+### 第四十批：IM 会话操作（拉黑状态 / 拉黑买家 / 解除 / 发商品卡片）（237~240）
+
+237. 只读 1 条 + 写 3 条：`GET /api/im/{account_id}/blacklist`、`POST …/blacklist`、
+     `POST …/blacklist/remove`、`POST …/cards`；协议层 `backend/app/xianyu/im_actions.py`
+     （**版本按动作分别传**，bundle 逐字）：`mtop.taobao.idlemessage.pc.blacklist.query` **v1.0**、
+     `.blacklist.add` **v2.0**、`.blacklist.remove` **v1.0**、
+     `mtop.taobao.idlemessage.message.card.send` **v1.0** `{sessionId, itemId}`
+     （偏移与官方 toast 文案见常量注释与 `WRITE_APIS[...]['evidence']`）。
+238. `is_in_black` / `show_black_list` 平台没返回这个键时是 **null**，不补 `false`（服务层补中文 warning）；
+     写返回 `{action, saved[, deleted][, item_id][, session_id]}` —— 解除拉黑多一个 `deleted:true`。
+239. **会话标识有两条路**：`session_id`（平台 cid）或 `conversation_id`（本地会话行 id，由后端从最新一条
+     消息的 `meta.cid` 解析）—— `conversations` 表**没有 cid 列**（`backend/app/core/db.py:119-131`），
+     会话页手里只有本地行 id，只能传它。两个都传以 `session_id` 为准；一个都没有 → 400 `invalid_fields`；
+     会话不存在或属于别的账号 → 404 `not_found`；会话还没有 cid → 400 `missing_cid`
+     （文案让用户先点「同步历史会话」）。**不替平台加/去 `@goofish` 后缀**（库里存的是去掉后缀的 cid）。
+240. AI 侧 4 个工具（`im_blacklist_status` 只读 + `im_blacklist_add` / `im_blacklist_remove` /
+     `im_card_send` 要 `confirm`）+ MCP 4 条路由；`scripts/reconcile_tools.py` 的 `WRITE_PREFIX`
+     补 3 个写工具名，`backend/tests/test_mcp_server.py` 两处硬编码 52 → 55。
+     会话页（`frontend/src/pages/Chats.tsx` + `frontend/src/pages/chats.css`）：头部两个入口
+     （拉黑 / 解除拉黑、发商品卡片）、拉黑状态小字（**查到 / 没查到 / 平台没返回**三种说法分开）、
+     两个确认框都走 `ConfirmDialog` / `Modal`，写操作**唯一出口** `runImWrite` 一律
+     `confirm: true` + `conversation_id`。
+
+> **第四十批证据链**：`backend/tests/test_im_actions_api.py` → `Ran 64 tests ... OK`
+> （含 `ImConversationIdTest` 10 条：解析 cid / `session_id` 优先 / 写走解析结果 /
+> 没有 cid 400 `missing_cid` 且零平台调用 / 未知会话 404 / 跨账号 404 / 两个都不传 400）；
+> `backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_im40_full`）→
+> `TOTAL 57  PASS 57  FAIL 0  CASES 2136  SKIPPED 2`；
+> `python -m unittest backend.tests.test_agents_cross backend.tests.test_mcp_server backend.tests.test_agents_tools_workbench`
+> → `Ran 130 tests ... OK`；`test_mcp_server.py` 单跑 → `Ran 65 tests ... OK`；
+> `scripts/reconcile_tools.py` → `specs=121 master=120 routes=122 targets=101 handlers=121 /
+> write_tools=55 / route_checked=122 / RECON OK`；
+> `cd frontend && npx tsc --noEmit` → `TSC_EXIT=0`；`npx vite build` → `BUILD_EXIT=0`
+> （96 modules，`index-ASnrPafL.js` 601.33 kB / `index-DtLJInxc.css` 147.66 kB）；
+> `scripts/ui_smoke.py --port 18441` → **29/29 页通过**。
+> UI 取证（`C:\Users\Administrator\.dsh-tmp\im_panel_shots.py`：临时库 + 演示数据 + 补一条
+> `meta.cid`；**只打开弹窗与确认框，绝不点确认**）→ `PROBLEMS: []`、`page errors: []`、
+> 只读请求 1 条（`GET /api/im/demo_acc/blacklist?conversation_id=1`）、**`POST /api/im` 0 条**
+> （红线：没有显式确认，一个写请求都不许发）；截图
+> `logs/im_panel_shots/{01-chats-dark,02-card-modal-dark,03-blacklist-confirm-dark,04-chats-light}.png`。
+> 顺手修掉一个真缺陷：`mcp_server/client.py` 里第三十九批的物流 `TOOL_ROUTES` 块被**重复插入了 5 份**
+> （补丁脚本没去重，五方对账与单测都没查出来 —— 对账是**字典**、重复键自然只留一份），
+> 用 `C:\Users\Administrator\.dsh-tmp\fix_mcp_dup.py` 收敛成一份。
+> 重打包（`build_exe.ps1 -SkipFrontend`，exe **10,137,125 B / 2026-10-13 22:32:23**，
+> `--port 18400` `/api/health` 200 `frozen:true`）后打包版复验全绿：
+> `probe_write_gate.py` → **`GATE FAILURES: 0 / 56`**（3 条 IM 写接口都 400 `confirmation_required`，
+> 确认腿用不存在的账号 → 400 `invalid_fields`，零平台写请求）；`packaged_ui_smoke.py` → **29/29 页**；
+> `check_assets.py` → `ASSETS_MATCH=True`（`index-ASnrPafL.js` / `index-DtLJInxc.css`）；
+> `scripts/contrast_audit.py --threshold 4.0` → `[dark] 0/29`、`[light] 0/29`、`NON_GET=[]`；
+> `scripts/a11y_audit.py` → 三类问题全 0、`焦点不可见的页面：[]`、`NON_GET=[]`。
+> **打包版真机只读探针**（`C:\Users\Administrator\.dsh-tmp\im_read_packaged.py`，**只发 GET**）→
+> `PROBLEMS: []`：`GET /api/im/2217970177348/blacklist?conversation_id=<真实会话行>` → 200，
+> 后端把本地会话行解析成平台 cid `66978575394`，`is_in_black=false`、`show_black_list=true`、
+> `warnings=[]`、`source=platform`；未知会话 → 404 `not_found`；两个 id 都不传 → 400 `invalid_fields`。
+> 诚实边界：**3 条写接口一次真机请求都没发过**（拉黑 / 解除 / 发商品卡片都会真的动平台数据）；
+> `blacklist.add` 是 v2.0、`card.send` 的 `sessionId` 是否要 `@goofish` 后缀、以及平台是否接受
+> 这族入参，仍属未验证。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**56 个测试文件、2072 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**57 个测试文件、2136 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -2671,15 +2729,16 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   从 `共 95 条` 变成 `共 56 条`（= 两个在售账号的 45 + 11），页面里再也搜不到 `3998190171`，
   只读探针（真 Edge）`has_deleted_account: false`、`page_errors: []`。
 - 真实 HTTP：只读 17 条 + 写路径 11 条（早期探针）；打包版接口面现在
-  `/openapi.json` = **181 条路径 / 195 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
+  `/openapi.json` = **184 条路径 / 199 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
   第三十二批 +10 条店铺资料/子账号；第三十三批 +4 条推广资金明细；第三十四批 +1 条商品数据；第三十五批 +1 条经营卡片；
   第三十六批 +1 条客服明细表 `GET /api/datacenter/{account_id}/cs/{kind}`；
   第三十七批 +6 条话术 `/api/quick-reply/*`（7 个操作）；第三十八批 +6 条订单处理
   `/api/trade/{account_id}/orders|refunds|complaints/*`；第三十九批 +3 条物流
-  `/api/logistics/{account_id}/{companies,guess,orders/{order_id}/resend}`），
+  `/api/logistics/{account_id}/{companies,guess,orders/{order_id}/resend}`；
+  第四十批 +3 条 IM 会话操作 `/api/im/{account_id}/{blacklist,blacklist/remove,cards}`（4 个操作）），
   均结构化信封、无 500。
-- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 117 / `MASTER_TOOLS` 116 /
-  `TOOL_ROUTES` 118，其中 **52 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
+- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 121 / `MASTER_TOOLS` 120 /
+  `TOOL_ROUTES` 122，其中 **55 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
   FastAPI 端点接受 → `RECON OK`。MCP 端到端冒烟（真起 `mcp_server/server.py` 子进程打打包版）
   `tools/list` 返回 63 个工具（该数字早于后面几批新增的工具）。
 - **真实浏览器逐页冒烟 29/29 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
@@ -2689,9 +2748,9 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   packaged_ui_smoke.py`，复用 `scripts/ui_smoke.py::run_browser` 但不启后端、直接打
   `127.0.0.1:18400` 与**真实 `%APPDATA%` 数据目录**，截图 `logs/packaged_ui_smoke/`）。
   与上一条的区别：上一条跑的是源码 + 临时库，这一条跑的是**用户手上那个 exe**。
-- **打包版 confirm 闸门 53 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
-  （`confirmation_required` / `confirm_required`），**`GATE FAILURES: 0 / 47`**（探针随批次扩过：
-  19 → 22 → 26 → 28 → 30 → 33 → 41 → 47 → 52 → 53）；确认那一腿**故意换成不存在的
+- **打包版 confirm 闸门 56 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
+  （`confirmation_required` / `confirm_required`），**`GATE FAILURES: 0 / 56`**（探针随批次扩过：
+  19 → 22 → 26 → 28 → 30 → 33 → 41 → 47 → 52 → 53 → 56）；确认那一腿**故意换成不存在的
   账号**（`SAFE_ACC`），闸门放行后本地查库直接 404 `not_found` / 400 `invalid_fields` / 409 —— 既证明闸门放行，
   又保证**零平台请求**（2026-10-12 00:35 之前那版拿真账号打过，三条写请求真到了闲鱼，见第二十五批 161）。
   第 32 批新增八条（`shop.profile_{nick,desc,avatar}` / `sub.{create,delete,mobile,roles,password}`）：
@@ -2699,6 +2758,8 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   第 37 批新增六条话术写（`qr.group_{create,update,delete}` / `qr.phrase_{create,update,delete}`）；
   第 38 批新增五条订单处理写（`trade.close` / `delay` / `remind` / `postage_pay` / `complain_revoke`）；
   第 39 批新增一条物流写（`logistics.resend`）。
+  第 40 批新增三条 IM 写（`im.blacklist_add` / `im.blacklist_remove` / `im.card_send`）：
+  未确认 400 `confirmation_required`，确认腿 400 `invalid_fields`（账号用的是不存在的那个）。
 - **真实浏览器实时刷新 2/2 阶段通过**（`scripts/live_refresh_smoke.py`）：后端写账号
   备注 / 新增提示词后，页面在 0.21 秒内自己更新，且 `navigation` 计数不变。
 - **真后端 + 真 `XianyuClient` + `httpx.MockTransport` 逐条打商品接口**（不碰真平台）：
