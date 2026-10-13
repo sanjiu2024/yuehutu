@@ -97,12 +97,26 @@ class ApiHardeningTest(unittest.TestCase):
         body = resp.json()
         self.assertIn('success', body, f'404 没走统一信封：{body}')
         self.assertFalse(body['success'])
-        self.assertEqual(body['code'], 'not_found')
+        # 「路由没注册」必须与「业务 404」可区分：前端靠它显示「未就绪」空态而不是
+        # 把英文 Not Found 当业务错误甩给用户（`frontend/src/api.ts` 的 notReady）。
+        self.assertEqual(body['code'], 'route_not_found')
+        self.assertNotIn('Not Found', body['message'])
+        self.assertIn('还没有实现', body['message'])
 
     def test_wrong_method_uses_envelope(self):
         resp = self.client.delete('/api/risk/status', headers=self.headers)
         self.assertEqual(resp.status_code, 405, resp.text)
         self.assertIn('success', resp.json(), f'405 没走统一信封：{resp.text}')
+        self.assertEqual(resp.json()['code'], 'route_not_found')
+        self.assertIn('不支持这个请求方法', resp.json()['message'])
+
+    def test_business_not_found_keeps_its_code(self):
+        """反向对照：业务 404（账号不存在/商品不存在）仍是 `not_found`，不是 `route_not_found`。"""
+        resp = self.client.get('/api/items/hard_acc/no-such-item', headers=self.headers)
+        self.assertEqual(resp.status_code, 404, resp.text)
+        body = resp.json()
+        self.assertEqual(body['code'], 'not_found', body)
+        self.assertNotEqual(body['code'], 'route_not_found')
 
     def test_existing_route_still_works(self):
         """反向对照：404/405 的 handler 不能把正常响应的信封打乱。"""

@@ -193,6 +193,8 @@ function handleResponse<T>(
     // FastAPI 的默认错误处理器返回 {"detail": "..."}，**没有** success 字段；
     // 后端业务失败走 common.respond，一定带 success/code。据此区分
     // 「路由根本不存在」与「路由在、但这单业务失败了（如账号不存在）」。
+    // 注意：后端为了统一信封，会把**路由层**的 404/405 也套成信封，但给了
+    // 可区分的 `code: 'route_not_found'`（见 backend/app/main.py 的 http_error）。
     const isFrameworkError = !envelope || typeof envelope.success !== 'boolean'
     const rawMessage =
       envelope?.message ||
@@ -201,7 +203,9 @@ function handleResponse<T>(
       ''
     const code = envelope?.code || `http_${status}`
     // 后端尚未实现该路由时 FastAPI 直接 404/405；这类才算「未就绪」。
-    const notReady = isFrameworkError && (status === 404 || status === 405 || status === 501)
+    const routeMissing = code === 'route_not_found'
+    const notReady = (isFrameworkError || routeMissing)
+      && (status === 404 || status === 405 || status === 501)
     throw new ApiError(friendlyMessage(status, rawMessage, code), code, status, notReady)
   }
 

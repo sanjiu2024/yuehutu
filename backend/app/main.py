@@ -25,7 +25,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
+from fastapi.routing import APIRoute
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.routing import Match, Mount
 
 from .core import config, db, events, security
 from .services import im_service, risk_service, stats_worker
@@ -291,9 +293,41 @@ def create_app() -> FastAPI:
     # 必须挂在 **Starlette** 的 HTTPException 上：FastAPI 的 HTTPException 是它的子类，
     # 而「路由没匹配上」的 404/405 是 Starlette 路由层直接抛父类，只注册子类抓不到，
     # 于是同一个后端一半错误是统一信封、一半是 {"detail":"Not Found"}。
+    def _path_registered(request: Request) -> bool:
+        """这个请求的**路径**有没有注册过 API 路由（方法对不对不管）。
+
+        只认 `APIRoute`：`/` 上挂着托管前端的 `Mount`（StaticFiles），它匹配**任何**路径，
+        把它算进来会让「路由没注册」永远判成「注册过」。
+        """
+        for route in request.app.router.routes:
+            if isinstance(route, Mount) or not isinstance(route, APIRoute):
+                continue
+            try:
+                match, _ = route.matches(request.scope)
+            except Exception:  # pragma: no cover - 少数 route 不吃 matches
+                continue
+            if match is not Match.NONE:
+                return True
+        return False
+
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request: Request, exc: StarletteHTTPException):
-        """所有 HTTPException 都套成统一信封：{"success":false,"message":...,"code":...}。"""
+        """所有 HTTPException 都套成统一信封：{"success":false,"message":...,"code":...}。
+
+        **路由层**抛出来的 404/405（路径没注册 / 方法不对）单独给 `code: 'route_not_found'`
+        与中文文案：前端 `api.ts` 靠「不是业务信封」来判断「后端这个接口还没就绪」，
+        统一信封把这个信号抹平了，于是 `notReady` 永不成立、页面把英文 `Not Found`
+        当业务错误显示给用户。业务 404（账号不存在之类）不受影响，仍是 `not_found`。
+        """
+        if exc.status_code in (404, 405) and (exc.status_code == 405
+                                              or not _path_registered(request)):
+            message = ('这个功能的后端接口还没有实现' if exc.status_code == 404
+                       else '这个接口不支持这个请求方法')
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={'success': False, 'message': message, 'code': 'route_not_found'},
+                headers=getattr(exc, 'headers', None),
+            )
         detail = exc.detail
         message = detail if isinstance(detail, str) else str(detail)
         code = {400: 'bad_request', 401: 'unauthorized', 403: 'forbidden', 404: 'not_found'}.get(
