@@ -2289,8 +2289,8 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 - **UI 细节有两个可重跑的审计脚本**（`scripts/contrast_audit.py`、`scripts/a11y_audit.py`）：
   28 页 × 深/浅两套主题的文字对比度全部 ≥4.0:1；无可访问名字的按钮 0、没有标签的
   输入框 0、无 alt 的图片 0、焦点环全部可见；两者整轮都是 `NON_GET_API_REQUESTS=[]`。
-  打包版实测（不带 `--port`，打的就是 18400 上那份）：`[dark] BAD_PAGES 0/27`、
-  `[light] BAD_PAGES 0/27`（第三十四批把新页加进清单后是 0/28）。
+  打包版实测（不带 `--port`，打的就是 18400 上那份）：**`[dark] BAD_PAGES 0/28`、
+  `[light] BAD_PAGES 0/28`**（第三十四批把新页加进清单并重打包后实测；上一版 27 页时是 0/27）。
   另有第三十批那个一次性扫描（`C:\Users\Administrator\.dsh-tmp\scan_markdown2.py`：
   按 tokenize 取非 docstring 字符串，找用户可见的字面 `**` 与反引号）—— 它抓到 6 处并已修，
   但**没入仓**（一次性核对用，重跑价值低）。
@@ -2323,11 +2323,12 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   `127.0.0.1:18400` 与**真实 `%APPDATA%` 数据目录**，截图 `logs/packaged_ui_smoke/`）。
   与上一条的区别：上一条跑的是源码 + 临时库，这一条跑的是**用户手上那个 exe**。
 - **打包版 confirm 闸门 41 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
-  （`confirmation_required` / `confirm_required`），`GATE FAILURES: 0 / 33`；确认那一腿**故意换成不存在的
+  （`confirmation_required` / `confirm_required`），**`GATE FAILURES: 0 / 41`**（探针随批次扩过：
+  19 → 22 → 26 → 28 → 30 → 33 → 41）；确认那一腿**故意换成不存在的
   账号**（`SAFE_ACC`），闸门放行后本地查库直接 404 `not_found` / 400 `invalid_fields` / 409 —— 既证明闸门放行，
   又保证**零平台请求**（2026-10-12 00:35 之前那版拿真账号打过，三条写请求真到了闲鱼，见第二十五批 161）。
-  本批新增三条（`shop.cs_routing_rule` / `shop.cs_group_save` / `shop.cs_group_delete`）：
-  未确认 400 `confirmation_required`，确认腿 400 `invalid_fields`（字段校验在建客户端之前）。
+  第 32 批新增八条（`shop.profile_{nick,desc,avatar}` / `sub.{create,delete,mobile,roles,password}`）：
+  未确认 400 `confirmation_required`，确认腿除 `sub.delete` 是 404 `not_found` 外都是 400 `invalid_fields`。
 - **真实浏览器实时刷新 2/2 阶段通过**（`scripts/live_refresh_smoke.py`）：后端写账号
   备注 / 新增提示词后，页面在 0.21 秒内自己更新，且 `navigation` 计数不变。
 - **真后端 + 真 `XianyuClient` + `httpx.MockTransport` 逐条打商品接口**（不碰真平台）：
