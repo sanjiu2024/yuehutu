@@ -639,3 +639,18 @@ tbody tr.tr-detail-row {
     max-width: 18ch;
   }
 }
+
+/* ---- 第三十九批：发货 / 修改运单号表单里的快递公司下拉 + 单号自动认公司（两个都是只读接口）---- */
+
+.tr-ship-select {
+  max-width: 420px;
+}
+
+.tr-ship-companies {
+  grid-column: 1 / -1;
+  gap: var(--sp-2);
+}
+
+.tr-ship-companies .notice {
+  margin: 0;
+}

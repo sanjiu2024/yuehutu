@@ -22,7 +22,7 @@
  *    一个平台请求都不发。
  */
 
-import { Fragment, useMemo, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { api, ApiError, errorText } from '../api'
 import { AsyncBox, Badge, ConfirmDialog, Field, Modal, Notice, useToast } from '../components'
 import { useAsync } from '../hooks/useAsync'
@@ -539,6 +539,8 @@ export type WriteKind =
   | 'remind'
   | 'postage-pay'
   | 'complain-revoke'
+  // ---- 第三十九批：物流写能力（修改运单号，端点挂在 /api/logistics 下，不在 /api/trade）----
+  | 'resend'
 
 type WriteGroup = 'order' | 'ship' | 'price' | 'refund' | 'rate' | 'complain'
 
@@ -674,6 +676,31 @@ const WRITE_SPECS: Record<WriteKind, WriteFormSpec> = {
       mail_no: value('mail_no'),
       cp_code: value('cp_code'),
       address_id: value('address_id'),
+    }),
+  },
+  /**
+   * 修改运单号（第三十九批）：端点在 `/api/logistics` 下的「重新发货」，**不在** `/api/trade`。
+   * 三个提交值就是确认框里列出的 order_id / mail_no / cp_code；`confirm` 由 `postWrite` 统一加字面量。
+   */
+  resend: {
+    title: '修改运单号',
+    action: '修改运单号',
+    desc: (
+      <>
+        平台接口 <code>mtop.taobao.idle.logistics.merchant.consign.resend</code>；
+        <strong>这一步会真的改动平台上的物流信息</strong>。
+      </>
+    ),
+    fields: [
+      { name: 'order_id', label: '订单号', required: true, placeholder: '订单号' },
+      { name: 'mail_no', label: '快递单号', required: true, placeholder: '如 SF1234567890', hint: '离开这一格时会自动认一次快递公司（只读）' },
+      { name: 'cp_code', label: '快递公司', required: true, placeholder: '如 SF / YTO / ZTO', hint: '平台编码，不是中文公司名' },
+    ],
+    path: (accountId, value) =>
+      `/api/logistics/${encodeURIComponent(accountId)}/orders/${encodeURIComponent(value('order_id'))}/resend`,
+    body: (value) => ({
+      mail_no: value('mail_no'),
+      cp_code: value('cp_code'),
     }),
   },
   'ship-dummy': {
@@ -931,7 +958,11 @@ const WRITE_MODES: Partial<Record<WriteGroup, Array<{ value: WriteKind; label: s
     { value: 'delay', label: '延长收货时间' },
     { value: 'remind', label: '提醒确认收货' },
   ],
-  ship: [{ value: 'ship', label: '自己联系物流' }, { value: 'ship-dummy', label: '无需物流' }],
+  ship: [
+    { value: 'ship', label: '自己联系物流' },
+    { value: 'ship-dummy', label: '无需物流' },
+    { value: 'resend', label: '修改运单号' },
+  ],
   refund: [
     { value: 'refund-agree', label: '同意退款' },
     { value: 'refund-refuse', label: '拒绝退款' },
@@ -956,7 +987,7 @@ const GROUP_DEFAULT_KIND: Record<WriteGroup, WriteKind> = {
 
 function groupOf(kind: WriteKind): WriteGroup {
   if (kind === 'close' || kind === 'delay' || kind === 'remind') return 'order'
-  if (kind === 'ship' || kind === 'ship-dummy') return 'ship'
+  if (kind === 'ship' || kind === 'ship-dummy' || kind === 'resend') return 'ship'
   if (kind === 'adjust-price') return 'price'
   if (kind === 'refund-agree' || kind === 'refund-refuse' || kind === 'postage-pay') return 'refund'
   if (kind === 'rate') return 'rate'
@@ -1003,6 +1034,17 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
   const [verifyBusy, setVerifyBusy] = useState(false)
   const [verifyError, setVerifyError] = useState('')
   const [verifyInfo, setVerifyInfo] = useState<{ token: string; url: string } | null>(null)
+  // 快递公司列表（只读，第三十九批）：`null` = 平台没返回列表键（**不是「没有公司」**），`[]` = 平台明确回了空数组。
+  const [companies, setCompanies] = useState<Array<{ code: string; name: string }> | null>(null)
+  const [companiesFetched, setCompaniesFetched] = useState(false)
+  const [companiesTried, setCompaniesTried] = useState(false)
+  const [companiesBusy, setCompaniesBusy] = useState(false)
+  const [companiesError, setCompaniesError] = useState('')
+  const [companyWarnings, setCompanyWarnings] = useState<string[]>([])
+  // 单号自动认公司（只读）：平台认不出就保持用户当前的选择，绝不编一家。
+  const [guessBusy, setGuessBusy] = useState(false)
+  const [guessNote, setGuessNote] = useState('')
+  const [guessBad, setGuessBad] = useState(false)
 
   const spec = WRITE_SPECS[kind]
   const group = groupOf(kind)
@@ -1014,6 +1056,8 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
   const checkMessage = spec.check ? spec.check(value) : ''
   const blocked = missing.length > 0 || Boolean(checkMessage)
   const path = spec.path(accountId, value)
+  /** 这个表单要不要「快递公司」——发货与修改运单号都有 `cp_code`，虚拟发货没有。 */
+  const hasCompanyField = spec.fields.some((field) => field.name === 'cp_code')
 
   function switchTo(next: WriteKind) {
     setKind(next)
@@ -1092,6 +1136,86 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
     }
     setReasonsBusy(false)
   }
+
+  /**
+   * 拉一次快递公司列表（`GET /api/logistics/{account_id}/companies`，**只读**）。
+   *
+   * 三种结果必须分开说：拿到数组就是下拉选项；拿到**空数组**是「平台明确说这个账号没有可选公司」；
+   * 拿到 `null` 是「平台没返回列表键」（可能另有 `list_key_missing` 提示）—— 那时只能手填 code。
+   */
+  async function fetchCompanies() {
+    setCompaniesBusy(true)
+    setCompaniesError('')
+    try {
+      const data = await api.get<Record<string, unknown>>(
+        `/api/logistics/${encodeURIComponent(accountId)}/companies`,
+      )
+      const raw = data?.companies
+      const list = Array.isArray(raw)
+        ? raw
+            .map((item) => {
+              const row = (item ?? {}) as Record<string, unknown>
+              return { code: String(row.code ?? ''), name: String(row.name ?? '') }
+            })
+            .filter((row) => row.code !== '')
+        : null
+      setCompanies(list)
+      setCompanyWarnings(normalizeWarnings(data?.warnings).map((item) => item.message || item.code))
+      setCompaniesFetched(true)
+      // 用户已经填了 code 就不动它（哪怕平台列表里没有，那也是用户自己的选择）。
+      if (list && list.length > 0 && !value('cp_code').trim()) setValue('cp_code', list[0].code)
+    } catch (err) {
+      setCompanies(null)
+      setCompanyWarnings([])
+      setCompaniesFetched(false)
+      setCompaniesError(errorText(err) || '拉取快递公司失败，后端没有给出原因')
+    }
+    setCompaniesBusy(false)
+  }
+
+  /**
+   * 按运单号认一次快递公司（`GET /api/logistics/{account_id}/guess?mail_no=…`，**只读**）。
+   *
+   * 平台认不出时 `cp_code` / `cp_name` 都是 `null`：这时**保持用户当前的选择**，
+   * 只说明「认不出」，不替他编一家公司。
+   */
+  async function guessCompany() {
+    const mailNo = value('mail_no').trim()
+    if (!mailNo) {
+      setGuessBad(true)
+      setGuessNote('先填「快递单号」，公司是按单号认的。')
+      return
+    }
+    setGuessBusy(true)
+    setGuessNote('')
+    setGuessBad(false)
+    try {
+      const data = await api.get<Record<string, unknown>>(
+        `/api/logistics/${encodeURIComponent(accountId)}/guess?mail_no=${encodeURIComponent(mailNo)}`,
+      )
+      const code = typeof data?.cp_code === 'string' ? data.cp_code : ''
+      const name = typeof data?.cp_name === 'string' ? data.cp_name : ''
+      if (!code) {
+        setGuessBad(true)
+        setGuessNote('平台认不出这个单号属于哪家快递，保持你当前选的公司（不替你编）。')
+      } else {
+        setValue('cp_code', code)
+        setGuessNote(`平台认出：${name || '（平台没回公司名）'}（${code}），已自动选中。`)
+      }
+    } catch (err) {
+      setGuessBad(true)
+      setGuessNote(errorText(err) || '自动认公司失败，后端没有给出原因')
+    }
+    setGuessBusy(false)
+  }
+
+  // 进到有「快递公司」的表单就自动拉一次（一次性，不轮询）；失败后由用户点按钮重试，不自动重试。
+  useEffect(() => {
+    if (!hasCompanyField || companiesTried) return
+    setCompaniesTried(true)
+    void fetchCompanies()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasCompanyField, companiesTried])
 
   async function submit() {
     setAsking(false)
@@ -1186,17 +1310,85 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
                     placeholder={field.placeholder}
                     onChange={(event) => setValue(field.name, event.target.value)}
                   />
+                ) : field.name === 'cp_code' && hasCompanyField ? (
+                  companies && companies.length > 0 ? (
+                    <select
+                      aria-label="快递公司"
+                      className="tr-ship-select"
+                      value={value('cp_code')}
+                      onChange={(event) => setValue('cp_code', event.target.value)}
+                    >
+                      <option value="">（从平台列表里选一家）</option>
+                      {companies.map((item) => (
+                        <option key={item.code} value={item.code}>
+                          {item.name ? `${item.name}（${item.code}）` : item.code}
+                        </option>
+                      ))}
+                      {/* 手填的 / 平台认出的 code 可能不在这份列表里：补一个选项，别把值吞掉。 */}
+                      {value('cp_code').trim() !== '' && !companies.some((item) => item.code === value('cp_code')) ? (
+                        <option value={value('cp_code')}>{value('cp_code')}（不在平台列表里，原样提交）</option>
+                      ) : null}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={value('cp_code')}
+                      placeholder={field.placeholder}
+                      onChange={(event) => setValue('cp_code', event.target.value)}
+                    />
+                  )
                 ) : (
                   <input
                     type="text"
                     value={value(field.name)}
                     placeholder={field.placeholder}
                     onChange={(event) => setValue(field.name, event.target.value)}
+                    onBlur={field.name === 'mail_no' && hasCompanyField ? guessCompany : undefined}
                   />
                 )}
                 {field.hint ? <span className="tr-sub">{field.hint}</span> : null}
               </label>
             ))}
+
+            {hasCompanyField && (
+              <div className="tr-field tr-ship-companies">
+                <span>
+                  快递公司列表
+                  <code className="tr-write-name">logistics.companies</code>
+                </span>
+                <span className="tr-write-inline">
+                  <button className="btn ghost sm" onClick={fetchCompanies} disabled={companiesBusy || busy}>
+                    <IconRefresh size={14} /> {companiesBusy ? '正在拉取…' : '重新拉取快递公司'}
+                  </button>
+                  <button className="btn ghost sm" onClick={guessCompany} disabled={guessBusy || busy}>
+                    <IconRefresh size={14} /> {guessBusy ? '正在认…' : '按单号认公司'}
+                  </button>
+                  <span className="tr-sub">两个都是只读接口，不会改动任何东西。</span>
+                </span>
+                {companiesFetched && companies && companies.length > 0 && (
+                  <span className="tr-sub">
+                    平台给出 {companies.length} 家可选快递公司，上面「快递公司」那一格是下拉（值是 code）。
+                  </span>
+                )}
+                {companiesFetched && companies && companies.length === 0 && (
+                  <Notice kind="warn">
+                    平台明确回了一个<strong>空数组</strong>：这个账号现在没有可选快递公司。
+                    上面那一格改成手填 code（平台编码，不是中文公司名）。
+                  </Notice>
+                )}
+                {companiesFetched && companies === null && (
+                  <Notice kind="warn">
+                    平台<strong>没有返回快递公司列表键</strong>（这<strong>不是</strong>「没有快递公司」）。
+                    我们不替你编：上面那一格手填 code。
+                    {companyWarnings.length > 0 ? `平台提示：${companyWarnings.join('；')}` : ''}
+                  </Notice>
+                )}
+                {companiesError ? <Notice kind="warn">{companiesError}</Notice> : null}
+                {guessNote ? (
+                  guessBad ? <Notice kind="warn">{guessNote}</Notice> : <span className="tr-sub">{guessNote}</span>
+                ) : null}
+              </div>
+            )}
 
             {kind === 'refund-agree' && (
               <div className="tr-field tr-write-verify">
@@ -1366,6 +1558,13 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
               {kind === 'close' && (
                 <p>
                   官方原文提醒：<strong>确认关闭后，请确保已和买家协商达成一致，否则您将面临投诉或赔偿</strong>。
+                </p>
+              )}
+              {kind === 'resend' && (
+                <p>
+                  <strong>这一步会真的改动平台上的物流信息</strong>：提交后这一单的运单号
+                  （<code>mail_no</code>）与快递公司（<code>cp_code</code>）在闲鱼平台上就变成下面列出的值，
+                  不可撤销；如果原单已经揽收，平台可能直接拒绝并回原文错误。
                 </p>
               )}
               {kind === 'postage-pay' && (
