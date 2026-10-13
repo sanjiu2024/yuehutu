@@ -794,6 +794,20 @@ GET /api/datacenter/{account_id}/card/{kind}?start=&end=
        --     真机这个账号对四张卡都回 FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问
        --     ⇒ 这一张给 200 + 一句人话 warning（不是 502，更不是把 mtop 原文糊在卡片上）；
        --     登录态过期（409）与链路/风控故障（502）仍然照抛。
+GET /api/datacenter/{account_id}/cs/{kind}?start=&end=&page=&size=&order_by=&order=
+       -- 「客服数据」页三张明细表（第三十六批）：kind ∈ detail（客服明细）/ diversion（订单分流明细）
+       --   / evaluation（客户评价明细），对应 cs.detail.list / cs.diversion.list / cs.evaluation.list。
+       --   默认区间是**今天**（官方客服页就是当天，与总览/粉丝的「今天往前 7 天」故意不同）。
+       --   响应多出 title / columns / rows / total / page / page_size / pages / date_type：
+       --     `columns` 是**平台表头**（[{key,title}]，逐字来自官方 dataIndex + 中文标题），
+       --       我们不翻译、不增删 —— 平台加列就多一列；
+       --     `rows === null` 是「平台没给列表字段」（界面明说不是「没有数据」），`rows: []` 才是真的没有；
+       --     `total` 认不出给 null 不补 0；平台真的给 0 就原样保留 0（pages 相应为 0）。
+       --   kind 不在枚举里 / order 不是 asc|desc / 给了 order 却没给 order_by → 400 invalid_fields，
+       --     一次平台都不打；page/size 越界由 Query(ge/le) 先拦成 **422**（与商品数据页同一分工）。
+       --   平台「拒绝访问」是有效答复（同一口径）：200 + 一句人话 warning，
+       --     且**不再补「可能改了字段名」那条**（两条一起说会把「没权限」说成「字段名变了」）。
+       --   未验证：三张表的真机返回值还没见过（账号无「数据」权限）。
 
 【读 + 写 · 运费模版】`docs/contracts/item_templates.md`
 GET  /api/item-templates/{account_id}?page=&size=&template_name=
@@ -944,13 +958,13 @@ POST /api/drafts/{account_id}/batch-delete           {draft_ids,confirm}
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 100 条 / `MASTER_TOOLS` 99 条（去掉 `master_chat` 防递归），
+【AI 侧】`TOOL_SPECS` 101 条 / `MASTER_TOOLS` 100 条（去掉 `master_chat` 防递归），
 其中 **40 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 101 条。五方对账（specs / master / routes / service targets / handlers）
+`mcp_server/client.py::TOOL_ROUTES` 102 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=100 master=99 routes=101 targets=80 handlers=100 / write_tools=40 / route_checked=101 / RECON OK
+-> specs=101 master=100 routes=102 targets=81 handlers=101 / write_tools=40 / route_checked=102 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`

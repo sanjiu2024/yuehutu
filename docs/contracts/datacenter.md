@@ -13,7 +13,7 @@
 >   从里面抽出 56 个 mtop token（调用形态 `xge({api, v:'1.0', data:{...}})`），
 >   其中 **46 个是真 API 名**（`mtop.alibaba.*` 44 + `mtop.taobao.*` 2；datacompass 族 39），
 >   另 10 个是 `mtop.config.*` / `mtop.request` 这类模块路径。
-> - **契约测试**：`backend/tests/test_datacenter_api.py`（139 用例，样本即真机原文形状）。
+> - **契约测试**：`backend/tests/test_datacenter_api.py`（195 用例，样本即真机原文形状）。
 >
 > 商品数据页（`/seller-data/commodity`，2026-10-13 加）的额外证据：官方菜单树
 > `logs/seller_discover/menu.json` 里这一页是**我们最后一个没复刻的官方叶子页**；
@@ -51,8 +51,9 @@
 | GET | `/api/datacenter/{account_id}/fans` | 粉丝数据：总数 / 新增 / 流失 / 活跃 / 订单 / 买家 + 画像洞察 |
 | GET | `/api/datacenter/{account_id}/customer-service` | 客服数据：询单人数 / 询单量 / 3 分钟响应率 / 平均响应时长 / 未回复 / 满意度 |
 | GET | `/api/datacenter/{account_id}/card/{kind}` | 经营卡片：`kind` ∈ `trade` / `seller` / `repurchase` / `refund`（官方数据总览页那四张卡） |
+| GET | `/api/datacenter/{account_id}/cs/{kind}` | 客服明细表：`kind` ∈ `detail`（客服明细）/ `diversion`（订单分流明细）/ `evaluation`（客户评价明细） |
 
-- 五个端点都要求登录（`Depends(current_user)`），响应走全局信封
+- 六个端点都要求登录（`Depends(current_user)`），响应走全局信封
   `{success: true, data: {...}}` / `{success: false, message, code, login_state?}`。
 - Query：`start`、`end`，都是 `YYYYMMDD`；缺省为「今天往前 7 天」（`start=今天-6`、`end=今天`）。
   非法值（`2026-10-04` / 开始晚于结束 / 位数不对 / 非数字）一律 `400 invalid_fields`，
@@ -127,6 +128,39 @@
 - `extra` 是**没登记过的字段**原样带出（不翻译、不丢），前端折叠在「平台原始字段」里；
   `series` 的点用 `points: [{date, value}]`，前端画折线时**跳过非数字点**（不插 0，插 0 会画出假的谷底）。
 - 只读：这四张卡官方都只有查询接口，我们没有任何写方法（`test_routes_are_read_only` 锁死）。
+
+### 1.5 客服明细三张表（`kind == 'detail' | 'diversion' | 'evaluation'`）
+
+官方「客服数据」页在 6 个指标下面还有三张表，各是一个独立接口（同一套入参/响应形状）：
+
+| `kind` | 平台接口 | 表标题 |
+| --- | --- | --- |
+| `detail` | `mtop.alibaba.idle.seller.pc.datacompass.cs.detail.list` | 客服明细 |
+| `diversion` | `mtop.alibaba.idle.seller.pc.datacompass.cs.diversion.list` | 订单分流明细 |
+| `evaluation` | `mtop.alibaba.idle.seller.pc.datacompass.cs.evaluation.list` | 客户评价明细 |
+
+- Query：`start` / `end`（`YYYYMMDD`，缺省「今天」—— 与另外三页的「今天往前 7 天」**故意不同**，
+  官方客服页默认就是当天）+ `page`（≥1，缺省 1）+ `size`（1~50，缺省 10；`10/20/50` 是官方分页档位）
+  + `order_by` + `order`（`asc` / `desc`）。
+  `kind` 不在枚举里 → `400 invalid_fields`；`order` 不是 `asc/desc`、或给了 `order` 却没给
+  `order_by` → `400 invalid_fields`，**一次平台都不打**。`page` / `size` 越界由 `Query(ge/le)`
+  先拦成 **422**（与商品数据页同一分工：FastAPI 拦边界、服务层拦业务取值）。
+- 响应：`{account_id, kind, title, columns: [{key, title}], rows, total, page, page_size, pages,
+  period: {from, to}, date_type, real_date_range, warnings[], source: "platform", fetched_at}`。
+- **列名与中文标题全部取平台表头**（`columns[].key/title`，逐字来自官方表头的 `dataIndex` +
+  中文标题）：我们不翻译、不增删 —— 平台加列就多显示一列，平台改列名就跟着改。
+  三张表的列分别是 12 / 3 / 6 列（客服明细含 `acctName`「账号名称」…`respRate1min`「1分钟响应率」；
+  分流明细 `divTp`「分流类型」/`dtlTp`「明细分类」/`sessCnt`「会话数」；评价明细 `buyerUserName`
+  「客户名称」/`buyerNick`/`subUserName`/`reviewTime`/`reviewScore`/`dissatReason`「不满意原因」）。
+- **`rows === null` 与 `rows === []` 是两件事**：前者是「平台没给列表字段」（界面明说不是「没有数据」），
+  后者才是「这段时间没有数据」（空表）。`total` 认不出是 `null`；平台真的给 `0` 就原样保留 `0`
+  （`pages` 相应为 0）。
+- **平台「拒绝访问」是有效答复**（与总览/粉丝/卡片同一口径）：真机这个账号三张表都回
+  `FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问` ⇒ 200 + 一句人话 warning（`平台拒绝访问客服明细接口：…`），
+  且**不再补「可能改了字段名」那条** —— 两条一起说会把「没权限」说成「字段名变了」，把人往错方向带。
+- 只读：三个接口官方都只有查询接口（`test_routes_are_read_only` 锁死）。
+- 未验证：三张表的**真机返回值**还没见过（账号无「数据」权限）；列名与中文标题来自官方 bundle 静态提取，
+  响应路径 `data.data.data.list` 逐字取自官方前端。
 
 ## 2. 指标键（前端只能依赖这些键）
 

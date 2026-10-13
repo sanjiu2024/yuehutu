@@ -16,7 +16,7 @@
 | 6 | 主 AI 对接我 / 插件让 DSH 控制 | `POST /api/agents/master/chat` + `mcp_server/` | 冒烟 ⑦；`test_mcp_server.py` 55 项；端口文件端到端 |
 | 7 | 除 AI 外我自己也能回消息 | `POST /api/chats/{id}/send` | 冒烟 ⑤（消息落库） |
 | 8 | 不能老登录、风控要做好 | `xianyu/risk.py` 熔断 + `xianyu/login.py` 人工验证 | `test_xianyu_cookies.py` 37 项 |
-| 9 | 集成闲鱼客服 / 网页版功能 | `services/cs.py` 意图分类 + 快捷回复；**官方卖家工作台逐页复刻**：财务四页、超级擦亮、安全中心（含申诉写）、交易五页（订单/退款/评价/投诉页内直接处理）、小铺四页（**客服分流含规则保存与分组增删**、**店铺资料含昵称/简介/头像修改**、**子账号含新建/删除/改手机号/改岗位/改密码**）、数据三页、通知、营销、资质、运费模版（含写）、退货地址（含写）、商品管理（含批量下架/删除/快捷改价改库存、**草稿箱**）、买家改地址审批（同意/拒绝） | `test_services_cs.py` 20 项；`test_finance_api.py`、`test_promotion_api.py`、`test_security_write_api.py`、`test_trade_api.py`、`test_trade_write_api.py`、`test_address_write_api.py`、`test_order_address_api.py`、`test_drafts_api.py`、`test_shop_api.py`、`test_shop_write_api.py`、`test_shop_profile_api.py`、`test_sub_accounts_api.py`、`test_notify_api.py`、`test_datacenter_api.py`、`test_marketing_api.py`、`test_item_templates_api.py`、`test_item_write_api.py`；真机探针见第十七~三十二批 |
+| 9 | 集成闲鱼客服 / 网页版功能 | `services/cs.py` 意图分类 + 快捷回复；**官方卖家工作台逐页复刻**：财务四页、超级擦亮、安全中心（含申诉写）、交易五页（订单/退款/评价/投诉页内直接处理）、小铺四页（**客服分流含规则保存与分组增删**、**店铺资料含昵称/简介/头像修改**、**子账号含新建/删除/改手机号/改岗位/改密码**）、数据三页（总览含四张经营卡片、商品数据含动态列与排序、粉丝、**客服数据含三张明细表：客服明细/订单分流明细/客户评价明细**）、通知、营销、资质、运费模版（含写）、退货地址（含写）、商品管理（含批量下架/删除/快捷改价改库存、**草稿箱**）、买家改地址审批（同意/拒绝） | `test_services_cs.py` 20 项；`test_finance_api.py`、`test_promotion_api.py`、`test_security_write_api.py`、`test_trade_api.py`、`test_trade_write_api.py`、`test_address_write_api.py`、`test_order_address_api.py`、`test_drafts_api.py`、`test_shop_api.py`、`test_shop_write_api.py`、`test_shop_profile_api.py`、`test_sub_accounts_api.py`、`test_notify_api.py`、`test_datacenter_api.py`、`test_marketing_api.py`、`test_item_templates_api.py`、`test_item_write_api.py`；真机探针见第十七~三十二批 |
 
 ### 官方卖家工作台菜单树 → 我们的页面（逐叶对照）
 
@@ -63,7 +63,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_card_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 54  PASS 54  FAIL 0  CASES 1883  SKIPPED 2
+-> TOTAL 54  PASS 54  FAIL 0  CASES 1933  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -83,20 +83,20 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 94 modules transformed.
-   frontend/dist/assets/index-C43KMt5l.js (574.12 kB, gzip 179.36 kB)
-   frontend/dist/assets/index-CMIURv5_.css (143.35 kB, gzip 22.73 kB)
+   frontend/dist/assets/index-C5sZJrHk.js (576.97 kB, gzip 180.37 kB)
+   frontend/dist/assets/index-CE1STJ7C.css (143.83 kB, gzip 22.82 kB)
 ```
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon_shop&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=100 master=99 routes=101 targets=80 handlers=100
-   write_tools=40  route_checked=101
+-> specs=101 master=100 routes=102 targets=81 handlers=101
+   write_tools=40  route_checked=102
    RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
    （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18481"
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18491"
 -> UI SMOKE ALL OK  (28/28 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
    截图目录：logs/ui_smoke
 ```
@@ -2378,10 +2378,82 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `cards_shots.py` → 卡片区 343 字符、`PROBLEMS: []`，深浅两套截图里四张卡各显示
 > 「这一张暂时没有数据。」+ 那句人话 warning（与同页核心指标同一姿势）。
 
+### 第三十六批：客服数据页三张明细表（只读）（209~213）
+
+**动机**：第三十五批补完「数据总览」的四张经营卡片后，数据组只剩官方「客服数据」页的三张表没做 ——
+官方那一页在 6 个指标下面还有「客服明细 / 订单分流明细 / 客户评价明细」三张表，各是一个独立接口。
+至此官方菜单树 7 组 19 个叶子页在**页面结构**上全部有对应实现（不是「接口全部拿到过真数据」，见 §四）。
+
+**取证（零平台请求，bundle = `logs/seller_discover/datacenter_main.js`，4,168,486 字符单行）**：
+- 三个接口名逐字：`mtop.alibaba.idle.seller.pc.datacompass.cs.detail.list` /
+  `…cs.diversion.list` / `…cs.evaluation.list`（官方包装 `wge(e,t)` 带 in-flight 去重缓存 `_ge`）。
+- 入参 8 个：`{selectedSellerId, dateRange, ms, dateType, orderBy, order, page, pageSize}`，
+  `dateRange` 只在 `dateType === 'customDate'` 时 `dates.join('|')`（竖线）、
+  `ms` 只在 `dateType === 'month'` 时 `dates[0]` —— 与经营卡片/商品数据同一套约定。
+- 响应是**双层 `data`**：官方前端写的是 `resp.data.data.data.list`（`extendInfo.realDateRange`
+  在同层），且先判 `resp.data.data.code === 'success'`。列表键缺失时官方默认 `[]`，
+  我们**故意保留 `None`**（「平台没给列表字段」与「真的没有数据」必须分得开）。
+- 列名与中文标题**逐字取自官方表头**：客服明细 12 列（`acctName`「账号名称」…`respRate1min`
+  「1分钟响应率」）、分流明细 3 列（`divTp`「分流类型」/`dtlTp`「明细分类」/`sessCnt`「会话数」）、
+  评价明细 6 列（`buyerUserName`「客户名称」/`buyerNick`/`subUserName`/`reviewTime`/
+  `reviewScore`/`dissatReason`「不满意原因」）。**不翻译、不增删** —— 平台加列就多一列。
+
+**落盘（4 处）**：
+- `backend/app/xianyu/datacenter.py`：常量 `CS_DETAIL_API` / `CS_LIST_APIS` / `CS_LIST_KINDS` /
+  `CS_LIST_TITLES` / `CS_LIST_COLUMNS` / `CS_LIST_PAGE_SIZES` / `CS_LIST_DEFAULT_PAGE_SIZE` /
+  `CS_LIST_MAX_PAGE_SIZE`；`cs_list_request()`、`parse_cs_list()`、`async cs_list()`。
+  **平台「拒绝访问」是有效答复**（与同页另外三块同一口径）：`_is_permission_error` 命中时不抛，
+  把 `errors[kind]` 带回服务层 → 200 + 人话 warning；登录态过期与其它故障**仍然照抛**。
+- `backend/app/services/datacenter.py`：`CS_LIST_TITLES` / `WARN_CS_LIST_MISSING` / `_int_arg()` /
+  `_wrap_cs_list()` / `cs_list()`。`rows` 认不出保持 `None`；`total` 认不出 `None`（**0 保留**）；
+  `pages = ceil(total / size)`；日期为空时 `period` 显示今天但**线上参数仍是不带日期的 `recent1d`**
+  （显示值不能反过来决定线上参数）。已经有权限 warning 时**不再补**「可能改了字段名」那条。
+- `backend/app/api/datacenter.py`：`GET /{account_id}/cs/{kind}`（`page`/`size` 用 `Query(ge/le)`，
+  越界 422；`order` 取值与 `kind` 白名单在服务层 → 400 `invalid_fields`）。
+- 前端 `frontend/src/pages/CsData.tsx`：从「只有 6 个指标」扩成 4 个 tab（客服指标 / 客服明细 /
+  订单分流明细 / 客户评价明细），三张表共用一个 `CsListTable`（列取 `columns`、`null` 单元格显示 `-`、
+  `rows === null` 与 `[]` 文案分开、本地分页、`useAsync` 不轮询）；`datacenter.css` 追加
+  `.dc-tabs/.dc-list-*/.dc-table/.dc-cell-null/.dc-pager`。AI 侧加 1 个只读工具 `datacenter_cs_list`
+  + MCP GET 路由（`test_agents_cross` 工具名清单、`test_agents_tools_workbench` 的 `NEW_TOOLS`、
+  `mcp_server/client.py` 的 `TOOL_ROUTES` 三处同步）。
+
+**首跑 8 处失败（都是我写的测试/假件的问题，已修）**：① 假协议层照抄一份死 payload ⇒
+「三张表各自的列」永远相等（假绿）⇒ 改成**按请求的 `kind` 重建** `kind`/`columns`；
+② `FakeMtopClient(errors={'mtop': …})` —— 假客户端的 `errors` 是**按接口名**索引的，
+所以三条「权限拒绝/其它失败/登录过期」的协议层测试全都没触发异常 ⇒ 改成
+`errors={datacenter_proto.CS_LIST_APIS['detail']: …}`；③ `args_of('cs_list')` 记的是
+`(client, kind, start, end, seller_id, order_by, order, page, page_size)`，索引写成 `[9]`/`[8:10]`
+⇒ 改成 `[8]`/`[7:9]`；④ `page=0` / `size=999` 由 FastAPI 的 `Query(ge/le)` 先拦成 **422**
+（不是服务层 400）⇒ 断言改成 422 + 保留 `order` 的 400。
+
+> **第三十六批证据链**：`backend/tests/test_datacenter_api.py` → **`Ran 195 tests ... OK`**
+> （139 → 195，+56：`CsListTest` 的协议 11 条 + 服务/HTTP 17 条，其中 `test_route_is_mounted_on_the_real_app`
+> 用 `create_app().openapi()` 而不是手写遍历 —— 子路由被 `_include_router` 包在 `path=None` 的
+> `_IncludedRouter` 里，手写遍历一条都走不到、用例会变成永远通过的空断言）；
+> `python -m unittest backend.tests.test_agents_cross backend.tests.test_mcp_server
+> backend.tests.test_agents_tools_workbench` → **`Ran 130 tests ... OK`**、`UNITS_EXIT=0`；
+> `scripts/reconcile_tools.py` → `specs=101 master=100 routes=102 targets=81 handlers=101`、
+> `write_tools=40`、`route_checked=102`、**`RECON OK`**、`RECON_EXIT=0`；
+> `backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_cslist_full`）→
+> **`TOTAL 54  PASS 54  FAIL 0  CASES 1933  SKIPPED 2`**（1883 → 1933）；
+> `create_app().openapi()` = **166 条路径 / 179 个操作**、`MCP_TOOL_ROUTES` = 102；
+> `cd frontend && npx tsc --noEmit` → `TSC_EXIT=0`；`npm run build` → `BUILD_EXIT=0`
+> （94 modules、`index-C5sZJrHk.js 576.97 kB` / `index-CE1STJ7C.css 143.83 kB`）；
+> `scripts/ui_smoke.py --port 18491` → **`UI SMOKE ALL OK (28/28 页通过)`**；
+> `scripts/contrast_audit.py --port 18501 --threshold 4.0` → `[dark] 0/28`、`[light] 0/28`、
+> `NON_GET=[]`；`scripts/a11y_audit.py --port 18503` → 三类问题全 0、`焦点不可见的页面：[]`、`NON_GET=[]`；
+> 视觉复核 `cs_list_shots.py`（源码起后端、只切 tab、**不点任何写按钮**）→ 4 个 tab 名称逐字正确、
+> 每个 tab 有独立标题与只读说明、`page errors: []`、`non-GET api requests: []`、`PROBLEMS: []`，
+> 截图 `logs/cs_list_shots/{01-overview,02-detail,03-diversion,04-evaluation}.png`
+> （演示账号故意没有 Cookie，所以列表 tab 显示的是 409 的诚实提示，不是空表）；
+> 真机只读探针 `cs_list_read_probe.py`（报告 `logs/cs_list_read_probe.json`）→ 三个 kind **全 200**
+> + 人话权限 warning（平台认下接口名与参数形状、账号没有「数据」权限）、`rows/total` 仍 `null`，
+> 另两条本地拦 `cs-bogus` / `cs-order-without-by` → 400 `invalid_fields`（零平台调用）。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**54 个测试文件、1883 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**54 个测试文件、1933 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -2407,11 +2479,12 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   从 `共 95 条` 变成 `共 56 条`（= 两个在售账号的 45 + 11），页面里再也搜不到 `3998190171`，
   只读探针（真 Edge）`has_deleted_account: false`、`page_errors: []`。
 - 真实 HTTP：只读 17 条 + 写路径 11 条（早期探针）；打包版接口面现在
-  `/openapi.json` = **165 条路径 / 178 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
-  第三十二批 +10 条店铺资料/子账号；第三十三批 +4 条推广资金明细；第三十四批 +1 条商品数据；第三十五批 +1 条经营卡片），
+  `/openapi.json` = **166 条路径 / 179 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
+  第三十二批 +10 条店铺资料/子账号；第三十三批 +4 条推广资金明细；第三十四批 +1 条商品数据；第三十五批 +1 条经营卡片；
+  第三十六批 +1 条客服明细表 `GET /api/datacenter/{account_id}/cs/{kind}`），
   均结构化信封、无 500。
-- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 100 / `MASTER_TOOLS` 99 /
-  `TOOL_ROUTES` 101，其中 **40 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
+- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 101 / `MASTER_TOOLS` 100 /
+  `TOOL_ROUTES` 102，其中 **40 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
   FastAPI 端点接受 → `RECON OK`。MCP 端到端冒烟（真起 `mcp_server/server.py` 子进程打打包版）
   `tools/list` 返回 63 个工具（该数字早于后面几批新增的工具）。
 - **真实浏览器逐页冒烟 28/28 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
@@ -2519,6 +2592,29 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   没有一次平台请求被发出）。所以「平台是否接受 `{requestJson}` 里的 `pageNum`/`pageSize`/
   日期区间」「`data.result` 的字段名」目前只有 bundle 证据，等用户重新扫码后才能真机复核。
   空 `order_id` 的 400 `invalid_fields` 由单元测试覆盖（路径里留空段会先被路由判 404，属预期）。
+- **客服数据页三张明细表的真值没取到过**（第三十六批）：三个接口（`cs.detail.list` /
+  `cs.diversion.list` / `cs.evaluation.list`）的真机只读探针
+  `C:\Users\Administrator\.dsh-tmp\cs_list_read_probe.py`（拷真实数据目录到临时根 → 从源码起后端 →
+  桌面密钥换 token → **只发 GET**，报告 `logs/cs_list_read_probe.json`）结果是
+  **三条都 200 + 一句人话 warning**：「平台拒绝访问客服明细/订单分流明细/客户评价明细接口：
+  这个账号没有「数据」权限，对应指标显示 -。换个有数据权限的卖家账号再试。」
+  ⇒ 说明**平台认下了这三个接口名与参数形状**（它没报参数错，走到权限判定才拒），
+  但 `rows` 仍是 `null`（平台没给列表字段）、`total` 也是 `null`。
+  同一次探针还验到两条**本地拦**（零平台调用）：`kind=bogus` → 400 `invalid_fields`
+  「明细类型只能是 detail / diversion / evaluation」；只给 `order` 不给 `order_by` →
+  400「指定排序方向时必须同时给出排序字段」。
+  所以「三张表的真实列值」「`data.data.list` 真形状」「`extendInfo.realDateRange` 是否真有」
+  「`total` 是否给数字」目前仍只有 bundle 证据 + 我们钉住的表头（12/3/6 列）；
+  `rows === null` 与 `rows: []` 的分工在真机上还没见过一次。
+  视觉复核（`cs_list_shots.py`，源码起后端、只切 tab、**不点任何写按钮**）确认 4 个 tab 名称、
+  独立标题、只读说明都渲染正确，`page errors: []`、`non-GET api requests: []`、`PROBLEMS: []`，
+  截图 `logs/cs_list_shots/{01-overview,02-detail,03-diversion,04-evaluation}.png`。
+- **★ 探针/审计脚本必须先确认端口空闲**（第三十六批踩到的坑）：`cs_list_read_probe.py` 第一版用
+  `PORT = 18473`，而那个端口**被上一次对比度审计留下的源码后端占着** ⇒ 探针其实在跟**旧代码**说话，
+  五条请求全回 `404 not_found`（`/api/health` 与 `/api/auth/desktop` 却都 200，所以「后端起来了」的
+  判断也会骗人）。现在探针先 `connect()` 探一次端口、占用就直接拒绝跑，并换了干净端口复跑。
+  同一批清理时发现 `18381/18383/18385/18391/18393/18395/18473/18475/18501/18503` 十个残留后端
+  仍在监听 —— 凡是从源码起后端的脚本，收尾都要确认子进程真的退出了。
 - **客服分流的写接口一次真机请求都没发过**（第三十一批）：三条 POST（规则保存 /
   分组保存 / 分组删除）只验到「路由已注册 + body 被端点接受 + confirm 闸门拦得住 +
   界面上不点最终确认就一个写请求都不发」；平台是否接受 `HH:MM` 的 `serviceTime`、
