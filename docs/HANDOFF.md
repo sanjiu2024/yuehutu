@@ -62,8 +62,8 @@
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_im43_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 59  PASS 59  FAIL 0  CASES 2306  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_ai44_full&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 59  PASS 59  FAIL 0  CASES 2366  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -88,9 +88,9 @@ cmd /c "cd frontend && npm run build"
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon43c&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=133 master=132 routes=134 targets=113 handlers=133
-   write_tools=63  route_checked=134
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon44&& C:\Python310\python.exe scripts\reconcile_tools.py"
+-> specs=134 master=133 routes=135 targets=122 handlers=134
+   write_tools=63  route_checked=135
    RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
    （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
 ```
@@ -2902,10 +2902,54 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `GET /api/im/{acc}/blacklist` 回业务码 400 `invalid_fields`、`GET /api/disputes/{acc}/cid-1/messages`
 > 回 404 `not_found`。
 
+### 第四十四批：发布前预检（只读）+ 修掉 8 个 AI 工具的分派断链（258~262）
+
+258. **发布前预检接口**（只读）：`POST /api/items/{account_id}/publish/precheck` —— 只跑发布链路的
+     前半段（图片准备 → 违禁词预检 → 分类推荐 → 组载荷），把「真发布时会提交的载荷」摆出来，
+     **绝不调用** `...publish.service.cards.list`（注册分类路径）与 `mtop.idle.pc.idleitem.publish`。
+     落点：`backend/app/xianyu/client.py::publish_precheck`（复用 `_publish_images` / `check_bad_words` /
+     `recommend_category` / `build_label_ext` / `build_publish_payload`）、
+     `backend/app/services/items.py::publish_precheck`、`backend/app/api/items.py` 1 条 POST。
+259. **AI 侧 1 个只读工具** `items_listing_precheck` + MCP 路由 1 条。工具名不能叫
+     `items_publish_precheck` —— 只读工具的名字里不许出现 `publish` 这类写动作词（测试会拦）。
+260. **★ 真缺陷：8 个 AI 工具在主管 AI 路径上一调就失败** —— `accounts_relogin` / `items_edit` /
+     `items_publish` / `items_batch_edit` / `items_sync` / `chats_send` / `chats_set_mode` /
+     `orders_deliver` 的 handler 是 `lambda a: _dispatch_service('xxx', a)`，而 `_SERVICE_TARGETS`
+     里没有 `xxx` ⇒ `_resolve_service` 退到表外分支 `getattr(backend.app.services, 'xxx')` 找不到，
+     回 `{"ok": false, "error": "业务模块还没实现 xxx()"}`。之前只有第 56 批那批新工具被查过，
+     老工具没人查（`_HANDLERS` 有名字就以为能跑）。
+261. 修法：`_SERVICE_TARGETS` 补 9 条真目标；工具面参数与服务面签名不一致的 5 个在**服务层**加适配
+     （`items.edit_from_args` / `publish_from_args` / `publish_precheck_from_args` /
+     `batch_edit_from_args`、`chats.send_from_args`）—— 适配若放工具层，
+     `test_agents_tools_workbench.py::test_spec_properties_are_accepted_by_the_service_function`
+     永远过不去；`accounts_relogin` 的服务层逻辑原来只写在路由 `api/accounts.py:396`，抽出
+     `services/accounts.relogin(account_id)` 让路由与 AI 共用一处实现。
+262. 两条回归测试：`test_every_tool_resolves_a_service_target`（源码里按名字分派过的工具都必须解析
+     得通）、`test_dispatch_gap_tools_reach_their_service`（用间谍证明这 8 个真的调到了服务层）。
+
+> **第四十四批证据链**：`C:\Users\Administrator\.dsh-tmp\check_ai_targets.py` →
+> `logs/ai_targets_check.txt` 打出 `HANDLERS=133 TARGETS=113` 与 8 个「表外分派」的工具名；
+> `dump_dispatch_gap.py` → `logs/ai_dispatch_gap.txt` 逐个比对工具 spec 与服务层签名。
+> 预检三个测试文件：`test_xianyu_items.py` → **`Ran 95 tests ... OK`**（新类 `PublishPrecheckCallTest`
+> 8 条：只读前缀、绝不碰 cards/publish、载荷等于发布载荷去掉 `uniqueCode`、违禁词命中 →
+> `ready:false` + 逐步骤 detail、分类失败 → warning 不阻断、用户指定类目优先、缺标题/缺图零调用）；
+> `test_services_items.py` → **`Ran 194 tests ... OK`**（新类 `PublishPrecheckTest` 7 条）；
+> `test_items_api.py` → **`Ran 35 tests ... OK`**（路由 200 / 校验 400 / 鉴权 401）。
+> AI 侧三个测试文件 → **`Ran 131 tests ... OK`**（含新增两条回归）；
+> `scripts/reconcile_tools.py` → `specs=134 master=133 routes=135 targets=122 handlers=134 /
+> write_tools=63 / route_checked=135 / RECON OK`；
+> 全量 `backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_ai44_full`）→
+> **`TOTAL 59  PASS 59  FAIL 0  CASES 2366  SKIPPED 2`**。
+> 接口面（`C:\Users\Administrator\.dsh-tmp\surface44.py` → `logs/surface44.log`）：
+> openapi **195 路径 / 212 操作**、MCP 135 条路由（63 条写）、AI 规格 134 / 主管 133 / 写 63、
+> `_SERVICE_TARGETS` 122、`_HANDLERS` 134。
+> 诚实边界：**预检本身一次真机请求都没发过**（只有离线单测）；它是只读的，
+> 既不注册分类也不发布，所以「真发布能不能成功」仍未验证。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**59 个测试文件、2306 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**59 个测试文件、2366 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -2942,7 +2986,7 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
    `GET|POST /api/items/{account_id}/{item_id}/fans-price`（2 个操作）；
   第四十三批 +3 条会话接管 `/api/im/{account_id}/sessions/{transfer,leave,rejoin}`），
   均结构化信封、无 500。
-- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 133 / `MASTER_TOOLS` 132 /
+- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 134 / `MASTER_TOOLS` 133 /
   `TOOL_ROUTES` 134，其中 **63 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
   FastAPI 端点接受 → `RECON OK`。MCP 端到端冒烟（真起 `mcp_server/server.py` 子进程打打包版）
   `tools/list` 返回 63 个工具（第 6 批的旧数字；`TOOL_ROUTES` 现在 134 条，本次未重跑该冒烟）。

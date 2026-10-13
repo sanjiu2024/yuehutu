@@ -1138,6 +1138,37 @@ POST /api/im/{account_id}/sessions/rejoin    body {session_id?, conversation_id?
         --   （第 43 批界面取证抓到的真缺陷，已修）。
 ```
 
+【第 44 批 /api/items/{account_id}/publish/precheck —— 发布前预检（只读）】
+POST /api/items/{account_id}/publish/precheck
+  请求体＝发布表单：`title`、`price` 必填，`description` / `images` / `category_id` 可选。
+  只跑发布链路的前半段：`_publish_images`（URL → 平台 imageInfo）→ `check_bad_words` →
+  `recommend_category` → `build_label_ext` → `build_publish_payload`，然后**停住**。
+  **绝不调用** `mtop.idle.item.publish.service.cards.list`（注册分类路径）与
+  `mtop.idle.pc.idleitem.publish`（真发布）—— 这两条一次都不发，单测用**真协议层 + 假 mtop 客户端**钉住。
+  响应 `data.{account_id, ready, steps:[{step, ok, detail}], payload, category:{ok, cards,
+  channel_cate_id, channel_cate_name, tb_cat_id}, warnings[], note, fetched_at, source:'platform'}`；
+  `note` 固定「预检只跑到「分类推荐」为止：不会注册分类，更不会发布。」。
+  错误：400 `invalid_fields`（标题为空 / 没有图片）、400 `bad_request`（payload 为空 / 缺 account_id）、
+  409 `verification_required`、502 `protocol_error`、503 `xianyu_not_ready`。
+  `payload.itemCatDTO.catId` = **tbCatId**（channel cate id 在 `itemCatDTO.channelCatId`）。
+  只读接口，**无 confirm**；只记一条 `publish_precheck` 审计，不写任何业务表、不发事件。
+
+【第 44 批 修掉的真缺陷：8 个 AI 工具在主管 AI 路径上分派不到 service】
+`_HANDLERS` 里是 `lambda a: _dispatch_service('xxx', a)`，而 `_SERVICE_TARGETS` 没有 `xxx` ⇒
+`_resolve_service` 退到表外分支 `getattr(backend.app.services, 'xxx')` 找不到，模型一调就得到
+`{"ok": false, "error": "业务模块还没实现 xxx()"}`。**8 个**：`accounts_relogin` / `items_edit` /
+`items_publish` / `items_batch_edit` / `items_sync` / `chats_send` / `chats_set_mode` / `orders_deliver`。
+修法：① `_SERVICE_TARGETS` 补 9 条真目标；② 工具面参数与服务面签名不一致的 5 个在**服务层**加适配
+（`items.edit_from_args` / `items.publish_from_args` / `items.publish_precheck_from_args` /
+`items.batch_edit_from_args` / `chats.send_from_args`）—— 适配若放工具层，
+`test_agents_tools_workbench.py::test_spec_properties_are_accepted_by_the_service_function` 永远过不去；
+③ `accounts_relogin` 的服务层逻辑原来只写在路由 `api/accounts.py:396`，抽出
+`services/accounts.relogin(account_id)` 让路由与 AI 共用一处实现。
+新增两条回归测试：`test_every_tool_resolves_a_service_target`（源码里按名字分派过的工具都必须解析得通）
+与 `test_dispatch_gap_tools_reach_their_service`（间谍证明这 8 个真的调到了服务层）。
+只读工具的**名字**里不许出现 `publish/delete/edit/update/create/remove/set_/send/sync` ⇒ 预检工具叫
+`items_listing_precheck`。
+
 【写接口的三条硬口径（所有 *_write 一律遵守）】
 1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /
    `confirm_required`），**一次平台请求都不发**；
@@ -1145,13 +1176,13 @@ POST /api/im/{account_id}/sessions/rejoin    body {session_id?, conversation_id?
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 133 条 / `MASTER_TOOLS` 132 条（去掉 `master_chat` 防递归），
+【AI 侧】`TOOL_SPECS` 134 条 / `MASTER_TOOLS` 133 条（去掉 `master_chat` 防递归），
 其中 **63 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 134 条。五方对账（specs / master / routes / service targets / handlers）
+`mcp_server/client.py::TOOL_ROUTES` 135 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=133 master=132 routes=134 targets=113 handlers=133 / write_tools=63 / route_checked=134 / RECON OK
+-> specs=134 master=133 routes=135 targets=122 handlers=134 / write_tools=63 / route_checked=135 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`
