@@ -151,7 +151,9 @@ WRITE_PREFIX = ('trade_write_', 'trade_address_', 'promotion_write_', 'qualifica
                 # 第三十八批：订单页 5 条写（只读的 trade_close_reasons 故意不在，
                 # 它名字里没有写动作，靠**完整写工具名**而不是 'trade_' 宽前缀。）
                 'trade_close_order', 'trade_delay_confirm', 'trade_remind_confirm',
-                'trade_postage_refund_pay', 'trade_complain_revoke')
+                'trade_postage_refund_pay', 'trade_complain_revoke',
+                # 第三十九批：物流写只有这一条，同样用完整工具名。
+                'logistics_resend_consign')
 write_names = [n for n in specs if n.startswith(WRITE_PREFIX) and n != 'promotion_write_actions']
 print(f'write_tools={len(write_names)}')
 for s in T.TOOL_SPECS:

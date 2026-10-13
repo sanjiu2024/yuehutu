@@ -2322,6 +2322,60 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---- 第三十九批：物流（2 读 + 1 写；写的那条会真的改平台上的运单号）----
+    {
+        'type': 'function',
+        'function': {
+            'name': 'logistics_companies',
+            'description': ('快递公司列表（只读）。发货、改运单号时要选公司就用它；'
+                            '默认编码是 OTHER（其它）。不传 account_id 会回 not_found。'),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '账号 id'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'logistics_guess_mailno',
+            'description': ('按快递单号猜快递公司（只读）。平台认不出时 cp_code / cp_name 是 null，'
+                            '不要自己编公司名；不传 account_id 会回 not_found。'),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '账号 id'},
+                    'mail_no': {'type': 'string', 'description': '快递单号'},
+                },
+                'required': ['account_id', 'mail_no'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'logistics_resend_consign',
+            'description': ('修改已经发货订单的运单号 / 快递公司（写操作，会真的改动平台上的物流信息）。'
+                            + _WRITE_HINT),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '账号 id'},
+                    'order_id': {'type': 'string', 'description': '订单号（平台的 tradeId）'},
+                    'mail_no': {'type': 'string', 'description': '新的快递单号'},
+                    'cp_code': {'type': 'string', 'description': '快递公司编码，留空按 OTHER 提交'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'order_id', 'mail_no', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 主管 AI（只给 MCP 侧） ----------------
     {
         'type': 'function',
@@ -2670,6 +2724,10 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'quick_reply_phrase_create': ['quick_reply', 'create_phrase'],
     'quick_reply_phrase_update': ['quick_reply', 'update_phrase'],
     'quick_reply_phrase_delete': ['quick_reply', 'delete_phrase'],
+    # ---- 物流（2 读 + 1 写）----
+    'logistics_companies': ['logistics', 'companies'],
+    'logistics_guess_mailno': ['logistics', 'guess_mailno'],
+    'logistics_resend_consign': ['logistics', 'resend_consign'],
 }
 
 # 有额外位置参数（不是直接透传 args 的）在这里补上固定值
@@ -2895,6 +2953,10 @@ _HANDLERS = {
     'quick_reply_phrase_create': lambda a: _dispatch_service('quick_reply_phrase_create', a),
     'quick_reply_phrase_update': lambda a: _dispatch_service('quick_reply_phrase_update', a),
     'quick_reply_phrase_delete': lambda a: _dispatch_service('quick_reply_phrase_delete', a),
+    # ---- 物流（工具层同样不做 confirm 判定，原样透传给服务层）----
+    'logistics_companies': lambda a: _dispatch_service('logistics_companies', a),
+    'logistics_guess_mailno': lambda a: _dispatch_service('logistics_guess_mailno', a),
+    'logistics_resend_consign': lambda a: _dispatch_service('logistics_resend_consign', a),
 }
 
 

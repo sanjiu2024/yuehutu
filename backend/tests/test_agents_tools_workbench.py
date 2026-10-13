@@ -44,6 +44,10 @@ NEW_TOOLS: Dict[str, Dict[str, Any]] = {
                         'path': '/api/shop/{account_id}/cs-routing'},
     'quick_reply_list': {'module': 'quick_reply', 'fn': 'list_groups', 'verb': 'get',
                          'path': '/api/quick-reply/{account_id}/groups'},
+    'logistics_companies': {'module': 'logistics', 'fn': 'companies', 'verb': 'get',
+                            'path': '/api/logistics/{account_id}/companies'},
+    'logistics_guess_mailno': {'module': 'logistics', 'fn': 'guess_mailno', 'verb': 'get',
+                               'path': '/api/logistics/{account_id}/guess'},
     'datacenter_overview': {'module': 'datacenter', 'fn': 'overview', 'verb': 'get',
                             'path': '/api/datacenter/{account_id}/overview'},
     'datacenter_fans': {'module': 'datacenter', 'fn': 'fans', 'verb': 'get',
@@ -239,6 +243,9 @@ class ServiceTargetTest(unittest.TestCase):
 # `confirm` 一律由**服务层**判定（工具层原样透传），所以这里只核对
 # 「名字 ↔ 服务层函数 ↔ HTTP 路由」三件事，不重复测服务层的确认逻辑。
 WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
+    'logistics_resend_consign': {
+        'module': 'logistics', 'fn': 'resend_consign', 'confirm': True,
+        'method': 'POST', 'path': '/api/logistics/{account_id}/orders/{order_id}/resend'},
     'trade_write_ship_offline': {
         'module': 'trade_write', 'fn': 'ship_offline', 'confirm': True,
         'method': 'POST', 'path': '/api/trade/{account_id}/orders/ship'},
@@ -448,6 +455,9 @@ WRITE_TOOL_NAMES = list(WRITE_TOOLS)
 
 #: 一个「参数齐全但 confirm=False」的最小调用，用来验证工具层不替服务层做确认判定。
 _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
+    'logistics_resend_consign': {
+        'account_id': 'acc-x', 'order_id': 't1', 'mail_no': 'SF123', 'cp_code': 'SF',
+        'confirm': False},
     'trade_write_ship_offline': {
         'account_id': 'acc-x', 'trade_ids': ['t1'], 'mail_no': 'SF123',
         'cp_code': 'SF', 'address_id': 'addr-1', 'confirm': False},
