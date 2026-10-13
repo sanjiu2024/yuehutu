@@ -136,7 +136,7 @@ def ship_offline(account_id: str, trade_ids: Sequence[Any], mail_no: Any, cp_cod
 
     `address_id` 是发货/退货地址 id（`trade.address.list.query` 拿到的 `address_id`）。
     """
-    if not confirm:
+    if not _truthy(confirm):
         return _confirm_required('订单发货')
     failure = _missing(('订单号列表', trade_ids), ('运单号', mail_no),
                        ('物流公司编码', cp_code), ('发货地址', address_id))
@@ -152,7 +152,7 @@ def ship_offline(account_id: str, trade_ids: Sequence[Any], mail_no: Any, cp_cod
 def ship_dummy(account_id: str, order_id: Any, trade_text: Any = '', pic_urls: Any = (),
                *, confirm: bool = False) -> Dict[str, Any]:
     """无需物流发货（虚拟发货）：`mtop.taobao.idle.logistics.merchant.consign.dummy`。"""
-    if not confirm:
+    if not _truthy(confirm):
         return _confirm_required('无需物流发货')
     failure = _missing(('订单号', order_id))
     if failure:
@@ -172,7 +172,7 @@ def adjust_price(account_id: str, order_id: Any, modify_fee: Any, new_transport_
     入参 `modify_fee` / `new_transport_fee` 是**元**；平台口径是分，换算在协议层做一次。
     官方前端拒绝「商品价格为 0」，这里同样拦下。
     """
-    if not confirm:
+    if not _truthy(confirm):
         return _confirm_required('订单改价')
     failure = _missing(('订单号', order_id))
     if failure:
@@ -197,7 +197,7 @@ def refund_agree(account_id: str, refund_id: Any, auth_token: Any,
     `auth_token` 是平台下发的操作令牌（退款详情/渲染接口里给），必须原样回传；
     服务层**不会**自己去猜或缓存它。
     """
-    if not confirm:
+    if not _truthy(confirm):
         return _confirm_required('同意退款')
     failure = _missing(('退款单号', refund_id), ('操作令牌', auth_token))
     if failure:
@@ -215,7 +215,7 @@ def refund_refuse(account_id: str, refund_id: Any, order_id: Any, refuse_reason_
     `refuse_reason_id` 来自 `mtop.taobao.idle.merchant.refund.refuse.render` 的
     `refuseReasonList[].refuseReasonId`（该接口只读，不在这里调用）。
     """
-    if not confirm:
+    if not _truthy(confirm):
         return _confirm_required('拒绝退款')
     failure = _missing(('退款单号', refund_id), ('订单号', order_id), ('拒绝原因', refuse_reason_id))
     if failure:
@@ -238,7 +238,7 @@ def rate_create(account_id: str, trade_ids: Any, feedback: Any, rate: Any = -1,
     bundle 里卖家侧**只有这一个**评价写接口（没有单独的「回复评价」接口）；
     `rate` 是评价等级，不需要等级时官方传 `-1`。
     """
-    if not confirm:
+    if not _truthy(confirm):
         return _confirm_required('评价')
     failure = _missing(('订单号列表', trade_ids), ('评价内容', feedback))
     if failure:
@@ -254,7 +254,7 @@ def rate_create(account_id: str, trade_ids: Any, feedback: Any, rate: Any = -1,
 
 def _complain_guard(account_id: str, action: str, complain_id: Any, proof_urls: Any,
                     builder, version: str, confirm: bool) -> Dict[str, Any]:
-    if not confirm:
+    if not _truthy(confirm):
         return _confirm_required(action)
     failure = _missing(('投诉单号', complain_id), ('举证图片', proof_urls))
     if failure:
@@ -639,3 +639,144 @@ def order_address_refuse(account_id: str, order_id: Any, deliver_id: Any, *,
                          confirm: Any = False) -> Dict[str, Any]:
     """拒绝买家修改收货地址（`mtop.idle.merchant.order.address.modify.refuse`）。"""
     return _order_address_write(account_id, 'refuse', order_id, deliver_id, confirm)
+
+
+# --------------------------------------------------------------------------- 关单 / 延时 / 提醒
+#
+# 第三十八批：订单页的五个写能力。取证全部来自本地 bundle（零平台请求）：
+#   close.by.seller      @2762506  v2.0  {tid, bizOrderId, closeReason}
+#   close.reason.get     @2585779  v1.0  {bizOrderId} → data.closeReasons（字符串数组，只读）
+#   batch.delay.confirm  @2758810  v1.0  {orderIdList, delayTime(秒)}
+#   batch.remind.confirm @2023848  v1.0  {orderIdList, remindAllOrder}
+#   postage.refund.pay   @2835556  v1.0  {orderId, refundId, payType} + ttid + needLoginPC
+#   complain.apply.revoke@2814089  v1.0  {complainId} + needLoginPC → data.success/failReason
+
+
+def close_reasons(account_id: str, order_id: Any) -> Dict[str, Any]:
+    """关单原因候选 —— **只读**，所以没有 `confirm`。
+
+    官方关单弹窗先调这个接口，把 `data.closeReasons`（字符串数组）直接当选项。
+    平台没给列表键时 `close_reasons` 给 `None` + 一条中文 warning（不是空数组：
+    「平台没给」和「平台给了空列表」是两件事，前者不该让用户以为「就是没有原因可选」）。
+    """
+    failure = _missing(('订单号', order_id))
+    if failure:
+        return failure
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+    api, data = proto.close_reason_request(order_id)
+    raw, failure = _call_api(client, api, data, proto.CLOSE_REASON_VERSION)
+    if failure:
+        return failure
+    payload = proto.parse_close_reasons(raw)
+    payload['account_id'] = account_id
+    payload['order_id'] = _text(order_id)
+    payload['api'] = api
+    warnings = []
+    if payload.get('close_reasons') is None:
+        warnings.append({
+            'code': 'close_reasons_missing',
+            'message': '平台没有返回关单原因列表（可能改了字段名），这里不替你编原因；'
+                       '可以手填一个原因，或者去官方卖家工作台看当前可选值。',
+        })
+    payload['warnings'] = warnings
+    return _stamp(payload)
+
+
+def close_order(account_id: str, order_id: Any, close_reason: Any, *,
+                confirm: Any = False) -> Dict[str, Any]:
+    """关闭订单（`mtop.taobao.idle.trade.merchant.close.by.seller` v2.0）。
+
+    **不可撤销**：关掉之后交易就结束了。`close_reason` 必须先选（官方也是必填），
+    候选来自 `close_reasons()`。官方原话提醒：「确认关闭后，请确保已和买家协商达成一致，
+    否则您将面临投诉或赔偿」。
+    """
+    if not _truthy(confirm):
+        return _confirm_required('关闭订单')
+    failure = _missing(('订单号', order_id), ('关闭原因', close_reason))
+    if failure:
+        return failure
+    return _submit(account_id, 'trade_close_order', _text(order_id),
+                   lambda: proto.close_order_request(order_id, close_reason, confirm=True),
+                   proto.parse_write_result, proto.CLOSE_BY_SELLER_VERSION)
+
+
+def delay_confirm(account_id: str, order_ids: Any, days: Any, *,
+                  confirm: Any = False) -> Dict[str, Any]:
+    """延长收货时间（`...merchant.batch.delay.confirm`，`delayTime` 是秒）。
+
+    `days` 只认官方那四档（3/5/7/10）；`order_ids` 收数组，也收逗号串（AI 侧传串）。
+    """
+    if not _truthy(confirm):
+        return _confirm_required('延长收货时间')
+    failure = _missing(('订单号列表', order_ids), ('延长天数', days))
+    if failure:
+        return failure
+    return _submit(account_id, 'trade_delay_confirm', '',
+                   lambda: proto.delay_confirm_request(order_ids, days, confirm=True),
+                   proto.parse_batch_result, proto.BATCH_DELAY_VERSION,
+                   audit={'order_ids': _text(order_ids), 'days': _text(days)})
+
+
+def remind_confirm(account_id: str, order_ids: Any, remind_all: Any = False, *,
+                   confirm: Any = False) -> Dict[str, Any]:
+    """提醒买家确认收货（`...merchant.batch.remind.confirm`）。"""
+    if not _truthy(confirm):
+        return _confirm_required('提醒确认收货')
+    failure = _missing(('订单号列表', order_ids))
+    if failure:
+        return failure
+    return _submit(account_id, 'trade_remind_confirm', '',
+                   lambda: proto.remind_confirm_request(order_ids, remind_all, confirm=True),
+                   proto.parse_batch_result, proto.BATCH_REMIND_VERSION,
+                   audit={'order_ids': _text(order_ids), 'remind_all': _text(remind_all)})
+
+
+def postage_refund_pay(account_id: str, order_id: Any, refund_id: Any,
+                       pay_type: Any = 'alipay', amount: Any = None, *,
+                       confirm: Any = False) -> Dict[str, Any]:
+    """支付运费退款（`mtop.taobao.idle.merchant.postage.refund.pay`）—— **真的付钱**。
+
+    `amount` 不参与请求（官方也不发），只进审计与返回值，方便事后对账；
+    调用方（界面/主管 AI）应当先把它念给用户看再确认。
+    """
+    if not _truthy(confirm):
+        return _confirm_required('支付运费退款')
+    failure = _missing(('订单号', order_id), ('退款单号', refund_id))
+    if failure:
+        return failure
+    result = _submit(account_id, 'trade_postage_refund_pay', _text(order_id),
+                     lambda: proto.postage_refund_pay_request(order_id, refund_id, pay_type,
+                                                              confirm=True),
+                     proto.parse_write_result, proto.POSTAGE_PAY_VERSION,
+                     audit={'order_id': _text(order_id), 'refund_id': _text(refund_id),
+                            'pay_type': _text(pay_type), 'amount': _text(amount)})
+    if common.is_failure(result):
+        return result
+    result['amount'] = _text(amount) or None
+    result['pay_type'] = _text(pay_type).strip() or 'alipay'
+    return result
+
+
+def complain_revoke(account_id: str, complain_id: Any, *,
+                    confirm: Any = False) -> Dict[str, Any]:
+    """撤销投诉申请（`mtop.taobao.idle.cco.shop.complain.apply.revoke`）。
+
+    平台在这条上**顶层 success 仍可能是 true**，业务失败在 `data.success` + `data.failReason`
+    （与投诉拒绝同族），所以复用 `complain_business_failure()`。
+    """
+    if not _truthy(confirm):
+        return _confirm_required('撤销投诉申请')
+    failure = _missing(('投诉单号', complain_id))
+    if failure:
+        return failure
+    result = _submit(account_id, 'trade_complain_revoke', _text(complain_id),
+                     lambda: proto.complain_revoke_request(complain_id, confirm=True),
+                     proto.parse_write_result, proto.COMPLAIN_REVOKE_VERSION)
+    if common.is_failure(result):
+        return result
+    business = complain_business_failure(result)
+    if business:
+        return business
+    return result

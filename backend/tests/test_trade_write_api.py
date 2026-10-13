@@ -677,5 +677,337 @@ class WriteContractTest(TradeWritePageTest):
         self.assertEqual(status, 400)
 
 
+# --------------------------------------------------------------------------- 关单 / 延时 / 提醒（第三十八批）
+
+#: 假响应：关单原因候选（bundle @2598721 读 `data.closeReasons`，**字符串数组**）
+CLOSE_REASONS_OK = {'success': True, 'data': {'closeReasons': ['买家不想要了', '其他原因']},
+                    'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功']}
+
+#: 假响应：平台换了字段名（既不是 closeReasons 也不是 reasonList/reasons/list）
+CLOSE_REASONS_MISSING = {'success': True, 'data': {'somethingElse': 1},
+                         'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功']}
+
+CLOSE_ORDER_OK = {'success': True, 'data': {}, 'message': 'SUCCESS::调用成功',
+                  'ret': ['SUCCESS::调用成功']}
+
+#: 假响应：批量延时（`data.module.{totalNum,successNum,failOrderInfos}`）
+DELAY_OK = {'success': True, 'data': {'module': {
+    'totalNum': 2, 'successNum': 1,
+    'failOrderInfos': [{'orderId': '2', 'errorMsg': '订单状态不允许'}]}},
+    'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功']}
+
+REMIND_OK = {'success': True,
+             'data': {'module': {'totalNum': 1, 'successNum': 1, 'failOrderInfos': []}},
+             'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功']}
+
+POSTAGE_PAY_OK = {'success': True, 'data': {'success': True}, 'message': 'SUCCESS::调用成功',
+                  'ret': ['SUCCESS::调用成功']}
+
+COMPLAIN_REVOKE_OK = {'success': True, 'data': {'success': True}, 'message': 'SUCCESS::调用成功',
+                      'ret': ['SUCCESS::调用成功']}
+
+#: 假响应：撤销投诉的**业务级**失败（顶层 success 仍是 true，失败在 `data.success`）
+COMPLAIN_REVOKE_BIZ_FAIL = {'success': True,
+                            'data': {'success': False, 'failReason': '投诉已处理，无法撤销'},
+                            'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功']}
+
+#: 第三十八批新增：五个写端点 + 一个只读端点
+NEW_WRITE_CALLS = (
+    ('close', BASE + '/%s/orders/1/close', {'close_reason': '买家不想要了'}),
+    ('delay', BASE + '/%s/orders/1/delay', {'days': 3}),
+    ('remind', BASE + '/%s/orders/1/remind', {}),
+    ('postage-pay', BASE + '/%s/refunds/1/postage-pay', {'order_id': '1'}),
+    ('complain-revoke', BASE + '/%s/complaints/1/revoke', {}),
+)
+
+#: 第三十八批之前就有的写端点（闸门同样只在服务层判）
+LEGACY_WRITE_CALLS = (
+    ('ship-dummy', BASE + '/%s/orders/1/ship-dummy', {}),
+    ('adjust-price', BASE + '/%s/orders/1/adjust-price', {'price': '9.9'}),
+)
+
+#: 路径参数 → 测试用的假值（用来遍历**全部** POST 路由）
+PATH_FILL = {'account_id': ACC, 'order_id': '1', 'refund_id': '1', 'complain_id': '1',
+             'contact_id': '1'}
+
+
+def fill_path(path: str) -> str:
+    out = path
+    for key, value in PATH_FILL.items():
+        out = out.replace('{%s}' % key, value)
+    return out
+
+
+def post_routes() -> List[str]:
+    return [route.path for route in trade_write_api.router.routes
+            if 'POST' in getattr(route, 'methods', set())]
+
+
+class ConfirmGateBypassTest(TradeWritePageTest):
+    """★ 第三十八批真 bug 的回归：字符串 `"false"` 曾经能把写闸门强制成「已确认」。
+
+    `bool('false')` 是 `True`（路由层曾用它改写 `confirm`），而 `not 'false'` 是 `False`
+    （服务层曾有 10 处用裸的 `if not confirm:`）。两条路都会让 `{"confirm": "false"}`
+    直接落到建客户端那一步 —— 打包版探针实测 `trade.ship_dummy` 回 **404 `not_found`**
+    而不是 400 `confirmation_required`。现在：路由**原样透传**、服务层一律 `_truthy()`。
+
+    这里遍历**本模块全部 POST 路由**（不手写清单），避免以后新增写接口时漏掉这条。
+    """
+
+    #: 一律不算点头（`_truthy` 只认 True / 'true' / 1）
+    FALSE_LIKE = ('false', 'FALSE', ' false ', 'no', 'yes', '0', 0, '', None, 2)
+
+    def setUp(self):
+        super().setUp()
+        # 「真点头能过闸门」那一条要真发出去，所以备好关单响应
+        self.fake.payloads[proto.CLOSE_BY_SELLER_API] = CLOSE_ORDER_OK
+
+    def test_every_write_route_refuses_false_like_confirm(self):
+        routes = post_routes()
+        # 19 条 POST（22 条路由里有 3 条只读 GET）—— 以后新增写接口时这个数只会涨
+        self.assertGreaterEqual(len(routes), 19, routes)
+        for path in routes:
+            for value in self.FALSE_LIKE:
+                resp = self.post(fill_path(path), {'confirm': value})
+                self.assertEqual(resp.status_code, 400,
+                                 f'{path} confirm={value!r} -> {resp.status_code} {resp.text}')
+                self.assertEqual(resp.json().get('code'), 'confirmation_required',
+                                 f'{path} confirm={value!r}')
+            self.assertEqual(self.fake.calls, [],
+                             f'{path}: 没确认却发了平台请求 {self.fake.apis()}')
+
+    def test_missing_confirm_is_also_refused(self):
+        for path in post_routes():
+            resp = self.post(fill_path(path), {})
+            self.assertEqual(resp.status_code, 400, f'{path} -> {resp.status_code}')
+            self.assertEqual(resp.json().get('code'), 'confirmation_required', path)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_true_like_confirm_does_open_the_gate(self):
+        for value in (True, 'true', 'TRUE', ' true '):
+            self.fake.calls.clear()
+            resp = self.post(BASE + '/%s/orders/1/close' % ACC,
+                             {'close_reason': '买家不想要了', 'confirm': value})
+            self.assertEqual(resp.status_code, 200, f'confirm={value!r} -> {resp.text}')
+            self.assertEqual(self.fake.apis(), [proto.CLOSE_BY_SELLER_API])
+
+
+class CloseAndDelayTest(TradeWritePageTest):
+    """关单 / 延时 / 提醒 / 运费退款 / 撤销投诉（第三十八批）。"""
+
+    def setUp(self):
+        super().setUp()
+        self.fake.payloads.update({
+            proto.CLOSE_REASON_API: CLOSE_REASONS_OK,
+            proto.CLOSE_BY_SELLER_API: CLOSE_ORDER_OK,
+            proto.BATCH_DELAY_API: DELAY_OK,
+            proto.BATCH_REMIND_API: REMIND_OK,
+            proto.POSTAGE_PAY_API: POSTAGE_PAY_OK,
+            proto.COMPLAIN_REVOKE_API: COMPLAIN_REVOKE_OK,
+        })
+
+    # -- 协议层 ----------------------------------------------------------
+
+    def test_close_order_puts_the_same_id_in_tid_and_biz_order_id(self):
+        api, data = proto.close_order_request(123, '买家不想要了', confirm=True)
+        self.assertEqual(api, proto.CLOSE_BY_SELLER_API)
+        self.assertEqual(data, {'tid': '123', 'bizOrderId': '123',
+                                'closeReason': '买家不想要了'})
+        self.assertEqual(proto.CLOSE_BY_SELLER_VERSION, '2.0')
+
+    def test_close_reason_request_is_just_the_order_id(self):
+        api, data = proto.close_reason_request(7)
+        self.assertEqual(api, proto.CLOSE_REASON_API)
+        self.assertEqual(data, {'bizOrderId': '7'})
+
+    def test_delay_time_is_days_in_seconds(self):
+        for days, seconds in ((3, 259200), (5, 432000), (7, 604800), (10, 864000)):
+            _, data = proto.delay_confirm_request(['1'], days, confirm=True)
+            self.assertEqual(data['delayTime'], seconds, days)
+            self.assertEqual(data['orderIdList'], ['1'])
+
+    def test_delay_days_are_the_four_official_ones(self):
+        for bad in (0, 1, 4, 30, 'x', None):
+            with self.assertRaises(ValueError):
+                proto.delay_confirm_request(['1'], bad, confirm=True)
+
+    def test_order_id_list_takes_arrays_and_comma_strings(self):
+        self.assertEqual(proto.order_id_list(['1', '2', '1']), ['1', '2'])
+        self.assertEqual(proto.order_id_list('1,2, 3'), ['1', '2', '3'])
+        self.assertEqual(proto.order_id_list('1，2'), ['1', '2'])
+
+    def test_order_id_list_rejects_empty_and_too_many(self):
+        for bad in ('', '  ', [], None, ',,'):
+            with self.assertRaises(ValueError):
+                proto.order_id_list(bad)
+        with self.assertRaises(ValueError):
+            proto.order_id_list([str(i) for i in range(proto.MAX_ORDER_IDS + 1)])
+
+    def test_postage_pay_type_is_alipay_or_deposit(self):
+        for pay_type in ('alipay', 'deposit'):
+            _, data = proto.postage_refund_pay_request(1, 2, pay_type, confirm=True)
+            self.assertEqual(data['payType'], pay_type)
+        with self.assertRaises(ValueError):
+            proto.postage_refund_pay_request(1, 2, 'wechat', confirm=True)
+
+    def test_parse_close_reasons_never_invents_a_list(self):
+        parsed = proto.parse_close_reasons(CLOSE_REASONS_OK)
+        self.assertEqual(parsed['close_reasons'], ['买家不想要了', '其他原因'])
+        missing = proto.parse_close_reasons(CLOSE_REASONS_MISSING)
+        self.assertIsNone(missing['close_reasons'])
+        self.assertIn('somethingElse', missing['raw_keys'])
+
+    def test_parse_batch_result_keeps_none_when_module_is_missing(self):
+        parsed = proto.parse_batch_result({'success': True, 'data': {}})
+        self.assertIsNone(parsed['total_num'])
+        self.assertIsNone(parsed['success_num'])
+        self.assertIsNone(parsed['fail_order_infos'])
+
+    def test_the_five_new_apis_are_in_the_write_whitelist(self):
+        for api in (proto.CLOSE_BY_SELLER_API, proto.BATCH_DELAY_API, proto.BATCH_REMIND_API,
+                    proto.POSTAGE_PAY_API, proto.COMPLAIN_REVOKE_API):
+            self.assertIn(api, proto.WRITE_APIS)
+        self.assertIn(proto.CLOSE_REASON_API, proto.READ_APIS)
+        self.assertNotIn(proto.CLOSE_REASON_API, proto.WRITE_APIS)
+
+    def test_the_read_only_layer_blacklists_the_new_write_apis(self):
+        for api in (proto.POSTAGE_PAY_API, proto.COMPLAIN_REVOKE_API,
+                    proto.CLOSE_BY_SELLER_API):
+            self.assertIn(api, trade_proto.WRITE_APIS)
+
+    # -- 只读：关单原因 --------------------------------------------------
+
+    def test_close_reasons_is_read_only_and_has_no_confirm_gate(self):
+        resp = self.get(BASE + '/%s/orders/1/close-reasons' % ACC)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertEqual(data['close_reasons'], ['买家不想要了', '其他原因'])
+        self.assertEqual(data['warnings'], [])
+        self.assertEqual(self.fake.apis(), [proto.CLOSE_REASON_API])
+        self.assertEqual(self.fake.call_of(proto.CLOSE_REASON_API)['data'], {'bizOrderId': '1'})
+
+    def test_close_reasons_missing_key_gives_a_warning_and_null(self):
+        self.fake.payloads[proto.CLOSE_REASON_API] = CLOSE_REASONS_MISSING
+        resp = self.get(BASE + '/%s/orders/1/close-reasons' % ACC)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertIsNone(data['close_reasons'])
+        self.assertEqual([w['code'] for w in data['warnings']], ['close_reasons_missing'])
+
+    def test_close_reasons_requires_the_order_id(self):
+        payload = trade_write_svc.close_reasons(ACC, '   ')
+        self.assertFalse(payload.get('success'), payload)
+        self.assertEqual(payload['code'], 'invalid_fields')
+        self.assertEqual(self.fake.calls, [])
+
+    # -- 写：五个动作 ----------------------------------------------------
+
+    def test_close_order_happy_path(self):
+        data = self.ok_data(BASE + '/%s/orders/9/close' % ACC,
+                            {'close_reason': '买家不想要了', 'confirm': True})
+        self.assertEqual(data['action'], 'trade_close_order')
+        self.assertEqual(self.fake.call_of(proto.CLOSE_BY_SELLER_API)['data'],
+                         {'tid': '9', 'bizOrderId': '9', 'closeReason': '买家不想要了'})
+        self.assertEqual(self.fake.call_of(proto.CLOSE_BY_SELLER_API)['v'], '2.0')
+        rows = self.logs()
+        self.assertTrue(any(row['action'] == 'trade_close_order' and row['success']
+                            for row in rows), [dict(r) for r in rows])
+
+    def test_close_order_needs_a_reason(self):
+        payload = self.fail(BASE + '/%s/orders/9/close' % ACC, {'confirm': True})
+        self.assertEqual(payload['code'], 'invalid_fields')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_delay_confirm_reports_counts(self):
+        data = self.ok_data(BASE + '/%s/orders/1/delay' % ACC,
+                            {'order_ids': ['1', '2'], 'days': 3, 'confirm': True})
+        self.assertEqual(data['action'], 'trade_delay_confirm')
+        self.assertEqual(data['total_num'], 2)
+        self.assertEqual(data['success_num'], 1)
+        self.assertEqual(data['fail_order_infos'],
+                         [{'orderId': '2', 'errorMsg': '订单状态不允许'}])
+        self.assertEqual(self.fake.call_of(proto.BATCH_DELAY_API)['data'],
+                         {'orderIdList': ['1', '2'], 'delayTime': 259200})
+        rows = self.logs()
+        self.assertTrue(any(row['action'] == 'trade_delay_confirm' and row['success']
+                            for row in rows), [dict(r) for r in rows])
+
+    def test_delay_without_order_ids_uses_the_path_order(self):
+        self.ok_data(BASE + '/%s/orders/7/delay' % ACC, {'days': 5, 'confirm': True})
+        self.assertEqual(self.fake.call_of(proto.BATCH_DELAY_API)['data'],
+                         {'orderIdList': ['7'], 'delayTime': 432000})
+
+    def test_remind_confirm_passes_remind_all(self):
+        data = self.ok_data(BASE + '/%s/orders/1/remind' % ACC,
+                            {'order_ids': '1,2', 'remind_all': True, 'confirm': True})
+        self.assertEqual(data['action'], 'trade_remind_confirm')
+        self.assertEqual(self.fake.call_of(proto.BATCH_REMIND_API)['data'],
+                         {'orderIdList': ['1', '2'], 'remindAllOrder': True})
+
+    def test_postage_pay_keeps_amount_out_of_the_request(self):
+        data = self.ok_data(BASE + '/%s/refunds/5/postage-pay' % ACC,
+                            {'order_id': '1', 'amount': '12.30', 'confirm': True})
+        self.assertEqual(data['action'], 'trade_postage_refund_pay')
+        self.assertEqual(data['amount'], '12.30')
+        self.assertEqual(data['pay_type'], 'alipay')
+        sent = self.fake.call_of(proto.POSTAGE_PAY_API)['data']
+        self.assertNotIn('amount', sent)
+        self.assertEqual(sent, {'orderId': '1', 'refundId': '5', 'payType': 'alipay'})
+
+    def test_complain_revoke_happy_path(self):
+        data = self.ok_data(BASE + '/%s/complaints/3/revoke' % ACC, {'confirm': True})
+        self.assertEqual(data['action'], 'trade_complain_revoke')
+        self.assertEqual(self.fake.call_of(proto.COMPLAIN_REVOKE_API)['data'],
+                         {'complainId': '3'})
+
+    def test_complain_revoke_business_failure_is_502(self):
+        self.fake.payloads[proto.COMPLAIN_REVOKE_API] = COMPLAIN_REVOKE_BIZ_FAIL
+        payload = self.fail(BASE + '/%s/complaints/3/revoke' % ACC, {'confirm': True},
+                            status=502)
+        self.assertEqual(payload['code'], 'protocol_error')
+        self.assertIn('无法撤销', json.dumps(payload, ensure_ascii=False))
+        self.assertEqual(self.login_state(), 'active')
+
+    # -- 平台拒绝 / 凭据 ------------------------------------------------
+
+    def test_platform_refusal_is_502_and_not_a_logout(self):
+        self.fake.payloads[proto.BATCH_DELAY_API] = UNAUTHORIZED
+        payload = self.fail(BASE + '/%s/orders/1/delay' % ACC,
+                            {'days': 3, 'confirm': True}, status=502)
+        self.assertEqual(payload['code'], 'protocol_error')
+        self.assertEqual(self.login_state(), 'active')
+
+    def test_missing_cookie_is_409_and_sends_nothing(self):
+        db.execute('DELETE FROM account_credentials WHERE account_id=?', (ACC,))
+        payload = self.fail(BASE + '/%s/orders/1/close' % ACC,
+                            {'close_reason': 'x', 'confirm': True}, status=409)
+        self.assertEqual(payload['code'], 'verification_required')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_unknown_account_is_404_and_sends_nothing(self):
+        payload = self.fail(BASE + '/no-such-acc/orders/1/close',
+                            {'close_reason': 'x', 'confirm': True}, status=404)
+        self.assertEqual(payload['code'], 'not_found')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_session_expired_is_409_and_marks_need_relogin(self):
+        self.fake.errors[proto.CLOSE_BY_SELLER_API] = SessionExpiredError(
+            'FAIL_SYS_SESSION_EXPIRED::Session过期')
+        self.fail(BASE + '/%s/orders/1/close' % ACC,
+                  {'close_reason': 'x', 'confirm': True}, status=409)
+        self.assertEqual(self.login_state(), 'need_relogin')
+
+    # -- 路由形状 --------------------------------------------------------
+
+    def test_new_routes_are_registered_with_the_right_methods(self):
+        paths = {(route.path, tuple(sorted(getattr(route, 'methods', ()))))
+                 for route in trade_write_api.router.routes}
+        self.assertIn((BASE + '/{account_id}/orders/{order_id}/close-reasons', ('GET',)), paths)
+        for suffix in ('/close', '/delay', '/remind'):
+            self.assertIn((BASE + '/{account_id}/orders/{order_id}' + suffix, ('POST',)), paths)
+        self.assertIn((BASE + '/{account_id}/refunds/{refund_id}/postage-pay', ('POST',)), paths)
+        self.assertIn((BASE + '/{account_id}/complaints/{complain_id}/revoke', ('POST',)), paths)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

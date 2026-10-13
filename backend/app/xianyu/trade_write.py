@@ -90,6 +90,56 @@ VERIFY_URL_VERSION = '1.0'
 VERIFY_SCENE_REFUND = 'REFUND_PC'
 VERIFY_CALLBACK_URL = 'https://seller.goofish.com/?site=COMMONPRO#/seller-trade/refund-manage'
 
+#: 关闭订单（卖家主动关单）。bundle 偏移 **2762506**：
+#: `hO({api:"...trade.merchant.close.by.seller",v:"2.0",data:{tid:e,bizOrderId:e,closeReason:t}})`
+#: —— 官方把**同一个订单号**同时塞进 `tid` 与 `bizOrderId`（`tid` 是历史字段，别自己编）。
+#: 关单原因必须先选（官方提示「请选择订单取消原因~」），候选来自下面那个只读接口。
+#: 官方文案：「确认关闭后，请确保已和买家协商达成一致，否则您将面临投诉或赔偿」。
+CLOSE_BY_SELLER_API = 'mtop.taobao.idle.trade.merchant.close.by.seller'
+CLOSE_BY_SELLER_VERSION = '2.0'
+
+#: 关单原因候选（**只读**）。bundle 偏移 2585779：
+#: `{api:"mtop.taobao.idle.trade.order.close.reason.get",v:"1.0",data:{bizOrderId}}`；
+#: 消费点（偏移 2598721）读 `resp.data.closeReasons` —— **字符串数组**，官方直接
+#: `map(r => ({label: r, value: r}))` 当选项，没有 code/desc 之分。
+CLOSE_REASON_API = 'mtop.taobao.idle.trade.order.close.reason.get'
+CLOSE_REASON_VERSION = '1.0'
+
+#: 延长收货时间（批量）。bundle 偏移 **2758810**：
+#: `hO({api:"...trade.merchant.batch.delay.confirm",v:"1.0",data:{orderIdList,delayTime}})`；
+#: `delayTime` 是**秒**：官方 `60*(p||0)*60*24`，`p` 取 3/5/7/10（天）。
+#: 响应读 `data.module.{totalNum,successNum,failOrderInfos[{orderId,errorMsg}]}`。
+BATCH_DELAY_API = 'mtop.taobao.idle.trade.merchant.batch.delay.confirm'
+BATCH_DELAY_VERSION = '1.0'
+DELAY_DAYS: Tuple[int, ...] = (3, 5, 7, 10)
+SECONDS_PER_DAY = 24 * 60 * 60
+
+#: 提醒买家确认收货（批量）。bundle 偏移 **2023848**：
+#: `hO({api:"...trade.merchant.batch.remind.confirm",v:"1.0",data:{orderIdList,remindAllOrder}})`。
+BATCH_REMIND_API = 'mtop.taobao.idle.trade.merchant.batch.remind.confirm'
+BATCH_REMIND_VERSION = '1.0'
+
+#: 支付运费退款（卖家承担运费）。bundle 偏移 **2835556**：
+#: `hO({api:"mtop.taobao.idle.merchant.postage.refund.pay",v:"1.0",
+#:     ttid:"1@tbwang_mac_1.0.0#pc",data:{orderId,refundId,payType},needLoginPC:!0})`；
+#: `payType` 官方默认 `'alipay'`（另一个取值是 `'deposit'`，界面文案走保证金）。
+#: **这是真的付钱**，所以除了 confirm 之外还要求调用方把金额念清楚（见服务层）。
+POSTAGE_PAY_API = 'mtop.taobao.idle.merchant.postage.refund.pay'
+POSTAGE_PAY_VERSION = '1.0'
+PAY_TYPES: Tuple[str, ...] = ('alipay', 'deposit')
+PC_TTID = '1@tbwang_mac_1.0.0#pc'
+
+#: 撤销投诉申请。bundle 偏移 **2814089**：
+#: `hO({api:"mtop.taobao.idle.cco.shop.complain.apply.revoke",v:"1.0",
+#:     data:{complainId},needLoginPC:!0})`；响应读 `data.success` + `data.failReason`
+#: （与投诉拒绝同族，用 `complain_failure()` 判）。
+COMPLAIN_REVOKE_API = 'mtop.taobao.idle.cco.shop.complain.apply.revoke'
+COMPLAIN_REVOKE_VERSION = '1.0'
+
+#: 批量类接口的单次订单数上限（官方界面按页勾选，一页最多 10~20；这里给足余量）。
+MAX_ORDER_IDS = 50
+
+
 #: 本模块声明的全部写接口（用于自检与文档；`trade.py` 的黑名单是它的超集）。
 WRITE_APIS: Tuple[str, ...] = (
     SHIP_OFFLINE_API,
@@ -99,11 +149,16 @@ WRITE_APIS: Tuple[str, ...] = (
     REFUND_REFUSE_API,
     RATE_CREATE_API,
     COMPLAIN_REFUSE_API,
+    CLOSE_BY_SELLER_API,
+    BATCH_DELAY_API,
+    BATCH_REMIND_API,
+    POSTAGE_PAY_API,
+    COMPLAIN_REVOKE_API,
 ) + tuple(COMPLAIN_PROOF_APIS.values())
 
-#: 本模块里**只读**的接口（查退款凭证）。单独列出来，免得被误当成写接口加进黑名单，
-#: 也免得有人给它加 confirm 闸门 —— 它不改变任何平台状态。
-READ_APIS: Tuple[str, ...] = (VERIFY_URL_API,)
+#: 本模块里**只读**的接口（查退款凭证、查关单原因）。单独列出来，免得被误当成写接口
+#: 加进黑名单，也免得有人给它加 confirm 闸门 —— 它们不改变任何平台状态。
+READ_APIS: Tuple[str, ...] = (VERIFY_URL_API, CLOSE_REASON_API)
 
 
 class WriteNotConfirmed(RuntimeError):
@@ -301,8 +356,96 @@ def complain_proof_request(complain_id: Any, proof_desc: Any, proof_urls: Any,
     return COMPLAIN_PROOF_APIS[kind], _complain_data(complain_id, proof_desc, proof_urls)
 
 
-# --------------------------------------------------------------------------- 响应解析
+def order_id_list(value: Any) -> List[str]:
+    """把「订单号列表」统一成字符串列表（收数组，也收逗号/中文逗号串）。
 
+    UI 传数组、MCP/AI 传逗号串，两条路都必须能用；去重保序、上限 `MAX_ORDER_IDS`。
+    """
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.replace('，', ',').split(',')]
+        items = [part for part in parts if part]
+    else:
+        items = [_text(item) for item in _list_of(value)]
+    seen: List[str] = []
+    for item in items:
+        text = _text(item)
+        if text and text not in seen:
+            seen.append(text)
+    if not seen:
+        raise ValueError('订单号不能为空')
+    if len(seen) > MAX_ORDER_IDS:
+        raise ValueError(f'一次最多处理 {MAX_ORDER_IDS} 个订单')
+    return seen
+
+
+def close_order_request(order_id: Any, close_reason: Any,
+                        *, confirm: bool = False) -> Tuple[str, Dict[str, Any]]:
+    """关闭订单。`tid` 与 `bizOrderId` 都是同一个订单号（官方就是这么发的）。"""
+    require_confirm(confirm, '关闭订单')
+    order = _text(order_id)
+    if not order:
+        raise ValueError('订单号不能为空')
+    reason = _text(close_reason).strip()
+    if not reason:
+        raise ValueError('关闭原因不能为空（候选见 close_reason_request）')
+    return CLOSE_BY_SELLER_API, {'tid': order, 'bizOrderId': order, 'closeReason': reason}
+
+
+def close_reason_request(order_id: Any) -> Tuple[str, Dict[str, Any]]:
+    """关单原因候选（只读，不要 confirm）。"""
+    order = _text(order_id)
+    if not order:
+        raise ValueError('订单号不能为空')
+    return CLOSE_REASON_API, {'bizOrderId': order}
+
+
+def delay_confirm_request(order_ids: Any, days: Any,
+                          *, confirm: bool = False) -> Tuple[str, Dict[str, Any]]:
+    """延长收货时间。`days` 只认官方那四档（3/5/7/10），`delayTime` 换算成秒。"""
+    require_confirm(confirm, '延长收货时间')
+    ids = order_id_list(order_ids)
+    value = _int_or_none(days)
+    if value not in DELAY_DAYS:
+        raise ValueError('延长天数只能是 %s 之一' % '/'.join(str(day) for day in DELAY_DAYS))
+    return BATCH_DELAY_API, {'orderIdList': ids, 'delayTime': value * SECONDS_PER_DAY}
+
+
+def remind_confirm_request(order_ids: Any, remind_all: Any = False,
+                           *, confirm: bool = False) -> Tuple[str, Dict[str, Any]]:
+    """提醒买家确认收货。`remindAllOrder` 官方是布尔。"""
+    require_confirm(confirm, '提醒确认收货')
+    ids = order_id_list(order_ids)
+    flag = remind_all is True or _text(remind_all).lower() in ('true', '1')
+    return BATCH_REMIND_API, {'orderIdList': ids, 'remindAllOrder': flag}
+
+
+def postage_refund_pay_request(order_id: Any, refund_id: Any, pay_type: Any = 'alipay',
+                               *, confirm: bool = False) -> Tuple[str, Dict[str, Any]]:
+    """支付运费退款（**真的付钱**）。`payType` 只认 `alipay` / `deposit`。"""
+    require_confirm(confirm, '支付运费退款')
+    order = _text(order_id)
+    refund = _text(refund_id)
+    if not order:
+        raise ValueError('订单号不能为空')
+    if not refund:
+        raise ValueError('退款单号不能为空')
+    kind = _text(pay_type).strip() or 'alipay'
+    if kind not in PAY_TYPES:
+        raise ValueError('付款方式只能是 %s 之一' % '/'.join(PAY_TYPES))
+    return POSTAGE_PAY_API, {'orderId': order, 'refundId': refund, 'payType': kind}
+
+
+def complain_revoke_request(complain_id: Any,
+                            *, confirm: bool = False) -> Tuple[str, Dict[str, Any]]:
+    """撤销投诉申请。"""
+    require_confirm(confirm, '撤销投诉申请')
+    complain = _text(complain_id)
+    if not complain:
+        raise ValueError('投诉单号不能为空')
+    return COMPLAIN_REVOKE_API, {'complainId': complain}
+
+
+# --------------------------------------------------------------------------- 响应解析
 
 def parse_write_result(raw: Any) -> Dict[str, Any]:
     """写接口响应的公共部分：只透出平台**确实给了**的东西，缺就是 None。"""
@@ -371,3 +514,41 @@ def complain_failure(raw: Any) -> str:
     if data.get('success') is False:
         return _text(data.get('failReason')) or '平台拒绝了本次投诉操作'
     return ''
+
+
+def parse_close_reasons(raw: Any) -> Dict[str, Any]:
+    """关单原因候选。官方读 `data.closeReasons`，元素是**字符串**。
+
+    认不出列表键一律 `None`（不是 `[]`）—— 「平台没给」和「平台给了空列表」是两件事。
+    """
+    raw = decode_payload(raw)
+    data = decode_payload(raw.get('data')) if isinstance(raw, dict) else None
+    if not isinstance(data, dict):
+        data = raw if isinstance(raw, dict) else {}
+    reasons = None
+    for key in ('closeReasons', 'reasonList', 'reasons', 'list'):
+        value = data.get(key)
+        if isinstance(value, list):
+            reasons = [_text(item) for item in value if _text(item)]
+            break
+    return {
+        'close_reasons': reasons,
+        'raw_keys': sorted(data.keys())[:20] if isinstance(data, dict) else [],
+    }
+
+
+def parse_batch_result(raw: Any) -> Dict[str, Any]:
+    """批量写（延长收货 / 提醒收货）的结果：`data.module.{totalNum,successNum,failOrderInfos}`。
+
+    官方在没有 module 时读不到计数 —— 那种情况一律 `None`，绝不补 0。
+    """
+    payload = parse_write_result(raw)
+    body = payload['platform_body'] if isinstance(payload['platform_body'], dict) else {}
+    module = body.get('module') if isinstance(body.get('module'), dict) else body
+    module = module if isinstance(module, dict) else {}
+    payload.update({
+        'total_num': _int_or_none(module.get('totalNum')),
+        'success_num': _int_or_none(module.get('successNum')),
+        'fail_order_infos': _or_none(module.get('failOrderInfos')),
+    })
+    return payload

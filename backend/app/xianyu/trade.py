@@ -99,6 +99,10 @@ WRITE_APIS = (
     'mtop.taobao.idle.logistics.merchant.consign.dummy',
     'mtop.taobao.idle.cco.shop.complain.submit.active.proof',
     'mtop.taobao.idle.cco.shop.complain.submit.passive.proof',
+    # 第三十八批（订单页写能力补全）新实现的 5 个写接口：黑名单是写协议层的超集，
+    # 漏一个 `test_trade_write_api.py` 的断言就红。
+    'mtop.taobao.idle.merchant.postage.refund.pay',
+    'mtop.taobao.idle.cco.shop.complain.apply.revoke',
 )
 
 

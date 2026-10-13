@@ -44,7 +44,7 @@ def ship_offline(
         body.get('mail_no'),
         body.get('cp_code'),
         body.get('address_id'),
-        confirm=bool(body.get('confirm')),
+        confirm=body.get('confirm'),
     ))
 
 
@@ -61,7 +61,7 @@ def ship_dummy(
         order_id,
         body.get('trade_text', ''),
         body.get('pic_urls') or (),
-        confirm=bool(body.get('confirm')),
+        confirm=body.get('confirm'),
     ))
 
 
@@ -78,7 +78,7 @@ def adjust_price(
         order_id,
         body.get('modify_fee'),
         body.get('new_transport_fee'),
-        confirm=bool(body.get('confirm')),
+        confirm=body.get('confirm'),
     ))
 
 
@@ -109,7 +109,7 @@ def refund_agree(
         account_id,
         refund_id,
         body.get('auth_token'),
-        confirm=bool(body.get('confirm')),
+        confirm=body.get('confirm'),
     ))
 
 
@@ -132,7 +132,7 @@ def refund_refuse(
         body.get('proof_desc', ''),
         body.get('proof_urls') or (),
         body.get('negotiation'),
-        confirm=bool(body.get('confirm')),
+        confirm=body.get('confirm'),
     ))
 
 
@@ -153,7 +153,7 @@ def rate_create(
         body.get('rate', -1),
         body.get('image_urls') or (),
         bool(body.get('anonymous')),
-        confirm=bool(body.get('confirm')),
+        confirm=body.get('confirm'),
     ))
 
 
@@ -170,7 +170,7 @@ def complain_refuse(
         complain_id,
         body.get('proof_desc', ''),
         body.get('proof_urls') or (),
-        confirm=bool(body.get('confirm')),
+        confirm=body.get('confirm'),
     ))
 
 
@@ -191,7 +191,7 @@ def complain_proof(
         body.get('proof_desc', ''),
         body.get('proof_urls') or (),
         body.get('kind') or 'sellerSubmitProof',
-        confirm=bool(body.get('confirm')),
+        confirm=body.get('confirm'),
     ))
 
 
@@ -316,3 +316,100 @@ def order_modify_address_refuse(
     """拒绝买家改地址：`…merchant.order.address.modify.refuse`。"""
     return _envelope(trade_write.order_address_refuse(
         account_id, order_id, body.get('deliver_id'), confirm=body.get('confirm')))
+
+
+# --------------------------------------------------------------------------- 关单 / 延时 / 提醒（写）
+# 第三十八批：官方订单页的另外几个动作。证据见 `xianyu/trade_write.py` 顶部常量注释。
+# `confirm` 一律**原样**交服务层判 —— 路由层不许写 `bool(...)`，因为 `bool('false')` 是 True，
+# 那会把写闸门强制成「已确认」（第三十八批就是这么抓到 8 处 + `security_write.py` 3 处的）。
+
+
+@router.get('/{account_id}/orders/{order_id}/close-reasons')
+def order_close_reasons(
+    account_id: str,
+    order_id: str,
+    user=Depends(current_user),
+):
+    """关单原因候选（**只读**，没有 `confirm`）：`…trade.order.close.reason.get`。
+
+    官方关单弹窗先调它，把 `data.closeReasons`（字符串数组）直接当选项。平台没给列表键时
+    `close_reasons` 是 `null` + 一条中文 warning，**不替你编原因**。
+    """
+    return _envelope(trade_write.close_reasons(account_id, order_id))
+
+
+@router.post('/{account_id}/orders/{order_id}/close')
+def order_close(
+    account_id: str,
+    order_id: str,
+    body: Dict[str, Any] = Body(default={}, description='{close_reason, confirm}'),
+    user=Depends(current_user),
+):
+    """关闭订单：`…trade.merchant.close.by.seller` v2.0。**不可撤销**。
+
+    `close_reason` 必填（官方也是必选），候选来自上面那个只读接口。官方原话提醒：
+    「确认关闭后，请确保已和买家协商达成一致，否则您将面临投诉或赔偿」。
+    """
+    return _envelope(trade_write.close_order(
+        account_id, order_id, body.get('close_reason'), confirm=body.get('confirm')))
+
+
+@router.post('/{account_id}/orders/{order_id}/delay')
+def order_delay_confirm(
+    account_id: str,
+    order_id: str,
+    body: Dict[str, Any] = Body(
+        default={}, description='{days, order_ids?, confirm}，days ∈ 3/5/7/10'),
+    user=Depends(current_user),
+):
+    """延长收货时间：`…trade.merchant.batch.delay.confirm`（`delayTime` 平台要**秒**）。
+
+    `order_ids` 不给就只处理路径里那一个订单；给了就是批量（收数组，也收逗号串）。
+    """
+    return _envelope(trade_write.delay_confirm(
+        account_id, body.get('order_ids') or order_id, body.get('days'),
+        confirm=body.get('confirm')))
+
+
+@router.post('/{account_id}/orders/{order_id}/remind')
+def order_remind_confirm(
+    account_id: str,
+    order_id: str,
+    body: Dict[str, Any] = Body(
+        default={}, description='{order_ids?, remind_all?, confirm}'),
+    user=Depends(current_user),
+):
+    """提醒买家确认收货：`…trade.merchant.batch.remind.confirm`。"""
+    return _envelope(trade_write.remind_confirm(
+        account_id, body.get('order_ids') or order_id, body.get('remind_all', False),
+        confirm=body.get('confirm')))
+
+
+@router.post('/{account_id}/refunds/{refund_id}/postage-pay')
+def refund_postage_pay(
+    account_id: str,
+    refund_id: str,
+    body: Dict[str, Any] = Body(
+        default={}, description='{order_id, pay_type?, amount?, confirm}'),
+    user=Depends(current_user),
+):
+    """支付运费退款：`mtop.taobao.idle.merchant.postage.refund.pay` —— **真的付钱**。
+
+    `pay_type` 取 `alipay`（默认）/ `deposit`；`amount` 不参与请求，只进审计与返回值，
+    方便事后对账（调用方应当先把它念给用户看再确认）。
+    """
+    return _envelope(trade_write.postage_refund_pay(
+        account_id, body.get('order_id'), refund_id, body.get('pay_type') or 'alipay',
+        body.get('amount'), confirm=body.get('confirm')))
+
+
+@router.post('/{account_id}/complaints/{complain_id}/revoke')
+def complain_revoke(
+    account_id: str,
+    complain_id: str,
+    body: Dict[str, Any] = Body(default={}, description='{confirm}'),
+    user=Depends(current_user),
+):
+    """撤销投诉申请：`mtop.taobao.idle.cco.shop.complain.apply.revoke`。"""
+    return _envelope(trade_write.complain_revoke(
+        account_id, complain_id, confirm=body.get('confirm')))
