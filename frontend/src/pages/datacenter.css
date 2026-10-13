@@ -273,3 +273,53 @@
   overflow: auto;
   margin-top: 6px;
 }
+
+/* ------------------------------------------------------------------ *
+ * 客服数据页的三张明细表（只读）—— 列与中文标题全取平台表头，
+ * 横向滚动交给全局 .table-wrap
+ * ------------------------------------------------------------------ */
+
+.dc-tabs {
+  margin-bottom: 12px;
+}
+
+.dc-list-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.dc-list-title {
+  font-weight: 600;
+}
+
+.dc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.dc-table th,
+.dc-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-soft);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.dc-table th {
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.dc-cell-null {
+  color: var(--text-mute);
+}
+
+.dc-pager {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
