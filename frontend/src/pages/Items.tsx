@@ -347,6 +347,8 @@ export function ItemsPage() {
   const [editing, setEditing] = useState<Item | null>(null)
   /** 行内「改价/库存」：只改这两个字段，不整份回提表单（见 `QuickEditModal` 的注释）。 */
   const [quickEdit, setQuickEdit] = useState<Item | null>(null)
+  /** 行内「粉丝价」：官方 `item.operate.fansprice`，给三个粉丝分组设专属价（整份替换，见 `FansPriceModal`）。 */
+  const [fansPrice, setFansPrice] = useState<Item | null>(null)
   const [publishOpen, setPublishOpen] = useState(false)
   const [batchOpen, setBatchOpen] = useState(false)
   const [logsOpen, setLogsOpen] = useState(false)
@@ -995,6 +997,13 @@ export function ItemsPage() {
                           >
                             改价/库存
                           </button>
+                          <button
+                            className="btn sm ghost"
+                            title={`粉丝价：官方 item.operate.fansprice，给全部粉 / 老粉 / 已购粉分别设专属价（平台是整份替换，留空的组会被清空）（${item.title || item.item_id}）`}
+                            onClick={() => setFansPrice(item)}
+                          >
+                            粉丝价
+                          </button>
                           <button className="btn sm ghost" onClick={() => setShelf(item, onsale ? 'delist' : 'relist')}>
                             {onsale ? '下架' : '上架'}
                           </button>
@@ -1084,6 +1093,17 @@ export function ItemsPage() {
           onClose={() => setQuickEdit(null)}
           onDone={() => {
             setQuickEdit(null)
+            items.reload()
+          }}
+        />
+      )}
+
+      {fansPrice && (
+        <FansPriceModal
+          item={fansPrice}
+          onClose={() => setFansPrice(null)}
+          onDone={() => {
+            setFansPrice(null)
             items.reload()
           }}
         />
@@ -3086,6 +3106,346 @@ function QuickEditModal({
               </div>
               <div className="dim" style={{ fontSize: 12 }}>
                 只有上面列出的字段会提交；没列出来的保持闲鱼上的原值。
+              </div>
+              <div className="it-idlist mono">商品 ID：{item.item_id}</div>
+            </>
+          }
+          onCancel={() => setConfirming(false)}
+          onConfirm={submit}
+        />
+      )}
+    </>
+  )
+}
+
+/* ---------------- 粉丝价（官方 item.operate.fansprice） ---------------- */
+
+/**
+ * 官方三个粉丝分组，`fansGroup` 逐字对齐平台：`all` / `old` / `buy`。
+ * 官方列名是「全部粉-粉丝价」「老粉-粉丝价」「已购粉-粉丝价」。
+ */
+const FANS_GROUPS = ['all', 'old', 'buy'] as const
+type FansGroup = (typeof FANS_GROUPS)[number]
+
+const FANS_GROUP_LABEL: Record<FansGroup, string> = {
+  all: '全部粉',
+  old: '老粉',
+  buy: '已购粉',
+}
+
+/** 官方口径：`min .01`、`max 99999999.99`、最多 2 位小数。 */
+const FANS_PRICE_MAX = 99999999.99
+
+/**
+ * 读回来的配置。
+ * **`prices === null` = 平台没返回配置**，与「三个组都没配」不是一回事，界面必须分开说。
+ */
+interface FansPriceReadResult {
+  account_id: string
+  item_id: string
+  prices: Array<{ fans_group?: string; price_string?: string }> | null
+  /** 三个键恒在；拿不到就是 `null`（显示 `-`，**不补 0**）。 */
+  groups?: Partial<Record<FansGroup, string | null>> | null
+  api?: string
+  source?: string
+  warnings?: string[]
+  fetched_at?: string
+}
+
+interface FansPriceWriteResult {
+  action?: string
+  saved?: boolean
+  item_id?: string
+  /** 平台真正收到的**整份**列表（不是「改动的那几组」）。 */
+  submitted?: Array<{ fans_group?: string; price_string?: string }>
+  warnings?: string[]
+  fetched_at?: string
+}
+
+function fansGroupLabel(group?: string | null): string {
+  return group === 'all' || group === 'old' || group === 'buy' ? FANS_GROUP_LABEL[group] : String(group ?? '-')
+}
+
+/** 读回来的值可能是 `null`（平台没给这个组）：`null` 与 `''` 要分得清，所以不写成 `?? ''` 混在一起。 */
+function fansText(value: string | null | undefined): string {
+  return value === null || value === undefined ? '' : String(value)
+}
+
+/**
+ * 本地预校验，口径与文案都照官方：非空、是数字、最多 2 位小数、`> 0`、`<= 99999999.99`。
+ * 返回空字符串 = 这一组合法。
+ */
+function fansPriceBad(value: string): string {
+  const text = value.trim()
+  if (text === '') return ''
+  if (!/^\d+(\.\d+)?$/.test(text)) return '粉丝价只能是数字，请修改'
+  if (!/^\d+(\.\d{1,2})?$/.test(text)) return '粉丝价最多为2位小数，请修改'
+  const num = Number(text)
+  if (!Number.isFinite(num)) return '粉丝价只能是数字，请修改'
+  if (num <= 0) return '粉丝价必须大于0，请修改'
+  if (num > FANS_PRICE_MAX) return `粉丝价不能超过 ${FANS_PRICE_MAX}，请修改`
+  return ''
+}
+
+/**
+ * 粉丝价的**唯一写出口**：请求体一律 `{...body, confirm: true}` 字面量（由 `postItemWrite` 保证），
+ * 没带 `confirm: true` 后端直接 400 `confirmation_required`，不会替你猜。
+ *
+ * **平台是整份替换**（官方 bundle `...item.operate.fansprice.set` 的载荷逐字就是
+ * `{itemId, fansPriceConfig:{itemId, fansPriceList:[…]}}`）：`fansPriceList` 里没有的组
+ * 等于「没配置」⇒ 传进来的 `groups` 是「要保留/设置的**完整**集合」，**没传的组会被清空**。
+ * 所以这里绝不「只发改动过的那一组」—— 那是按组增量的语义，会顺手清掉另外两组。
+ */
+function postFansPrice<T>(
+  accountId: string,
+  itemId: string,
+  groups: Partial<Record<FansGroup, string>>,
+): Promise<T> {
+  return postItemWrite<T>(`/api/items/${encodeURIComponent(accountId)}/${encodeURIComponent(itemId)}/fans-price`, {
+    groups,
+  })
+}
+
+/**
+ * 行内「粉丝价」弹窗：读 `GET /api/items/{account_id}/{item_id}/fans-price`、
+ * 写 `POST` 同路径。
+ *
+ * 官方行为（`item-main.js` 逐字）：弹窗**预填当前三组值**，保存时**把三组一起发** ——
+ * 是整份替换，不是按组增量。所以：
+ *   - 输入框留空 = 这一组不在提交列表里 = **这一组会被清空**（文案必须写在明处）；
+ *   - 三组全空不发请求（后端也会 400 `invalid_fields`，这里先挡住，别让用户白点一次）。
+ */
+function FansPriceModal({ item, onClose, onDone }: { item: Item; onClose: () => void; onDone: () => void }) {
+  const toast = useToast()
+  const [values, setValues] = useState<Record<FansGroup, string>>({ all: '', old: '', buy: '' })
+  /** 点「保存粉丝价」先弹二次确认，确认后才真的发请求。 */
+  const [confirming, setConfirming] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  const current = useAsync<FansPriceReadResult>(
+    () =>
+      api.get<FansPriceReadResult>(
+        `/api/items/${encodeURIComponent(item.account_id)}/${encodeURIComponent(item.item_id)}/fans-price`,
+      ),
+    [item.account_id, item.item_id],
+    true,
+    ['items.changed'],
+  )
+
+  const groups = current.data?.groups
+
+  /** 平台给的这一组的当前值，拿不到就是 `-`（**不补 0**）。 */
+  const currentText = (group: FansGroup): string => {
+    const value = groups?.[group]
+    return value === null || value === undefined ? '-' : String(value)
+  }
+
+  // 预填当前值（官方也是预填）。**只填一次**：`items.changed` 触发的静默重拉如果又填一遍，
+  // 会把用户已经敲进去的数字冲掉。
+  const [prefilled, setPrefilled] = useState(false)
+  useEffect(() => {
+    if (prefilled || !groups) return
+    setValues({ all: fansText(groups.all), old: fansText(groups.old), buy: fansText(groups.buy) })
+    setPrefilled(true)
+  }, [groups, prefilled])
+
+  const bad: Partial<Record<FansGroup, string>> = {}
+  for (const group of FANS_GROUPS) {
+    const message = fansPriceBad(values[group])
+    if (message) bad[group] = message
+  }
+  const filled = FANS_GROUPS.filter((group) => values[group].trim() !== '')
+  const ready = filled.length > 0 && Object.keys(bad).length === 0
+
+  const prices = current.data?.prices
+  /** 平台返回了配置对象，但三个组都是 `null`/空 = 真的一个都没配。 */
+  const groupsEmpty = FANS_GROUPS.every((group) => fansText(groups?.[group]) === '')
+
+  const submit = async () => {
+    if (!ready) {
+      toast.info(filled.length === 0 ? '至少要填一组粉丝价' : '先把提示里的粉丝价改对再提交')
+      setConfirming(false)
+      return
+    }
+    const payload: Partial<Record<FansGroup, string>> = {}
+    for (const group of filled) payload[group] = values[group].trim()
+    setSaving(true)
+    try {
+      const result = await postFansPrice<FansPriceWriteResult>(item.account_id, item.item_id, payload)
+      const warnings = result?.warnings ?? []
+      if (result && result.saved === false) {
+        // 平台没回执（`fans_price_no_echo`）：**不是成功也不是失败**，绝不能报成功。
+        toast.error(warnings[0] || '平台没有确认这次粉丝价改动，请到闲鱼商品管理页核对')
+      } else {
+        toast.success(
+          `粉丝价已提交：${filled.map((group) => `${FANS_GROUP_LABEL[group]} ${payload[group]}`).join('、')}`,
+        )
+      }
+      // 回执里的 `submitted` 才是平台真正收到的整份列表：和提交的对不上就得说出来。
+      const echoed = Array.isArray(result?.submitted) ? result.submitted : null
+      if (echoed && echoed.length !== filled.length) {
+        toast.info(
+          `平台回执的列表和你提交的不一样：${
+            echoed.length === 0
+              ? '（空）'
+              : echoed.map((entry) => `${fansGroupLabel(entry.fans_group)} ${entry.price_string ?? '-'}`).join('、')
+          }`,
+        )
+      } else if (warnings.length > 0 && result?.saved !== false) {
+        toast.info(warnings.join('；'))
+      }
+      onDone()
+    } catch (err) {
+      // 400 / 404 / 409 / 502 / 503 的中文原因原样展示，不笼统说「请重新登录」。
+      toast.error(errorText(err))
+    } finally {
+      setSaving(false)
+      setConfirming(false)
+    }
+  }
+
+  return (
+    <>
+      <Modal
+        title={`粉丝价 · ${truncate(item.title || item.item_id, 30)}`}
+        onClose={onClose}
+        footer={
+          <>
+            <span className="dim" style={{ fontSize: 12, marginRight: 'auto' }}>
+              平台是<b>整份替换</b>：留空的组会被<b>清空</b>
+            </span>
+            <button className="btn ghost" onClick={onClose} disabled={saving}>
+              取消
+            </button>
+            <button
+              className="btn primary"
+              onClick={() => setConfirming(true)}
+              disabled={saving || !ready}
+              title={ready ? undefined : '至少要填一组合法的粉丝价'}
+            >
+              保存粉丝价
+            </button>
+          </>
+        }
+      >
+        <Notice kind="info">
+          走官方 <span className="mono">item.operate.fansprice</span>（get / set）。官方弹窗是
+          <b>预填当前值、三组一起发</b> —— <b>整份替换</b>：这里没填的组等于「没配置」，保存后会被
+          <b>清空</b>，不是「保持原样」。
+        </Notice>
+
+        {/* 当前配置：几种状态分开说，不能混成一句「没有粉丝价」。 */}
+        <div className="it-fans-cur">
+          <div className="it-fans-cur-head">闲鱼上的当前配置</div>
+          {current.notReady ? (
+            <Notice kind="warn" onRetry={current.reload}>
+              粉丝价的后端接口还没就绪（并行开发中）。
+            </Notice>
+          ) : current.error ? (
+            <Notice kind="error" onRetry={current.reload}>
+              {current.error}
+            </Notice>
+          ) : current.loading ? (
+            <div className="dim">正在读当前粉丝价…</div>
+          ) : prices === null ? (
+            <Notice kind="warn">
+              平台这次<b>没有返回</b>粉丝价配置（<span className="mono">prices: null</span>）—— 这不等于
+              「三个组都没配」，也不代表当前没设过。下面三个框留空时请当心：留空 = 清空。
+            </Notice>
+          ) : groupsEmpty ? (
+            <div className="dim">
+              平台返回了配置，但<b>三个粉丝分组目前都没配粉丝价</b>（真的没配）。
+            </div>
+          ) : (
+            <div className="it-fans-list">
+              {FANS_GROUPS.map((group) => (
+                <div className="it-fans-row" key={group}>
+                  <span className="it-fans-label">{FANS_GROUP_LABEL[group]}</span>
+                  <span className="mono">{currentText(group)}</span>
+                  <span className="dim">元</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {current.data?.fetched_at ? (
+            <div className="it-fans-stamp dim">
+              读取时间 {formatTime(current.data.fetched_at)}
+              {current.data.api ? ` · ${current.data.api}` : ''}
+              {current.data.source ? ` · ${current.data.source}` : ''}
+            </div>
+          ) : null}
+          {(current.data?.warnings ?? []).length > 0 ? (
+            <div className="it-fans-stamp dim">平台提示：{(current.data?.warnings ?? []).join('；')}</div>
+          ) : null}
+        </div>
+
+        {FANS_GROUPS.map((group) => (
+          <div key={group}>
+            <Field
+              label={`${FANS_GROUP_LABEL[group]} 粉丝价（元）`}
+              tip={
+                currentText(group) === '-'
+                  ? `平台没给这一组的当前值（显示 -）；上限 ${FANS_PRICE_MAX}，最多 2 位小数`
+                  : `当前 ${currentText(group)}；留空 = 清空这一组`
+              }
+            >
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                inputMode="decimal"
+                value={values[group]}
+                onChange={(event) => setValues((prev) => ({ ...prev, [group]: event.target.value }))}
+                placeholder="留空 = 清空这一组"
+              />
+            </Field>
+            {bad[group] ? <div className="it-field-bad">{bad[group]}</div> : null}
+          </div>
+        ))}
+
+        {/* 提交前就把「到底会发什么」摆出来：整份替换的后果必须看得见。 */}
+        <div className="it-fans-plan">
+          <span className="dim">本次会提交（整份替换）：</span>
+          {FANS_GROUPS.map((group) =>
+            values[group].trim() !== '' ? (
+              <span className="mono" key={group}>
+                {FANS_GROUP_LABEL[group]} {values[group].trim()} 元
+              </span>
+            ) : (
+              <span className="mono it-fans-clear" key={group}>
+                {FANS_GROUP_LABEL[group]} 留空 → 会被清空
+              </span>
+            ),
+          )}
+          {filled.length === 0 ? <span className="dim">至少要填一组，三组全空不会发请求。</span> : null}
+        </div>
+      </Modal>
+
+      {confirming && (
+        <ConfirmDialog
+          title="确认保存粉丝价"
+          danger
+          confirmText="确认提交"
+          busy={saving}
+          message={
+            <>
+              会把 <strong>{truncate(item.title || item.item_id, 40)}</strong> 的粉丝价在
+              <strong>闲鱼上真的改掉</strong>，<strong>不可撤销</strong>。
+              <div className="it-fans-plan">
+                {FANS_GROUPS.map((group) =>
+                  values[group].trim() !== '' ? (
+                    <span className="mono" key={group}>
+                      {FANS_GROUP_LABEL[group]} 粉丝价 {values[group].trim()} 元
+                    </span>
+                  ) : (
+                    <span className="mono it-fans-clear" key={group}>
+                      {FANS_GROUP_LABEL[group]} 没填 → <strong>会被清空</strong>
+                    </span>
+                  ),
+                )}
+              </div>
+              <div className="dim" style={{ fontSize: 12 }}>
+                平台是<b>整份替换</b>：只提交上面有价格的组，<b>没填的组会被清空</b>（不是保持原样）。
               </div>
               <div className="it-idlist mono">商品 ID：{item.item_id}</div>
             </>
