@@ -1082,6 +1082,9 @@ POST /api/logistics/{account_id}/orders/{order_id}/resend      {mail_no,cp_code,
        -- AI 侧 7 个工具：`disputes_conversation` / `disputes_messages` / `disputes_unread`（只读）+
        --   `disputes_send_text` / `disputes_send_image` / `disputes_urge` / `disputes_mark_read`（写）。
        -- 详见 `docs/contracts/disputes.md`。
+        -- **界面口径**：面板里四个写按钮（发送 / 发送图片 / 标记已读 / 催办）都必须先弹
+        --   `ConfirmDialog` 列清楚「要发什么」，用户点确认才真的发（补丁前是点一下就发，属缺陷）；
+        --   唯一写出口仍是 `runDisputeWrite`，请求体一律 `confirm: true` 字面量。
 
 【写接口的三条硬口径（所有 *_write 一律遵守）】
 1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /

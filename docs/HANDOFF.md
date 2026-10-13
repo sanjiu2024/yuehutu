@@ -83,7 +83,7 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 97 modules transformed.
-   frontend/dist/assets/index-C4Eyq4GU.js (609.24 kB, gzip 190.90 kB)
+   frontend/dist/assets/index-3WxsizZZ.js (609.95 kB, gzip 191.24 kB)
    frontend/dist/assets/index-CbU9mCPj.css (150.51 kB, gzip 23.73 kB)
 ```
 
@@ -96,7 +96,7 @@ cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18441"
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18465"
 -> UI SMOKE ALL OK  (29/29 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
    截图目录：logs/ui_smoke
 ```
@@ -2747,11 +2747,31 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > write_tools=59 / route_checked=129 / RECON OK`；
 > `create_app().openapi()` = **190 条路径 / 206 个操作**（6 条 `/api/disputes/*` = 7 个操作全在）；
 > `cd frontend && npx tsc --noEmit` → `TSC_EXIT=0`；`npx vite build` → `BUILD_EXIT=0`
-> （97 modules，`index-C4Eyq4GU.js` 609.24 kB = 磁盘 671,338 B / `index-CbU9mCPj.css`
+> （97 modules，`index-3WxsizZZ.js` 609.95 kB = 磁盘 672,349 B / `index-CbU9mCPj.css`
 > 150.51 kB = 磁盘 150,515 B）。
 > 诚实边界：**这一族 7 条接口一次真机请求都没发过**（本轮红线是零平台请求，形状全部来自官方
 > bundle 静态取证）；平台是否接受这族入参、真机上纠纷会话 id 的取得方式、`mark.read` 的
 > `sequence` 语义，仍属未验证。
+>
+> **重打包 + 打包版复验 + 界面取证（收尾补）**：`build_exe.ps1 -SkipFrontend` → exe
+> **10,156,009 B / 2026-10-13 23:53:47**（`--port 18400`，`/api/health` 200 `frozen:true`）；
+> `probe_write_gate.py` → **`GATE FAILURES: 0 / 60`**（4 条纠纷写未确认 400 `confirmation_required`，
+> 确认腿用不存在的账号 ⇒ 400 `invalid_fields` / 404 `not_found`，零平台写请求）；
+> `packaged_ui_smoke.py` → **29/29 页**；`check_assets.py` → `ASSETS_MATCH=True`
+> （`index-3WxsizZZ.js` `bf0244a29695` / `index-CbU9mCPj.css` `b5af0adf0f99`）；
+> `scripts/contrast_audit.py --threshold 4.0` → `[dark] 0/29`、`[light] 0/29`、`NON_GET=[]`；
+> `scripts/a11y_audit.py` → 三类问题全 0、焦点环全可见；打包版路由探针
+> `d41_packaged_probe.py` → `PROBLEMS []`（未知账号取会话 404 `not_found`、三个单号都不传
+> 400 `invalid_fields`、四条写未确认 400 `confirmation_required`、确认腿 404 `not_found`）。
+> **界面取证（`C:\Users\Administrator\.dsh-tmp\d41_panel_shots.py`，`page.route` 拦两个 API 喂假数据、
+> 零平台请求）**：`PROBLEMS []` —— 面板渲染出会话 id / 双方消息 / 平台提示 / 四个写入口，
+> **`dispute_posts []`**（只开了确认框、没点确认）、`page_errors []`；截图
+> `logs/d41_panel_shots/{01-complaints-dark,02-dispute-panel-dark,03-urge-confirm-dark,04-dispute-panel-light}.png`。
+> **★ 这次取证抓出一个真缺陷**：面板四个写按钮（发送 / 发送图片 / 标记已读 / 催办）**点一下就发**，
+> 没有二次确认 —— 而列表入口的提示语自己写着「写操作都要二次确认」⇒ 既缺确认又是假话。
+> 修法：新增 `pending` 状态 + `ConfirmDialog`（逐条列出要发什么），确认后才走唯一写出口
+> `runDisputeWrite`；`frontend/src/pages/Complaints.tsx`（tsc `TSC_EXIT=0`、`vite build BUILD_EXIT=0`、
+> `ui_smoke.py` 29/29 页），契约补进 `docs/CONTRACTS.md` 第 41 批块。
 
 ## 四、已验证 / 未验证（诚实边界）
 
