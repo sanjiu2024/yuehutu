@@ -571,6 +571,7 @@ class MasterChatTest(unittest.TestCase):
             'items_fans_price', 'items_set_fans_price',
             # ---- 第四十三批：客服会话接管（3 条写）----
             'im_session_deliver', 'im_session_leave', 'im_session_rejoin',
+            'trade_compensate_detail', 'trade_compensate_reasons', 'trade_compensate_refuse',
             'master_chat',
         ]
         self.assertEqual(tools.TOOL_NAMES, expected)
@@ -611,6 +612,7 @@ class MasterChatTest(unittest.TestCase):
             'im_session_deliver', 'im_session_leave', 'im_session_rejoin',
             'disputes_send_text', 'disputes_send_image', 'disputes_urge', 'disputes_mark_read',
             'items_set_fans_price',
+            'trade_compensate_refuse',
         ]
         for name in write_tools:
             spec = tools.get_tool(name)

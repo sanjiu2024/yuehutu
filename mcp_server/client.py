@@ -288,6 +288,22 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'path_params': ['account_id'],
         'body': ['session_id', 'conversation_id', 'confirm'],
     },
+    'trade_compensate_detail': {
+        'method': 'GET',
+        'path': '/api/trade/{account_id}/orders/{order_id}/compensations/{service_code}',
+        'path_params': ['account_id', 'order_id', 'service_code'],
+    },
+    'trade_compensate_reasons': {
+        'method': 'GET',
+        'path': '/api/trade/{account_id}/compensations/{service_code}/reasons',
+        'path_params': ['account_id', 'service_code'],
+    },
+    'trade_compensate_refuse': {
+        'method': 'POST',
+        'path': '/api/trade/{account_id}/orders/{order_id}/compensations/{service_code}/refuse',
+        'path_params': ['account_id', 'order_id', 'service_code'],
+        'body': ['reason_choices', 'reason_desc', 'proof_urls', 'is_manual', 'confirm'],
+    },
     'disputes_conversation': {
         'method': 'GET', 'path': '/api/disputes/{account_id}/conversation',
         'path_params': ['account_id'], 'query': ['order_id', 'refund_id', 'dispute_id'],

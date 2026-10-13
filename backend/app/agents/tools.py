@@ -2725,6 +2725,73 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---- 第四十五批：赔付 / 维权（2 条只读 + 1 条写）----
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_compensate_detail',
+            'description': '查一笔赔付/维权的详情（只读）。官方这一条带 valueType=string，'
+                           'amount 单位是**分**，我们额外给 amount_yuan（元）。平台没返回时 '
+                           'found=false + 中文 warning，不会替你编一笔赔付出来。'
+                           'account_id / order_id / service_code 都必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '订单号'},
+                    'service_code': {'type': 'string', 'description': '赔付服务号（维权服务单号）'},
+                },
+                'required': ['account_id', 'order_id', 'service_code'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_compensate_reasons',
+            'description': '查「拒绝赔付」可选的原因（只读）。平台没返回 reasonChoices 时给 null + '
+                           'warning（「平台没给」和「平台给了空列表」是两件事）。'
+                           'account_id / service_code 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'service_code': {'type': 'string', 'description': '赔付服务号（维权服务单号）'},
+                },
+                'required': ['account_id', 'service_code'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_compensate_refuse',
+            'description': '拒绝赔付（维权里的「拒绝赔付」）。**凭证必填**'
+                           '（官方原话「请上传凭证」），拒绝说明最多 200 字，**提交后不可撤销**。'
+                           + _WRITE_HINT + 'account_id / order_id / service_code / reason_choices 必填；'
+                           'reason_choices 收数组也收逗号串，proof_urls 至少一张图片 URL。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '订单号'},
+                    'service_code': {'type': 'string', 'description': '赔付服务号（维权服务单号）'},
+                    'reason_choices': {'type': 'array', 'items': {'type': 'string'},
+                                       'description': '拒绝原因（候选来自 trade_compensate_reasons）'},
+                    'reason_desc': {'type': 'string', 'description': '拒绝说明，最多 200 字，可选'},
+                    'proof_urls': {'type': 'array', 'items': {'type': 'string'},
+                                   'description': '凭证图片 URL，至少一张'},
+                    'is_manual': {'type': 'boolean',
+                                  'description': '官方 refuse_and_cco / refuse_new 场景传 true，默认 false'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'order_id', 'service_code', 'reason_choices', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 主管 AI（只给 MCP 侧） ----------------
     {
         'type': 'function',
@@ -3102,6 +3169,10 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'im_session_deliver': ['im_actions', 'session_deliver'],
     'im_session_leave': ['im_actions', 'session_leave'],
     'im_session_rejoin': ['im_actions', 'session_rejoin'],
+    # ---- 第四十五批：赔付 / 维权 ----
+    'trade_compensate_detail': ['trade_write', 'compensate_detail'],
+    'trade_compensate_reasons': ['trade_write', 'compensate_refuse_form'],
+    'trade_compensate_refuse': ['trade_write', 'compensate_refuse'],
 
     'disputes_conversation': ['disputes', 'conversation'],
     'disputes_messages': ['disputes', 'history'],
@@ -3348,6 +3419,9 @@ _HANDLERS = {
     'im_session_deliver': lambda a: _dispatch_service('im_session_deliver', a),
     'im_session_leave': lambda a: _dispatch_service('im_session_leave', a),
     'im_session_rejoin': lambda a: _dispatch_service('im_session_rejoin', a),
+    'trade_compensate_detail': lambda a: _dispatch_service('trade_compensate_detail', a),
+    'trade_compensate_reasons': lambda a: _dispatch_service('trade_compensate_reasons', a),
+    'trade_compensate_refuse': lambda a: _dispatch_service('trade_compensate_refuse', a),
 
     'disputes_conversation': lambda a: _dispatch_service('disputes_conversation', a),
     'disputes_messages': lambda a: _dispatch_service('disputes_messages', a),

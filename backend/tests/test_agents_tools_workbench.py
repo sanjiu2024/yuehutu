@@ -60,6 +60,12 @@ NEW_TOOLS: Dict[str, Dict[str, Any]] = {
                          'path': '/api/items/{account_id}/{item_id}/fans-price'},
     'items_listing_precheck': {'module': 'items', 'fn': 'publish_precheck_from_args', 'verb': 'post',
                               'path': '/api/items/{account_id}/publish/precheck'},
+    'trade_compensate_detail': {
+        'module': 'trade_write', 'fn': 'compensate_detail', 'verb': 'get',
+        'path': '/api/trade/{account_id}/orders/{order_id}/compensations/{service_code}'},
+    'trade_compensate_reasons': {
+        'module': 'trade_write', 'fn': 'compensate_refuse_form', 'verb': 'get',
+        'path': '/api/trade/{account_id}/compensations/{service_code}/reasons'},
     'datacenter_overview': {'module': 'datacenter', 'fn': 'overview', 'verb': 'get',
                             'path': '/api/datacenter/{account_id}/overview'},
     'datacenter_fans': {'module': 'datacenter', 'fn': 'fans', 'verb': 'get',
@@ -526,6 +532,10 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
     'items_set_fans_price': {
         'module': 'fans_price', 'fn': 'set_prices', 'confirm': True,
         'method': 'POST', 'path': '/api/items/{account_id}/{item_id}/fans-price'},
+    'trade_compensate_refuse': {
+        'module': 'trade_write', 'fn': 'compensate_refuse', 'confirm': True,
+        'method': 'POST',
+        'path': '/api/trade/{account_id}/orders/{order_id}/compensations/{service_code}/refuse'},
 }
 
 WRITE_TOOL_NAMES = list(WRITE_TOOLS)
@@ -682,6 +692,9 @@ _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
         'account_id': 'acc-x', 'order_id': 'o1', 'refund_id': 'r1', 'confirm': False},
     'trade_complain_revoke': {
         'account_id': 'acc-x', 'complain_id': 'c1', 'confirm': False},
+    'trade_compensate_refuse': {
+        'account_id': 'acc-x', 'order_id': 'o1', 'service_code': 's1',
+        'reason_choices': ['原因A'], 'proof_urls': ['http://x/1.png'], 'confirm': False},
 }
 
 
