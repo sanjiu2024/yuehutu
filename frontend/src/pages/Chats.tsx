@@ -31,6 +31,7 @@ import {
   IconSparkle,
   IconTag,
   IconUser,
+  IconUsers,
   IconWarn,
   IconXCircle,
 } from '../icons'
@@ -83,7 +84,32 @@ interface ImActionResult {
   saved: boolean
   deleted?: boolean
   item_id?: string
+  target_uid?: string
   session_id?: string
+  /** 会话接管族（第 43 批）才有：平台自己说的 `data.success`（三态，`null` = 平台没说）。 */
+  platform_success?: boolean | null
+  /** 重新发起成功时平台回显的 sessionId。 */
+  returned_session_id?: string
+  /** 只有「重新发起」成功才补的别名，便于前端说话。 */
+  rejoined?: boolean
+  warnings?: string[]
+}
+
+/**
+ * 客服列表（`GET /api/shop/{account_id}/cs-routing` 的 `data.agents`）。
+ *
+ * **`agents` 可能是 `null`**：平台没返回这个键时后端不补空数组 ——「平台没说」和
+ * 「这个店没有客服」是两件事。转交需要一个真实的客服 uid，拿不到就不许编。
+ */
+interface CsAgent {
+  customerUid?: string | number
+  nick?: string
+  customName?: string
+  roleNames?: string[]
+}
+
+interface CsRoutingResult {
+  agents?: CsAgent[] | null
   warnings?: string[]
 }
 
@@ -672,9 +698,29 @@ function ChatWindow({
     ['chats.changed'],
   )
   const [imBusy, setImBusy] = useState('')
-  const [confirmKind, setConfirmKind] = useState<'' | 'add' | 'remove'>('')
+  /** 需要二次确认的会话级写操作：拉黑 / 解除（第 40 批）+ 转交 / 结束 / 重新发起（第 43 批）。 */
+  const [confirmKind, setConfirmKind] = useState<
+    '' | 'add' | 'remove' | 'transfer' | 'leave' | 'rejoin' | 'card'
+  >('')
   const [cardOpen, setCardOpen] = useState(false)
   const [cardItemId, setCardItemId] = useState('')
+  /** 转交客服的选人弹窗 + 选中的客服 uid（`targetUid` 只能来自客服列表，不猜）。 */
+  const [transferOpen, setTransferOpen] = useState(false)
+  const [targetUid, setTargetUid] = useState('')
+  /**
+   * 可转交的客服列表（第 43 批）。
+   *
+   * 懒加载（`immediate=false`）：只有用户点「转交客服」才去查 —— 每开一个会话就打一次
+   * 平台接口没有意义。订阅 `shop.changed`：小铺页改了客服分组后这里静默重拉。
+   */
+  const agents = useAsync<CsRoutingResult>(
+    () => api.get<CsRoutingResult>(`/api/shop/${conversation.account_id}/cs-routing`),
+    [conversation.account_id],
+    false,
+    ['shop.changed'],
+  )
+  /** `null` = 平台没返回客服列表（不是「没有客服」）；`[]` = 真的一个都没有。 */
+  const agentList = agents.data?.agents ?? null
   /** `true`/`false`/`null`（平台没说）/`undefined`（还没查出来）。 */
   const blackState = blacklist.data ? blacklist.data.is_in_black : undefined
   /** 用户是不是停在底部（往上翻历史时别把他拽回来）。 */
@@ -797,6 +843,7 @@ function ChatWindow({
       }
       setConfirmKind('')
       setCardOpen(false)
+      setTransferOpen(false)
       refresh()
       onRefreshList()
     } catch (err) {
@@ -832,6 +879,104 @@ function ChatWindow({
     )
   }
 
+  /* ---- 客服会话接管（第 43 批）：转交 / 结束 / 重新发起 ---- */
+
+  const agentLabel = (agent: CsAgent): string => {
+    const label = (agent.customName || agent.nick || '').trim()
+    const uid = String(agent.customerUid ?? '').trim()
+    if (label && uid) return `${label}（${uid}）`
+    return label || uid || '未命名客服'
+  }
+
+  const openTransfer = () => {
+    setTransferOpen(true)
+    // 懒加载：第一次点开才查客服列表（查过就不重复打平台接口）
+    if (!agents.data && !agents.loading) agents.reload()
+  }
+
+  const submitTransfer = () => {
+    const uid = targetUid.trim()
+    if (!uid) return
+    void runImWrite(
+      `${imBase}/sessions/transfer`,
+      { conversation_id: conversation.id, target_uid: uid },
+      '会话已转交',
+    )
+  }
+
+  const confirmSessionAction = () => {
+    if (confirmKind === 'transfer') {
+      submitTransfer()
+      return
+    }
+    if (confirmKind === 'leave') {
+      void runImWrite(`${imBase}/sessions/leave`, { conversation_id: conversation.id }, '会话已结束')
+      return
+    }
+    if (confirmKind === 'rejoin') {
+      void runImWrite(`${imBase}/sessions/rejoin`, { conversation_id: conversation.id }, '已重新发起聊天')
+      return
+    }
+    if (confirmKind === 'card') {
+      sendCard()
+    }
+  }
+
+  /** 二次确认框的文案：五种会话级写操作各自把后果说清楚。 */
+  const confirmSpec = (): { title: string; message: string; ok: string; danger: boolean } => {
+    if (confirmKind === 'remove') {
+      return {
+        title: `解除对「${name}」的拉黑？`,
+        message: '解除后对方可以重新给你发消息，会真的改平台上的拉黑名单。',
+        ok: '解除拉黑',
+        danger: false,
+      }
+    }
+    if (confirmKind === 'transfer') {
+      const agent = (agentList || []).find(
+        (item) => String(item.customerUid ?? '') === targetUid.trim(),
+      )
+      return {
+        title: '转交这个会话？',
+        message: `会把和「${name}」的会话转交给 ${
+          agent ? agentLabel(agent) : targetUid.trim()
+        }，转交后由对方接待；会真的改平台上的会话归属。`,
+        ok: '转交',
+        danger: false,
+      }
+    }
+    if (confirmKind === 'leave') {
+      return {
+        title: `结束和「${name}」的会话？`,
+        message: '结束后买家不能再给你发消息，你也不能再回复；会真的改平台上的会话状态。',
+        ok: '结束会话',
+        danger: true,
+      }
+    }
+    if (confirmKind === 'rejoin') {
+      return {
+        title: `重新发起和「${name}」的聊天？`,
+        message: '会重新发起和这个买家的聊天，对方会收到新会话；会真的改平台上的会话状态。',
+        ok: '重新发起',
+        danger: false,
+      }
+    }
+    if (confirmKind === 'card') {
+      return {
+        title: `给「${name}」发商品卡片？`,
+        message: `会往这个会话里发一条商品卡片（商品 id ${cardItemId.trim() || '（空）'}），对方立刻能看到，发出去不能撤回。`,
+        ok: '发送',
+        danger: false,
+      }
+    }
+    return {
+      title: `拉黑「${name}」？`,
+      message: '拉黑后对方不能再给你发消息，会真的改平台上的拉黑名单。',
+      ok: '拉黑',
+      danger: true,
+    }
+  }
+
   const blackHint =
     blacklist.error
       ? `拉黑状态没查到：${blacklist.error}`
@@ -844,6 +989,7 @@ function ChatWindow({
             : '平台没有返回拉黑状态（可能这个账号没有该权限），仍可以尝试拉黑'
 
   const mode = modeLabel(conversation.mode)
+  const confirmView = confirmSpec()
   // 发图/发语音/打电话 只能在闲鱼官方页面做；没有真实商品 id 就禁用（不编地址）。
   const officialUrl = officialItemUrl(conversation.item_id)
   const openOfficial = () => {
@@ -927,6 +1073,30 @@ function ChatWindow({
             title="把这个商品以卡片形式发给买家（会真的发一条消息）"
           >
             <IconTag size={14} /> 发商品卡片
+          </button>
+          <button
+            className="btn sm ghost"
+            onClick={openTransfer}
+            disabled={Boolean(imBusy)}
+            title="把这个会话转交给其他客服接待（会真的改平台上的会话归属）"
+          >
+            <IconUsers size={14} /> 转交客服
+          </button>
+          <button
+            className="btn sm ghost"
+            onClick={() => setConfirmKind('leave')}
+            disabled={Boolean(imBusy)}
+            title="结束和这个买家的会话（结束后买家不能再发消息）"
+          >
+            <IconXCircle size={14} /> 结束会话
+          </button>
+          <button
+            className="btn sm ghost"
+            onClick={() => setConfirmKind('rejoin')}
+            disabled={Boolean(imBusy)}
+            title="重新发起和这个买家的聊天"
+          >
+            <IconChat size={14} /> 重新发起
           </button>
           <button className="btn sm ghost" onClick={refresh}>
             <IconRefresh size={14} /> 刷新
@@ -1107,20 +1277,60 @@ function ChatWindow({
         />
       )}
 
-      {confirmKind && (
-        <ConfirmDialog
-          title={confirmKind === 'add' ? `拉黑「${name}」？` : `解除对「${name}」的拉黑？`}
-          message={
-            confirmKind === 'add'
-              ? '拉黑后对方不能再给你发消息，会真的改平台上的拉黑名单。'
-              : '解除后对方可以重新给你发消息，会真的改平台上的拉黑名单。'
+      {transferOpen && (
+        <Modal
+          title="转交会话"
+          onClose={() => setTransferOpen(false)}
+          footer={
+            <>
+              <button className="btn ghost" onClick={() => setTransferOpen(false)}>
+                取消
+              </button>
+              <button
+                className="btn primary"
+                onClick={() => setConfirmKind('transfer')}
+                disabled={Boolean(imBusy) || !targetUid.trim()}
+              >
+                <IconUsers size={14} /> 转交
+              </button>
+            </>
           }
-          confirmText={confirmKind === 'add' ? '拉黑' : '解除拉黑'}
-          danger={confirmKind === 'add'}
-          busy={Boolean(imBusy)}
-          onConfirm={toggleBlacklist}
-          onCancel={() => setConfirmKind('')}
-        />
+        >
+          {agents.notReady && (
+            <p className="ch-im-hint ch-im-warn">客服列表接口还没就绪，暂时拿不到可转交的客服。</p>
+          )}
+          {agents.error && <p className="ch-im-hint ch-im-warn">客服列表加载失败：{agents.error}</p>}
+          {agents.loading && <p className="ch-im-hint">正在拉取客服列表…</p>}
+          {!agents.loading && !agents.error && !agents.notReady && agentList === null && (
+            <p className="ch-im-hint ch-im-warn">
+              平台没有返回客服列表（可能这个账号没有该权限），拿不到可转交的客服 uid。
+            </p>
+          )}
+          {agentList && agentList.length === 0 && (
+            <p className="ch-im-hint ch-im-warn">
+              这个店还没有客服账号，先到「小铺 · 客服分流」里加客服分组。
+            </p>
+          )}
+          {agentList && agentList.length > 0 && (
+            <Field label="转交给哪个客服" tip="uid 直接取自客服列表，不猜">
+              <select
+                className="ch-im-select"
+                value={targetUid}
+                onChange={(e) => setTargetUid(e.target.value)}
+              >
+                <option value="">请选择客服</option>
+                {agentList.map((agent, index) => (
+                  <option key={`${String(agent.customerUid ?? '')}-${index}`} value={String(agent.customerUid ?? '')}>
+                    {agentLabel(agent)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+          <p className="ch-im-hint">
+            转交后由对方接待这个买家；点「转交」还会再弹一次确认框，确认后才真的发到平台。
+          </p>
+        </Modal>
       )}
 
       {cardOpen && (
@@ -1132,8 +1342,12 @@ function ChatWindow({
               <button className="btn ghost" onClick={() => setCardOpen(false)}>
                 取消
               </button>
-              <button className="btn primary" onClick={sendCard} disabled={Boolean(imBusy) || !cardItemId.trim()}>
-                <IconCheck size={14} /> {imBusy ? '发送中…' : '发送'}
+              <button
+                className="btn primary"
+                onClick={() => setConfirmKind('card')}
+                disabled={Boolean(imBusy) || !cardItemId.trim()}
+              >
+                <IconCheck size={14} /> 发送
               </button>
             </>
           }
@@ -1148,6 +1362,25 @@ function ChatWindow({
           </Field>
           <p className="ch-im-hint">发出去就是给对方的一条真实消息，发完不能撤回。</p>
         </Modal>
+      )}
+
+      {/*
+        确认框必须放在**所有弹窗之后**：两者都是 `position: fixed` 且 z-index 相同，
+        同级元素里后渲染的盖在上面。放在前面时，「转交会话」弹窗会盖住确认框 ——
+        用户点「转交」后什么都看不到（第 43 批界面取证抓到的真缺陷）。
+      */}
+      {confirmKind && (
+        <ConfirmDialog
+          title={confirmView.title}
+          message={confirmView.message}
+          confirmText={confirmView.ok}
+          danger={confirmView.danger}
+          busy={Boolean(imBusy)}
+          onConfirm={
+            confirmKind === 'add' || confirmKind === 'remove' ? toggleBlacklist : confirmSessionAction
+          }
+          onCancel={() => setConfirmKind('')}
+        />
       )}
     </>
   )
