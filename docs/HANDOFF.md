@@ -63,7 +63,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_shop_full2&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 53  PASS 53  FAIL 0  CASES 1758  SKIPPED 2
+-> TOTAL 54  PASS 54  FAIL 0  CASES 1762  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -2172,7 +2172,7 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 断言 PKCS#1 v1.5 能解回明文、断言密码不出现在响应与日志里）；
 > `backend/tests/test_drafts_api.py` → **`Ran 47 tests in 0.6s OK`**；
 > `backend/tests/run_all.py`（`XIANYU_APP_DIR=%TEMP%\xywb_sa_full3`）→
-> **`TOTAL 53  PASS 53  FAIL 0  CASES 1758  SKIPPED 2`**；
+> **`TOTAL 53  PASS 53  FAIL 0  CASES 1758  SKIPPED 2`**（加入 `test_services_common.py` 后为 54 / 1762）；
 > `python -m unittest backend.tests.test_agents_cross backend.tests.test_mcp_server backend.tests.test_agents_tools_workbench`
 > → **`Ran 140 tests ... OK`**；`scripts/reconcile_tools.py` →
 > `specs=94 master=93 routes=95 targets=74 handlers=94`、`write_tools=40`、`route_checked=95`、**`RECON OK`**；
@@ -2183,7 +2183,7 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**53 个测试文件、1758 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**54 个测试文件、1762 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
