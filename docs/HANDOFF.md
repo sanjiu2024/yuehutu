@@ -2958,6 +2958,22 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 复验：`cd frontend && npx tsc --noEmit` EXIT=0；`npx vite build` EXIT=0
 > （`index-70l17fQf.js` 685,250 B / `index-aeg2IrM1.css` 152,425 B）；
 > 全量 `backend/tests/run_all.py` → **`TOTAL 59  PASS 59  FAIL 0  CASES 2368  SKIPPED 2`**。
+> 重打包（`build_exe.ps1 -SkipFrontend`，exe **10,178,915 B / 2026-10-14 03:45:13**，
+> `--port 18400` `/api/health` 200 `frozen:true`）后打包版六项复验全绿：
+> `probe_write_gate.py` → **`GATE FAILURES: 0 / 64`**；`fp44_packaged_probe.py` → **`PROBLEMS []`**
+> （桌面登录 200；空 payload 400 `bad_request`；缺图片 400 `invalid_fields`；未知账号 404 `not_found`；
+> 不鉴权 401；带 `confirm:false` 也 404 `not_found` —— 预检是只读的，`confirm` 被忽略）；
+> `check_assets.py` → `ASSETS_MATCH=True`（`index-70l17fQf.js` `f4ef2d576f14` /
+> `index-aeg2IrM1.css` `265e2ed9b3c2`）；`packaged_ui_smoke.py` → **29/29 页**；
+> `scripts/contrast_audit.py --threshold 4.0` → `[dark] 0/29`、`[light] 0/29`、`NON_GET=[]`；
+> `scripts/a11y_audit.py` → 无可访问名字的按钮 0 类、没有标签的输入框 0 类、焦点不可见页面 `[]`。
+> 界面取证 `C:\Users\Administrator\.dsh-tmp\fp44_panel_shots.py`（起源码后端 + 拦截
+> `**/api/uploads/images*` 与 `**/api/items/*/publish/precheck*` ⇒ **零平台请求**）→ `PROBLEMS []`：
+> 账号选中后点「发布前预检」，只发出 **1 条** `POST /api/items/demo_acc/publish/precheck`，
+> **`publish_posts []`**（一次真发布请求都没发），面板逐步骤渲染「图片准备 / 违禁词预检 / 分类推荐」
+> 与人话结论 + 「不会注册分类路径，更不会发布。」，`page_errors []`；
+> 截图 `logs/fp44_panel_shots/{01-publish-modal-dark,02-precheck-result-dark,03-page-dark}.png`。
+> （`console` 里 `ERR_NAME_NOT_RESOLVED` 是假图床 URL 的预期产物，不是缺陷。）
 
 ## 四、已验证 / 未验证（诚实边界）
 
