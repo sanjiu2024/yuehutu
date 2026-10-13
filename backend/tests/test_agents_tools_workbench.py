@@ -262,6 +262,16 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
     'im_card_send': {
         'module': 'im_actions', 'fn': 'send_item_card', 'confirm': True,
         'method': 'POST', 'path': '/api/im/{account_id}/cards'},
+    # ---- 第四十三批：客服会话接管（3 条写）----
+    'im_session_deliver': {
+        'module': 'im_actions', 'fn': 'session_deliver', 'confirm': True,
+        'method': 'POST', 'path': '/api/im/{account_id}/sessions/transfer'},
+    'im_session_leave': {
+        'module': 'im_actions', 'fn': 'session_leave', 'confirm': True,
+        'method': 'POST', 'path': '/api/im/{account_id}/sessions/leave'},
+    'im_session_rejoin': {
+        'module': 'im_actions', 'fn': 'session_rejoin', 'confirm': True,
+        'method': 'POST', 'path': '/api/im/{account_id}/sessions/rejoin'},
     'disputes_send_text': {
         'module': 'disputes', 'fn': 'send_text', 'confirm': True,
         'method': 'POST', 'path': '/api/disputes/{account_id}/{conversation_id}/messages'},
@@ -490,6 +500,13 @@ WRITE_TOOL_NAMES = list(WRITE_TOOLS)
 
 #: 一个「参数齐全但 confirm=False」的最小调用，用来验证工具层不替服务层做确认判定。
 _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
+    'im_session_deliver': {
+        'account_id': 'acc-x', 'session_id': 'cid-1', 'target_uid': '8888',
+        'confirm': False},
+    'im_session_leave': {
+        'account_id': 'acc-x', 'session_id': 'cid-1', 'confirm': False},
+    'im_session_rejoin': {
+        'account_id': 'acc-x', 'session_id': 'cid-1', 'confirm': False},
     'items_set_fans_price': {
         'account_id': 'acc-x', 'item_id': 'it-1', 'groups': {'all': '9.9'},
         'confirm': False},

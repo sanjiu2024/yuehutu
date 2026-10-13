@@ -2639,6 +2639,72 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---- 客服会话接管（3 条写：转交 / 结束 / 重新发起）----
+    {
+        'type': 'function',
+        'function': {
+            'name': 'im_session_deliver',
+            'description': '把一个客服会话转交给指定的客服账号（target_uid 取自客服列表：'
+                           'shop_cs_routing 返回的 agents[].uid）。'
+                           + _WRITE_HINT + 'account_id、target_uid 必填；会话用 session_id，'
+                           '手里只有本地会话行 id 时传 conversation_id。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'target_uid': {'type': 'string', 'description': '转交目标客服的 uid'},
+                    'session_id': {'type': 'string', 'description': '平台会话 id（cid），可选'},
+                    'conversation_id': {'type': 'string',
+                                        'description': '本地会话行 id（会话页手里只有它）'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'target_uid', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'im_session_leave',
+            'description': '结束当前客服会话（官方弹窗原文「确认结束当前会话？」）。'
+                           + _WRITE_HINT + 'account_id 必填；会话用 session_id 或 conversation_id。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'session_id': {'type': 'string', 'description': '平台会话 id（cid），可选'},
+                    'conversation_id': {'type': 'string',
+                                        'description': '本地会话行 id（会话页手里只有它）'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'im_session_rejoin',
+            'description': '重新发起与买家的聊天（官方成功 toast「重新发起聊天成功」）。'
+                           '平台会回一个 data.success 布尔，我们原样透出 platform_success；'
+                           'success=false 时这次调用算失败。'
+                           + _WRITE_HINT + 'account_id 必填；会话用 session_id 或 conversation_id。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'session_id': {'type': 'string', 'description': '平台会话 id（cid），可选'},
+                    'conversation_id': {'type': 'string',
+                                        'description': '本地会话行 id（会话页手里只有它）'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 主管 AI（只给 MCP 侧） ----------------
     {
         'type': 'function',
@@ -2998,6 +3064,10 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'im_blacklist_add': ['im_actions', 'blacklist_add'],
     'im_blacklist_remove': ['im_actions', 'blacklist_remove'],
     'im_card_send': ['im_actions', 'send_item_card'],
+    # ---- 客服会话接管（3 条写；会真的动平台上的会话）----
+    'im_session_deliver': ['im_actions', 'session_deliver'],
+    'im_session_leave': ['im_actions', 'session_leave'],
+    'im_session_rejoin': ['im_actions', 'session_rejoin'],
 
     'disputes_conversation': ['disputes', 'conversation'],
     'disputes_messages': ['disputes', 'history'],
@@ -3240,6 +3310,9 @@ _HANDLERS = {
     'im_blacklist_add': lambda a: _dispatch_service('im_blacklist_add', a),
     'im_blacklist_remove': lambda a: _dispatch_service('im_blacklist_remove', a),
     'im_card_send': lambda a: _dispatch_service('im_card_send', a),
+    'im_session_deliver': lambda a: _dispatch_service('im_session_deliver', a),
+    'im_session_leave': lambda a: _dispatch_service('im_session_leave', a),
+    'im_session_rejoin': lambda a: _dispatch_service('im_session_rejoin', a),
 
     'disputes_conversation': lambda a: _dispatch_service('disputes_conversation', a),
     'disputes_messages': lambda a: _dispatch_service('disputes_messages', a),

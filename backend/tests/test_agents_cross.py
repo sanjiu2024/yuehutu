@@ -568,6 +568,8 @@ class MasterChatTest(unittest.TestCase):
             'disputes_send_text', 'disputes_send_image', 'disputes_urge', 'disputes_mark_read',
             # ---- 第四十二批：粉丝价（1 读 + 1 写）----
             'items_fans_price', 'items_set_fans_price',
+            # ---- 第四十三批：客服会话接管（3 条写）----
+            'im_session_deliver', 'im_session_leave', 'im_session_rejoin',
             'master_chat',
         ]
         self.assertEqual(tools.TOOL_NAMES, expected)
@@ -605,6 +607,7 @@ class MasterChatTest(unittest.TestCase):
             'trade_postage_refund_pay', 'trade_complain_revoke',
             'logistics_resend_consign',
             'im_blacklist_add', 'im_blacklist_remove', 'im_card_send',
+            'im_session_deliver', 'im_session_leave', 'im_session_rejoin',
             'disputes_send_text', 'disputes_send_image', 'disputes_urge', 'disputes_mark_read',
             'items_set_fans_price',
         ]

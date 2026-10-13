@@ -265,6 +265,22 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'path_params': ['account_id'], 'body': ['session_id', 'conversation_id', 'item_id', 'confirm'],
     },
     # ---- 纠纷协商（联系纠纷小二：3 读 + 4 写；写的那四条会真的发到平台）----
+    # ---- 客服会话接管（3 条写；转交 / 结束 / 重新发起）----
+    'im_session_deliver': {
+        'method': 'POST', 'path': '/api/im/{account_id}/sessions/transfer',
+        'path_params': ['account_id'],
+        'body': ['target_uid', 'session_id', 'conversation_id', 'confirm'],
+    },
+    'im_session_leave': {
+        'method': 'POST', 'path': '/api/im/{account_id}/sessions/leave',
+        'path_params': ['account_id'],
+        'body': ['session_id', 'conversation_id', 'confirm'],
+    },
+    'im_session_rejoin': {
+        'method': 'POST', 'path': '/api/im/{account_id}/sessions/rejoin',
+        'path_params': ['account_id'],
+        'body': ['session_id', 'conversation_id', 'confirm'],
+    },
     'disputes_conversation': {
         'method': 'GET', 'path': '/api/disputes/{account_id}/conversation',
         'path_params': ['account_id'], 'query': ['order_id', 'refund_id', 'dispute_id'],
