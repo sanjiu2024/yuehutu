@@ -270,7 +270,7 @@ class ItemsApiTest(unittest.TestCase):
     def test_single_edit_not_pushed_reports_warning(self):
         seed('A1', account=ACC, price=100.0)
         resp = self.client.post(f'/api/items/{ACC}/A1/edit',
-                                json={'price': 9.9}, headers=self.headers)
+                                json={'confirm': True, 'price': 9.9}, headers=self.headers)
         self.assertEqual(resp.status_code, 200, resp.text)
         data = resp.json()['data']
         # 单条形状：不是批量的 total/ok/warnings/failed
@@ -285,7 +285,7 @@ class ItemsApiTest(unittest.TestCase):
         fake = FakeClient(ACC)
         install_fake_protocol(fake)
         resp = self.client.post(f'/api/items/{ACC}/A1/edit',
-                                json={'price': 9.9}, headers=self.headers)
+                                json={'confirm': True, 'price': 9.9}, headers=self.headers)
         self.assertEqual(resp.status_code, 200, resp.text)
         data = resp.json()['data']
         self.assertTrue(data['synced'], resp.text)
@@ -302,7 +302,7 @@ class ItemsApiTest(unittest.TestCase):
         fake = FakeClient(ACC)
         install_fake_protocol(fake)
         resp = self.client.post(f'/api/items/{ACC}/A1/edit',
-                                json={'price': 9.9}, headers=self.headers)
+                                json={'confirm': True, 'price': 9.9}, headers=self.headers)
         self.assertEqual(resp.status_code, 200, resp.text)
         data = resp.json()['data']
         self.assertFalse(data['synced'], resp.text)
@@ -318,7 +318,7 @@ class ItemsApiTest(unittest.TestCase):
         fake = FakeClient(ACC)
         install_fake_protocol(fake)
         resp = self.client.post(f'/api/items/{ACC}/A1/edit',
-                                json={'images': ['https://img.alicdn.com/a.png']},
+                                json={'confirm': True, 'images': ['https://img.alicdn.com/a.png']},
                                 headers=self.headers)
         self.assertEqual(resp.status_code, 200, resp.text)
         data = resp.json()['data']
@@ -334,7 +334,7 @@ class ItemsApiTest(unittest.TestCase):
         fake = FakeClient(ACC)
         install_fake_protocol(fake)
         resp = self.client.post(f'/api/items/{ACC}/A1/edit',
-                                json={'title': '新标题', 'ai_enabled': False},
+                                json={'confirm': True, 'title': '新标题', 'ai_enabled': False},
                                 headers=self.headers)
         self.assertEqual(resp.status_code, 200, resp.text)
         data = resp.json()['data']
@@ -351,7 +351,7 @@ class ItemsApiTest(unittest.TestCase):
         fake = FakeClient(ACC)
         install_fake_protocol(fake)
         resp = self.client.post(f'/api/items/{ACC}/A1/edit',
-                                json={'images': []}, headers=self.headers)
+                                json={'confirm': True, 'images': []}, headers=self.headers)
         self.assertEqual(resp.status_code, 200, resp.text)
         data = resp.json()['data']
         self.assertTrue(data['noop'], resp.text)
@@ -362,7 +362,7 @@ class ItemsApiTest(unittest.TestCase):
     def test_single_edit_unknown_field_is_400(self):
         seed('A1', account=ACC)
         resp = self.client.post(f'/api/items/{ACC}/A1/edit',
-                                json={'不存在的字段': 1}, headers=self.headers)
+                                json={'confirm': True, '不存在的字段': 1}, headers=self.headers)
         self.assertEqual(resp.status_code, 400, resp.text)
         body = resp.json()
         self.assertFalse(body['success'])
@@ -374,7 +374,7 @@ class ItemsApiTest(unittest.TestCase):
         fake = FakeClient(ACC)
         install_fake_protocol(fake)
         resp = self.client.post(f'/api/items/{ACC}/A1/edit',
-                                json={'stock_delta': 3}, headers=self.headers)
+                                json={'confirm': True, 'stock_delta': 3}, headers=self.headers)
         self.assertEqual(resp.status_code, 200, resp.text)
         data = resp.json()['data']
         self.assertTrue(data['synced'], resp.text)
@@ -385,7 +385,7 @@ class ItemsApiTest(unittest.TestCase):
         """未知库存（-1）不许加减：会算出编造的数字。"""
         seed('A1', account=ACC, stock=-1)
         resp = self.client.post(f'/api/items/{ACC}/A1/edit',
-                                json={'stock_delta': 3}, headers=self.headers)
+                                json={'confirm': True, 'stock_delta': 3}, headers=self.headers)
         self.assertEqual(resp.status_code, 400, resp.text)
         body = resp.json()
         self.assertFalse(body['success'])
@@ -396,7 +396,7 @@ class ItemsApiTest(unittest.TestCase):
     def test_single_edit_stock_set_on_unknown_is_allowed(self):
         seed('A1', account=ACC, stock=-1)
         resp = self.client.post(f'/api/items/{ACC}/A1/edit',
-                                json={'stock_set': 66}, headers=self.headers)
+                                json={'confirm': True, 'stock_set': 66}, headers=self.headers)
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertEqual(resp.json()['data']['item']['stock'], 66)
 
@@ -405,7 +405,7 @@ class ItemsApiTest(unittest.TestCase):
         seed('A1', account=ACC, stock=5)
         seed('A2', account=ACC, stock=-1)
         resp = self.client.post(f'/api/items/{ACC}/batch-edit',
-                                json={'item_ids': ['A1', 'A2'], 'patch': {'stock_delta': 10}},
+                                json={'confirm': True, 'item_ids': ['A1', 'A2'], 'patch': {'stock_delta': 10}},
                                 headers=self.headers)
         self.assertEqual(resp.status_code, 200, resp.text)
         data = resp.json()['data']
@@ -429,7 +429,7 @@ class ItemsApiTest(unittest.TestCase):
         """
         seed('A1', account=ACC, stock=5)
         resp = self.client.post(f'/api/items/{ACC}/A1/edit',
-                                json={'stock_delta': None}, headers=self.headers)
+                                json={'confirm': True, 'stock_delta': None}, headers=self.headers)
         self.assertEqual(resp.status_code, 400, resp.text)
         body = resp.json()
         self.assertEqual(body['code'], 'invalid_fields')
@@ -442,7 +442,7 @@ class ItemsApiTest(unittest.TestCase):
         for bad in ('abc', [], {}, True, 'nan', 'inf'):
             with self.subTest(bad=bad):
                 resp = self.client.post(f'/api/items/{ACC}/A1/edit',
-                                        json={'stock_set': bad}, headers=self.headers)
+                                        json={'confirm': True, 'stock_set': bad}, headers=self.headers)
                 self.assertEqual(resp.status_code, 400, resp.text)
                 self.assertEqual(resp.json()['code'], 'invalid_fields')
 
@@ -450,7 +450,7 @@ class ItemsApiTest(unittest.TestCase):
         """半件库存没有意义：`2.5` 静默截成 `2` 也是编数字。"""
         seed('A1', account=ACC, stock=5)
         resp = self.client.post(f'/api/items/{ACC}/A1/edit',
-                                json={'stock_set': 2.5}, headers=self.headers)
+                                json={'confirm': True, 'stock_set': 2.5}, headers=self.headers)
         self.assertEqual(resp.status_code, 400, resp.text)
         self.assertEqual(resp.json()['code'], 'invalid_fields')
 
@@ -459,7 +459,7 @@ class ItemsApiTest(unittest.TestCase):
         seed('A1', account=ACC, stock=5)
         seed('A2', account=ACC, stock=6)
         resp = self.client.post(f'/api/items/{ACC}/batch-edit',
-                                json={'item_ids': ['A1', 'A2'], 'patch': {'stock_delta': None}},
+                                json={'confirm': True, 'item_ids': ['A1', 'A2'], 'patch': {'stock_delta': None}},
                                 headers=self.headers)
         self.assertEqual(resp.status_code, 200, resp.text)
         data = resp.json()['data']
@@ -581,7 +581,7 @@ class ItemsApiTest(unittest.TestCase):
     def test_publish_route_emits_items_updated(self):
         install_fake_protocol(FakeClient(ACC))
         resp = self.client.post(f'/api/items/{ACC}/publish',
-                                json={'title': '新商品', 'price': 10}, headers=self.headers)
+                                json={'confirm': True, 'title': '新商品', 'price': 10}, headers=self.headers)
         self.assertEqual(resp.status_code, 200, resp.text)
         payloads = updates()
         self.assertEqual(payloads[-1]['action'], 'publish')
@@ -591,7 +591,7 @@ class ItemsApiTest(unittest.TestCase):
         seed('A1', account=ACC)
         install_fake_protocol(FakeClient(ACC))
         resp = self.client.post(f'/api/items/{ACC}/A1/edit',
-                                json={'price': 1.0}, headers=self.headers)
+                                json={'confirm': True, 'price': 1.0}, headers=self.headers)
         self.assertEqual(resp.status_code, 200, resp.text)
         payloads = updates()
         self.assertEqual(payloads[-1]['action'], 'edit')
@@ -600,7 +600,8 @@ class ItemsApiTest(unittest.TestCase):
     def test_delist_route_emits_items_updated(self):
         seed('A1', account=ACC, status='on_sale')
         install_fake_protocol(FakeClient(ACC))
-        resp = self.client.post(f'/api/items/{ACC}/A1/delist', headers=self.headers)
+        resp = self.client.post(f'/api/items/{ACC}/A1/delist',
+                                json={'confirm': True}, headers=self.headers)
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertTrue(resp.json()['data']['synced'], resp.text)
         payloads = updates()
@@ -612,7 +613,7 @@ class ItemsApiTest(unittest.TestCase):
         seed('A2', account=ACC, price=100.0)
         install_fake_protocol(FakeClient(ACC))
         resp = self.client.post(f'/api/items/{ACC}/batch-edit',
-                                json={'item_ids': ['A1', 'A2'], 'patch': {'price_set': 8.8}},
+                                json={'confirm': True, 'item_ids': ['A1', 'A2'], 'patch': {'price_set': 8.8}},
                                 headers=self.headers)
         self.assertEqual(resp.status_code, 200, resp.text)
         payloads = updates()
@@ -631,7 +632,7 @@ class ItemsApiTest(unittest.TestCase):
         events.publish = boom  # type: ignore[assignment]
         try:
             resp = self.client.post(f'/api/items/{ACC}/A1/edit',
-                                    json={'price': 5.0}, headers=self.headers)
+                                    json={'confirm': True, 'price': 5.0}, headers=self.headers)
         finally:
             events.publish = original  # type: ignore[assignment]
         self.assertEqual(resp.status_code, 200, resp.text)
@@ -639,6 +640,51 @@ class ItemsApiTest(unittest.TestCase):
         row = db.query_one('SELECT price FROM items WHERE account_id = ? AND item_id = ?',
                            (ACC, 'A1'))
         self.assertEqual(float(row['price']), 5.0)
+
+
+class ItemWriteConfirmGateApiTest(ItemsApiTest):
+    """第 52 批：老一代商品写路由的确认闸门（HTTP 面）。
+
+    路由层**不做**判断（`confirm=body.get('confirm')` 原样下传），判断权只在服务层 ——
+    所以这里要断言的是「HTTP 400 + `confirmation_required` + 平台零调用 + 本地没改」。
+    """
+
+    #: 五个写路由（方法、路径、请求体）
+    WRITE_ROUTES = (
+        ('POST', '/api/items/{acc}/A1/edit', {'price': 1.0}),
+        ('POST', '/api/items/{acc}/batch-edit', {'item_ids': ['A1'], 'patch': {'price_set': 1.0}}),
+        ('POST', '/api/items/{acc}/publish', {'title': 'x', 'price': 1.0}),
+        ('POST', '/api/items/{acc}/A1/delist', {}),
+        ('POST', '/api/items/{acc}/A1/relist', {}),
+    )
+
+    FALSE_LIKE = ('false', 'no', 0, '', None)
+
+    def test_write_routes_require_confirm(self):
+        seed('A1', account=ACC, price=100.0)
+        fake = FakeClient(ACC)
+        install_fake_protocol(fake)
+        for method, path, body in self.WRITE_ROUTES:
+            with self.subTest(path=path):
+                resp = self.client.request(method, path.format(acc=ACC), json=body,
+                                           headers=self.headers)
+                self.assertEqual(resp.status_code, 400, resp.text)
+                self.assertEqual(resp.json()['code'], 'confirmation_required')
+        # 闸门在最前：一条平台调用都没发出去，价格也没动
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(float(db.query_one(
+            'SELECT price FROM items WHERE account_id = ? AND item_id = ?',
+            (ACC, 'A1'))['price']), 100.0)
+
+    def test_false_like_confirm_is_rejected_over_http(self):
+        seed('A1', account=ACC, price=100.0)
+        for value in self.FALSE_LIKE:
+            with self.subTest(confirm=value):
+                resp = self.client.post(f'/api/items/{ACC}/A1/edit',
+                                        json={'confirm': value, 'price': 1.0},
+                                        headers=self.headers)
+                self.assertEqual(resp.status_code, 400, resp.text)
+                self.assertEqual(resp.json()['code'], 'confirmation_required')
 
 
 if __name__ == '__main__':

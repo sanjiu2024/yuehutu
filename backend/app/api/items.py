@@ -89,29 +89,29 @@ def sync_items(payload: Dict[str, Any] = Body(default={}), user=Depends(current_
 
 @router.post('/batch')
 def batch_update(payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
-    """body: {ids: [...], fields: {价格/标题/描述/库存 或 price/title/description/stock}}"""
+    """body: {ids: [...], fields: {...}, confirm: true}（第 52 批起必须显式确认）"""
     ids = payload.get('ids') or payload.get('item_ids') or []
     fields = payload.get('fields') or payload.get('patch') or {}
-    return _envelope(items.batch_update(ids, fields))
+    return _envelope(items.batch_update(ids, fields, confirm=payload.get('confirm')))
 
 
 @router.post('/publish')
 def publish_item(payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
     body = dict(payload or {})
     account_id = str(body.pop('account_id', '') or '')
-    return _envelope(items.publish_item(account_id, body))
+    return _envelope(items.publish_item(account_id, body, confirm=body.pop('confirm', None)))
 
 
 @router.post('/downshelf')
 def downshelf(payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
     ids = payload.get('ids') or payload.get('item_ids') or []
-    return _envelope(items.downshelf(ids))
+    return _envelope(items.downshelf(ids, confirm=payload.get('confirm')))
 
 
 @router.post('/reshelf')
 def reshelf(payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
     ids = payload.get('ids') or payload.get('item_ids') or []
-    return _envelope(items.reshelf(ids))
+    return _envelope(items.reshelf(ids, confirm=payload.get('confirm')))
 
 
 # --------------------------------------------------------------------------- 带 account_id 的正式路径
@@ -133,19 +133,27 @@ def batch_edit(account_id: str, payload: Dict[str, Any] = Body(...), user=Depend
     """
     ids = payload.get('item_ids') or payload.get('ids') or []
     patch = payload.get('patch') or payload.get('fields') or {}
-    return _envelope(items.batch_update(ids, patch, account_id=account_id))
+    return _envelope(items.batch_update(ids, patch, account_id=account_id,
+                                        confirm=payload.get('confirm')))
 
 
 @router.post('/{account_id}/batch-publish')
 def batch_publish(account_id: str, payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
     rows = payload.get('items') or []
+    body_confirm = payload.get('confirm')
     results = []
     for row in rows:
         if not isinstance(row, dict):
             results.append((None, {'success': False, 'message': 'item 必须是对象'}))
             continue
+        # 每一行自己也可以带 confirm（逐条确认）；行里的 confirm 必须 pop 掉，
+        # 否则会被当成发布载荷的一个字段发给协议层。
+        item = dict(row)
+        row_confirm = item.pop('confirm', None)
+        confirm = row_confirm if row_confirm is not None else body_confirm
         # 失败项要把**是哪一条**带回去，否则前端只能报「有 N 条失败」而说不出是哪条
-        results.append((row.get('item_id') or row.get('id') or '', items.publish_item(account_id, row)))
+        results.append((item.get('item_id') or item.get('id') or '',
+                        items.publish_item(account_id, item, confirm=confirm)))
     ok = sum(1 for _, r in results if not common.is_failure(r))
     return _envelope({'total': len(rows), 'ok': ok,
                       'failed': [{'id': str(rid or ''), 'message': r.get('message', '')}
@@ -154,7 +162,8 @@ def batch_publish(account_id: str, payload: Dict[str, Any] = Body(...), user=Dep
 
 @router.post('/{account_id}/publish')
 def publish_item_for_account(account_id: str, payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
-    return _envelope(items.publish_item(account_id, payload))
+    body = dict(payload or {})
+    return _envelope(items.publish_item(account_id, body, confirm=body.pop('confirm', None)))
 
 
 @router.post('/{account_id}/publish/precheck')
@@ -216,17 +225,25 @@ def delete_item_for_account(account_id: str, item_id: str, user=Depends(current_
 
 @router.post('/{account_id}/{item_id}/edit')
 def edit_item(account_id: str, item_id: str, payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
-    return _envelope(items.update_item(item_id, payload, account_id=account_id))
+    body = dict(payload or {})
+    return _envelope(items.update_item(item_id, body, account_id=account_id,
+                                       confirm=body.pop('confirm', None)))
 
 
 @router.post('/{account_id}/{item_id}/delist')
-def delist_item(account_id: str, item_id: str, user=Depends(current_user)):
-    return _envelope(items.downshelf([item_id], account_id=account_id))
+def delist_item(account_id: str, item_id: str, payload: Dict[str, Any] = Body(default={}),
+                user=Depends(current_user)):
+    """下架单条（**平台写**）：第 52 批起 body 必须带 `confirm: true`。"""
+    return _envelope(items.downshelf([item_id], account_id=account_id,
+                                     confirm=(payload or {}).get('confirm')))
 
 
 @router.post('/{account_id}/{item_id}/relist')
-def relist_item(account_id: str, item_id: str, user=Depends(current_user)):
-    return _envelope(items.reshelf([item_id], account_id=account_id))
+def relist_item(account_id: str, item_id: str, payload: Dict[str, Any] = Body(default={}),
+                user=Depends(current_user)):
+    """重新上架单条（**平台写**）：第 52 批起 body 必须带 `confirm: true`。"""
+    return _envelope(items.reshelf([item_id], account_id=account_id,
+                                   confirm=(payload or {}).get('confirm')))
 
 
 # --------------------------------------------------------------------------- 商品写接口
@@ -280,4 +297,5 @@ def quick_edit_item(account_id: str, item_id: str, payload: Dict[str, Any] = Bod
 
 @router.put('/{item_id}')
 def update_item(item_id: str, payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
-    return _envelope(items.update_item(item_id, payload))
+    body = dict(payload or {})
+    return _envelope(items.update_item(item_id, body, confirm=body.pop('confirm', None)))

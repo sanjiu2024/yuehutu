@@ -639,8 +639,16 @@ def _push_update(client: Any, account_id: str, item_id: str, payload: Dict[str, 
     return f'协议层修改失败，改动仅本地生效: {value}{_platform_error_hint(value)}'
 
 
-def update_item(item_id: Any, fields: Dict[str, Any], account_id: Optional[str] = None) -> Any:
-    """单条修改。给了 `account_id` 就必须 `(account_id, item_id)` 配对命中，否则 not_found。"""
+def update_item(item_id: Any, fields: Dict[str, Any], account_id: Optional[str] = None,
+                *, confirm: Any = None) -> Any:
+    """单条修改。给了 `account_id` 就必须 `(account_id, item_id)` 配对命中，否则 not_found。
+
+    **平台写**：确认闸门必须在最前（第 52 批补）—— 这条经 `_push_update` 真的会改
+    闲鱼上的商品，以前没有闸门，主管 AI / MCP 客户端可以零确认改价改标题。
+    """
+    problem = _confirm_gate('修改商品', confirm)
+    if problem is not None:
+        return problem
     row = _find_row_for_account(account_id, item_id) if account_id else _find_row(item_id)
     if row is None:
         return common.fail(f'商品不存在: {item_id}', 'not_found')
@@ -763,14 +771,22 @@ def _batch_summary(
 
 
 def batch_update(
-    item_ids: Sequence[Any], fields: Dict[str, Any], account_id: Optional[str] = None
+    item_ids: Sequence[Any], fields: Dict[str, Any], account_id: Optional[str] = None,
+    *, confirm: Any = None,
 ) -> Dict[str, Any]:
     """批量修改：逐条处理，一条失败不影响其它条，逐条记 operation_logs。
 
     给了 `account_id`（CONTRACTS §3 的 `/api/items/{account_id}/batch-edit`）时，
     每条都必须 `(account_id, item_id)` 配对命中；属于别的账号的进 `failed`，
     **不整批 400** —— MCP 的 `items_batch_edit` 与前端都靠逐条结果。
+
+    **平台写**：确认闸门在最前（第 52 批补）。`_confirm_gate` 返回的是 `common.fail()`
+    形状（不是 `_batch_summary` 形状），前端与 MCP 都只看 `success:false` + `code`，
+    所以未确认时按单条失败信封返回即可。
     """
+    problem = _confirm_gate('批量修改商品', confirm)
+    if problem is not None:
+        return problem
     ids = [str(x) for x in (item_ids or []) if str(x).strip()]
     if not ids:
         return _batch_summary(0, 0, [], [{'id': '', 'message': 'item_ids 不能为空', 'code': 'bad_request'}])
@@ -799,7 +815,9 @@ def batch_update(
                 failed.append({'id': item_id, 'message': message, 'code': code})
                 common.log_operation(str(account_id), 'batch_update', item_id, False, message)
                 continue
-        result = update_item(item_id, fields, account_id=account_id)
+        # 整批的闸门已经在本函数开头过掉了，逐条这里不能再拦一次（否则整批全变
+        # confirmation_required）；传 confirm=True 表示「这条是批量子调用」。
+        result = update_item(item_id, fields, account_id=account_id, confirm=True)
         if common.is_failure(result):
             failed.append({'id': item_id, 'message': result.get('message', '失败'),
                            'code': result.get('code', 'error')})
@@ -890,11 +908,21 @@ def _set_status(
     return _batch_summary(len(ids), synced_ok, warnings, failed, {'status': status})
 
 
-def downshelf(item_ids: Sequence[Any], account_id: Optional[str] = None) -> Dict[str, Any]:
+def downshelf(item_ids: Sequence[Any], account_id: Optional[str] = None,
+              *, confirm: Any = None) -> Dict[str, Any]:
+    """**平台写**：确认闸门在最前（第 52 批补）—— 真的会把商品从闲鱼下架。"""
+    problem = _confirm_gate('下架商品', confirm)
+    if problem is not None:
+        return problem
     return _set_status(item_ids, 'off_shelf', 'downshelf', account_id)
 
 
-def reshelf(item_ids: Sequence[Any], account_id: Optional[str] = None) -> Dict[str, Any]:
+def reshelf(item_ids: Sequence[Any], account_id: Optional[str] = None,
+            *, confirm: Any = None) -> Dict[str, Any]:
+    """**平台写**：确认闸门在最前（第 52 批补）—— 真的会把商品重新上架。"""
+    problem = _confirm_gate('重新上架商品', confirm)
+    if problem is not None:
+        return problem
     return _set_status(item_ids, 'on_sale', 'reshelf', account_id)
 
 
@@ -1376,8 +1404,14 @@ def sync_items(account_id: str) -> Any:
     return result
 
 
-def publish_item(account_id: str, payload: Dict[str, Any]) -> Any:
-    """发布新商品：协议层是唯一真相，未就绪直接返回 xianyu_not_ready。"""
+def publish_item(account_id: str, payload: Dict[str, Any], *, confirm: Any = None) -> Any:
+    """发布新商品：协议层是唯一真相，未就绪直接返回 xianyu_not_ready。
+
+    **平台写**：确认闸门在最前（第 52 批补）—— 这条真的会在闲鱼上架一个新商品。
+    """
+    problem = _confirm_gate('发布商品', confirm)
+    if problem is not None:
+        return problem
     if not account_id:
         return common.fail('account_id 不能为空', 'bad_request')
     if not isinstance(payload, dict) or not payload:
@@ -1486,14 +1520,19 @@ def publish_precheck(account_id: str, payload: Dict[str, Any]) -> Any:
 
 
 def edit_from_args(account_id: str, item_id: str, price: Any = None, title: Any = None,
-                   description: Any = None, stock: Any = None, images: Any = None) -> Any:
-    """工具 `items_edit` 的扁平参数 → `update_item(item_id, fields)`。"""
+                   description: Any = None, stock: Any = None, images: Any = None,
+                   *, confirm: Any = None) -> Any:
+    """工具 `items_edit` 的扁平参数 → `update_item(item_id, fields)`。
+
+    `confirm` 原样透传给服务层（第 52 批补）：工具层**不**自己判闸门，
+    否则会出现「工具层拦住了、HTTP 路由却没拦」这种两套口径。
+    """
     fields: Dict[str, Any] = {}
     for key, value in (('price', price), ('title', title), ('description', description),
                        ('stock', stock), ('images', images)):
         if value is not None:
             fields[key] = value
-    return update_item(item_id, fields, account_id)
+    return update_item(item_id, fields, account_id, confirm=confirm)
 
 
 def _publish_payload(title: Any, price: Any, description: Any, images: Any,
@@ -1507,10 +1546,12 @@ def _publish_payload(title: Any, price: Any, description: Any, images: Any,
 
 
 def publish_from_args(account_id: str, title: Any, price: Any, description: Any = None,
-                      images: Any = None, category_id: Any = None) -> Any:
+                      images: Any = None, category_id: Any = None,
+                      *, confirm: Any = None) -> Any:
     """工具 `items_publish` 的扁平参数 → `publish_item(account_id, payload)`。"""
     return publish_item(account_id,
-                        _publish_payload(title, price, description, images, category_id))
+                        _publish_payload(title, price, description, images, category_id),
+                        confirm=confirm)
 
 
 def publish_precheck_from_args(account_id: str, title: Any, price: Any, description: Any = None,
@@ -1520,6 +1561,7 @@ def publish_precheck_from_args(account_id: str, title: Any, price: Any, descript
                             _publish_payload(title, price, description, images, category_id))
 
 
-def batch_edit_from_args(account_id: str, item_ids: Any, patch: Any) -> Any:
+def batch_edit_from_args(account_id: str, item_ids: Any, patch: Any,
+                         *, confirm: Any = None) -> Any:
     """工具 `items_batch_edit` 的 `patch` → `batch_update(item_ids, fields)`。"""
-    return batch_update(item_ids or [], patch or {}, account_id)
+    return batch_update(item_ids or [], patch or {}, account_id, confirm=confirm)

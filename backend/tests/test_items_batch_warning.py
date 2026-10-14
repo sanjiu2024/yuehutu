@@ -126,7 +126,7 @@ class BatchWarningServiceTest(unittest.TestCase):
         """协议层没就绪 → ok 必须是 0，改动记在 warnings / local_only 里。"""
         seed('A1')
         seed('A2')
-        result = items.batch_update(['A1', 'A2'], {'price_set': 9.9})
+        result = items.batch_update(['A1', 'A2'], {'price_set': 9.9}, confirm=True)
 
         self.assertEqual(result['total'], 2)
         self.assertEqual(result['ok'], 0)
@@ -144,7 +144,7 @@ class BatchWarningServiceTest(unittest.TestCase):
         seed('A1')
         seed('A2')
         install_fake_protocol(self.client)
-        result = items.batch_update(['A1', 'A2'], {'price_set': 9.9})
+        result = items.batch_update(['A1', 'A2'], {'price_set': 9.9}, confirm=True)
 
         self.assertEqual(result['ok'], 2)
         self.assertEqual(result['local_only'], 0)
@@ -154,7 +154,7 @@ class BatchWarningServiceTest(unittest.TestCase):
     def test_downshelf_not_pushed_is_not_ok(self):
         seed('A1')
         seed('A2')
-        result = items.downshelf(['A1', 'A2'])
+        result = items.downshelf(['A1', 'A2'], confirm=True)
 
         self.assertEqual(result['ok'], 0)
         self.assertEqual(result['local_only'], 2)
@@ -162,7 +162,7 @@ class BatchWarningServiceTest(unittest.TestCase):
         self.assertEqual(status_of(ACC, 'A1'), 'off_shelf')
 
         install_fake_protocol(self.client)
-        result = items.reshelf(['A1'])
+        result = items.reshelf(['A1'], confirm=True)
         self.assertEqual(result['ok'], 1)
         self.assertEqual(result['warnings'], [])
 
@@ -170,7 +170,7 @@ class BatchWarningServiceTest(unittest.TestCase):
         """拿 ACC 的 account_id 改 OTHER 账号的商品 → 必须失败，且不能改到别人的数据。"""
         seed('A1', account=ACC, price=100.0)
         seed('B1', account=OTHER, price=555.0)
-        result = items.batch_update(['A1', 'B1'], {'price_set': 9.9}, account_id=ACC)
+        result = items.batch_update(['A1', 'B1'], {'price_set': 9.9}, account_id=ACC, confirm=True)
 
         self.assertEqual(result['total'], 2)
         self.assertEqual(len(result['failed']), 1)
@@ -184,7 +184,7 @@ class BatchWarningServiceTest(unittest.TestCase):
 
     def test_downshelf_cross_account_must_fail(self):
         seed('B1', account=OTHER, status='on_sale')
-        result = items.downshelf(['B1'], account_id=ACC)
+        result = items.downshelf(['B1'], account_id=ACC, confirm=True)
 
         self.assertEqual(result['ok'], 0)
         self.assertEqual(len(result['failed']), 1)
@@ -228,7 +228,7 @@ class BatchEditApiTest(unittest.TestCase):
         seed('A2')
         resp = self.client.post(
             f'/api/items/{ACC}/batch-edit',
-            json={'item_ids': ['A1', 'A2'], 'patch': {'price_set': 9.9}},
+            json={'confirm': True, 'item_ids': ['A1', 'A2'], 'patch': {'price_set': 9.9}},
             headers=self.headers,
         )
         self.assertEqual(resp.status_code, 200, resp.text)
@@ -247,7 +247,7 @@ class BatchEditApiTest(unittest.TestCase):
         seed('B1', account=OTHER, price=555.0)
         resp = self.client.post(
             f'/api/items/{ACC}/batch-edit',
-            json={'item_ids': ['A1', 'B1'], 'patch': {'price_set': 9.9}},
+            json={'confirm': True, 'item_ids': ['A1', 'B1'], 'patch': {'price_set': 9.9}},
             headers=self.headers,
         )
         self.assertEqual(resp.status_code, 200, resp.text)
@@ -260,7 +260,7 @@ class BatchEditApiTest(unittest.TestCase):
 
     def test_delist_cross_account_item_goes_to_failed(self):
         seed('B1', account=OTHER, status='on_sale')
-        resp = self.client.post(f'/api/items/{ACC}/B1/delist', headers=self.headers)
+        resp = self.client.post(f'/api/items/{ACC}/B1/delist', json={'confirm': True}, headers=self.headers)
         self.assertEqual(resp.status_code, 200, resp.text)
         data = resp.json()['data']
         self.assertEqual(data['failed'][0]['code'], 'account_mismatch')
@@ -270,7 +270,7 @@ class BatchEditApiTest(unittest.TestCase):
         seed('A1')
         resp = self.client.post(
             f'/api/items/{ACC}/batch-edit',
-            json={'item_ids': ['A1', 'NOPE'], 'patch': {'price_set': 9.9}},
+            json={'confirm': True, 'item_ids': ['A1', 'NOPE'], 'patch': {'price_set': 9.9}},
             headers=self.headers,
         )
         self.assertEqual(resp.status_code, 200, resp.text)

@@ -307,7 +307,7 @@ class ItemsServiceTest(unittest.TestCase):
 
     def test_update_item_fields_and_logs(self):
         self.seed('I1', price=100.0, title='旧标题')
-        result = items.update_item('I1', {'价格': 88.5, '标题': '新标题', '库存': 5})
+        result = items.update_item('I1', {'价格': 88.5, '标题': '新标题', '库存': 5}, confirm=True)
         self.assertNotIn('success', result)
         self.assertEqual(result['item']['price'], 88.5)
         self.assertEqual(result['item']['title'], '新标题')
@@ -322,24 +322,24 @@ class ItemsServiceTest(unittest.TestCase):
 
     def test_update_item_rejects_bad_fields(self):
         self.seed('I1')
-        result = items.update_item('I1', {'不存在的字段': 1})
+        result = items.update_item('I1', {'不存在的字段': 1}, confirm=True)
         self.assertFalse(result['success'])
         self.assertEqual(result['code'], 'invalid_fields')
 
-        result = items.update_item('I1', {'price': 'abc'})
+        result = items.update_item('I1', {'price': 'abc'}, confirm=True)
         self.assertFalse(result['success'])
 
-        result = items.update_item('NOPE', {'price': 1})
+        result = items.update_item('NOPE', {'price': 1}, confirm=True)
         self.assertFalse(result['success'])
         self.assertEqual(result['code'], 'not_found')
 
-        result = items.update_item('I1', {})
+        result = items.update_item('I1', {}, confirm=True)
         self.assertFalse(result['success'])
 
     def test_update_item_pushes_to_protocol(self):
         install_fake_protocol(self.client)
         self.seed('I1')
-        result = items.update_item('I1', {'price': 66})
+        result = items.update_item('I1', {'price': 66}, confirm=True)
         self.assertTrue(result['synced'])
         self.assertEqual(len(self.client.calls), 1)
         self.assertEqual(self.client.calls[0][0], 'edit_item')
@@ -354,7 +354,7 @@ class ItemsServiceTest(unittest.TestCase):
         """
         install_fake_protocol(self.client)
         self.seed('I1', status='sold')
-        result = items.update_item('I1', {'title': '改个标题'})
+        result = items.update_item('I1', {'title': '改个标题'}, confirm=True)
         self.assertEqual(self.client.calls, [])            # 一次协议调用都不能发
         self.assertFalse(result['synced'])
         self.assertIn('已卖出', result['warning'])
@@ -367,7 +367,7 @@ class ItemsServiceTest(unittest.TestCase):
         """对照：在售商品照旧推平台（闸门只针对 sold）。"""
         install_fake_protocol(self.client)
         self.seed('I1', status='on_sale')
-        result = items.update_item('I1', {'title': '改个标题'})
+        result = items.update_item('I1', {'title': '改个标题'}, confirm=True)
         self.assertTrue(result['synced'])
         self.assertEqual(self.client.calls, [('edit_item', 'I1', {'title': '改个标题'})])
 
@@ -376,7 +376,7 @@ class ItemsServiceTest(unittest.TestCase):
         install_fake_protocol(self.client)
         self.seed('I1', status='sold')
         self.seed('I2', status='on_sale')
-        result = items.batch_update(['I1', 'I2'], {'price': 12}, account_id='acc1')
+        result = items.batch_update(['I1', 'I2'], {'price': 12}, account_id='acc1', confirm=True)
         self.assertEqual(result['ok'], 1)
         self.assertEqual(len(result['warnings']), 1)
         self.assertEqual(result['warnings'][0]['id'], 'I1')
@@ -397,7 +397,7 @@ class ItemsServiceTest(unittest.TestCase):
         """
         install_fake_protocol(self.client)
         self.seed('I1')
-        result = items.update_item('I1', {'images': ['https://img.alicdn.com/a.png']})
+        result = items.update_item('I1', {'images': ['https://img.alicdn.com/a.png']}, confirm=True)
         self.assertNotIn('success', result)
         self.assertTrue(result['synced'])
         self.assertNotIn('warning', result)
@@ -418,7 +418,7 @@ class ItemsServiceTest(unittest.TestCase):
         install_fake_protocol(self.client)
         self.seed('I1')
         entry = {'url': 'https://img.alicdn.com/a.png', 'width': 1254, 'height': 1254}
-        result = items.update_item('I1', {'images': [entry]})
+        result = items.update_item('I1', {'images': [entry]}, confirm=True)
         self.assertTrue(result['synced'])
         sent = self.client.calls[0][2]['images']
         self.assertEqual(sent, [entry])  # 推协议层：完整条目（含尺寸）
@@ -431,7 +431,7 @@ class ItemsServiceTest(unittest.TestCase):
         # 混排（新对象 + 历史 URL）且 URL 重复 -> 顺序保留、去重
         result = items.update_item('I1', {'images': [
             entry, 'https://img.alicdn.com/b.png', 'https://img.alicdn.com/a.png',
-        ]})
+        ]}, confirm=True)
         self.assertEqual(self._db_images(),
                          ['https://img.alicdn.com/a.png', 'https://img.alicdn.com/b.png'])
         self.assertEqual(result['item']['images'],
@@ -444,7 +444,7 @@ class ItemsServiceTest(unittest.TestCase):
         db.execute("UPDATE items SET images = ? WHERE item_id = 'I1'",
                    (json.dumps(['https://img.alicdn.com/keep.png']),))
 
-        result = items.update_item('I1', {'images': []})
+        result = items.update_item('I1', {'images': []}, confirm=True)
         self.assertNotIn('success', result)          # 不是错误信封
         self.assertTrue(result['noop'])
         self.assertEqual(result['updated_fields'], [])
@@ -458,7 +458,7 @@ class ItemsServiceTest(unittest.TestCase):
     def test_update_images_without_protocol_is_local_only(self):
         """协议层没就绪：本地照存 URL（本地优先），但 synced 必须是 False。"""
         self.seed('I1')
-        result = items.update_item('I1', {'images': ['https://img.alicdn.com/a.png']})
+        result = items.update_item('I1', {'images': ['https://img.alicdn.com/a.png']}, confirm=True)
         self.assertFalse(result['synced'])
         self.assertIn('协议层', result['warning'])
         self.assertEqual(self._db_images(), ['https://img.alicdn.com/a.png'])
@@ -471,7 +471,7 @@ class ItemsServiceTest(unittest.TestCase):
         """
         install_fake_protocol(self.client)
         self.seed('I1', title='旧标题')
-        result = items.update_item('I1', {'title': '新标题', 'ai_enabled': False})
+        result = items.update_item('I1', {'title': '新标题', 'ai_enabled': False}, confirm=True)
         self.assertFalse(result['synced'])
         self.assertIn('ai_enabled', result['warning'])
         self.assertIn('仅本地生效', result['warning'])
@@ -484,7 +484,7 @@ class ItemsServiceTest(unittest.TestCase):
         install_fake_protocol(self.client)
         self.seed('I1')
         self.seed('I2')
-        result = items.batch_update(['I1', 'I2'], {'images': ['https://img.alicdn.com/a.png']})
+        result = items.batch_update(['I1', 'I2'], {'images': ['https://img.alicdn.com/a.png']}, confirm=True)
         self.assertEqual(result['total'], 2)
         self.assertEqual(result['ok'], 2)
         self.assertEqual(result['local_only'], 0)
@@ -499,7 +499,7 @@ class ItemsServiceTest(unittest.TestCase):
         install_fake_protocol(self.client)
         self.seed('I1')
         self.seed('I2')
-        result = items.batch_update(['I1', 'I2'], {'title': '新标题', 'ai_enabled': False})
+        result = items.batch_update(['I1', 'I2'], {'title': '新标题', 'ai_enabled': False}, confirm=True)
         self.assertEqual(result['ok'], 0)
         self.assertEqual(result['local_only'], 2)
         self.assertEqual(result['noop'], 0)
@@ -511,7 +511,7 @@ class ItemsServiceTest(unittest.TestCase):
         """批量里 ``images: []`` 一行都没改 -> ok=0、noop=1（不能算成功）。"""
         install_fake_protocol(self.client)
         self.seed('I1')
-        result = items.batch_update(['I1'], {'images': []})
+        result = items.batch_update(['I1'], {'images': []}, confirm=True)
         self.assertEqual(result['total'], 1)
         self.assertEqual(result['ok'], 0)
         self.assertEqual(result['noop'], 1)
@@ -531,7 +531,7 @@ class ItemsServiceTest(unittest.TestCase):
         """
         self.seed('I1')
         self.seed('I2')
-        result = items.batch_update(['I1', 'I2', 'MISSING'], {'价格': 50})
+        result = items.batch_update(['I1', 'I2', 'MISSING'], {'价格': 50}, confirm=True)
         self.assertEqual(result['total'], 3)
         self.assertEqual(result['ok'], 0)          # 没推到平台 -> 不算成功
         self.assertEqual(result['synced'], 0)
@@ -558,7 +558,7 @@ class ItemsServiceTest(unittest.TestCase):
         self.seed('I2')
         install_fake_protocol(self.client)
         try:
-            result = items.batch_update(['I1', 'I2'], {'价格': 50})
+            result = items.batch_update(['I1', 'I2'], {'价格': 50}, confirm=True)
             self.assertEqual(result['ok'], 2)
             self.assertEqual(result['local_only'], 0)
             self.assertEqual(result['warnings'], [])
@@ -572,25 +572,25 @@ class ItemsServiceTest(unittest.TestCase):
         try:
             self.seed('I1', price=100.0)
             self.seed('I2', price=200.0)
-            result = items.batch_update(['I1', 'I2'], {'price_delta': -10})
+            result = items.batch_update(['I1', 'I2'], {'price_delta': -10}, confirm=True)
             self.assertEqual(result['ok'], 2)
             self.assertEqual(items.get_item('I1')['price'], 90.0)
             self.assertEqual(items.get_item('I2')['price'], 190.0)
 
-            result = items.batch_update(['I1'], {'title_prefix': '【特价】'})
+            result = items.batch_update(['I1'], {'title_prefix': '【特价】'}, confirm=True)
             self.assertEqual(result['ok'], 1)
             self.assertTrue(items.get_item('I1')['title'].startswith('【特价】'))
         finally:
             remove_fake_protocol()
 
     def test_batch_update_empty_and_bad_fields(self):
-        result = items.batch_update([], {'price': 1})
+        result = items.batch_update([], {'price': 1}, confirm=True)
         self.assertEqual(result['total'], 0)
         self.assertEqual(result['ok'], 0)
         self.assertTrue(result['failed'])
 
         self.seed('I1')
-        result = items.batch_update(['I1'], {'price': 'x'})
+        result = items.batch_update(['I1'], {'price': 'x'}, confirm=True)
         self.assertEqual(result['ok'], 0)
         self.assertEqual(result['failed'][0]['id'], 'I1')
 
@@ -600,7 +600,7 @@ class ItemsServiceTest(unittest.TestCase):
         """协议层没就绪时 ok=0（本地状态改了、但没推到闲鱼）；推成功才算 ok。"""
         self.seed('I1')
         self.seed('I2')
-        result = items.downshelf(['I1', 'I2', 'NOPE'])
+        result = items.downshelf(['I1', 'I2', 'NOPE'], confirm=True)
         self.assertEqual(result['total'], 3)
         self.assertEqual(result['ok'], 0)
         self.assertEqual(result['local_only'], 2)
@@ -608,7 +608,7 @@ class ItemsServiceTest(unittest.TestCase):
         self.assertEqual(len(result['failed']), 1)
         self.assertEqual(items.get_item('I1')['status'], 'off_shelf')
 
-        result = items.reshelf(['I1'])
+        result = items.reshelf(['I1'], confirm=True)
         self.assertEqual(result['ok'], 0)
         self.assertEqual(result['local_only'], 1)
         self.assertEqual(items.get_item('I1')['status'], 'on_sale')
@@ -616,11 +616,11 @@ class ItemsServiceTest(unittest.TestCase):
         # 同上，装上假协议层 -> 真的推成功了，ok 才等于条数
         install_fake_protocol(self.client)
         try:
-            result = items.downshelf(['I1', 'I2', 'NOPE'])
+            result = items.downshelf(['I1', 'I2', 'NOPE'], confirm=True)
             self.assertEqual(result['ok'], 2)
             self.assertEqual(result['local_only'], 0)
             self.assertEqual(result['warnings'], [])
-            result = items.reshelf(['I1'])
+            result = items.reshelf(['I1'], confirm=True)
             self.assertEqual(result['ok'], 1)
             self.assertEqual(result['warnings'], [])
         finally:
@@ -767,7 +767,7 @@ class ItemsServiceTest(unittest.TestCase):
             self.assertTrue(result['message'])
             self.assertEqual(result['message'], '协议层尚未就绪')
 
-            result = items.publish_item('acc1', {'title': 'x', 'price': 1})
+            result = items.publish_item('acc1', {'title': 'x', 'price': 1}, confirm=True)
             self.assertFalse(result['success'])
             self.assertEqual(result['code'], 'xianyu_not_ready')
         finally:
@@ -791,7 +791,7 @@ class ItemsServiceTest(unittest.TestCase):
             self.assertIn('Cookie 里缺少 unb', result['message'])
             self.assertIn('协议层客户端创建失败', result['message'])
 
-            result = items.publish_item('acc1', {'title': 'x', 'price': 1})
+            result = items.publish_item('acc1', {'title': 'x', 'price': 1}, confirm=True)
             self.assertFalse(result['success'])
             self.assertEqual(result['code'], 'xianyu_not_ready')
             self.assertIn('Cookie 里缺少 unb', result['message'])
@@ -822,13 +822,13 @@ class ItemsServiceTest(unittest.TestCase):
 
     def test_publish_item_with_fake_protocol(self):
         install_fake_protocol(self.client)
-        result = items.publish_item('acc1', {'title': '新商品', 'price': 12.5, 'description': '描述'})
+        result = items.publish_item('acc1', {'title': '新商品', 'price': 12.5, 'description': '描述'}, confirm=True)
         self.assertNotIn('success', result)
         self.assertEqual(result['item_id'], 'NEW1')
         self.assertEqual(items.get_item('NEW1')['title'], '新商品')
 
     def test_publish_item_needs_title(self):
-        result = items.publish_item('acc1', {'price': 1})
+        result = items.publish_item('acc1', {'price': 1}, confirm=True)
         self.assertFalse(result['success'])
         self.assertEqual(result['code'], 'invalid_fields')
 
@@ -845,8 +845,8 @@ class ItemsServiceTest(unittest.TestCase):
 
     def test_operation_logs_listing(self):
         self.seed('I1')
-        items.update_item('I1', {'price': 1})
-        items.update_item('I1', {'price': 2})
+        items.update_item('I1', {'price': 1}, confirm=True)
+        items.update_item('I1', {'price': 2}, confirm=True)
         logs = items.list_operation_logs(account_id='acc1', limit=10)
         self.assertEqual(len(logs), 2)
         self.assertTrue(all(isinstance(log['success'], bool) for log in logs))
@@ -857,8 +857,8 @@ class ItemsServiceTest(unittest.TestCase):
     def test_events_published(self):
         self.seed('I1')
         before = len(events.recent(limit=500))
-        items.update_item('I1', {'price': 9})
-        items.downshelf(['I1'])
+        items.update_item('I1', {'price': 9}, confirm=True)
+        items.downshelf(['I1'], confirm=True)
         after = events.recent(limit=500)
         topics = [e['topic'] for e in after[before:]]
         self.assertIn('items.updated', topics)
@@ -922,31 +922,31 @@ class StockPatchTest(ItemsServiceTest):
 
     def test_stock_set_fixed_value(self):
         self.seed('I1', stock=3)
-        result = items.update_item('I1', {'stock_set': 10})
+        result = items.update_item('I1', {'stock_set': 10}, confirm=True)
         self.assertNotIn('success', result)
         self.assertEqual(result['item']['stock'], 10)
 
     def test_stock_set_negative_is_clamped_to_zero(self):
         # 平台不接受负库存；钳掉比报错更符合用户预期（用户就是想卖光）。
         self.seed('I1', stock=3)
-        result = items.update_item('I1', {'stock_set': -5})
+        result = items.update_item('I1', {'stock_set': -5}, confirm=True)
         self.assertEqual(result['item']['stock'], 0)
 
     def test_stock_delta_increases_then_decreases(self):
         self.seed('I1', stock=3)
-        up = items.update_item('I1', {'stock_delta': 5})
+        up = items.update_item('I1', {'stock_delta': 5}, confirm=True)
         self.assertEqual(up['item']['stock'], 8)
-        down = items.update_item('I1', {'stock_delta': -2})
+        down = items.update_item('I1', {'stock_delta': -2}, confirm=True)
         self.assertEqual(down['item']['stock'], 6)
 
     def test_stock_delta_clamps_at_zero(self):
         self.seed('I1', stock=1)
-        result = items.update_item('I1', {'stock_delta': -5})
+        result = items.update_item('I1', {'stock_delta': -5}, confirm=True)
         self.assertEqual(result['item']['stock'], 0)
 
     def test_stock_delta_on_unknown_stock_is_rejected(self):
         self.seed('I1', stock=-1)  # 平台列表没返回库存 = 未知
-        result = items.update_item('I1', {'stock_delta': 5})
+        result = items.update_item('I1', {'stock_delta': 5}, confirm=True)
         self.assertFalse(result['success'])
         self.assertEqual(result['code'], 'unknown_stock')
         self.assertIn('库存未知', result['message'])
@@ -959,14 +959,14 @@ class StockPatchTest(ItemsServiceTest):
     def test_stock_set_on_unknown_stock_is_allowed(self):
         # 明确指定固定值 = 把未知覆盖成已知，是合理操作，不能一起拦掉。
         self.seed('I1', stock=-1)
-        result = items.update_item('I1', {'stock_set': 20})
+        result = items.update_item('I1', {'stock_set': 20}, confirm=True)
         self.assertNotIn('success', result)
         self.assertEqual(result['item']['stock'], 20)
 
     def test_stock_delta_pushed_to_protocol(self):
         self.seed('I1', stock=7)
         install_fake_protocol(self.client)
-        result = items.update_item('I1', {'stock_delta': 3}, account_id='acc1')
+        result = items.update_item('I1', {'stock_delta': 3}, account_id='acc1', confirm=True)
         self.assertTrue(result['synced'])
         self.assertEqual(result['item']['stock'], 10)
         pushed = [c for c in self.client.calls if c[0] == 'edit_item']
@@ -990,7 +990,7 @@ class StockPatchTest(ItemsServiceTest):
                 )
 
         install_fake_protocol(Rejecting('acc1'))
-        result = items.update_item('I1', {'stock_set': 100}, account_id='acc1')
+        result = items.update_item('I1', {'stock_set': 100}, account_id='acc1', confirm=True)
         self.assertFalse(result['synced'])
         self.assertIn('FAIL_BIZ_ITEM_ERROR_MULTI_INVENTORY_ITEM_CAN_NOT_PUBLISH', result['warning'])
         self.assertIn('单件库存', result['warning'])
@@ -1006,7 +1006,7 @@ class StockPatchTest(ItemsServiceTest):
                 raise RealXianyuError('FAIL_SYS_SOMETHING_NEW::没见过的错误')
 
         install_fake_protocol(Rejecting('acc1'))
-        result = items.update_item('I1', {'stock_set': 5}, account_id='acc1')
+        result = items.update_item('I1', {'stock_set': 5}, account_id='acc1', confirm=True)
         self.assertEqual(result['warning'], '协议层修改失败，改动仅本地生效: FAIL_SYS_SOMETHING_NEW::没见过的错误')
 
     def test_same_prefix_but_new_error_code_is_not_translated(self):
@@ -1026,7 +1026,7 @@ class StockPatchTest(ItemsServiceTest):
                 )
 
         install_fake_protocol(Rejecting('acc1'))
-        result = items.update_item('I1', {'stock_set': 5}, account_id='acc1')
+        result = items.update_item('I1', {'stock_set': 5}, account_id='acc1', confirm=True)
         self.assertNotIn('单件库存', result['warning'])
         self.assertIn('CAN_NOT_PUBLISH_V2', result['warning'])
         # 文案里出现同一个词根也不算命中：匹配的是错误码，不是人话
@@ -1040,7 +1040,7 @@ class StockPatchTest(ItemsServiceTest):
     def test_batch_stock_set_applies_to_every_item(self):
         self.seed('A1', stock=1)
         self.seed('A2', stock=-1)
-        result = items.batch_update(['A1', 'A2'], {'stock_set': 66}, account_id='acc1')
+        result = items.batch_update(['A1', 'A2'], {'stock_set': 66}, account_id='acc1', confirm=True)
         self.assertEqual(result['total'], 2)
         self.assertEqual(result['failed'], [])
         rows = {r['item_id']: r['stock'] for r in db.query('SELECT item_id, stock FROM items')}
@@ -1049,7 +1049,7 @@ class StockPatchTest(ItemsServiceTest):
     def test_batch_stock_delta_skips_unknown_and_keeps_identity(self):
         self.seed('A1', stock=5)
         self.seed('A2', stock=-1)
-        result = items.batch_update(['A1', 'A2'], {'stock_delta': 10}, account_id='acc1')
+        result = items.batch_update(['A1', 'A2'], {'stock_delta': 10}, account_id='acc1', confirm=True)
         # 恒等式：total == ok + local_only + noop + len(failed)
         self.assertEqual(result['total'], result['ok'] + result['local_only'] + result['noop'] + len(result['failed']))
         self.assertEqual(len(result['failed']), 1)
@@ -1067,7 +1067,7 @@ class StockPatchTest(ItemsServiceTest):
                       {'stock_set': True}, {'stock_set': 2.5}, {'price_set': None},
                       {'price_delta': {}}):
             with self.subTest(patch=patch):
-                result = items.update_item('I1', patch)
+                result = items.update_item('I1', patch, confirm=True)
                 self.assertFalse(result['success'], f'{patch} 应该被拒')
                 self.assertEqual(result['code'], 'invalid_fields', result)
                 self.assertIn(list(patch)[0], result['message'])
@@ -1078,14 +1078,14 @@ class StockPatchTest(ItemsServiceTest):
     def test_numeric_patch_accepts_numeric_strings(self):
         """表单/前端偶尔会发字符串数字 —— 那是能认的，别一起拒掉。"""
         self.seed('I1', stock=5)
-        self.assertEqual(items.update_item('I1', {'stock_delta': '3'})['item']['stock'], 8)
-        self.assertEqual(items.update_item('I1', {'stock_set': '20'})['item']['stock'], 20)
+        self.assertEqual(items.update_item('I1', {'stock_delta': '3'}, confirm=True)['item']['stock'], 8)
+        self.assertEqual(items.update_item('I1', {'stock_set': '20'}, confirm=True)['item']['stock'], 20)
 
     def test_batch_bad_patch_number_is_per_item_failure(self):
         """批量里同样的非法值：逐条进 `failed`，不是整批抛异常。"""
         self.seed('A1', stock=1)
         self.seed('A2', stock=2)
-        result = items.batch_update(['A1', 'A2'], {'stock_delta': None}, account_id='acc1')
+        result = items.batch_update(['A1', 'A2'], {'stock_delta': None}, account_id='acc1', confirm=True)
         self.assertEqual(result['ok'], 0)
         self.assertEqual(len(result['failed']), 2)
         self.assertTrue(all(f['code'] == 'invalid_fields' for f in result['failed']), result['failed'])
@@ -1096,8 +1096,8 @@ class StockPatchTest(ItemsServiceTest):
 
     def test_single_and_batch_agree_on_unknown_delta(self):
         self.seed('A2', stock=-1)
-        single = items.update_item('A2', {'stock_delta': 1}, account_id='acc1')
-        batch = items.batch_update(['A2'], {'stock_delta': 1}, account_id='acc1')
+        single = items.update_item('A2', {'stock_delta': 1}, account_id='acc1', confirm=True)
+        batch = items.batch_update(['A2'], {'stock_delta': 1}, account_id='acc1', confirm=True)
         self.assertEqual(single['code'], 'unknown_stock')
         self.assertEqual(batch['failed'][0]['code'], single['code'])
         self.assertEqual(batch['failed'][0]['message'], single['message'])
@@ -1270,6 +1270,102 @@ class FakeClientSignatureTest(unittest.TestCase):
             with self.subTest(method=name):
                 self.assertTrue(hasattr(RealXianyuClient, name),
                                 f'XianyuClient 缺少服务层要调的方法 {name}')
+
+
+class ItemWriteConfirmGateTest(ItemsServiceTest):
+    """第 52 批：商品**老一代**写接口的确认闸门（以前一个都没有）。
+
+    这批修的真缺陷：`items_edit` / `items_publish` / `items_batch_edit` 三个 AI 工具的
+    规格里 `confirm` 是 **required**，主管 AI 与 MCP 都照规矩传，但服务层从来没看过这个
+    参数 —— 传 `confirm: false` 照样改平台。工具规格承诺了一道不存在的闸门。
+
+    闸门必须满足三件事，所以每条都一起钉：
+    1. 未确认 → `confirmation_required`（`common.FAIL_STATUS` 里没有这个码 ⇒ HTTP 400）；
+    2. 闸门在**最前** —— 不碰数据库、不碰平台（`operation_logs` 也不许写）；
+    3. `'false'` / `0` / `'yes'` 这类「看着像点头」的值不算确认（全仓 `_truthy` 同一口径）。
+    """
+
+    #: 全仓统一口径里「不算确认」的值（`bool('false')` 是 True，所以这里全是坑）
+    FALSE_LIKE = ('false', 'FALSE', ' false ', 'no', 'yes', '0', 0, '', None, 2, [], {})
+
+    def _calls(self) -> list:
+        return list(getattr(self.client, 'calls', []))
+
+    def test_single_edit_needs_confirm_and_touches_nothing(self):
+        self.seed('I1', price=100.0)
+        result = items.update_item('I1', {'price': 1.0})
+        self.assertFalse(result['success'], result)
+        self.assertEqual(result['code'], 'confirmation_required')
+        self.assertIn('写操作', result['message'])
+        self.assertEqual(items.get_item('I1')['price'], 100.0)
+        self.assertEqual(self._calls(), [])
+        self.assertEqual(db.query('SELECT * FROM operation_logs'), [])
+
+    def test_batch_edit_needs_confirm_and_touches_nothing(self):
+        self.seed('I1', price=100.0)
+        self.seed('I2', price=100.0)
+        result = items.batch_update(['I1', 'I2'], {'price_set': 1.0})
+        self.assertFalse(result['success'], result)
+        self.assertEqual(result['code'], 'confirmation_required')
+        self.assertEqual(items.get_item('I1')['price'], 100.0)
+        self.assertEqual(self._calls(), [])
+        self.assertEqual(db.query('SELECT * FROM operation_logs'), [])
+
+    def test_downshelf_and_reshelf_need_confirm(self):
+        self.seed('I1', status='on_sale')
+        down = items.downshelf(['I1'])
+        self.assertFalse(down['success'], down)
+        self.assertEqual(down['code'], 'confirmation_required')
+        up = items.reshelf(['I1'])
+        self.assertFalse(up['success'], up)
+        self.assertEqual(up['code'], 'confirmation_required')
+        self.assertEqual(items.get_item('I1')['status'], 'on_sale')
+        self.assertEqual(self._calls(), [])
+
+    def test_publish_needs_confirm(self):
+        self.seed('I1')
+        result = items.publish_item('acc1', {'title': '新商品', 'price': 12.5})
+        self.assertFalse(result['success'], result)
+        self.assertEqual(result['code'], 'confirmation_required')
+        self.assertEqual(self._calls(), [])
+        self.assertEqual(db.query('SELECT * FROM operation_logs'), [])
+
+    def test_false_like_values_are_not_confirmation(self):
+        self.seed('I1', price=100.0)
+        for value in self.FALSE_LIKE:
+            with self.subTest(confirm=value):
+                result = items.update_item('I1', {'price': 1.0}, confirm=value)
+                self.assertFalse(result['success'], f'{value!r} 不该算确认：{result}')
+                self.assertEqual(result['code'], 'confirmation_required')
+        self.assertEqual(items.get_item('I1')['price'], 100.0)
+        self.assertEqual(self._calls(), [])
+
+    def test_literal_true_and_one_still_work(self):
+        """闸门不能把真的点头也拦掉：`True` / `'true'` / `1` 三种都放行。
+
+        成功路径返回的是**单条形状**（`{'item': …}`，没有 `success` 键），
+        失败路径才是 `common.fail()` 信封 —— 这里按单条形状断言。
+        """
+        self.seed('I1', price=100.0)
+        for value in (True, 'true', ' TRUE ', 1):
+            with self.subTest(confirm=value):
+                result = items.update_item('I1', {'price': 1.0}, confirm=value)
+                self.assertNotIn('code', result, f'{value!r} 该算确认：{result}')
+                self.assertEqual(result['item']['price'], 1.0, f'{value!r} 该算确认：{result}')
+                db.execute("UPDATE items SET price = 100.0 WHERE item_id = 'I1'")
+
+    def test_batch_edit_inner_calls_do_not_regate(self):
+        """整批闸门过掉之后，逐条的 `update_item` 不能再拦一次（否则整批全失败）。"""
+        self.seed('I1', price=100.0)
+        self.seed('I2', price=100.0)
+        result = items.batch_update(['I1', 'I2'], {'price_set': 7.0}, confirm=True)
+        self.assertNotIn('code', result, result)
+        self.assertEqual(result['total'], 2)
+        self.assertEqual(result['local_only'], 2)     # 没装协议层 ⇒ 只落本地
+        self.assertEqual(result['ok'], 0)
+        self.assertEqual(result['failed'], [])
+        self.assertEqual(items.get_item('I1')['price'], 7.0)
+        self.assertEqual(items.get_item('I2')['price'], 7.0)
 
 
 if __name__ == '__main__':
