@@ -3109,6 +3109,20 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > **第四十七批证据链**：写覆盖审计 `logs/cov47.txt`（362 个 bundle mtop 名 / 已实现 214 / 未实现 187）、
 > 静态取证 `C:\Users\Administrator\.dsh-tmp\pick47.py`；自检 `C:\Users\Administrator\.dsh-tmp\check_im47.py`
 > → `logs/check_im47.log`（61 项全绿）；单测 `backend/tests/test_im_tools_api.py`（55 条）→ `logs/im47_test.log`；
+> 重打包（`build_exe.ps1 -SkipFrontend`，exe **10,205,562 B / 2026-10-14 14:13:06**，
+> `--port 18400` `/api/health` 200 `frozen:true`）后打包版六项复验全绿：
+> `probe_write_gate.py` → **`GATE FAILURES: 0 / 67`**（新加的 `im.clear_unread` 未确认 / `confirm:false` /
+> `confirm:"false"` 全 400 `confirmation_required`；确认腿用不存在账号 `SAFE_ACC` → 404 `not_found`）；
+> `packaged_ui_smoke.py` → **29/29 页**；`check_assets.py` → `ASSETS_MATCH=True`
+> （`index-CMl2DAYc.js` `0c548417274a` / `index-Ct3XMCKL.css` `283c1481d598`）；
+> `scripts/contrast_audit.py --threshold 4.0` → `[dark] BAD_PAGES 0/29`、`[light] BAD_PAGES 0/29`、`NON_GET=[]`；
+> `scripts/a11y_audit.py` → 无可访问名字的按钮 0 / 没有标签的输入框 0 / 无 alt 图片 0、`焦点不可见的页面：[]`；
+> **打包版只读探针** `C:\Users\Administrator\.dsh-tmp\im47_packaged_probe.py` → **`PROBLEMS []`**（16 条：
+> 会话搜索未知账号 404 `not_found`、`size=0` 被框架拦成 422、商品搜索两个 id 都不传 400 `invalid_fields`、
+> 未知账号带 cid 404、会话不存在 404、非法 role 400、清未读三种伪确认全 400 `confirmation_required`、
+> 非法 kind 400 `invalid_fields`、未知账号 session/system 404 `not_found`、未鉴权 401、
+> 未知路径与「GET 打到只写路径」都 404 `route_not_found`）。全部用不存在的账号 ⇒ **零平台请求**。
+
 > 全量 `logs/im47_run_all.log`；对账 `logs/im47_reconcile.log`；界面取证
 > `C:\Users\Administrator\.dsh-tmp\im47_panel_shots.py` → `logs/im47_panel_shots/`（8 张截图 + `report.json`）。
 
@@ -3167,9 +3181,9 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   packaged_ui_smoke.py`，复用 `scripts/ui_smoke.py::run_browser` 但不启后端、直接打
   `127.0.0.1:18400` 与**真实 `%APPDATA%` 数据目录**，截图 `logs/packaged_ui_smoke/`）。
   与上一条的区别：上一条跑的是源码 + 临时库，这一条跑的是**用户手上那个 exe**。
-- **打包版 confirm 闸门 65 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
-  （`confirmation_required` / `confirm_required`），**`GATE FAILURES: 0 / 65`**（探针随批次扩过：
-  19 → 22 → 26 → 28 → 30 → 33 → 41 → 47 → 52 → 53 → 56 → 60 → 61 → 64 → 65）；确认那一腿**故意换成不存在的
+- **打包版 confirm 闸门 67 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
+  （`confirmation_required` / `confirm_required`），**`GATE FAILURES: 0 / 67`**（探针随批次扩过：
+  19 → 22 → 26 → 28 → 30 → 33 → 41 → 47 → 52 → 53 → 56 → 60 → 61 → 64 → 65 → 66 → 67）；确认那一腿**故意换成不存在的
   账号**（`SAFE_ACC`），闸门放行后本地查库直接 404 `not_found` / 400 `invalid_fields` / 409 —— 既证明闸门放行，
   又保证**零平台请求**（2026-10-12 00:35 之前那版拿真账号打过，三条写请求真到了闲鱼，见第二十五批 161）。
   第 32 批新增八条（`shop.profile_{nick,desc,avatar}` / `sub.{create,delete,mobile,roles,password}`）：
