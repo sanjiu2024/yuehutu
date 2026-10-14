@@ -62,8 +62,8 @@
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_fans51_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 60  PASS 60  FAIL 0  CASES 2700  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_guard54_full&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 62  PASS 62  FAIL 0  CASES 2711  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -3390,10 +3390,43 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `scripts/contrast_audit.py --threshold 4.0` → `[dark] 0/29`、`[light] 0/29`、`NON_GET=[]`；
 > `scripts/a11y_audit.py` → 无可访问名字的按钮 0 类、没有标签的输入框 0 类、焦点不可见页面 `[]`、`NON_GET=[]`。
 
+### 第五十四批：补两道回归防线（MCP 路由 ↔ OpenAPI 对账 + 写路由闸门覆盖面）（297~298）
+
+- 起因：第 52 / 53 批连续抓到两类**反向盲区** —— 写函数没闸门（items 五个 +
+  `orders.update_shipment` + `chats.send_manual`）、MCP 路由**语义漂移**
+  （`orders_deliver` 指向纯本地端点）。当时的检查一条都查不出来：
+  `scripts/reconcile_tools.py` 只查「声明了 confirm 的是不是写工具」，
+  打包版写闸门探针只查「清单里的端点该不该被拒」——**没进清单的等于没检查**。
+- 新增 `backend/tests/test_mcp_routes_match_openapi.py`（7 条）：`TOOL_ROUTES` 149 条逐条对
+  `create_app().openapi()`：路径 + 方法存在 / `path_params` 正好等于端点占位符 /
+  `query` 必须是端点真声明的（`query_rename` 改名后算数）/ requestBody 有 properties 时
+  body 键必须是子集 / 工具名能被 `canonical_name()` 认出 /
+  **声明 `confirm` 的写工具必须指向背后有闸门的路由**（专防第 53 批那类语义漂移）。
+- 新增 `backend/tests/test_write_routes_have_gates.py`（4 条）：AST 扫 `backend/app/api/*.py`
+  的每条**非 GET 路由** → 找它调的服务层函数 → 递归查（含同模块私有助手）有没有闸门；
+  没有的必须登记进 `GATE_FREE_ALLOWLIST` 并写理由，**白名单过期条目也会让测试失败**。
+  当前 123 条非 GET 路由：有闸门 81、合法无闸门 21、无服务调用（纯本地）21。
+- 审计脚本 `C:\Users\Administrator\.dsh-tmp\mcp_route_drift54.py`（149 条 → `PROBLEMS=0`，
+  首跑报的 2 条 `finance_income/expense` 是**脚本自己的假阳性**：那两条故意用
+  `query_rename` 把 `cycle_from/cycle_to` 改成 `from/to`）、
+  `write_route_gate54.py`（按路由对账）、`gate_coverage54.py`（按服务函数普查）。
+- **变异检查** `C:\Users\Administrator\.dsh-tmp\mutation_check54.py`：把 `orders_deliver` 改回纯本地端点
+  → 测试 1 报错；删掉一条白名单 → 测试 2 报错（两者 `detected=True`），证明这两道防线不是空转。
+- 验证：全量 **`TOTAL 62 PASS 62 FAIL 0 CASES 2711 SKIPPED 2`**（60 → 62 个测试文件，
+  2700 → 2711 个用例）。本批只加测试与文档，**没有改动任何运行时行为**。
+
+> **第五十四批证据链**：审计脚本 `mcp_route_drift54.py`（首跑 2 条 → 认出 `query_rename` 后 `PROBLEMS=0`）、
+> `write_route_gate54.py`（123 条非 GET 路由 / 有闸门 81 / 无闸门 21 / 纯本地 21）、
+> `gate_coverage54.py`（27 个服务模块 / 166 个会打平台的公开函数）；
+> 变异检查 `mutation_check54.py` → `{'mcp_drift_detected': True, 'gate_allowlist_detected': True}`；
+> 两个新测试单独跑：`test_mcp_routes_match_openapi` → `Ran 7 tests ... OK`、
+> `test_write_routes_have_gates` → `Ran 4 tests ... OK`；
+> 全量 `TOTAL 62 PASS 62 FAIL 0 CASES 2711 SKIPPED 2`。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**60 个测试文件、2700 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**62 个测试文件、2711 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。

@@ -1366,6 +1366,31 @@ POST /api/items/{account_id}/publish/precheck
 【对账脚本放宽】`scripts/reconcile_tools.py` 第 4 步原先硬要求写工具的 MCP method 必须是 `POST`，
   但发货的正式端点是 `PUT` ⇒ 改成接受 `POST` / `PUT` / `PATCH` / `DELETE`。
 
+第五十四批（补两道**回归防线**：MCP 路由 ↔ OpenAPI 对账 + 写路由闸门覆盖面）
+【为什么】第 52 / 53 批连续抓到两类「反向盲区」：写函数没闸门（items 五个 +
+  `orders.update_shipment` + `chats.send_manual`），以及 MCP 路由**语义漂移**
+  （`orders_deliver` 指向纯本地端点）。当时的检查一条都查不出来 ——
+  `scripts/reconcile_tools.py` 只查「声明了 confirm 的是不是写工具」，
+  打包版写闸门探针只查「清单里的端点该不该被拒」（没进清单的等于没检查）。
+  本批把两道正面清单补成**测试**，随 `backend/tests/run_all.py` 常驻。
+【新增测试 1】`backend/tests/test_mcp_routes_match_openapi.py`（7 条）：`TOOL_ROUTES` 的 149 条
+  逐条与 `create_app().openapi()` 对账 —— ① 路径（`{param}` 归一）+ 方法存在；
+  ② `path_params` 正好等于端点占位符；③ `query` 键必须是端点**真正声明**的 query
+  （`query_rename` 改名后的名字才算数，否则 FastAPI **静默忽略** —— 第 20 批的
+  `cycle_from` / `cycle_to` 就是这个坑）；④ 端点 requestBody 有 properties 时工具 body 键必须是子集；
+  ⑤ 工具名必须能被 `canonical_name()` 认出；⑥ **声明了 `confirm` 的写工具必须指向背后有闸门的路由**
+  （专防第 53 批那类语义漂移：结构上完全合法、语义上指向纯本地端点）。
+【新增测试 2】`backend/tests/test_write_routes_have_gates.py`（4 条）：AST 扫描
+  `backend/app/api/*.py` 的每条**非 GET 路由** → 找它调用的服务层函数 → 递归查该函数
+  （含同模块私有助手）有没有闸门（签名有 `confirm` 参数，或出现 `_confirm_gate` /
+  `confirmation_required` / `confirm_required` / `_truthy`）。没有闸门的必须登记进
+  `GATE_FREE_ALLOWLIST` 并写理由（纯本地 / 只读同步 / 登录恢复 / 契约写明只读）；
+  白名单**过期条目也会让测试失败**（防白名单腐烂）。当前 123 条非 GET 路由：
+  有闸门 81 条、合法无闸门 21 条、无服务调用（纯本地）21 条。
+【变异检查（证明测试不是空转）】`C:\Users\Administrator\.dsh-tmp\mutation_check54.py`：
+  把 `orders_deliver` 改回纯本地端点 → 测试 1 报错；把一条白名单删掉 → 测试 2 报错；
+  两者都 `detected=True`。
+
 【写接口的三条硬口径（所有 *_write 一律遵守）】
 1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /
    `confirm_required`），**一次平台请求都不发**；
