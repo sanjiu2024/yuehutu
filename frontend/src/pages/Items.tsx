@@ -469,6 +469,7 @@ export function ItemsPage() {
         // 直接报「已下架」会让用户以为闲鱼上真的下架了。
         const result = await api.post<BatchResult>(
           `/api/items/${encodeURIComponent(item.account_id)}/${encodeURIComponent(item.item_id)}/${action}`,
+          { confirm: true },
         )
         showBatchNotice(toast, result, verb, '商品')
         items.reload()
@@ -508,6 +509,7 @@ export function ItemsPage() {
             // warning 在 warnings 里 —— HTTP 200 只代表请求到了，不代表真的推到闲鱼。
             const result = await api.post<BatchResult>(
               `/api/items/${encodeURIComponent(item.account_id)}/${encodeURIComponent(item.item_id)}/relist`,
+              { confirm: true },
             )
             merged.ok += Number(result?.ok) || 0
             merged.warnings.push(...(result?.warnings ?? []))
@@ -2322,7 +2324,8 @@ function EditItemModal({ item, onClose, onSaved }: { item: Item; onClose: () => 
         noop?: boolean
       }>(
         `/api/items/${encodeURIComponent(item.account_id)}/${encodeURIComponent(item.item_id)}/edit`,
-        patch,
+        // 第 52 批起这条平台写接口也要显式确认：弹窗里点「保存」就是用户的确认动作。
+        { ...patch, confirm: true },
       )
       onSaved()
       if (result?.noop) {
@@ -2683,6 +2686,8 @@ function BatchEditModal({
           {
             item_ids: items.map((item) => item.item_id),
             patch: perItem[0].patch,
+            // 弹窗里点「批量修改」= 用户确认过，平台写接口要求显式 confirm。
+            confirm: true,
           },
         )
         showBatchNotice(toast, result, '修改')
@@ -2696,7 +2701,7 @@ function BatchEditModal({
           try {
             const result = await api.post<{ item?: Item; synced?: boolean; warning?: string }>(
               `/api/items/${encodeURIComponent(entry.item.account_id)}/${encodeURIComponent(entry.item.item_id)}/edit`,
-              entry.patch,
+              { ...entry.patch, confirm: true },
             )
             const one = singleEditAsBatch(result)
             merged.ok += one.ok
@@ -3640,7 +3645,8 @@ function PublishItemModal({
     }
     setSaving(true)
     try {
-      await api.post(`/api/items/${encodeURIComponent(accountId)}/publish`, buildPayload())
+      await api.post(`/api/items/${encodeURIComponent(accountId)}/publish`,
+        { ...buildPayload(), confirm: true })
       toast.success('发布请求已提交')
       onDone()
     } catch (err) {
