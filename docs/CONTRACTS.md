@@ -1305,7 +1305,8 @@ POST /api/items/{account_id}/publish/precheck
     **我们不补**（仓库硬口径：平台没给就是 `null`，不造 0）；
   - 八大人群：官方顺序表（bundle 偏移 2491628）`未来之星 0 / 学生群体 1 / 小康青年 2 / 小资青年 3 /
     家有儿女 4 / 勤俭持家 5 / 资深中产 6 / 退休长辈 7 / 模糊人群 8`；表外的档位排最后；
-  - 每组**按占比从高到低**排，没给比例的项排最后且 `ratio=null`（界面显示 `-`）。
+  - 排序照官方：性别固定「男 → 女」、粉丝类型按 `A_流失粉` → `G_忠诚粉` 档位、八大人群按官方顺序表，
+    省份（以及表外的组）按占比从高到低；**任何一组里平台没给比例的项排最后**且 `ratio=null`（界面显示 `-`）。
 【HTTP 面】`GET /api/datacenter/{account_id}/fans` 的 `data` 新增
   `insights_breakdown`：`{groups:{<key>:{key,title,platform_key,items:[{name,ratio,ratio_text,raw_label,raw}]}},
   raw_keys:[...]}`；**认不出任何一组就是 `null`**（不是 `{}`、不是空数组），此时附中文 warning

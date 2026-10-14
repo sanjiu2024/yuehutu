@@ -3262,7 +3262,8 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   `backend/app/services/datacenter.py` 加 `WARN_FANS_INSIGHTS_MISSING`（**只有一条 error 都没有时才附**，
   免得无权限账号被叠一句「画像没解析出来」）。
 - **口径**：官方会把缺失的粉丝类型档位补成 `0.00%`，**我们不补**（仓库硬口径：平台没给就是 `null`）；
-  每组按占比从高到低排，没给比例的项排最后且 `ratio=null`（界面 `-`）。
+  排序照官方（性别固定男→女、粉丝类型 A→G、八大人群按官方顺序表、省份按占比降序），
+  任何一组里没给比例的项排最后且 `ratio=null`（界面 `-`）。
 - 前端 `frontend/src/pages/Fans.tsx` + `datacenter.css`：粉丝画像卡改成四组小卡（名字 + 占比条 + 占比文字，
   `ratio_text` 优先）；旧字段 `insights` 挪进 `<details>`（标题写明「没有名字的画像列表」），不删。
 - 测试：`backend/tests/test_datacenter_api.py` 223 → **237 条**（新增 `FansBreakdownTest` 14 条 +
