@@ -63,7 +63,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_fans51_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 60  PASS 60  FAIL 0  CASES 2674  SKIPPED 2
+-> TOTAL 60  PASS 60  FAIL 0  CASES 2700  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -83,14 +83,14 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 97 modules transformed.
-   frontend/dist/assets/index-bwukL4s-.js (641.00 kB, gzip 201.47 kB)
+   frontend/dist/assets/index-D50hq6iO.js (641.01 kB, gzip 201.47 kB)
    frontend/dist/assets/index-B1Z6zu0w.css (156.99 kB, gzip 24.60 kB)
 ```
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon50&& C:\Python310\python.exe scripts\reconcile_tools.py"
 -> specs=148 master=147 routes=149 targets=136 handlers=148
-   write_tools=70  route_checked=149
+   write_tools=72  route_checked=149
    RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
    （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
 ```
@@ -3230,7 +3230,7 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 协议 / 服务 / 路由自检 `C:\Users\Administrator\.dsh-tmp\check_ap50.py` → `CHECKS=40 PROBLEMS=0`、
 > `check_ap50b.py` → `CHECKS=17 PROBLEMS=0`（含「平台拒绝走 `protocol_error`、零 `need_relogin`」）；
 > 后端单测 `Ran 147 tests ... OK`；AI 侧三方单测 `Ran 132 tests ... OK`；对账
-> `specs=148 master=147 routes=149 targets=136 handlers=148 / write_tools=67 / route_checked=149 / RECON OK`；
+> `specs=148 master=147 routes=149 targets=136 handlers=148 / write_tools=72 / route_checked=149 / RECON OK`；
 > 接口面 `/openapi.json` = **208 条路径 / 226 个操作**；前端 `TSC_EXIT=0` + `BUILD_EXIT=0`（97 modules，
 > `index-D1tij8ad.js` 638.89 kB / `index-C5I0n3Oo.css` 156.01 kB）；真实浏览器逐页冒烟 `29/29`。
 > 界面取证 `C:\Users\Administrator\.dsh-tmp\ap50_panel_shots.py`（源码 + 临时库 + 拦截全部 `/api/**`，
@@ -3346,10 +3346,46 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `DELETE /api/items/{account_id}/{item_id}`（**只删本地记录、不碰平台**，服务层本来就无闸门）、
 > `publish/precheck`（只读）—— 都对。
 
+### 第五十三批：真发货 + 人工回消息补确认闸门（真缺陷）（295~296）
+- **两条真的会改变平台状态的写操作一直没有闸门**：`orders.update_shipment`
+  （`PUT /api/orders/{order_id}/shipment`，**真发货**，买家立刻能看到物流单号）与
+  `chats.send_manual`（`POST /api/chats/{conversation_id}/send`，**真的把消息发给买家**，
+  发出去撤不回来）。AI 侧 `orders_deliver` / `chats_send` 的规格里也**没有 `confirm` 属性**。
+- **同批修一条 MCP 路由漂移**：`mcp_server/client.py` 的 `orders_deliver` 原先指向
+  `POST /api/orders/{order_id}/deliver`，而那条端点是**纯本地**的（只改本地库状态、零平台请求）
+  ⇒ 外部 MCP 客户端调「发货」**永远发不出去**；现在指向 `PUT /api/orders/{order_id}/shipment`
+  且 body 带 `company` / `tracking_no` / `confirm`。
+- **审计方法（可复用）**：`C:\Users\Administrator\.dsh-tmp\gate_coverage53b.py` 把打包版写闸门探针的
+  路径与 `/openapi.json` 的非 GET 操作逐个比对（做 id 段归一），找出「有写端点、但探针从没试过」
+  的 46 条；`gate_module_audit53b.py` 再按服务模块列 `_confirm_gate` / `confirmation_required`
+  与 `common.call_method` 的数量比 —— 两条线索一起才定位到这两条漏网。
+- 改动：`services/orders.py` 与 `services/chats.py` 各加 `CONFIRM_CODE` / `_truthy` / `_confirm_gate`
+  （口径同 `items.py`）；`update_shipment`（'发货'）与 `send_manual`（'给买家发消息'）函数第一件事过闸门；
+  路由层原样透传 `confirm`；`POST /api/chats/incoming` 的 `direction='out'` 分支传 `confirm=True`；
+  `POST /api/orders/{order_id}/deliver` 保持无闸门（纯本地）；两条 AI 规格补 `confirm` 进 `required`
+  + `_WRITE_HINT`；MCP 两条路由 body 加 `'confirm'`；会话页发送按钮传 `confirm: true`。
+- **对账脚本放宽**：`scripts/reconcile_tools.py` 第 4 步原先硬要求写工具 MCP method 必须是 `POST`，
+  发货的正式端点是 `PUT` ⇒ 改成接受 `POST`/`PUT`/`PATCH`/`DELETE`；`WRITE_PREFIX` 补
+  `chats_send` / `orders_deliver`（这两条**一直是**写工具，只是原先没声明 confirm、也没进表）。
+- 测试：`test_services_orders.py` 新增 `OrderShipConfirmGateTest`（4 条）、
+  `test_services_chats.py` 新增 `SendManualConfirmGateTest`（5 条）；既有 16 处服务层调用补 `confirm=True`；
+  `test_mcp_server.py` 写路由条数 70 → 72（两处 + 两处 docstring）；
+  `test_agents_tools_workbench.py` 的分派断链用例给 `chats_send` / `orders_deliver` 补 `confirm`。
+- 验证：三方单测 `Ran 132 tests ... OK`；全量 **`TOTAL 60 PASS 60 FAIL 0 CASES 2700 SKIPPED 2`**；
+  逐页冒烟 `29/29`（端口 18495）；前端 `TSC_EXIT=0` + `BUILD_EXIT=0`
+  （97 modules, `index-D50hq6iO.js` 641.01 kB / `index-B1Z6zu0w.css` 156.99 kB）。
+
+> **第五十三批证据链**：审计脚本 `C:\Users\Administrator\.dsh-tmp\gate_coverage53b.py` 与
+> `gate_module_audit53b.py`（覆盖面比对 + 模块闸门普查）；补丁脚本
+> `patch_gate53_tests.py`（16 处服务层调用补 confirm）、`patch_gate53_mcp.py`（条数 70 → 72）。
+> 闸门探针 `C:\Users\Administrator\.dsh-tmp\probe_write_gate.py` 新增两条用例
+> （`orders.ship` / `chats.send`，路径故意用**不存在的 id**，确认腿在本地查库就失败、
+> 零平台请求）⇒ 用例数 77 → 79。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**60 个测试文件、2674 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**60 个测试文件、2700 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -3394,11 +3430,13 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
    第四十九批 +1 条订单备注 `POST /api/trade/{account_id}/orders/{order_id}/memo`；
    第五十批 +1 条只读改价渲染 `GET /api/trade/{account_id}/orders/{order_id}/adjust-price/render`；
    第五十二批 **0 条新路由**（只给 9 条**已有**写路由补上 `confirm` 闸门，路径与操作数都没变）；
+   第五十三批 **0 条新路由**（只给 2 条**已有**写路由——真发货与给买家发消息——补上 `confirm` 闸门，
+   路径与操作数都没变；另修 `orders_deliver` 的 MCP 路由指向，让它真的打到发货端点）；
    第五十一批 **0 条新路由**（只给 `GET /api/datacenter/{account_id}/fans` 的响应加了
    `insights_breakdown` 字段，路径与操作数都没变）），
   均结构化信封、无 500。
 - **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 148 / `MASTER_TOOLS` 147 /
-  `TOOL_ROUTES` 149，其中 **70 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
+  `TOOL_ROUTES` 149，其中 **72 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
   FastAPI 端点接受 → `RECON OK`。MCP 端到端冒烟（真起 `mcp_server/server.py` 子进程打打包版）
   `tools/list` 返回 63 个工具（第 6 批的旧数字；`TOOL_ROUTES` 现在 149 条，本次未重跑该冒烟）。
 - **真实浏览器逐页冒烟 29/29 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
@@ -3408,9 +3446,9 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   packaged_ui_smoke.py`，复用 `scripts/ui_smoke.py::run_browser` 但不启后端、直接打
   `127.0.0.1:18400` 与**真实 `%APPDATA%` 数据目录**，截图 `logs/packaged_ui_smoke/`）。
   与上一条的区别：上一条跑的是源码 + 临时库，这一条跑的是**用户手上那个 exe**。
-- **打包版 confirm 闸门 77 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
-  （`confirmation_required` / `confirm_required`），**`GATE FAILURES: 0 / 77`**（探针随批次扩过：
-  19 → 22 → 26 → 28 → 30 → 33 → 41 → 47 → 52 → 53 → 56 → 60 → 61 → 64 → 65 → 66 → 67 → 68 → 77）；
+- **打包版 confirm 闸门 79 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
+  （`confirmation_required` / `confirm_required`），**`GATE FAILURES: 0 / 79`**（探针随批次扩过：
+  19 → 22 → 26 → 28 → 30 → 33 → 41 → 47 → 52 → 53 → 56 → 60 → 61 → 64 → 65 → 66 → 67 → 68 → 77 → 79）；
   第 52 批一次补 9 条（5 条商品正式写路径 + 4 条老路径）——**这 5 条正是从第 19 批到第 51 批
   一直没被探针覆盖的那批**（它们当时压根没有闸门，探针也不查，所以两边一起漏）。确认那一腿**故意换成不存在的
   账号**（`SAFE_ACC`），闸门放行后本地查库直接 404 `not_found` / 400 `invalid_fields` / 409 —— 既证明闸门放行，

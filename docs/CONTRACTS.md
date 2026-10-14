@@ -1341,6 +1341,31 @@ POST /api/items/{account_id}/publish/precheck
 【界面口径】商品页五个入口（编辑 / 批量修改 / 发布 / 上架 / 下架）本来就带 `confirm: true`，
   这次只是把「界面上能点」与「接口层也拦」补齐；批量修改**只弹一次确认**，不会逐件弹。
 
+第五十三批（真发货 + 人工回消息补确认闸门：**修真缺陷**，并修一条 MCP 路由漂移）
+【背景（真缺陷）】两条**真的会改变平台状态**的写操作一直**没有确认闸门**：
+  ① `orders.update_shipment(order_id, company, tracking_no)`（`PUT /api/orders/{order_id}/shipment`）——
+     **真发货**，会往平台写物流单号、买家立刻能看到；
+  ② `chats.send_manual(conversation_id, text)`（`POST /api/chats/{conversation_id}/send`）——
+     **真的把消息发给买家**，发出去撤不回来。
+  AI 侧 `orders_deliver` / `chats_send` 的规格里也**没有 `confirm` 属性** ⇒ 主管 AI 与 MCP 都能零确认发货 / 发消息。
+【MCP 路由漂移（同批修）】`mcp_server/client.py` 的 `orders_deliver` 原先指向 `POST /api/orders/{order_id}/deliver`，
+  而那条端点是**纯本地**的（只把本地库状态改成已发货，零平台请求）⇒ 外部 MCP 客户端调「发货」**永远发不出去**。
+  现在改成 `PUT /api/orders/{order_id}/shipment` + body `['company','tracking_no','confirm']`。
+【服务层】`backend/app/services/orders.py` 与 `backend/app/services/chats.py` 各新增
+  `CONFIRM_CODE='confirmation_required'`、`_truthy(confirm)`、`_confirm_gate(action, confirm)`（口径与
+  `items.py` / `item_templates` / `mcp_server` 一致）；`update_shipment`（'发货'）与
+  `send_manual`（'给买家发消息'）**函数第一件事**就是过闸门；`chats.send_from_args` 原样透传 `confirm`。
+【HTTP 面】`PUT /api/orders/{order_id}/shipment` 与 `POST /api/chats/{conversation_id}/send` 从 body 原样取
+  `confirm`（路由层不做 `bool()` 归一）；`POST /api/chats/incoming` 的 `direction='out'` 分支传
+  `confirm=True`（调用方已经确认过「卖家自己发出去了」）；`POST /api/orders/{order_id}/deliver` 保持**无闸门**
+  （纯本地、零平台请求，docstring 已写明）。
+【AI 侧】`orders_deliver` / `chats_send` 的规格补上 `confirm`（进 `required`）与中文写操作警示；
+  `mcp_server/client.py` 两条路由的 `body` 加 `'confirm'` ⇒ **写工具 70 → 72 条**。
+【界面口径】会话页「发送」按钮本来就带 `confirm: true`（用户点发送就是那次确认）；
+  订单页发货面板走同一个唯一写出口。
+【对账脚本放宽】`scripts/reconcile_tools.py` 第 4 步原先硬要求写工具的 MCP method 必须是 `POST`，
+  但发货的正式端点是 `PUT` ⇒ 改成接受 `POST` / `PUT` / `PATCH` / `DELETE`。
+
 【写接口的三条硬口径（所有 *_write 一律遵守）】
 1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /
    `confirm_required`），**一次平台请求都不发**；
@@ -1349,12 +1374,13 @@ POST /api/items/{account_id}/publish/precheck
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
 【AI 侧】`TOOL_SPECS` 148 条 / `MASTER_TOOLS` 147 条（去掉 `master_chat` 防递归），
-其中 **70 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 149 条。五方对账（specs / master / routes / service targets / handlers）
-+ 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
+其中 **72 条是写工具**（`required` 必含 `confirm`、MCP method 是写方法（`POST`/`PUT`/`PATCH`/`DELETE`）、
+description 带中文警示）；`mcp_server/client.py::TOOL_ROUTES` 149 条。五方对账（specs / master / routes /
+service targets / handlers）+ 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用
+**`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=148 master=147 routes=149 targets=136 handlers=148 / write_tools=67 / route_checked=149 / RECON OK
+-> specs=148 master=147 routes=149 targets=136 handlers=148 / write_tools=72 / route_checked=149 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`
