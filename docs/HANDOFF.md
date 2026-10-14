@@ -3064,6 +3064,19 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > （chip「接待：在线」、下拉三档、确认框文案、`im_posts []`；平台没返回时 chip「接待：平台未返回」
 > + 整行提示「平台没有返回接待状态（原样值：BUSY），这里不当作「离线」。」），
 > 截图 `logs/im46_panel_shots/{01-chats-reception-dark,02-reception-confirm-dark,03-reception-unknown-dark,04-reception-unknown-light}.png`。
+> 重打包（`build_exe.ps1 -SkipFrontend`，exe **10,192,272 B / 2026-10-14 12:59:37**，
+> `--port 18400` `/api/health` 200 `frozen:true`）后打包版六项复验全绿：
+> `probe_write_gate.py`（已扩到 **66 个写端点**）→ **`GATE FAILURES: 0 / 66`**；
+> `im46_packaged_probe.py`（打 18400，写腿全用不存在的账号 ⇒ **零平台写请求**）→ **`PROBLEMS []`**
+> 八条（不带 `confirm` / `confirm:false` / `confirm:"false"` 都 400 `confirmation_required`；
+> 已确认但状态非法 400 `invalid_fields`；已确认 + 未知账号 404 `not_found`；只读未知账号 404 `not_found`
+> （不是 `route_not_found` ⇒ 路由确实进了冻结包）；未鉴权 401；真账号只读当时回 409
+> `verification_required` —— 该账号登录态已过期，属预期内的诚实降级）；
+> `check_assets.py` → `ASSETS_MATCH=True`（`index-BJyAgqBC.js` remote=local=`9eaf079263ad`、
+> `index-D56zukAj.css` remote=local=`2a7fbafa2112`）；`packaged_ui_smoke.py` → **29/29 页通过**；
+> `scripts/contrast_audit.py --threshold 4.0` → `[dark] BAD_PAGES 0/29`、`[light] BAD_PAGES 0/29`、
+> `NON_GET_API_REQUESTS=[]`；`scripts/a11y_audit.py` → 无可访问名字的按钮 0 类、没有标签的输入框 0 类、
+> `焦点不可见的页面：[]`、`NON_GET_API_REQUESTS=[]`。
 
 ## 四、已验证 / 未验证（诚实边界）
 
