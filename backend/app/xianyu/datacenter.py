@@ -213,6 +213,167 @@ def suspect_keys(payload: Any, keys: Tuple[str, ...]) -> List[str]:
     return found[:8]
 
 
+# ---------------------------------------------------------------------------
+# 粉丝画像分组（`fans.insights.query` 的具名列表）
+# ---------------------------------------------------------------------------
+#
+# 官方「粉丝数据」页把 `fans.insights.query` 响应 `data.data` 里的**具名列表**渲染成
+# 四张图（bundle `datacenter_main.js` 偏移 2452720 的 `rwe()`，解构出
+# `buyerGenderList` / `fansTypeList` / `buyerProvinceList` / `buyerEightTpList`）。
+#
+# 本仓库原先只按 `insights` / `insightList` / `fanInsights` / `list` 找「一个列表」——
+# 真机响应里**没有这些键**，于是粉丝画像一栏永远是空的：页面看着「正常」，
+# 其实是数据根本没被解析出来。这一段就是补这个缺口。
+#
+# 两个必须小心的口径：
+# * 这些列表里 `profileVal` 是**标签**（`'M'` / `'A_流失粉'` / `'学生群体'`），不是数字；
+# * 比例有两个来源：`usrRatio`（0~1 浮点）与 `usrRatioFormat`（`'12.34%'` 字符串，
+#   官方直接喂给图表）。两个都如实透出，一个都没有就是 None，**不补 0**。
+
+#: 我们的键 → (平台列表键, 页面上的标题)
+FANS_INSIGHT_GROUPS: Tuple[Tuple[str, str, str], ...] = (
+    ('gender', 'buyerGenderList', '性别分布'),
+    ('fans_type', 'fansTypeList', '粉丝类型'),
+    ('province', 'buyerProvinceList', '省份分布'),
+    ('eight_type', 'buyerEightTpList', '八大人群'),
+    ('age', 'buyerAgeList', '年龄分布'),
+    ('active', 'buyerActiveList', '活跃度分布'),
+)
+
+#: 官方把 `profileVal` 的 `M`/`F` 翻成中文，且 `M` 排在前（bundle 偏移 2490798）
+FANS_GENDER_LABELS: Dict[str, str] = {'M': '男', 'F': '女'}
+FANS_GENDER_ORDER: Tuple[str, ...] = ('M', 'F')
+
+#: 官方粉丝七型：展示时去掉 `A_` 前缀、按 A→G 排序
+#: （官方还会把缺失档位补成 `0.00%`；我们**只排序不补**，与本仓「不造 0」的硬口径一致）
+FANS_TYPE_ORDER: Tuple[str, ...] = (
+    'A_流失粉', 'B_僵尸粉', 'C_沉默粉', 'D_活跃粉', 'E_亲密粉', 'F_超亲密粉', 'G_忠诚粉',
+)
+
+#: 官方八大人群顺序表（bundle 偏移 2491628，注意 `未来之星` 是 0）
+FANS_EIGHT_ORDER: Dict[str, int] = {
+    '未来之星': 0, '学生群体': 1, '小康青年': 2, '小资青年': 3,
+    '家有儿女': 4, '勤俭持家': 5, '资深中产': 6, '退休长辈': 7, '模糊人群': 8,
+}
+
+#: 画像条目里「标签」可能在的键
+_PROFILE_LABEL_KEYS = ('profileVal', 'name', 'label', 'title', 'key', 'type')
+#: 比例（0~1 浮点）
+_PROFILE_RATIO_KEYS = ('usrRatio', 'ratio', 'rate')
+#: 比例（已格式化字符串，如 `'12.34%'`）
+_PROFILE_RATIO_TEXT_KEYS = ('usrRatioFormat', 'ratioFormat', 'rateFormat')
+
+
+def _profile_label(entry: Dict[str, Any]) -> Optional[str]:
+    for key in _PROFILE_LABEL_KEYS:
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _profile_ratio(entry: Dict[str, Any]) -> Tuple[Optional[float], Optional[str]]:
+    """返回 `(ratio, ratio_text)`；一个都没有就是 `(None, None)`，**不补 0**。"""
+    text: Optional[str] = None
+    for key in _PROFILE_RATIO_TEXT_KEYS:
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            text = value.strip()
+            break
+    for key in _PROFILE_RATIO_KEYS:
+        value = entry.get(key)
+        if _is_number(value):
+            return float(value), text
+    if text and text.endswith('%'):
+        try:
+            return float(text[:-1]) / 100.0, text
+        except ValueError:
+            return None, text
+    return None, text
+
+
+def _profile_items(entries: Any, *, label_map: Optional[Dict[str, str]] = None,
+                   strip_prefix: bool = False) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        raw_label = _profile_label(entry)
+        name = label_map.get(raw_label, raw_label) if (label_map and raw_label) else raw_label
+        if strip_prefix and name and len(name) > 2 and name[1] == '_':
+            name = name[2:]
+        ratio, ratio_text = _profile_ratio(entry)
+        items.append({
+            'name': name,
+            'ratio': ratio,
+            'ratio_text': ratio_text,
+            'raw_label': raw_label,
+            'raw': entry,
+        })
+    return items
+
+
+def _order_index(raw_label: Optional[str], order: Tuple[str, ...]) -> int:
+    """官方枚举顺序；认不出的排到最后（官方也是 `999`）。"""
+    if raw_label in order:
+        return order.index(raw_label)  # type: ignore[arg-type]
+    return len(order)
+
+
+def _by_ratio_desc(item: Dict[str, Any]) -> Tuple[int, float]:
+    """比例大的在前；没给比例的排最后（**不当 0 参与排序**）。"""
+    ratio = item.get('ratio')
+    if isinstance(ratio, (int, float)):
+        return (0, -float(ratio))
+    return (1, 0.0)
+
+
+def _find_profile_list(payload: Any, platform_key: str) -> Optional[List[Any]]:
+    for mapping in walk_dicts(payload):
+        value = mapping.get(platform_key)
+        if isinstance(value, list) and value:
+            return value
+    return None
+
+
+def parse_fans_insights(payload: Any) -> Optional[Dict[str, Any]]:
+    """把 `fans.insights.query` 的响应翻成画像分组。
+
+    返回 `{'groups': {我们的键: {key, title, platform_key, items}}, 'raw_keys': [...]}`；
+    **平台一组都没给时返回 `None`**（不是空 dict —— 空 dict 会让上层把「没解析出来」
+    当成「今天没人来」）。
+    """
+    groups: Dict[str, Any] = {}
+    raw_keys: List[str] = []
+    for our_key, platform_key, title in FANS_INSIGHT_GROUPS:
+        entries = _find_profile_list(payload, platform_key)
+        if entries is None:
+            continue
+        if our_key == 'gender':
+            items = _profile_items(entries, label_map=FANS_GENDER_LABELS)
+            items.sort(key=lambda item: _order_index(item.get('raw_label'), FANS_GENDER_ORDER))
+        elif our_key == 'fans_type':
+            items = _profile_items(entries, strip_prefix=True)
+            items.sort(key=lambda item: _order_index(item.get('raw_label'), FANS_TYPE_ORDER))
+        elif our_key == 'eight_type':
+            items = _profile_items(entries)
+            items.sort(key=lambda item: FANS_EIGHT_ORDER.get(
+                str(item.get('raw_label') or ''), len(FANS_EIGHT_ORDER)))
+        else:
+            items = _profile_items(entries)
+            items.sort(key=_by_ratio_desc)
+        raw_keys.append(platform_key)
+        groups[our_key] = {
+            'key': our_key,
+            'title': title,
+            'platform_key': platform_key,
+            'items': items,
+        }
+    if not groups:
+        return None
+    return {'groups': groups, 'raw_keys': raw_keys}
+
+
 async def _mtop(client: Any, api: str, data: Any) -> Any:
     """调一次 mtop 并剥掉外层信封，返回平台响应里的 `data`。
 
@@ -337,7 +498,11 @@ async def overview(client: Any, start: str = '', end: str = '',
 
 async def fans(client: Any, start: str = '', end: str = '',
                seller_id: str = '') -> Dict[str, Any]:
-    """粉丝数据：粉丝总数 / 新增 / 流失 / 活跃 + 画像洞察列表。"""
+    """粉丝数据：粉丝总数 / 新增 / 流失 / 活跃 + 画像分组。
+
+    `insights` 是老的「找一个列表」路径（真机响应里通常为 None，保留是为了不破坏既有调用方）；
+    `insights_breakdown` 才是官方页面真正渲染的具名分组（见 `parse_fans_insights`）。
+    """
     data = date_data(start, end, seller_id)
     metrics, raw, errors = await _collect(client, (
         ('fans', FANS_API, dict(data)),
@@ -346,6 +511,7 @@ async def fans(client: Any, start: str = '', end: str = '',
     return {
         'metrics': metrics,
         'insights': find_list(raw.get('insights'), ('insights', 'insightList', 'fanInsights', 'list')),
+        'insights_breakdown': parse_fans_insights(raw.get('insights')),
         'real_date_range': _real_date_range(raw.get('fans')),
         'suspect_keys': suspect_keys(raw.get('fans'), FANS_METRICS),
         'errors': errors,

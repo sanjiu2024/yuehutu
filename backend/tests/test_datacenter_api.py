@@ -76,6 +76,32 @@ FANS_PAYLOAD = {
              'fansOrderCount': 4, 'fansBuyerCount': 3},
     'insights': [{'label': '18-24 岁', 'ratio': 0.31}],
 }
+#: 粉丝画像：官方页面渲染的是 `fans.insights.query` 响应里的**具名列表**
+#: （bundle `datacenter_main.js` 偏移 2452720 的 `rwe()`：性别 / 粉丝类型 / 省份 / 八大人群）。
+#: 注意 `profileVal` 是**标签**不是数字，比例有 `usrRatio`（0~1）与 `usrRatioFormat`（`'12.00%'`）两种。
+FANS_INSIGHTS_PAYLOAD = {
+    'code': 'success',
+    'data': {
+        'buyerGenderList': [
+            {'profileVal': 'F', 'usrRatio': 0.62},
+            {'profileVal': 'M', 'usrRatio': 0.38},
+        ],
+        'fansTypeList': [
+            {'profileVal': 'D_活跃粉', 'usrRatioFormat': '25.00%'},
+            {'profileVal': 'A_流失粉', 'usrRatioFormat': '10.00%'},
+        ],
+        'buyerProvinceList': [
+            {'profileVal': '广东', 'usrRatioFormat': '12.00%'},
+            {'profileVal': '浙江', 'usrRatioFormat': '20.00%'},
+        ],
+        'buyerEightTpList': [
+            {'profileVal': '学生群体', 'usrRatioFormat': '30.00%'},
+            {'profileVal': '未来之星', 'usrRatioFormat': '5.00%'},
+        ],
+    },
+}
+#: 平台把接口都答了、却一组画像分组都没给（真机上是「改了字段名」）
+FANS_NO_BREAKDOWN = {'code': 'success', 'data': {'fansTotal': 128}}
 CS_PAYLOAD = {
     'data': {'inquiryUserCount': 8, 'inquiryCount': 11, 'replyRate3min': 33.33,
              'avgReplyTime': 42, 'unrepliedCount': 2, 'satisfactionRate': 98.5},
@@ -396,15 +422,30 @@ def seed_account(account_id: str = ACC, cookie: str = 'cookie-ok',
                'VALUES(?,?,?)', (account_id, cookie, login_state))
 
 
+def fans_payload(insights: Any = FANS_INSIGHTS_PAYLOAD,
+                 errors: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """把「平台原始响应」拼成协议层 `fans()` 的返回形状（**真解析函数参与**）。
+
+    与 `commodity_payload()` 同一个理由：假协议层若自己编一份 `insights_breakdown`，
+    解析口径就没人测了。
+    """
+    return {
+        'metrics': datacenter_proto.extract_metrics(FANS_PAYLOAD, datacenter_proto.FANS_METRICS),
+        'insights': FANS_PAYLOAD['insights'],
+        'insights_breakdown': datacenter_proto.parse_fans_insights(insights),
+        'real_date_range': None,
+        'suspect_keys': [],
+        'errors': errors or {},
+    }
+
+
 def full_protocol(**overrides: Any) -> FakeDataCenterProtocol:
     payloads = {
         'overview': {'metrics': datacenter_proto.extract_metrics(OVERVIEW_PAYLOAD, datacenter_proto.OVERVIEW_METRICS),
                      'begin_time': '20260201',
                      'real_date_range': ['2026-10-04', '2026-10-10'],
                      'suspect_keys': [], 'errors': {}},
-        'fans': {'metrics': datacenter_proto.extract_metrics(FANS_PAYLOAD, datacenter_proto.FANS_METRICS),
-                 'insights': FANS_PAYLOAD['insights'], 'real_date_range': None,
-                 'suspect_keys': [], 'errors': {}},
+        'fans': fans_payload(),
         'customer_service': {'metrics': datacenter_proto.extract_metrics(CS_PAYLOAD, datacenter_proto.CS_METRICS),
                              'real_date_range': None, 'suspect_keys': [], 'errors': {}},
         'commodity': commodity_payload(),
@@ -1594,6 +1635,108 @@ class CsListTest(DataCenterApiTest):
         paths = app_main.create_app().openapi().get('paths', {})
         self.assertIn(f'{BASE}/{{account_id}}/cs/{{kind}}', paths)
         self.assertIn('get', paths[f'{BASE}/{{account_id}}/cs/{{kind}}'])
+
+
+class FansBreakdownTest(DataCenterApiTest):
+    """第 51 批：粉丝画像分组（只读）。
+
+    官方「粉丝数据」页渲染的是 `fans.insights.query` 响应里的具名列表
+    （`buyerGenderList` / `fansTypeList` / `buyerProvinceList` / `buyerEightTpList`），
+    不是我们原先找的那个 `insights` 列表 —— 原先真机上这一栏永远是空的。
+    """
+
+    def breakdown(self, insights: Any = FANS_INSIGHTS_PAYLOAD) -> Dict[str, Any]:
+        seed_account()
+        self.proto.payloads['fans'] = fans_payload(insights)
+        data = self.ok_data(f'{BASE}/{ACC}/fans')
+        return data['insights_breakdown']
+
+    def test_breakdown_has_the_four_groups_from_the_real_shape(self):
+        breakdown = self.breakdown()
+        self.assertIsNotNone(breakdown)
+        self.assertEqual(sorted(breakdown['groups']),
+                         ['eight_type', 'fans_type', 'gender', 'province'])
+        self.assertEqual(breakdown['raw_keys'],
+                         ['buyerGenderList', 'fansTypeList', 'buyerProvinceList', 'buyerEightTpList'])
+
+    def test_group_carries_its_title_and_platform_key(self):
+        group = self.breakdown()['groups']['gender']
+        self.assertEqual(group['title'], '性别分布')
+        self.assertEqual(group['platform_key'], 'buyerGenderList')
+
+    def test_gender_is_translated_and_male_comes_first(self):
+        items = self.breakdown()['groups']['gender']['items']
+        self.assertEqual([item['name'] for item in items], ['男', '女'])
+        self.assertEqual([item['ratio'] for item in items], [0.38, 0.62])
+        self.assertEqual([item['raw_label'] for item in items], ['M', 'F'])
+
+    def test_fans_type_drops_the_letter_prefix_and_sorts_a_to_g(self):
+        items = self.breakdown()['groups']['fans_type']['items']
+        self.assertEqual([item['name'] for item in items], ['流失粉', '活跃粉'])
+        self.assertEqual([item['raw_label'] for item in items], ['A_流失粉', 'D_活跃粉'])
+
+    def test_eight_types_follow_the_official_order_table(self):
+        """官方顺序表里 `未来之星` 是 0 ⇒ 排最前（bundle 偏移 2491628）。"""
+        items = self.breakdown()['groups']['eight_type']['items']
+        self.assertEqual([item['name'] for item in items], ['未来之星', '学生群体'])
+
+    def test_provinces_sort_by_ratio_desc(self):
+        items = self.breakdown()['groups']['province']['items']
+        self.assertEqual([item['name'] for item in items], ['浙江', '广东'])
+        self.assertEqual([item['ratio'] for item in items], [0.2, 0.12])
+
+    def test_ratio_text_is_kept_verbatim_and_ratio_is_derived_from_it(self):
+        items = self.breakdown()['groups']['province']['items']
+        self.assertEqual(items[0]['ratio_text'], '20.00%')
+        self.assertAlmostEqual(items[0]['ratio'], 0.2)
+
+    def test_unknown_label_sorts_last_and_is_not_dropped(self):
+        payload = {'data': {'fansTypeList': [
+            {'profileVal': 'Z_没见过的档位', 'usrRatioFormat': '1.00%'},
+            {'profileVal': 'A_流失粉', 'usrRatioFormat': '10.00%'},
+        ]}}
+        items = self.breakdown(payload)['groups']['fans_type']['items']
+        self.assertEqual([item['name'] for item in items], ['流失粉', '没见过的档位'])
+
+    def test_entry_without_ratio_is_null_never_zero(self):
+        payload = {'data': {'buyerProvinceList': [{'profileVal': '没有比例的省'}]}}
+        items = self.breakdown(payload)['groups']['province']['items']
+        self.assertIsNone(items[0]['ratio'])
+        self.assertIsNone(items[0]['ratio_text'])
+
+    def test_entries_without_ratio_sort_last(self):
+        payload = {'data': {'buyerProvinceList': [
+            {'profileVal': '没比例'}, {'profileVal': '广东', 'usrRatioFormat': '12.00%'},
+        ]}}
+        items = self.breakdown(payload)['groups']['province']['items']
+        self.assertEqual([item['name'] for item in items], ['广东', '没比例'])
+
+    def test_platform_without_groups_gives_null_and_a_warning(self):
+        seed_account()
+        self.proto.payloads['fans'] = fans_payload(FANS_NO_BREAKDOWN)
+        data = self.ok_data(f'{BASE}/{ACC}/fans')
+        self.assertIsNone(data['insights_breakdown'])
+        self.assertIn(datacenter_service.WARN_FANS_INSIGHTS_MISSING, data['warnings'])
+
+    def test_permission_denied_keeps_only_the_permission_warning(self):
+        """账号没有「数据」权限时已经有权限 warning，不再叠一句「画像没解析出来」。"""
+        seed_account()
+        self.proto.payloads['fans'] = fans_payload(FANS_NO_BREAKDOWN, errors={
+            'insights': 'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问'})
+        data = self.ok_data(f'{BASE}/{ACC}/fans')
+        self.assertIsNone(data['insights_breakdown'])
+        self.assertNotIn(datacenter_service.WARN_FANS_INSIGHTS_MISSING, data['warnings'])
+        self.assertTrue(any('没有「数据」权限' in text for text in data['warnings']), data['warnings'])
+
+    def test_other_kinds_do_not_carry_the_breakdown(self):
+        seed_account()
+        overview = self.ok_data(f'{BASE}/{ACC}/overview')
+        self.assertNotIn('insights_breakdown', overview)
+
+    def test_legacy_insights_list_is_still_passed_through(self):
+        seed_account()
+        data = self.ok_data(f'{BASE}/{ACC}/fans')
+        self.assertEqual(data['insights'], FANS_PAYLOAD['insights'])
 
 
 if __name__ == '__main__':

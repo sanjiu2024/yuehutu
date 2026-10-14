@@ -208,6 +208,14 @@ def _warnings(errors: Dict[str, str]) -> list:
     return messages
 
 
+#: 平台把接口都答了、却一组画像分组都没给（真机上是「改了字段名」）时说的话。
+#: 注意**只在没有任何接口报错时**才加这句：账号没数据权限时已经有权限 warning，
+#: 再叠一句「画像没解析出来」是噪音。
+WARN_FANS_INSIGHTS_MISSING = (
+    '平台没有返回粉丝画像分组（性别 / 粉丝类型 / 省份 / 八大人群），这一块暂时显示不出来。'
+)
+
+
 def _wrap(kind: str, account_id: str, dates: Tuple[str, str], payload: Dict[str, Any]) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         'account_id': account_id,
@@ -222,6 +230,9 @@ def _wrap(kind: str, account_id: str, dates: Tuple[str, str], payload: Dict[str,
     }
     if kind == 'fans':
         result['insights'] = payload.get('insights')
+        result['insights_breakdown'] = payload.get('insights_breakdown')
+        if payload.get('insights_breakdown') is None and not (payload.get('errors') or {}):
+            result['warnings'].append(WARN_FANS_INSIGHTS_MISSING)
     if payload.get('suspect_keys'):
         result['unrecognized_keys'] = payload['suspect_keys']
     return result
