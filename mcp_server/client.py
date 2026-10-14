@@ -325,6 +325,25 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'method': 'POST', 'path': '/api/im/{account_id}/unread/clean',
         'path_params': ['account_id'], 'body': ['kind', 'confirm'],
     },
+    'trade_refund_refuse_reasons': {
+        'method': 'GET', 'path': '/api/trade/{account_id}/refunds/{refund_id}/refuse-reasons',
+        'path_params': ['account_id', 'refund_id'], 'query': ['order_id', 'refuse_reason_id'],
+    },
+    'trade_refund_detail': {
+        'method': 'GET', 'path': '/api/trade/{account_id}/refunds/{refund_id}/detail',
+        'path_params': ['account_id', 'refund_id'], 'query': ['order_id'],
+    },
+    'trade_postage_refund_detail': {
+        'method': 'GET', 'path': '/api/trade/{account_id}/orders/{order_id}/postage-refund/detail',
+        'path_params': ['account_id', 'order_id'],
+        'query': ['refund_id', 'refund_postage_type'],
+    },
+    'trade_postage_refund_reasons': {
+        'method': 'GET',
+        'path': '/api/trade/{account_id}/orders/{order_id}/postage-refund/refuse-reasons',
+        'path_params': ['account_id', 'order_id'],
+        'query': ['refund_id', 'refund_postage_type', 'default_reason'],
+    },
     'disputes_conversation': {
         'method': 'GET', 'path': '/api/disputes/{account_id}/conversation',
         'path_params': ['account_id'], 'query': ['order_id', 'refund_id', 'dispute_id'],

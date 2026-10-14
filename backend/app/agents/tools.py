@@ -2890,6 +2890,89 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---- 第四十八批：退款处理（4 条只读）----
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_refund_refuse_reasons',
+            'description': '查「拒绝退款」可选的原因（只读）。拒绝退款界面真正需要的就是它 ——'
+                           '以前让用户手抄平台内部 id。官方把「只能在手机 App 操作」的那条标成 '
+                           'app_only（我们同样标）。account_id / refund_id 必填；'
+                           '平台没返回原因列表时给 null + warning（不补成空数组）。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'refund_id': {'type': 'string', 'description': '退款单号'},
+                    'order_id': {'type': 'string', 'description': '订单号（可选，只用于回显）'},
+                    'refuse_reason_id': {'type': 'string', 'description': '回填选中的原因 id（可选）'},
+                },
+                'required': ['account_id', 'refund_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_refund_detail',
+            'description': '查退款详情（只读）。官方按 components[].render 挑组件渲染，'
+                           '我们原样透传组件列表（不猜字段名），并给出 component_renders。'
+                           'account_id / refund_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'refund_id': {'type': 'string', 'description': '退款单号'},
+                    'order_id': {'type': 'string', 'description': '订单号（可选）'},
+                },
+                'required': ['account_id', 'refund_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_postage_refund_detail',
+            'description': '查邮费退款详情（只读，响应在 data.module，原样透传）。'
+                           'account_id / order_id 必填；refund_id 与 refund_postage_type 可选。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '订单号'},
+                    'refund_id': {'type': 'string', 'description': '退款单号（可选）'},
+                    'refund_postage_type': {'type': 'string',
+                                            'description': '邮费退款类型（官方从 URL 上带过来，可选）'},
+                },
+                'required': ['account_id', 'order_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_postage_refund_reasons',
+            'description': '查邮费退款可选的拒绝原因（只读）。平台返回的是字符串数组'
+                           '（官方直接当 label/value 用）。account_id / order_id 必填；'
+                           '平台没返回时给 null + warning。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '订单号'},
+                    'refund_id': {'type': 'string', 'description': '退款单号（可选）'},
+                    'refund_postage_type': {'type': 'string', 'description': '邮费退款类型（可选）'},
+                    'default_reason': {'type': 'string',
+                                       'description': '官方会把 URL 上的 defaultReason 带过来（可选）'},
+                },
+                'required': ['account_id', 'order_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 主管 AI（只给 MCP 侧） ----------------
     {
         'type': 'function',
@@ -3276,6 +3359,11 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'im_session_search': ['im_tools', 'session_search'],
     'im_item_search': ['im_tools', 'item_search'],
     'im_clear_unread': ['im_tools', 'clear_unread'],
+    # ---- 第四十八批：退款处理（4 条只读）----
+    'trade_refund_refuse_reasons': ['trade', 'refund_refuse_reasons'],
+    'trade_refund_detail': ['trade', 'refund_detail'],
+    'trade_postage_refund_detail': ['trade', 'postage_refund_detail'],
+    'trade_postage_refund_reasons': ['trade', 'postage_refund_refuse_reasons'],
 
     'disputes_conversation': ['disputes', 'conversation'],
     'disputes_messages': ['disputes', 'history'],
@@ -3530,6 +3618,10 @@ _HANDLERS = {
     'im_session_search': lambda a: _dispatch_service('im_session_search', a),
     'im_item_search': lambda a: _dispatch_service('im_item_search', a),
     'im_clear_unread': lambda a: _dispatch_service('im_clear_unread', a),
+    'trade_refund_refuse_reasons': lambda a: _dispatch_service('trade_refund_refuse_reasons', a),
+    'trade_refund_detail': lambda a: _dispatch_service('trade_refund_detail', a),
+    'trade_postage_refund_detail': lambda a: _dispatch_service('trade_postage_refund_detail', a),
+    'trade_postage_refund_reasons': lambda a: _dispatch_service('trade_postage_refund_reasons', a),
 
     'disputes_conversation': lambda a: _dispatch_service('disputes_conversation', a),
     'disputes_messages': lambda a: _dispatch_service('disputes_messages', a),

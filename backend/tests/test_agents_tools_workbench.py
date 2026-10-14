@@ -75,6 +75,18 @@ NEW_TOOLS: Dict[str, Dict[str, Any]] = {
     'im_item_search': {
         'module': 'im_tools', 'fn': 'item_search', 'verb': 'get',
         'path': '/api/im/{account_id}/item-search'},
+    'trade_refund_refuse_reasons': {
+        'module': 'trade', 'fn': 'refund_refuse_reasons', 'verb': 'get',
+        'path': '/api/trade/{account_id}/refunds/{refund_id}/refuse-reasons'},
+    'trade_refund_detail': {
+        'module': 'trade', 'fn': 'refund_detail', 'verb': 'get',
+        'path': '/api/trade/{account_id}/refunds/{refund_id}/detail'},
+    'trade_postage_refund_detail': {
+        'module': 'trade', 'fn': 'postage_refund_detail', 'verb': 'get',
+        'path': '/api/trade/{account_id}/orders/{order_id}/postage-refund/detail'},
+    'trade_postage_refund_reasons': {
+        'module': 'trade', 'fn': 'postage_refund_refuse_reasons', 'verb': 'get',
+        'path': '/api/trade/{account_id}/orders/{order_id}/postage-refund/refuse-reasons'},
     'datacenter_overview': {'module': 'datacenter', 'fn': 'overview', 'verb': 'get',
                             'path': '/api/datacenter/{account_id}/overview'},
     'datacenter_fans': {'module': 'datacenter', 'fn': 'fans', 'verb': 'get',

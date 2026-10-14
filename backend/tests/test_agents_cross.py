@@ -576,6 +576,9 @@ class MasterChatTest(unittest.TestCase):
             'im_reception_status', 'im_set_reception',
             # ---- 第四十七批：IM 工具族（2 读 + 1 写）----
             'im_session_search', 'im_item_search', 'im_clear_unread',
+            # ---- 第四十八批：退款处理（4 条只读）----
+            'trade_refund_refuse_reasons', 'trade_refund_detail',
+            'trade_postage_refund_detail', 'trade_postage_refund_reasons',
             'master_chat',
         ]
         self.assertEqual(tools.TOOL_NAMES, expected)
