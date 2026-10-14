@@ -1217,6 +1217,28 @@ POST /api/items/{account_id}/publish/precheck
   与「小休收不到新消息」）；读失败 / 平台没返回时头部下面整行显示后端中文原话；唯一写出口
   `runImWrite`（`confirm: true` 字面量）。
 
+【第 47 批 /api/im —— 会话搜索 / 商品搜索 / 清未读（IM 工具族）】
+- 三条路由：`GET /api/im/{account_id}/sessions/search?keyword=&page=&size=`（只读）、
+  `GET /api/im/{account_id}/item-search?session_id=&conversation_id=&role=&keyword=&page=&size=`（只读）、
+  `POST /api/im/{account_id}/unread/clean`（写，body `{kind, confirm}`）。
+- 平台接口逐字（全 `v1.0`）：`mtop.taobao.idlemessage.pc.session.search`（`{keyword, pageNumber, pageSize}`）、
+  `mtop.taobao.idlemessage.pc.tool.item.search`、`mtop.taobao.idlemessage.pc.session.unread.clean`（不带 data）、
+  `mtop.taobao.idlemessage.pc.systems.unread.clean`（不带 data）。
+- 只读三态：`sessions` / `items` **可能是 `null`**（平台没返回列表键 ⇒ warning `im_sessions_missing` /
+  `im_items_missing`），`[]` 才是「平台明确说没有」；`total` 拿不到就是 `null` + warning
+  `im_session_total_missing`（**不拿当前页条数冒充总数**）；`has_more` 同理。
+- 商品搜索的 `role` 只有 `own`（我的宝贝）/ `other`（TA的宝贝）；`session_id`（平台 cid）与
+  `conversation_id`（本地会话行 id）二选一，只给后者时后端用既有 `_resolve_session` 换 cid，
+  换不到 400 `missing_cid`（与 IM 其它接口同口径）。
+- 清未读**是账号级的**：官方接口没有单会话参数 ⇒ 一次清掉整个账号的未读；`kind` 只有 `session` / `system`；
+  成功时把本地 `conversations.unread` 清零（`kind='system'` 不动本地）并播 `chats.changed`；官方发完
+  不看响应 ⇒ 没有回执字段时 `platform_success: null` + warning `im_unread_unconfirmed`（不谎报成功）。
+- 错误码：400 `confirmation_required` / 400 `invalid_fields` / 400 `missing_cid` / 404 `not_found` /
+  409 `verification_required` / 502 `protocol_error` / 503 `xianyu_not_ready`。
+- 审计动作 `im_unread_clean`；界面口径：工具栏一个本地过滤框 + 「在平台搜」（结果只读、点不开会话，
+  页面写明原因）+ 「清未读」（二次确认写明「账号级」）；会话头部「商品」按钮开抽屉（我的宝贝 / TA的宝贝
+  两个 tab，懒加载，`items === null` 与 `[]` 分开说）；唯一写出口 `runImWrite`（`confirm: true` 字面量）。
+
 【写接口的三条硬口径（所有 *_write 一律遵守）】
 1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /
    `confirm_required`），**一次平台请求都不发**；
@@ -1224,13 +1246,13 @@ POST /api/items/{account_id}/publish/precheck
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 139 条 / `MASTER_TOOLS` 138 条（去掉 `master_chat` 防递归），
-其中 **65 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 140 条。五方对账（specs / master / routes / service targets / handlers）
+【AI 侧】`TOOL_SPECS` 142 条 / `MASTER_TOOLS` 141 条（去掉 `master_chat` 防递归），
+其中 **66 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
+`mcp_server/client.py::TOOL_ROUTES` 143 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=139 master=138 routes=140 targets=127 handlers=139 / write_tools=65 / route_checked=140 / RECON OK
+-> specs=142 master=141 routes=143 targets=130 handlers=142 / write_tools=66 / route_checked=143 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`
