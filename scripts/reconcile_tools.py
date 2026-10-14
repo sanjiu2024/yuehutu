@@ -177,7 +177,10 @@ WRITE_PREFIX = ('trade_write_', 'trade_address_', 'promotion_write_', 'qualifica
                 'disputes_mark_read',
                 # 第四十二批：粉丝价写只有这一条，用完整工具名
                 # （只读的 items_fans_price 故意不在，别用 'items_' 宽前缀）。
-                'items_set_fans_price')
+                'items_set_fans_price',
+                # 第五十三批：这两条**一直**是写工具（发货 / 给买家发消息），
+                # 只是原先规格里没声明 confirm、也没进这张表 —— 属于反向盲区。
+                'chats_send', 'orders_deliver')
 write_names = [n for n in specs if n.startswith(WRITE_PREFIX) and n != 'promotion_write_actions']
 print(f'write_tools={len(write_names)}')
 for s in T.TOOL_SPECS:
@@ -185,8 +188,8 @@ for s in T.TOOL_SPECS:
     n = fn['name']
     if n not in write_names:
         continue
-    if TOOL_ROUTES.get(n, {}).get('method') != 'POST':
-        fail.append(f'{n}: MCP method 不是 POST')
+    if TOOL_ROUTES.get(n, {}).get('method') not in ('POST', 'PUT', 'PATCH', 'DELETE'):
+        fail.append(f'{n}: MCP method 不是写方法（POST/PUT/PATCH/DELETE）')
     if 'confirm' not in fn['parameters'].get('required', []):
         fail.append(f'{n}: required 里没有 confirm')
     if 'confirm=true' not in fn.get('description', ''):

@@ -206,7 +206,7 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
     },
     'chats_send': {
         'method': 'POST', 'path': '/api/chats/{conversation_id}/send',
-        'path_params': ['conversation_id'], 'body': ['content'],
+        'path_params': ['conversation_id'], 'body': ['content', 'confirm'],
     },
     'chats_set_mode': {
         'method': 'POST', 'path': '/api/chats/{conversation_id}/mode',
@@ -400,8 +400,11 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'query': ['account_id', 'status', 'limit'],
     },
     'orders_deliver': {
-        'method': 'POST', 'path': '/api/orders/{order_id}/deliver',
-        'path_params': ['order_id'], 'body': ['company', 'tracking_no'],
+        # 真发货要写平台物流信息 ⇒ 打 `PUT /{order_id}/shipment`（服务层带确认闸门）。
+        # 以前这里指向 `POST /{order_id}/deliver`，那条**只改本地状态、一次平台请求都不发**，
+        # 而且不吃 body ⇒ 外部 MCP 客户端「发货」其实从来没发出去过（静默漂移）。
+        'method': 'PUT', 'path': '/api/orders/{order_id}/shipment',
+        'path_params': ['order_id'], 'body': ['company', 'tracking_no', 'confirm'],
     },
     'risk_status': {
         'method': 'GET', 'path': '/api/risk/status',

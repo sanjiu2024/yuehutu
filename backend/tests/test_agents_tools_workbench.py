@@ -970,11 +970,13 @@ class WriteToolDispatchTest(unittest.TestCase):
                                   'patch': {'price_set': 9.9}, 'confirm': True},
                                  'backend.app.services.items.batch_edit_from_args'),
             'items_sync': ({'account_id': 'acc-x'}, 'backend.app.services.items.sync_items'),
-            'chats_send': ({'conversation_id': 1, 'content': '在的'},
+            'chats_send': ({'conversation_id': 1, 'content': '在的', 'confirm': True},
                            'backend.app.services.chats.send_from_args'),
             'chats_set_mode': ({'conversation_id': 1, 'mode': 'auto'},
                                'backend.app.services.chats.set_mode'),
-            'orders_deliver': ({'order_id': 'o1', 'company': '顺丰', 'tracking_no': 'SF1'},
+            # 第 53 批起 `orders_deliver` 的规格也要求 `confirm`（真发货），同上。
+            'orders_deliver': ({'order_id': 'o1', 'company': '顺丰', 'tracking_no': 'SF1',
+                                'confirm': True},
                                'backend.app.services.orders.update_shipment'),
         }
         for name, (args, path) in calls.items():

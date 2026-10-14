@@ -338,14 +338,17 @@ TOOL_SPECS: List[Dict[str, Any]] = [
         'type': 'function',
         'function': {
             'name': 'chats_send',
-            'description': '以卖家身份给买家发一条消息。用户说「回复他/告诉他…」时用；发送前先想清楚措辞。',
+            'description': '以卖家身份给买家发一条消息。用户说「回复他/告诉他…」时用；发送前先想清楚措辞。'
+                           + _WRITE_HINT,
             'parameters': {
                 'type': 'object',
                 'properties': {
                     'conversation_id': {'type': 'integer', 'description': '会话 id'},
                     'content': {'type': 'string', 'description': '要发送的文本'},
+                    'confirm': {'type': 'boolean',
+                                'description': '必须显式传 true 才真的发出去（买家会收到，不可撤回）'},
                 },
-                'required': ['conversation_id', 'content'],
+                'required': ['conversation_id', 'content', 'confirm'],
                 'additionalProperties': False,
             },
         },
@@ -525,15 +528,18 @@ TOOL_SPECS: List[Dict[str, Any]] = [
         'type': 'function',
         'function': {
             'name': 'orders_deliver',
-            'description': '给某个订单发货（需要快递公司 + 运单号）。用户明确要求发货时用。',
+            'description': '给某个订单发货（需要快递公司 + 运单号）。用户明确要求发货时用。'
+                           + _WRITE_HINT,
             'parameters': {
                 'type': 'object',
                 'properties': {
                     'order_id': {'type': 'string', 'description': '订单号'},
                     'company': {'type': 'string', 'description': '快递公司，例如 顺丰'},
                     'tracking_no': {'type': 'string', 'description': '运单号'},
+                    'confirm': {'type': 'boolean',
+                                'description': '必须显式传 true 才真的发货（会往平台写物流信息，买家能看到）'},
                 },
-                'required': ['order_id', 'company', 'tracking_no'],
+                'required': ['order_id', 'company', 'tracking_no', 'confirm'],
                 'additionalProperties': False,
             },
         },
