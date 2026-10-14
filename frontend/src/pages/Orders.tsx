@@ -652,6 +652,20 @@ interface WriteExtra {
   memoGroup: string
 }
 
+/** 只读：改价渲染数据（官方 adjust.price.render）。 */
+interface AdjustRenderResult {
+  found: boolean
+  order_id: string | null
+  item: { item_id: string | null; item_image: string | null; item_title: string | null }
+  price_and_num: { price: string | null; num: number | null; unit: string | null }
+  total_discount: string | null
+  origin_total_price: string | null
+  origin_item_price: string | null
+  item_price_derived: boolean
+  modify_price_tips: string
+  ship_fee_info: { address: string | null; ship_fee: string | null }
+  warnings: Array<{ code?: string; message?: string }>
+}
 /** 一条平台给的拒绝原因（`refund.refuse.render` → `refuseReasonList[]`）。 */
 interface RefundReason {
   refuse_reason_id?: string | null
@@ -666,7 +680,7 @@ interface WriteFormSpec {
   desc: ReactNode
   fields: WriteFieldSpec[]
   extras?: 'rate' | 'proof-kind' | 'close-reason' | 'delay-days' | 'pay-type' | 'remind-all'
-    | 'compensate' | 'refund-reasons' | 'memo-group'
+    | 'compensate' | 'refund-reasons' | 'memo-group' | 'adjust-render'
   path: (accountId: string, value: (name: string) => string) => string
   body: (value: (name: string) => string, extra: WriteExtra) => Record<string, unknown>
   /** 额外校验：返回非空文案表示不通过（必填项由 `required` 统一判）。 */
@@ -760,6 +774,7 @@ const WRITE_SPECS: Record<WriteKind, WriteFormSpec> = {
       modify_fee: value('modify_fee'),
       new_transport_fee: value('new_transport_fee'),
     }),
+    extras: 'adjust-render',
     check: (value) => {
       const price = value('modify_fee').trim()
       if (price === '' || !Number.isFinite(Number(price))) return '改后商品价格必须是数字（元）'
@@ -1165,6 +1180,11 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
   const [rrReasons, setRrReasons] = useState<RefundReason[] | null>(null)
   const [rrFacts, setRrFacts] = useState<{ fee: unknown; negotiation: unknown; proof: unknown } | null>(null)
   const [rrWarnings, setRrWarnings] = useState<string[]>([])
+  const [arBusy, setArBusy] = useState(false)
+  const [arError, setArError] = useState('')
+  const [arFetched, setArFetched] = useState(false)
+  const [arData, setArData] = useState<AdjustRenderResult | null>(null)
+  const [arWarnings, setArWarnings] = useState<string[]>([])
 
   const spec = WRITE_SPECS[kind]
   const group = groupOf(kind)
@@ -1393,6 +1413,35 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
    * 丢给用户。官方把「只能在手机 App 操作」的那条置灰，我们同样禁用并写明原因。
    * 三种结果分开说：数组 = 可选；**空数组** = 平台明确说没有；`null` = 平台没返回那个键。
    */
+  async function fetchAdjustRender() {
+    if (!draft.orderId) {
+      setArError('先填订单号，再去平台读当前价。')
+      return
+    }
+    setArBusy(true)
+    setArError('')
+    try {
+      const result = await api.get<AdjustRenderResult>(
+        `/api/trade/${accountId}/orders/${draft.orderId}/adjust-price/render`,
+      )
+      setArData(result)
+      setArFetched(true)
+      setArWarnings(
+        (result.warnings || [])
+          .map((warning) => String(warning.message ?? warning.code ?? ''))
+          .filter((line) => line !== ''),
+      )
+      // 预填：平台给的初值直接填进去；平台没给就**不填**（不拿 0 顶上）。
+      if (result.origin_item_price) setValue('modify_fee', String(result.origin_item_price))
+      if (result.ship_fee_info?.ship_fee) {
+        setValue('new_transport_fee', String(result.ship_fee_info.ship_fee))
+      }
+    } catch (error) {
+      setArError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setArBusy(false)
+    }
+  }
   async function fetchRefundReasons() {
     const refundId = value('refund_id').trim()
     if (!refundId) {
@@ -1866,6 +1915,66 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
                     : '这一行现在没有备注。'}
                 </div>
               </Field>
+            )}
+            {spec.extras === 'adjust-render' && (
+              <div className="tr-field tr-write-reasons">
+                <span>
+                  平台当前价
+                  <code className="tr-write-name">adjust.price.render</code>
+                </span>
+                <span className="tr-write-inline">
+                  <button
+                    className="btn ghost sm"
+                    onClick={fetchAdjustRender}
+                    disabled={arBusy || busy}
+                  >
+                    <IconRefresh size={14} /> {arBusy ? '正在读取…' : '读取平台当前价'}
+                  </button>
+                  <span className="tr-sub">只读接口：只预填两个输入框，不会改价。</span>
+                </span>
+
+                {arFetched && arData && !arData.found && (
+                  <Notice kind="warn">
+                    平台<strong>没有返回这一单的改价数据</strong>（可能改了字段名，或者这单不能改价）。
+                    我们不替你编价格：请手动填写，或者去官方卖家工作台改。
+                  </Notice>
+                )}
+
+                {arFetched && arData && arData.found && (
+                  <ul className="tr-write-facts">
+                    <li>
+                      商品价（官方口径 = 订单总价 − 运费）：
+                      {arData.origin_item_price
+                        ? `${arData.origin_item_price} 元`
+                        : '（平台没给总价或运费，算不出来）'}
+                      {arData.item_price_derived ? '（按官方口径算的）' : ''}
+                    </li>
+                    <li>
+                      订单总价：{arData.origin_total_price ? `${arData.origin_total_price} 元` : '（平台没给）'}
+                      {' · '}优惠：{arData.total_discount ? `${arData.total_discount} 元` : '（平台没给）'}
+                    </li>
+                    <li>
+                      当前运费：{arData.ship_fee_info?.ship_fee ? `${arData.ship_fee_info.ship_fee} 元` : '（平台没给）'}
+                      {arData.ship_fee_info?.address ? ` · 收货地：${arData.ship_fee_info.address}` : ''}
+                    </li>
+                    <li>
+                      商品：{arData.item?.item_title || '（平台没给标题）'}
+                      {arData.item?.item_id ? `（${arData.item.item_id}）` : ''}
+                    </li>
+                    {arData.modify_price_tips ? <li>平台提示：{arData.modify_price_tips}</li> : null}
+                  </ul>
+                )}
+
+                {arFetched && (
+                  <p className="tr-sub">
+                    平台不接受「没有修改」的提交（官方原话「价格没有修改～」）：改完至少一个数再提交。
+                  </p>
+                )}
+                {arError ? <Notice kind="warn">{arError}</Notice> : null}
+                {arWarnings.map((warning) => (
+                  <Notice key={warning} kind="warn">{warning}</Notice>
+                ))}
+              </div>
             )}
             {spec.extras === 'refund-reasons' && (
               <div className="tr-field tr-write-reasons">

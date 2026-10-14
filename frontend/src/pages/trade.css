@@ -693,3 +693,8 @@ tbody tr.tr-detail-row {
 .tr-field .tr-write-select:disabled {
   opacity: 0.6;
 }
+
+/* 第五十批：改价面板的「读取平台当前价」事实列表沿用 .tr-write-facts；这里只收窄只读按钮行 */
+.tr-field.tr-write-reasons .tr-write-inline .btn.ghost.sm {
+  white-space: nowrap;
+}
