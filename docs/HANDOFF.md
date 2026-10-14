@@ -3190,6 +3190,16 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > AI 侧三方单测 `Ran 132 tests ... OK`；对账 `specs=147 master=146 routes=148 targets=135 handlers=147 /
 > write_tools=67 / route_checked=148 / RECON OK`；前端 `TSC_EXIT=0` + `BUILD_EXIT=0`（97 modules，
 > `index-CzQUuBgD.js` 636.65 kB / `index-BqEVQYpp.css` 155.93 kB）；真实浏览器逐页冒烟 `29/29`。
+> 重打包（`build_exe.ps1 -SkipFrontend`，exe **10,213,925 B / 2026-10-14 16:09:32**，
+> `--port 18400` `/api/health` 200 `frozen:true`）后打包版复验：`probe_write_gate.py` →
+> **`GATE FAILURES: 0 / 68`**（新增的 `trade.add_memo` 无 confirm → 400 `confirmation_required`，
+> 确认腿用不存在的账号 → 400 `invalid_fields`，零平台写请求）；`check_assets.py` →
+> `ASSETS_MATCH=True`（`index-CzQUuBgD.js` / `index-BqEVQYpp.css`）；`packaged_ui_smoke.py` →
+> **29/29 页**；`memo49_packaged_probe.py`（打 18400）→ **`PROBLEMS=0`**：闸门三态（不带 /
+> `false` / `"false"`）全 400 `confirmation_required`、空备注与换行与 emoji 与 51 字全 400
+> `invalid_fields`（换行与 emoji 用平台原文「输入内容不支持换行~」「输入内容不支持emoji表情~」）、
+> 不存在账号 404 `not_found`、未鉴权 401 `unauthorized`；只读订单列表 409
+> `verification_required`（账号仍 `need_relogin`，读回字段因此没有真机样本）。
 
 ## 四、已验证 / 未验证（诚实边界）
 
