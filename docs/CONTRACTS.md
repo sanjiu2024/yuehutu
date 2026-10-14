@@ -1273,6 +1273,25 @@ POST /api/items/{account_id}/publish/precheck
 【界面口径】订单页写面板「订单处理」tab 的「订单备注」模式：标记下拉只给 1~5 数字（写明官方只有旗标图、
   没有文字名），并显示这一行**现在**的备注；提交仍走唯一写出口 `postWrite`（`confirm: true` 字面量）。
 
+第五十批（改价渲染：**只读**，给改价面板预填当前价）
+【平台接口】`mtop.taobao.idle.trade.merchant.adjust.price.render` v1.0（本地 bundle 偏移 807434）
+  `{orderId}`；官方读 `resp.data.module`：`merchantItemVO.{itemId,itemPicUrl,title,itemInfoLines}`、
+  `merchantPriceVO.{auctionPrice,buyNum,discountFee,totalPrice,postFee}`、`address`、`modifyPriceTips`。
+【官方口径（bundle 里是 `ej(totalPrice, '-', postFee)`）】「改后商品价格」的初值 = 订单总价 − 运费，
+  平台**不直接给**这个数 ⇒ 我们照官方口径算，但如实标注 `item_price_derived=true`（界面写「按官方口径算的」）。
+  缺总价或缺运费 ⇒ `null` + warning `adjust_price_render_item_price_unknown`，**绝不拿 0 顶上**。
+  「算出来的」是常态、不是异常 ⇒ 正常响应 **不带** warning。
+【HTTP 面】`GET /api/trade/{account_id}/orders/{order_id}/adjust-price/render`（无 confirm，只读）
+  成功 `{success:true, data:{found, order_id, item, price_and_num, total_discount, origin_total_price,
+  origin_item_price, item_price_derived, modify_price_tips, ship_fee_info, raw_keys, account_id, api,
+  warnings, source, fetched_at}}`；平台没给 module ⇒ 200 + `found:false` + warning
+  `adjust_price_render_missing`（**不是** 502、也不是「价格为 0」）。
+  错误码：400 `invalid_fields`（订单号空）/ 404 `not_found` / 409 `verification_required` /
+  502 `protocol_error`（无权限等平台拒绝）/ 503 `xianyu_not_ready`。
+【AI 侧】只读工具 `trade_adjust_price_render`（account_id + order_id 必填，MCP `GET`）。
+【界面口径】订单页写面板「订单处理」→「订单改价」多了「读取平台当前价」按钮（唯一写出口仍是 `postWrite`）：
+  读回来的两个数**只预填**两个输入框，平台没给就不填；并提示官方不接受「没有修改」的提交（原话「价格没有修改～」）。
+
 【写接口的三条硬口径（所有 *_write 一律遵守）】
 1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /
    `confirm_required`），**一次平台请求都不发**；
@@ -1280,13 +1299,13 @@ POST /api/items/{account_id}/publish/precheck
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 147 条 / `MASTER_TOOLS` 146 条（去掉 `master_chat` 防递归），
+【AI 侧】`TOOL_SPECS` 148 条 / `MASTER_TOOLS` 147 条（去掉 `master_chat` 防递归），
 其中 **67 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 148 条。五方对账（specs / master / routes / service targets / handlers）
+`mcp_server/client.py::TOOL_ROUTES` 149 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=147 master=146 routes=148 targets=135 handlers=147 / write_tools=67 / route_checked=148 / RECON OK
+-> specs=148 master=147 routes=149 targets=136 handlers=148 / write_tools=67 / route_checked=149 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`

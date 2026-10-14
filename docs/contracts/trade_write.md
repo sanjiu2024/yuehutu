@@ -480,3 +480,13 @@ refuseProofs: "[\"https://.../1.png\"]", isManual}`（两个 JSON 串都用紧�
 - 测试：`backend/tests/test_trade_write_api.py::MemoTest`（协议形状 / 五条校验 / 闸门 / 审计 / 路由只 POST）
   与 `backend/tests/test_trade_api.py::OrderMemoNormalizeTest`（读回四态）。
 - 未验证：真机未执行（会真的写平台备注），读回也没有真机样本。
+
+### 11. 改价渲染（**只读**，第五十批）
+
+- `GET /api/trade/{account_id}/orders/{order_id}/adjust-price/render` —— 无 `confirm`。
+- 平台：`mtop.taobao.idle.trade.merchant.adjust.price.render` v1.0，`data = {orderId}`，读 `data.module`。
+- 「改后商品价格」初值按官方口径 **订单总价 − 运费** 计算，并如实标注 `item_price_derived=true`；
+  缺总价或运费 ⇒ `null` + warning，**不补 0**。
+- 平台没给 module ⇒ 200 + `found:false` + warning（不是 502）。
+- 无权限等平台拒绝 ⇒ 502 `protocol_error`，**不写 `need_relogin`**。
+- AI 侧只读工具 `trade_adjust_price_render`。

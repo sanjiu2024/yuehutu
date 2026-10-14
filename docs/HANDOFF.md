@@ -62,8 +62,8 @@
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_trade48_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 60  PASS 60  FAIL 0  CASES 2530  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_ap50_full&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 60  PASS 60  FAIL 0  CASES 2546  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -83,20 +83,20 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 97 modules transformed.
-   frontend/dist/assets/index-CzQUuBgD.js (636.65 kB, gzip 200.19 kB)
-   frontend/dist/assets/index-BqEVQYpp.css (155.93 kB, gzip 24.44 kB)
+   frontend/dist/assets/index-D1tij8ad.js (638.89 kB, gzip 200.91 kB)
+   frontend/dist/assets/index-C5I0n3Oo.css (156.01 kB, gzip 24.46 kB)
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon48&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=147 master=146 routes=148 targets=135 handlers=147
-   write_tools=67  route_checked=148
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon50&& C:\Python310\python.exe scripts\reconcile_tools.py"
+-> specs=148 master=147 routes=149 targets=136 handlers=148
+   write_tools=67  route_checked=149
    RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
    （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18493"
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18495"
 -> UI SMOKE ALL OK  (29/29 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
    截图目录：logs/ui_smoke
 ```
@@ -3201,10 +3201,43 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 不存在账号 404 `not_found`、未鉴权 401 `unauthorized`；只读订单列表 409
 > `verification_required`（账号仍 `need_relogin`，读回字段因此没有真机样本）。
 
+### 第五十批：改价渲染（只读，给改价面板预填当前价）（287~289）
+
+- **补上一个真实的体验缺口**：订单页的「订单改价」原来是**两个空白输入框** —— 卖家得凭记忆
+  手打「改后商品价格」和「改后运费」，打错就是改错价。官方弹窗是**先调只读接口预填**的。
+- 平台：`mtop.taobao.idle.trade.merchant.adjust.price.render` v1.0（本地 bundle 偏移 807434）
+  `{orderId}`，官方读 `resp.data.module`。**官方口径**（bundle 里就是 `ej(totalPrice,'-',postFee)`）：
+  「改后商品价格」初值 = **订单总价 − 运费**，平台**不直接给**这个数 ⇒ 我们照官方口径算，
+  但如实标注 `item_price_derived=true`；缺总价或缺运费 ⇒ `null` + warning，**绝不补 0**。
+  「算出来的」是常态 ⇒ 正常响应**不带** warning（第一版写成每次都给 warning，已按官方口径收口）。
+- 落盘：协议层 `backend/app/xianyu/trade_write.py`（`ADJUST_PRICE_RENDER_API` 进 `READ_APIS`、
+  `adjust_price_render_request`、`_render_body`（要钻两层 `data.module` / `data.data.module`）、
+  `parse_adjust_price_render`）；服务层 `services/trade_write.py::adjust_price_render`；
+  路由 `GET /api/trade/{account_id}/orders/{order_id}/adjust-price/render`（无 confirm，只读）；
+  AI 侧只读工具 `trade_adjust_price_render` + MCP `GET` 路由。
+- 测试：`test_trade_write_api.py` 131 → 147 条（`AdjustPriceRenderTest` 16 条：官方形状、
+  按官方口径算初值、缺 module ⇒ found=false + warning、缺价格 ⇒ null、只读不写审计、
+  POST 到只读路径 405、平台拒绝 502 且**不改 `login_state`**、无 Cookie 409、未知账号 404、未鉴权 401）。
+- 界面：订单页写面板「订单处理」→「订单改价」多一个「读取平台当前价」按钮，读回来的两个数
+  **只预填**两个输入框（平台没给就不填），并提示官方不接受「没有修改」的提交（原话「价格没有修改～」）。
+  唯一写出口仍是 `postWrite`（`confirm: true` 字面量）。
+- 全量回归 **`TOTAL 60  PASS 60  FAIL 0  CASES 2546  SKIPPED 2`**（第 49 批 2530 → +16）。
+- 未验证：**没有真机样本**（账号仍 `need_relogin`）⇒ 参数与字段形状只有 bundle 证据 + 单测 + 离线探针；
+  写接口（`user.adjust.price`）本来就没真机执行过，这一批只是把「改之前能看见当前价」补上。
+
+> **第五十批证据链**：写覆盖审计 `logs/cov50.txt`；bundle 取证 `C:\Users\Administrator\.dsh-tmp\pick50{,b,c}.py`
+> → `logs/pick50{,b,c}.txt`（官方 `originItemPrice: ej(totalPrice,'-',postFee)` 逐字取到）；
+> 协议 / 服务 / 路由自检 `C:\Users\Administrator\.dsh-tmp\check_ap50.py` → `CHECKS=40 PROBLEMS=0`、
+> `check_ap50b.py` → `CHECKS=17 PROBLEMS=0`（含「平台拒绝走 `protocol_error`、零 `need_relogin`」）；
+> 后端单测 `Ran 147 tests ... OK`；AI 侧三方单测 `Ran 132 tests ... OK`；对账
+> `specs=148 master=147 routes=149 targets=136 handlers=148 / write_tools=67 / route_checked=149 / RECON OK`；
+> 接口面 `/openapi.json` = **208 条路径 / 226 个操作**；前端 `TSC_EXIT=0` + `BUILD_EXIT=0`（97 modules，
+> `index-D1tij8ad.js` 638.89 kB / `index-C5I0n3Oo.css` 156.01 kB）；真实浏览器逐页冒烟 `29/29`。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**60 个测试文件、2530 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**60 个测试文件、2546 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -3230,7 +3263,7 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   从 `共 95 条` 变成 `共 56 条`（= 两个在售账号的 45 + 11），页面里再也搜不到 `3998190171`，
   只读探针（真 Edge）`has_deleted_account: false`、`page_errors: []`。
 - 真实 HTTP：只读 17 条 + 写路径 11 条（早期探针）；打包版接口面现在
-  `/openapi.json` = **207 条路径 / 225 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
+  `/openapi.json` = **208 条路径 / 226 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
   第三十二批 +10 条店铺资料/子账号；第三十三批 +4 条推广资金明细；第三十四批 +1 条商品数据；第三十五批 +1 条经营卡片；
   第三十六批 +1 条客服明细表 `GET /api/datacenter/{account_id}/cs/{kind}`；
   第三十七批 +6 条话术 `/api/quick-reply/*`（7 个操作）；第三十八批 +6 条订单处理
@@ -3246,12 +3279,13 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
    第四十七批 +3 条 IM 工具族 `/api/im/{account_id}/{sessions/search,item-search,unread/clean}`；
    第四十八批 +4 条退款处理只读（`refunds/{refund_id}/{refuse-reasons,detail}`、
    `orders/{order_id}/postage-refund/{detail,refuse-reasons}`）；
-   第四十九批 +1 条订单备注 `POST /api/trade/{account_id}/orders/{order_id}/memo`），
+   第四十九批 +1 条订单备注 `POST /api/trade/{account_id}/orders/{order_id}/memo`；
+   第五十批 +1 条只读改价渲染 `GET /api/trade/{account_id}/orders/{order_id}/adjust-price/render`），
   均结构化信封、无 500。
-- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 147 / `MASTER_TOOLS` 146 /
-  `TOOL_ROUTES` 148，其中 **67 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
+- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 148 / `MASTER_TOOLS` 147 /
+  `TOOL_ROUTES` 149，其中 **67 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
   FastAPI 端点接受 → `RECON OK`。MCP 端到端冒烟（真起 `mcp_server/server.py` 子进程打打包版）
-  `tools/list` 返回 63 个工具（第 6 批的旧数字；`TOOL_ROUTES` 现在 148 条，本次未重跑该冒烟）。
+  `tools/list` 返回 63 个工具（第 6 批的旧数字；`TOOL_ROUTES` 现在 149 条，本次未重跑该冒烟）。
 - **真实浏览器逐页冒烟 29/29 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
   临时数据目录，逐页断言未白屏、未掉回登录页、无 JS 报错，截图在 `logs/ui_smoke/`）。
   它抓到了后端全绿时仍然「UI 完全不可用」的登录死循环。
