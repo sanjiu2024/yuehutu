@@ -83,7 +83,7 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 97 modules transformed.
-   frontend/dist/assets/index-DrYgGT4R.js (640.87 kB, gzip 201.39 kB)
+   frontend/dist/assets/index-4n-fv9gw.js (640.92 kB, gzip 201.47 kB)
    frontend/dist/assets/index-B1Z6zu0w.css (156.99 kB, gzip 24.60 kB)
 ```
 
@@ -3285,6 +3285,22 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > **诚实边界**：字段名与官方顺序表都是从 bundle 逐字取的，但**没有有权限账号的真机样本**
 > —— `usrRatio` / `usrRatioFormat` 究竟哪个出现、`profileVal` 的完整取值表仍待真机确认；
 > 本机账号（`2217970177348`）粉丝接口无权限，所以真机上这一栏仍是「权限 warning + 空」。
+> 界面取证 `C:\Users\Administrator\.dsh-tmp\fans51_panel_shots.py`（源码 + 临时库 + 拦截
+> `/api/datacenter/**`，零平台请求）→ `PROBLEMS=0`：四组小卡全渲染（性别 男 38.00% / 女 62.00%、
+> 粉丝类型、省份 20.00% / `-`、八大人群），底部说明与平台字段名都在，旧 `insights` 收进 `<details>`，
+> **零非 GET 请求**；截图 `logs/fans51_panel_shots/{01-fans-breakdown-dark,02-fans-breakdown-light}.png`。
+> **读截图抓出真缺陷（说明与实现不一致）**：界面底部原先写「每组按占比从高到低排」，而后端是照官方排的
+> （性别固定男→女、粉丝类型 A→G、八大人群按官方顺序表，只有省份按占比降序）⇒ 界面与三份文档一起订正
+> （提交 `6eb90dc` + `0febfa9`）。
+> 重打包（`build_exe.ps1 -SkipFrontend`，exe **10,218,959 B / 2026-10-14 18:02:11**，`--port 18400`
+> `/api/health` 200 `frozen:true`）后打包版复验全绿：`probe_write_gate.py` → **`GATE FAILURES: 0 / 68`**
+> （本批没有新写端点，条数不变）；`check_assets.py` → `ASSETS_MATCH=True`
+> （`index-4n-fv9gw.js` = `1a98fc620d98`、`index-B1Z6zu0w.css` = `4e2508c29138`）；
+> `packaged_ui_smoke.py` → **29/29 页**；`scripts/contrast_audit.py --threshold 4.0` →
+> `[dark] 0/29`、`[light] 0/29`、`NON_GET=[]`；`scripts/a11y_audit.py` → 三类问题全 0、
+> `焦点不可见的页面：[]`；打包版只读探针 `fans51_packaged_probe.py` → `PROBLEMS=0`
+> （真账号 409 `verification_required` + `login_state=need_relogin`（**账号登录态真的过期了，需要用户重新扫码**）、
+> 未知账号 404 `not_found`、未鉴权 401、`POST` 打到只读路径 405 `route_not_found`）。
 
 ## 四、已验证 / 未验证（诚实边界）
 
