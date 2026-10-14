@@ -1239,6 +1239,27 @@ POST /api/items/{account_id}/publish/precheck
   页面写明原因）+ 「清未读」（二次确认写明「账号级」）；会话头部「商品」按钮开抽屉（我的宝贝 / TA的宝贝
   两个 tab，懒加载，`items === null` 与 `[]` 分开说）；唯一写出口 `runImWrite`（`confirm: true` 字面量）。
 
+第四十八批（退款处理：四条**只读**接口；拒绝原因不再让用户手抄平台内部 id）
+【平台接口】（全部 v1.0，逐字来自本地 bundle，零平台请求）
+  · `mtop.taobao.idle.merchant.refund.refuse.render`  `{refundId, orderId}` →
+    `data.refuseReasonList[]`（元素 `{refuseReasonId, reasonId, reasonName, ...}`）；
+    官方把「只能在手机 App 操作」的那条**置灰**（我们同样禁用并在选项里写明原因）。
+  · `mtop.taobao.idle.merchant.refund.detail`  `{refundId, orderId}` → `data.module`（退款详情）。
+  · `mtop.taobao.idle.merchant.postage.refund.detail.query`  `{orderId, refundId}` → 邮费退款详情。
+  · `mtop.taobao.idle.merchant.postage.refund.refuse.reason.query`  `{orderId, refundId}` → 邮费退款拒绝原因。
+【HTTP 面】（四条 GET，**没有 confirm 闸门**——只读）
+  `GET /api/trade/{account_id}/refunds/{refund_id}/refuse-reasons?order_id=`
+  `GET /api/trade/{account_id}/refunds/{refund_id}/detail?order_id=`
+  `GET /api/trade/{account_id}/orders/{order_id}/postage-refund/detail?refund_id=&refund_postage_type=`
+  `GET /api/trade/{account_id}/orders/{order_id}/postage-refund/refuse-reasons?refund_id=&refund_postage_type=&default_reason=`
+【三条口径】
+  1. **`refuse_reasons === null` 与 `[]` 必须分开说**：`null` = 平台没返回那个键（可能改了字段名），
+     `[]` = 平台明确说「现在没有可选的拒绝原因」。界面文案不同（前者提示去官方工作台确认，后者直接说没有）。
+  2. `app_only: true` 的原因**必须在界面上禁用**（官方行为一致），并在选项文字里写明「只能在手机闲鱼 App 操作」。
+  3. 拿不到的字段一律 `null`（退款金额、是否建议先协商、是否必须上传凭证），**不补 0 / false**。
+【界面口径】拒绝退款表单的 `refuse_reason_id` 由「读取平台原因」按钮填（唯一写出口仍是 `postWrite`，
+  `confirm: true` 字面量）；用户仍然可以自己粘贴 id（保留逃生通道），但默认路径是从平台给的候选里选。
+
 【写接口的三条硬口径（所有 *_write 一律遵守）】
 1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /
    `confirm_required`），**一次平台请求都不发**；
@@ -1246,13 +1267,13 @@ POST /api/items/{account_id}/publish/precheck
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 142 条 / `MASTER_TOOLS` 141 条（去掉 `master_chat` 防递归），
+【AI 侧】`TOOL_SPECS` 146 条 / `MASTER_TOOLS` 145 条（去掉 `master_chat` 防递归），
 其中 **66 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 143 条。五方对账（specs / master / routes / service targets / handlers）
+`mcp_server/client.py::TOOL_ROUTES` 147 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=142 master=141 routes=143 targets=130 handlers=142 / write_tools=66 / route_checked=143 / RECON OK
+-> specs=146 master=145 routes=147 targets=134 handlers=146 / write_tools=66 / route_checked=147 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`
