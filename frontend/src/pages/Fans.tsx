@@ -196,8 +196,9 @@ function Breakdown({ breakdown }: { breakdown: FansBreakdown | null | undefined 
         ))}
       </div>
       <div className="dc-note">
-        每组按占比从高到低排；平台没给比例的项排最后并显示「-」（不补 0）。平台字段名：
-        {breakdown.raw_keys.join('、')}
+        排序照官方：性别固定「男 → 女」、粉丝类型按 A→G 档位、八大人群按官方顺序表，
+        省份按占比从高到低；任何一组里平台没给比例的项排最后并显示「-」（不补 0）。
+        平台字段名：{breakdown.raw_keys.join('、')}
       </div>
     </>
   )
