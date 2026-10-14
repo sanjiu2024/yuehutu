@@ -323,3 +323,78 @@
   gap: 8px;
   margin-top: 10px;
 }
+
+/* ------------------------------------------------------------------ *
+ * 粉丝画像分组（第 51 批，只读）—— 每组一张小卡：名字 + 占比条 + 占比文字
+ * ------------------------------------------------------------------ */
+
+.dc-fans-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.dc-fans-group {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  padding: 10px 12px;
+}
+
+.dc-fans-group-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.dc-fans-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dc-fans-row {
+  display: grid;
+  grid-template-columns: minmax(72px, 1fr) 1.2fr auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.dc-fans-name {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dc-fans-bar {
+  display: block;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.dc-fans-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.dc-fans-ratio {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  min-width: 52px;
+  text-align: right;
+}
+
+.dc-fans-ratio.dc-missing {
+  color: var(--text-mute);
+}

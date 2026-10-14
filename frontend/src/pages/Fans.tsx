@@ -4,10 +4,11 @@
  * 契约见 `docs/contracts/datacenter.md`（task-52 冻结）：
  *  - `GET /api/datacenter/{account_id}/fans?start=&end=`（`YYYYMMDD`，缺省后端补今天往前 7 天）
  *  - 6 个指标：`fans_total / fans_new / fans_lost / fans_active / fans_orders / fans_buyers`，
- *    外加 `insights`（粉丝画像列表，认不出为 null）。`null` 一律 `-**，绝不补 0。
+ *    外加 `insights_breakdown`（第 51 批：性别 / 粉丝类型 / 省份 / 八大人群四组具名列表，
+ *    认不出为 null）与旧字段 `insights`（认不出为 null）。`null` 一律 `-`，绝不补 0。
  *  - 无权限 ≠ 掉线：只给 null + 中文 warning，不提示重新扫码。
  *
- * 真机现状（账号 2217970177348）：粉丝接口无权限 ⇒ 指标全 null + insights null。
+ * 真机现状（账号 2217970177348）：粉丝接口无权限 ⇒ 指标全 null + 画像为 null。
  */
 
 import { useState } from 'react'
@@ -32,6 +33,26 @@ const FANS_METRICS: MetricDef[] = [
 /** 画像项：形状未冻结（真机无权限拿不到），原样渲染常见键，其余合并成一行说明。 */
 type InsightRow = Record<string, unknown>
 
+/** 画像分组（第 51 批冻结）：官方页面渲染的就是这四组具名列表。 */
+interface FansInsightItem {
+  name: string
+  ratio: number | null
+  ratio_text: string | null
+  raw_label: string | null
+}
+
+interface FansInsightGroup {
+  key: string
+  title: string
+  platform_key: string
+  items: FansInsightItem[]
+}
+
+interface FansBreakdown {
+  groups: Record<string, FansInsightGroup>
+  raw_keys: string[]
+}
+
 interface FansEnvelope {
   account_id?: string
   kind?: string
@@ -42,6 +63,7 @@ interface FansEnvelope {
   warnings?: string[]
   unrecognized_keys?: string[]
   insights?: InsightRow[] | null
+  insights_breakdown?: FansBreakdown | null
   fetched_at?: string
   source?: string
 }
@@ -100,6 +122,85 @@ function insightText(value: unknown): string {
   if (typeof value === 'object') return JSON.stringify(value)
   if (typeof value === 'number') return pct(value)
   return String(value)
+}
+
+/** 占比显示：平台给了文字就原样用（`'12.34%'`），否则按 0~1 换算；`null` → `-`。 */
+function ratioText(item: FansInsightItem): string {
+  if (item.ratio_text) return item.ratio_text
+  if (item.ratio === null || item.ratio === undefined) return '-'
+  const n = Number(item.ratio)
+  if (!Number.isFinite(n)) return '-'
+  return `${(n * 100).toFixed(2)}%`
+}
+
+/** 一组画像：名字 + 占比条 + 占比文字。比例为 `null` 时条是空的、文字是 `-`（不补 0）。 */
+function InsightGroupBlock({ group }: { group: FansInsightGroup }) {
+  return (
+    <div className="dc-fans-group">
+      <div className="dc-fans-group-title">
+        {group.title}
+        <span className="dc-muted">{group.items.length} 项</span>
+      </div>
+      <div className="dc-fans-rows">
+        {group.items.map((item, idx) => (
+          <div className="dc-fans-row" key={`${item.name}-${idx}`}>
+            <span className="dc-fans-name" title={item.raw_label || item.name}>
+              {item.name}
+            </span>
+            <span className="dc-fans-bar" aria-hidden="true">
+              <span
+                className="dc-fans-bar-fill"
+                style={{
+                  width:
+                    item.ratio === null || item.ratio === undefined
+                      ? '0%'
+                      : `${Math.min(100, Math.max(0, Number(item.ratio) * 100))}%`,
+                }}
+              />
+            </span>
+            <span className={`dc-fans-ratio${item.ratio === null ? ' dc-missing' : ''}`}>{ratioText(item)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/** 粉丝画像分组（第 51 批）：官方页面就是这四组；认不出分组时诚实说明，不编数据。 */
+function Breakdown({ breakdown }: { breakdown: FansBreakdown | null | undefined }) {
+  if (breakdown === null || breakdown === undefined) {
+    return (
+      <Notice kind="warn">
+        平台这次<strong>没有返回</strong>粉丝画像分组（性别 / 粉丝类型 / 省份 / 八大人群）。这不代表「没有粉丝」——
+        可能是账号没有「数据」权限，也可能是平台改了字段名。
+      </Notice>
+    )
+  }
+  const groups = Object.values(breakdown.groups || {})
+  if (groups.length === 0) {
+    return (
+      <div className="sh-empty">
+        <span className="sh-empty-ico">
+          <IconUsers size={24} />
+        </span>
+        <div className="sh-empty-title">这个区间没有粉丝画像</div>
+        <div className="sh-empty-desc">平台明确返回了空分组。换个更长的时间区间也许会有数据。</div>
+      </div>
+    )
+  }
+  return (
+    <>
+      <div className="dc-fans-groups">
+        {groups.map((group) => (
+          <InsightGroupBlock key={group.key} group={group} />
+        ))}
+      </div>
+      <div className="dc-note">
+        每组按占比从高到低排；平台没给比例的项排最后并显示「-」（不补 0）。平台字段名：
+        {breakdown.raw_keys.join('、')}
+      </div>
+    </>
+  )
 }
 
 function Insights({ insights }: { insights: InsightRow[] | null | undefined }) {
@@ -305,12 +406,21 @@ export function FansPage() {
 
       <div className="card">
         <div className="dc-section-title">
+          <span className="dc-ico">
+            <IconUsers size={15} />
+          </span>
           粉丝画像
-          <span className="dc-muted">平台返回什么就显示什么</span>
+          <span className="dc-muted">性别 / 粉丝类型 / 省份 / 八大人群（平台分组，原样渲染）</span>
         </div>
         <AsyncBox loading={data.loading} error={data.error} notReady={data.notReady} onRetry={data.reload}>
-          {rangeOk && <Insights insights={data.data?.insights} />}
+          {rangeOk && <Breakdown breakdown={data.data?.insights_breakdown} />}
         </AsyncBox>
+        {rangeOk && data.data?.insights ? (
+          <details className="dc-extra">
+            <summary>平台另外还给了一段没有名字的画像列表（{data.data.insights.length} 项）</summary>
+            <Insights insights={data.data.insights} />
+          </details>
+        ) : null}
       </div>
     </div>
   )
