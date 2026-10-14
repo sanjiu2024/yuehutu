@@ -956,7 +956,7 @@ class WriteToolConfirmGateTest(unittest.TestCase):
         """46 条写路由逐个试：都不发请求、都回 confirm_required。"""
         write_routes = sorted(k for k, v in mcp_client.TOOL_ROUTES.items()
                               if 'confirm' in (v.get('body') or []))
-        self.assertEqual(len(write_routes), 65, '写工具数量变了就要同步复核这份清单')
+        self.assertEqual(len(write_routes), 66, '写工具数量变了就要同步复核这份清单')
         for name in write_routes:
             with self.subTest(tool=name):
                 client, calls = self._client()
@@ -1004,7 +1004,7 @@ class WriteToolConfirmGateTest(unittest.TestCase):
             if 'confirm' in props:
                 write_specs.add(fn.get('name'))
         self.assertEqual(declared, write_specs)
-        self.assertEqual(len(declared), 65)
+        self.assertEqual(len(declared), 66)
 
     def test_truthy_helper_matches_service_layer(self):
         """与 `backend/app/services/item_templates.py::_truthy` 同一口径。"""

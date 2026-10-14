@@ -69,6 +69,12 @@ NEW_TOOLS: Dict[str, Dict[str, Any]] = {
     'im_reception_status': {
         'module': 'im_actions', 'fn': 'reception_status', 'verb': 'get',
         'path': '/api/im/{account_id}/reception'},
+    'im_session_search': {
+        'module': 'im_tools', 'fn': 'session_search', 'verb': 'get',
+        'path': '/api/im/{account_id}/sessions/search'},
+    'im_item_search': {
+        'module': 'im_tools', 'fn': 'item_search', 'verb': 'get',
+        'path': '/api/im/{account_id}/item-search'},
     'datacenter_overview': {'module': 'datacenter', 'fn': 'overview', 'verb': 'get',
                             'path': '/api/datacenter/{account_id}/overview'},
     'datacenter_fans': {'module': 'datacenter', 'fn': 'fans', 'verb': 'get',
@@ -542,6 +548,9 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
     'im_set_reception': {
         'module': 'im_actions', 'fn': 'set_reception', 'confirm': True,
         'method': 'POST', 'path': '/api/im/{account_id}/reception'},
+    'im_clear_unread': {
+        'module': 'im_tools', 'fn': 'clear_unread', 'confirm': True,
+        'method': 'POST', 'path': '/api/im/{account_id}/unread/clean'},
 }
 
 WRITE_TOOL_NAMES = list(WRITE_TOOLS)
@@ -703,6 +712,7 @@ _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
         'reason_choices': ['原因A'], 'proof_urls': ['http://x/1.png'], 'confirm': False},
     'im_set_reception': {
         'account_id': 'acc-x', 'status': 'ONLINE', 'confirm': False},
+    'im_clear_unread': {'account_id': 'acc-x', 'kind': 'session', 'confirm': False},
 }
 
 

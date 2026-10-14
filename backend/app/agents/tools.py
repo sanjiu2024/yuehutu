@@ -2828,6 +2828,68 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'im_session_search',
+            'description': '搜索闲鱼会话（只读）：按关键词查买家会话，返回会话 id / 标题 / 未读数。'
+                           'account_id 必填；keyword 可以为空（等于列出会话）。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'keyword': {'type': 'string', 'description': '搜索关键词（可为空）'},
+                    'page': {'type': 'integer', 'description': '页码，从 1 开始'},
+                    'size': {'type': 'integer', 'description': '每页条数（最大 50）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'im_item_search',
+            'description': '搜索某个会话里的商品（只读）：「我的宝贝」或「TA的宝贝」。'
+                           'account_id 必填；session_id（平台 cid）与 conversation_id（本地会话行 id）'
+                           '二选一，只给 conversation_id 时后端会换成 cid（换不到会如实报错）。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'session_id': {'type': 'string', 'description': '平台会话 id（cid）'},
+                    'conversation_id': {'type': 'string', 'description': '本地会话行 id'},
+                    'role': {'type': 'string', 'enum': ['own', 'other'],
+                             'description': 'own=我的宝贝，other=TA的宝贝'},
+                    'keyword': {'type': 'string', 'description': '搜索关键词（可为空）'},
+                    'page': {'type': 'integer', 'description': '页码，从 1 开始'},
+                    'size': {'type': 'integer', 'description': '每页条数（最大 50）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'im_clear_unread',
+            'description': '清空未读（买家会话或系统通知）——' + _WRITE_HINT + 'account_id 必填，'
+                           'kind 只能是 session（买家会话，默认）/ system（系统通知）。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'kind': {'type': 'string', 'enum': ['session', 'system'],
+                             'description': 'session=买家会话未读，system=系统通知未读'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 主管 AI（只给 MCP 侧） ----------------
     {
         'type': 'function',
@@ -3211,6 +3273,9 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'trade_compensate_refuse': ['trade_write', 'compensate_refuse'],
     'im_reception_status': ['im_actions', 'reception_status'],
     'im_set_reception': ['im_actions', 'set_reception'],
+    'im_session_search': ['im_tools', 'session_search'],
+    'im_item_search': ['im_tools', 'item_search'],
+    'im_clear_unread': ['im_tools', 'clear_unread'],
 
     'disputes_conversation': ['disputes', 'conversation'],
     'disputes_messages': ['disputes', 'history'],
@@ -3462,6 +3527,9 @@ _HANDLERS = {
     'trade_compensate_refuse': lambda a: _dispatch_service('trade_compensate_refuse', a),
     'im_reception_status': lambda a: _dispatch_service('im_reception_status', a),
     'im_set_reception': lambda a: _dispatch_service('im_set_reception', a),
+    'im_session_search': lambda a: _dispatch_service('im_session_search', a),
+    'im_item_search': lambda a: _dispatch_service('im_item_search', a),
+    'im_clear_unread': lambda a: _dispatch_service('im_clear_unread', a),
 
     'disputes_conversation': lambda a: _dispatch_service('disputes_conversation', a),
     'disputes_messages': lambda a: _dispatch_service('disputes_messages', a),

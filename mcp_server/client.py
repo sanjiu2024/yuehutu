@@ -312,6 +312,19 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'method': 'POST', 'path': '/api/im/{account_id}/reception',
         'path_params': ['account_id'], 'body': ['status', 'confirm'],
     },
+    'im_session_search': {
+        'method': 'GET', 'path': '/api/im/{account_id}/sessions/search',
+        'path_params': ['account_id'], 'query': ['keyword', 'page', 'size'],
+    },
+    'im_item_search': {
+        'method': 'GET', 'path': '/api/im/{account_id}/item-search',
+        'path_params': ['account_id'],
+        'query': ['session_id', 'conversation_id', 'role', 'keyword', 'page', 'size'],
+    },
+    'im_clear_unread': {
+        'method': 'POST', 'path': '/api/im/{account_id}/unread/clean',
+        'path_params': ['account_id'], 'body': ['kind', 'confirm'],
+    },
     'disputes_conversation': {
         'method': 'GET', 'path': '/api/disputes/{account_id}/conversation',
         'path_params': ['account_id'], 'query': ['order_id', 'refund_id', 'dispute_id'],
