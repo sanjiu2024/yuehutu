@@ -3333,6 +3333,18 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > **全部属实**，其中「还没就绪」那类是 `notReady` 条件分支、不是假话）；**真缺陷是顺着「前端写出口复查」
 > 发现的**（AI 工具规格 + 服务层闸门）；打包版闸门探针扩到 **77 条**，先在源码后端上验
 > （`GATE FAILURES: 0 / 77`，`XYWB_PROBE_BASE`/`XYWB_PROBE_DATA` 可指向临时库）。
+> 重打包（`build_exe.ps1 -SkipFrontend`，exe **10,219,939 B / 2026-10-14 19:23:24**，`--port 18400`
+> `/api/health` 200 `frozen:true`）后打包版复验全绿：`probe_write_gate.py` → **`GATE FAILURES: 0 / 77`**
+> （9 条新覆盖：`items.edit` / `items.publish` / `items.batch_edit` / `items.delist` / `items.relist`
+> 未确认全 400 `confirmation_required`；4 条老路径同理；确认腿换假账号后是 404 `not_found` /
+> 400 `bad_request` / 200 空操作，**零平台请求**）；`check_assets.py` → `ASSETS_MATCH=True`
+> （`index-bwukL4s-.js` = `9365a00f2412`、`index-B1Z6zu0w.css` = `4e2508c29138`）；
+> `packaged_ui_smoke.py` → **29/29 页**；`scripts/contrast_audit.py --threshold 4.0` →
+> `[dark] 0/29`、`[light] 0/29`、`NON_GET=[]`；`scripts/a11y_audit.py` → 三类问题全 0、焦点环全可见。
+> 前端静态复查 `C:\Users\Administrator\.dsh-tmp\audit_items_writes52.py`：商品页 9 个 `/api/items`
+> 调用点里 **6 个平台写入口全部带 `confirm: true`**，剩下 3 个是 `sync`（本地拉取）、
+> `DELETE /api/items/{account_id}/{item_id}`（**只删本地记录、不碰平台**，服务层本来就无闸门）、
+> `publish/precheck`（只读）—— 都对。
 
 ## 四、已验证 / 未验证（诚实边界）
 
