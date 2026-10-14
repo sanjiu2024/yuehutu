@@ -448,7 +448,7 @@ class AccountsImTest(unittest.TestCase):
         self.clients['exp_send'].fail_with = SessionExpiredError(EXPIRED_PLATFORM_TEXT)
 
         resp = self.client.post(f'/api/chats/{conversation_id}/send',
-                                json={'content': '在的'}, headers=self.headers)
+                                json={'content': '在的', 'confirm': True}, headers=self.headers)
         self.assertEqual(resp.status_code, 200, resp.text)
         data = resp.json()['data']
         self.assertFalse(data['sent'], data)

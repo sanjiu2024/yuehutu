@@ -61,16 +61,26 @@ def get_logistics(order_id: str, user=Depends(current_user)):
 
 @router.put('/{order_id}/shipment')
 def update_shipment(order_id: str, payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
-    """body: {company, tracking_no}（也认 courier / tracking_number）"""
+    """body: {company, tracking_no, confirm}（也认 courier / tracking_number）
+
+    `confirm` 原样下传（**判断权只在服务层**，路由层不许 `bool(...)`：
+    `bool('false')` 是 `True`，那会把闸门绕过去）。
+    """
     company = str(payload.get('company') or payload.get('courier') or payload.get('express') or '')
     tracking_no = str(payload.get('tracking_no') or payload.get('tracking_number') or payload.get('waybill') or '')
-    return _envelope(orders.update_shipment(order_id, company, tracking_no))
+    return _envelope(orders.update_shipment(order_id, company, tracking_no,
+                                            confirm=payload.get('confirm')))
 
 
 @router.post('/{order_id}/deliver')
 def deliver(order_id: str, user=Depends(current_user)):
-    """CONTRACTS §3 的标记发货（不带物流单号时用）。"""
+    """CONTRACTS §3 的标记发货（不带物流单号时用）。
+
+    **纯本地**：只改本地订单状态，一次平台请求都不发 ⇒ 没有确认闸门
+    （要真发货、写平台物流信息请用 `PUT /{order_id}/shipment`）。
+    """
     return _envelope(orders.deliver(order_id))
+
 
 
 @router.get('/{order_id}')

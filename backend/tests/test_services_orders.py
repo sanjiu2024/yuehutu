@@ -136,7 +136,7 @@ class OrdersServiceTest(unittest.TestCase):
         self.assertIsNone(order['shipment'])
         self.assertEqual(order['shipments'], [])
 
-        orders.update_shipment('O1', '顺丰', 'SF123')
+        orders.update_shipment('O1', '顺丰', 'SF123', confirm=True)
         order = orders.get_order('O1')
         self.assertEqual(order['status'], 'shipped')
         self.assertEqual(order['shipment']['tracking_no'], 'SF123')
@@ -158,7 +158,7 @@ class OrdersServiceTest(unittest.TestCase):
         self.assertEqual(stats['shipped'], 1)
         self.assertEqual(stats['by_status']['paid'], 1)
 
-        orders.update_shipment('O1', '中通', 'ZT1')
+        orders.update_shipment('O1', '中通', 'ZT1', confirm=True)
         self.assertEqual(orders.order_stats()['shipments'], 1)
 
     # ------------------------------------------------------------------ 同步
@@ -219,7 +219,7 @@ class OrdersServiceTest(unittest.TestCase):
 
     def test_update_shipment_local_only(self):
         self.seed('O1')
-        result = orders.update_shipment('O1', '顺丰', 'SF001')
+        result = orders.update_shipment('O1', '顺丰', 'SF001', confirm=True)
         self.assertEqual(result['tracking_no'], 'SF001')
         self.assertIn('warning', result)          # 协议层未就绪
         self.assertTrue(result['reminder'])       # 发货提醒文案（来自 cs 模板）
@@ -233,25 +233,25 @@ class OrdersServiceTest(unittest.TestCase):
     def test_update_shipment_pushes_to_protocol(self):
         install_client(self.client)
         self.seed('O1')
-        result = orders.update_shipment('O1', '顺丰', 'SF001')
+        result = orders.update_shipment('O1', '顺丰', 'SF001', confirm=True)
         self.assertNotIn('warning', result)
         self.assertEqual(self.client.calls[0], ('ship_order', 'acc1', 'O1', '顺丰', 'SF001'))
 
     def test_update_shipment_validation_and_missing(self):
         self.seed('O1')
         for company, tracking in (('', 'SF1'), ('顺丰', '')):
-            result = orders.update_shipment('O1', company, tracking)
+            result = orders.update_shipment('O1', company, tracking, confirm=True)
             self.assertFalse(result['success'])
             self.assertEqual(result['code'], 'invalid_fields')
 
-        result = orders.update_shipment('NOPE', '顺丰', 'SF1')
+        result = orders.update_shipment('NOPE', '顺丰', 'SF1', confirm=True)
         self.assertFalse(result['success'])
         self.assertEqual(result['code'], 'not_found')
 
     def test_update_shipment_is_idempotent(self):
         self.seed('O1')
-        orders.update_shipment('O1', '顺丰', 'SF001')
-        orders.update_shipment('O1', '顺丰', 'SF001')
+        orders.update_shipment('O1', '顺丰', 'SF001', confirm=True)
+        orders.update_shipment('O1', '顺丰', 'SF001', confirm=True)
         # 同一单号不重复插 shipment
         self.assertEqual(len(db.query('SELECT * FROM shipments')), 1)
 
@@ -269,7 +269,7 @@ class OrdersServiceTest(unittest.TestCase):
 
     def test_get_logistics_prefers_protocol(self):
         self.seed('O1')
-        orders.update_shipment('O1', '顺丰', 'SF001')
+        orders.update_shipment('O1', '顺丰', 'SF001', confirm=True)
         install_client(self.client)
         result = orders.get_logistics('O1')
         self.assertEqual(result['source'], 'xianyu')
@@ -305,12 +305,64 @@ class OrdersServiceTest(unittest.TestCase):
         install_client(self.client)
         before = len(events.recent(limit=500))
         orders.sync_orders('acc1')
-        orders.update_shipment('O1', '顺丰', 'SF1')
+        orders.update_shipment('O1', '顺丰', 'SF1', confirm=True)
         orders.deliver('O1')
         topics = [e['topic'] for e in events.recent(limit=500)[before:]]
         self.assertIn('orders.synced', topics)
         self.assertIn('orders.shipment_updated', topics)
         self.assertIn('orders.delivered', topics)
+
+
+class OrderShipConfirmGateTest(OrdersServiceTest):
+    """发货的确认闸门：**这是真发货**（会往平台写物流信息、买家能看到）。
+
+    第 53 批补的闸门 —— 以前 `PUT /api/orders/{id}/shipment` 一路到平台都没有「你确定吗」。
+    """
+
+    #: 一律不算点头（`bool('false')` 是 `True`，所以只认字面量口径）。
+    FALSE_LIKE = ('false', 'FALSE', ' false ', 'no', 'yes', '0', 0, '', None, 2, [], {})
+
+    def test_without_confirm_is_400_and_touches_nothing(self):
+        self.seed('O1')
+        install_client(self.client)
+
+        result = orders.update_shipment('O1', '顺丰', 'SF1')
+
+        self.assertFalse(result['success'], result)
+        self.assertEqual(result['code'], 'confirmation_required')
+        # 一条货都没发出去、一条日志都没写、平台一次都没碰
+        self.assertEqual(db.query('SELECT * FROM shipments'), [])
+        self.assertEqual(orders.get_order('O1')['status'], 'paid')
+        self.assertEqual(db.query('SELECT * FROM operation_logs'), [])
+        self.assertEqual(self.client.calls, [])
+
+    def test_false_like_values_are_all_rejected(self):
+        self.seed('O1')
+        for value in self.FALSE_LIKE:
+            with self.subTest(value=value):
+                self.assertEqual(
+                    orders.update_shipment('O1', '顺丰', 'SF1', confirm=value)['code'],
+                    'confirmation_required',
+                )
+        self.assertEqual(db.query('SELECT * FROM shipments'), [])
+
+    def test_true_like_values_pass(self):
+        for value in (True, 'true', ' TRUE ', 1):
+            with self.subTest(value=value):
+                self.setUp()
+                self.seed('O1')
+                result = orders.update_shipment('O1', '顺丰', 'SF1', confirm=value)
+                self.assertNotIn('code', result, result)
+                self.assertEqual(result['tracking_no'], 'SF1')
+
+    def test_gate_runs_before_field_validation(self):
+        """三步顺序：**确认 → 字段校验 → 建客户端**（没点头就别提「单号不能为空」）。"""
+        self.seed('O1')
+        result = orders.update_shipment('O1', '', '', confirm=False)
+        self.assertEqual(result['code'], 'confirmation_required')
+
+        checked = orders.update_shipment('O1', '', '', confirm=True)
+        self.assertEqual(checked['code'], 'invalid_fields')
 
 
 if __name__ == '__main__':

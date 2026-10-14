@@ -2,6 +2,7 @@
 
 - 同步走协议层懒导入，未就绪返回 `xianyu_not_ready`。
 - `update_shipment()` 落 `shipments` 并尽力通知协议层；同时记 operation_logs。
+  **这是真发货**（会往平台写物流信息），所以第一道闸门是确认（`confirm=true`）。
 - 发货提醒文案交给 `cs.shipping_reminder()`（订单服务不重复写话术）。
 """
 
@@ -16,6 +17,34 @@ from . import common
 # 已发货/已完成这类终态（统计用）
 SHIPPED_STATES = ('shipped', 'delivered', '已发货', '已签收', '已完成')
 PENDING_STATES = ('pending', 'paid', 'wait_ship', '待发货', '已付款')
+
+#: 未确认时返回的业务码（`common.FAIL_STATUS` 里没有它 ⇒ 默认 400）。
+CONFIRM_CODE = 'confirmation_required'
+
+
+def _truthy(value: Any) -> bool:
+    """只有字面量 `True` / `'true'` / `1` 才算确认，别的（含 `'false'`、`'yes'`）都不算。
+
+    与 `services/items.py::_truthy`、`services/item_templates.py::_truthy`、
+    `mcp_server/client.py::_truthy` 同一口径 —— 三条路（HTTP / 主管 AI / MCP）
+    必须对「什么算点头」有完全一样的判断。
+    """
+    if value is True:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() == 'true'
+    return value == 1
+
+
+def _confirm_gate(action: str, confirm: Any) -> Optional[Dict[str, Any]]:
+    """写路径第一道闸门：**只判确认**，不碰库、不碰账号、不碰平台。"""
+    if _truthy(confirm):
+        return None
+    return common.fail(
+        f'{action} 是写操作，需要显式确认（confirm=true）后才会提交到闲鱼',
+        CONFIRM_CODE,
+    )
+
 
 
 def _row_to_order(row: Any) -> Dict[str, Any]:
@@ -190,8 +219,16 @@ def sync_orders(account_id: str) -> Any:
     return {'account_id': account_id, 'count': ok, 'orders': list_orders(account_id=account_id)['orders']}
 
 
-def update_shipment(order_id: Any, company: str, tracking_no: str) -> Any:
-    """填/改发货信息：落 shipments + 记日志 + 尽力通知协议层。"""
+def update_shipment(order_id: Any, company: str, tracking_no: str, *,
+                    confirm: Any = None) -> Any:
+    """填/改发货信息：落 shipments + 记日志 + 尽力通知协议层。
+
+    **这是真发货**：平台侧会把物流信息写进这笔订单、买家能看到，所以第一道闸门是确认
+    （`confirm=true`）。三步顺序与其它写接口一致：**确认 → 字段校验 → 建客户端**。
+    """
+    problem = _confirm_gate('发货', confirm)
+    if problem is not None:
+        return problem
     row = _find_order(order_id)
     if row is None:
         return common.fail(f'订单不存在: {order_id}', 'not_found')

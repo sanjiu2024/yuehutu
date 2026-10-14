@@ -179,7 +179,7 @@ class ChatsServiceTest(_ChatsTestBase):
         chats.append_message(conv['id'], 'buyer', '在吗', meta={'source': 'im', 'cid': 'cid-x'})
         block_module(CLIENT_MODULE)
         try:
-            result = chats.send_manual(conv['id'], '我自己回他')
+            result = chats.send_manual(conv['id'], '我自己回他', confirm=True)
         finally:
             clear_module(CLIENT_MODULE)
 
@@ -211,7 +211,7 @@ class ChatsServiceTest(_ChatsTestBase):
         install_client(self.client)
         conv = self.make_conversation(peer='audit_peer')  # 会话里没有任何带 cid 的消息
 
-        result = chats.send_manual(conv['id'], '人工回复')
+        result = chats.send_manual(conv['id'], '人工回复', confirm=True)
 
         self.assertEqual(self.client.sent, [], '取不到 cid 时一个字节都不该发出去')
         self.assertFalse(result['sent'])
@@ -229,7 +229,7 @@ class ChatsServiceTest(_ChatsTestBase):
         conv = self.make_conversation()
         chats.append_message(conv['id'], 'buyer', '在吗', meta={'source': 'im', 'cid': 'cid-real'})
 
-        result = chats.send_manual(conv['id'], '人工回复')
+        result = chats.send_manual(conv['id'], '人工回复', confirm=True)
 
         self.assertTrue(result['sent'])
         self.assertEqual(result['code'], 'ok')
@@ -247,18 +247,18 @@ class ChatsServiceTest(_ChatsTestBase):
         install_client(self.client)
         conv = self.make_conversation()
         chats.append_message(conv['id'], 'buyer', '在吗', meta={'source': 'im', 'cid': 'cid-from-im'})
-        result = chats.send_manual(conv['id'], '人工回复')
+        result = chats.send_manual(conv['id'], '人工回复', confirm=True)
         self.assertTrue(result['sent'])
         self.assertEqual(self.client.sent[0][0], 'cid-from-im')
         self.assertEqual(self.client.sent[0][1], '人工回复')
 
     def test_send_manual_rejects_empty_and_missing(self):
         conv = self.make_conversation()
-        result = chats.send_manual(conv['id'], '   ')
+        result = chats.send_manual(conv['id'], '   ', confirm=True)
         self.assertFalse(result['success'])
         self.assertEqual(result['code'], 'invalid_fields')
 
-        result = chats.send_manual(999, 'x')
+        result = chats.send_manual(999, 'x', confirm=True)
         self.assertFalse(result['success'])
         self.assertEqual(result['code'], 'not_found')
 
@@ -1234,6 +1234,77 @@ class UnparsedFrameLogTest(unittest.TestCase):
                 self._summary('/r/MessageManager/listUserMessages'), {'a': 1}, '不是可处理的买家文本消息',
             )
         warn.assert_called_once()
+
+
+class SendManualConfirmGateTest(_ChatsTestBase):
+    """人工回消息的确认闸门：**买家会真的收到**，发出去撤不回来。
+
+    第 53 批补的闸门 —— 以前 `POST /api/chats/{id}/send` 与主管 AI 的 `chats_send`
+    都能零确认把消息发给买家。
+    """
+
+    #: 一律不算点头（`bool('false')` 是 `True`，所以只认字面量口径）。
+    FALSE_LIKE = ('false', 'FALSE', ' false ', 'no', 'yes', '0', 0, '', None, 2, [], {})
+
+    def _seed_conversation(self):
+        self.make_account('acc1')
+        conv = self.make_conversation()
+        db.execute('INSERT INTO messages(conversation_id, direction, sender, content, meta) '
+                   'VALUES(?,?,?,?,?)',
+                   (conv['id'], 'in', 'buyer', '在吗', '{"cid": "cid-1"}'))
+        return conv
+
+    def test_without_confirm_is_400_and_sends_nothing(self):
+        conv = self._seed_conversation()
+        install_client(self.client)
+
+        result = chats.send_manual(conv['id'], '在的')
+
+        self.assertFalse(result['success'], result)
+        self.assertEqual(result['code'], 'confirmation_required')
+        # 没有 out 消息、没有日志、平台一次都没碰、模式没被切到 manual
+        self.assertEqual(db.query("SELECT * FROM messages WHERE direction = 'out'"), [])
+        self.assertEqual(db.query('SELECT * FROM operation_logs'), [])
+        self.assertEqual(self.client.sent, [])
+        self.assertEqual(chats.get_conversation(conv['id'])['mode'], 'auto')
+
+    def test_false_like_values_are_all_rejected(self):
+        conv = self._seed_conversation()
+        for value in self.FALSE_LIKE:
+            with self.subTest(value=value):
+                self.assertEqual(
+                    chats.send_manual(conv['id'], '在的', confirm=value)['code'],
+                    'confirmation_required',
+                )
+        self.assertEqual(db.query("SELECT * FROM messages WHERE direction = 'out'"), [])
+
+    def test_true_like_values_pass(self):
+        for value in (True, 'true', ' TRUE ', 1):
+            with self.subTest(value=value):
+                self.setUp()
+                conv = self._seed_conversation()
+                install_client(self.client)
+                result = chats.send_manual(conv['id'], '在的', confirm=value)
+                # 成功形状里本来就有 `code: 'ok'`（不是失败信封，见服务层 docstring）
+                self.assertEqual(result.get('code'), 'ok', result)
+                self.assertTrue(result['sent'], result)
+
+    def test_send_from_args_passes_confirm_through(self):
+        """主管 AI 的工具路径（`chats_send`）同样过闸门。"""
+        conv = self._seed_conversation()
+        install_client(self.client)
+        self.assertEqual(chats.send_from_args(conv['id'], '在的')['code'], 'confirmation_required')
+        result = chats.send_from_args(conv['id'], '在的', confirm=True)
+        self.assertEqual(result.get('code'), 'ok', result)
+
+    def test_gate_runs_before_field_validation(self):
+        """三步顺序：**确认 → 字段校验 → 建客户端**。"""
+        conv = self._seed_conversation()
+        self.assertEqual(chats.send_manual(conv['id'], '   ')['code'], 'confirmation_required')
+        self.assertEqual(
+            chats.send_manual(conv['id'], '   ', confirm=True)['code'], 'invalid_fields')
+        self.assertEqual(
+            chats.send_manual(999, 'x', confirm=True)['code'], 'not_found')
 
 
 if __name__ == '__main__':

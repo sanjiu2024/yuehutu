@@ -612,8 +612,41 @@ def _push_message(client: Any, conversation: Any, text: str, cid: str = '') -> O
     return f'协议层发送失败，消息仅本地留存: {value}'
 
 
-def send_manual(conversation_id: Any, text: str) -> Any:
+#: 未确认时返回的业务码（`common.FAIL_STATUS` 里没有它 ⇒ 默认 400）。
+CONFIRM_CODE = 'confirmation_required'
+
+
+def _truthy(value: Any) -> bool:
+    """只有字面量 `True` / `'true'` / `1` 才算确认，别的（含 `'false'`、`'yes'`）都不算。
+
+    与 `services/items.py::_truthy`、`services/orders.py::_truthy`、
+    `mcp_server/client.py::_truthy` 同一口径 —— 三条路（HTTP / 主管 AI / MCP）
+    必须对「什么算点头」有完全一样的判断。
+    """
+    if value is True:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() == 'true'
+    return value == 1
+
+
+def _confirm_gate(action: str, confirm: Any) -> Optional[Dict[str, Any]]:
+    """写路径第一道闸门：**只判确认**，不碰库、不碰账号、不碰平台。"""
+    if _truthy(confirm):
+        return None
+    return common.fail(
+        f'{action} 是写操作，需要显式确认（confirm=true）后才会提交到闲鱼',
+        CONFIRM_CODE,
+    )
+
+
+def send_manual(conversation_id: Any, text: str, *, confirm: Any = None) -> Any:
     """人工接管：卖家自己回消息。
+
+    **这是真发消息**（买家会收到），所以第一道闸门是确认（`confirm=true`）：
+    确认 → 字段校验 → 建客户端，与其它写接口同口径。
+    ``direction='out'`` 那条入口（卖家已在别处发过、由调用方断言）在路由层显式传
+    ``confirm=True``，见 `backend/app/api/chats.py`。
 
     - 落 `messages`（direction=out, sender=human），未送达时 `sent_ok=0` + `meta.send_error`
     - 尽力调协议层真正发出去；协议层未就绪 / 取不到 cid -> **不发送**，
@@ -624,6 +657,9 @@ def send_manual(conversation_id: Any, text: str) -> Any:
     （`sent=False` 时多一个 `'warning'` 说明原因）。故意**不是**失败信封：
     消息确实已经留在本地库里，HTTP 层报 4xx/5xx 会让前端丢掉「已留库、未送达」这个信息。
     """
+    problem = _confirm_gate('给买家发消息', confirm)
+    if problem is not None:
+        return problem
     row = _find_conversation(conversation_id)
     if row is None:
         return common.fail(f'会话不存在: {conversation_id}', 'not_found')
@@ -1602,6 +1638,10 @@ def attach_im_session(session: Any, account_id: str) -> Any:
     return session
 
 
-def send_from_args(conversation_id: Any, content: str) -> Any:
-    """工具 `chats_send` 的 `content` → `send_manual(conversation_id, text)`。"""
-    return send_manual(conversation_id, content)
+def send_from_args(conversation_id: Any, content: str, *, confirm: Any = None) -> Any:
+    """工具 `chats_send` 的 `content` → `send_manual(conversation_id, text, confirm=...)`。
+
+    主管 AI 要给买家发消息也必须显式 `confirm=true`（工具规格里已进 `required`）。
+    """
+    return send_manual(conversation_id, content, confirm=confirm)
+

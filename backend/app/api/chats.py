@@ -182,10 +182,12 @@ def incoming(payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
         return _envelope(common.fail("direction 只能是 'in' 或 'out'", 'invalid_fields'))
 
     if direction == 'out':
-        # 卖家自己回消息：走既有的 send_manual（会落 out/human 并把会话切到 manual）
+        # 卖家自己回消息：走既有的 send_manual（会落 out/human 并把会话切到 manual）。
+        # 这条入口的语义是「调用方断言卖家已经/正要发这条」⇒ 由路由层显式点头；
+        # 真人从界面上发走的是 POST /{conversation_id}/send，那条必须带 confirm。
         if conversation_id in (None, '', 0):
             return _envelope(common.fail('direction=out 时必须提供 conversation_id', 'invalid_fields'))
-        return _envelope(chats.send_manual(conversation_id, content))
+        return _envelope(chats.send_manual(conversation_id, content, confirm=True))
 
     if conversation_id not in (None, '', 0):
         # 明确给了会话 id 就必须存在：不拿它当「找不到就新建」的提示符（typo 会静默造会话）
@@ -257,9 +259,14 @@ def get_messages(
 
 @router.post('/{conversation_id}/send')
 def send_manual(conversation_id: int, payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
-    """人工回复（接管）。body: {content} 或 {text}"""
+    """人工回复（接管）。body: {content|text, confirm}
+
+    买家会真的收到这条消息 ⇒ 服务层要 `confirm=true`；`confirm` 原样下传
+    （**判断权只在服务层**，路由层不许 `bool(...)`：`bool('false')` 是 `True`）。
+    """
     text = str(payload.get('content') or payload.get('text') or '')
-    return _envelope(chats.send_manual(conversation_id, text))
+    return _envelope(chats.send_manual(conversation_id, text, confirm=payload.get('confirm')))
+
 
 
 @router.put('/{conversation_id}/ai')
