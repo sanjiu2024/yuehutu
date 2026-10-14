@@ -62,8 +62,8 @@
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_cp45_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 59  PASS 59  FAIL 0  CASES 2412  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_im46_full&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 59  PASS 59  FAIL 0  CASES 2441  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -75,7 +75,7 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_xianyu_log
 ```text
 cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_mcp_server.py"
 -> Ran 65 tests ... OK        （含 RouteParamAlignmentTest：MCP 路由参数 ↔ 真实端点签名、
-                                WriteToolConfirmGateTest：64 条写路由不带 confirm 一律零 HTTP 请求）
+                                WriteToolConfirmGateTest：65 条写路由不带 confirm 一律零 HTTP 请求）
 ```
 
 ```text
@@ -83,20 +83,20 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 97 modules transformed.
-   frontend/dist/assets/index-BHJSXv64.js (624.98 kB, gzip 196.32 kB)
-   frontend/dist/assets/index-B011Gghx.css (152.64 kB, gzip 24.02 kB)
+   frontend/dist/assets/index-BJyAgqBC.js (626.70 kB, gzip 197.01 kB)
+   frontend/dist/assets/index-D56zukAj.css (153.08 kB, gzip 24.08 kB)
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon45&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=137 master=136 routes=138 targets=125 handlers=137
-   write_tools=64  route_checked=138
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon46&& C:\Python310\python.exe scripts\reconcile_tools.py"
+-> specs=139 master=138 routes=140 targets=127 handlers=139
+   write_tools=65  route_checked=140
    RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
    （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18493"
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18489"
 -> UI SMOKE ALL OK  (29/29 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
    截图目录：logs/ui_smoke
 ```
@@ -3029,10 +3029,46 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 >   两条只读接口也**没有真机响应样例**（本机账号对赔付族接口可能无权限）。只验到：路由注册、
 >   body 被端点接受、`confirm` 闸门拦得住假确认值、界面不点最终确认就零写请求。
 
+### 第四十六批：客服接待状态（在线 / 小休 / 离线）读 + 写（268~272）
+
+- **平台接口逐字**：读 `mtop.taobao.idlemessage.pc.login.query`（`data:{}`，当前状态在 `data.subStatus`）；
+  写 `mtop.taobao.idlemessage.pc.repect.status.edit`（`data:{status}`）—— **官方拼写就是 `repect`
+  （少一个 c），照抄不改**；两条版本都是 `1.0`。证据：`C:\Users\Administrator\.dsh-tmp\seller_scan\js_008_vendors.js`
+  @1871530（写包装 `yY`）、@1871789（读包装 `y$`）、@1872149（三枚举 `eC`）、@2022805（三档选项 `xg`）、
+  @2023731（`subStatus` → 枚举的映射）。
+- **账号级，不跟会话走**：两条路由都不带 `session_id` / `conversation_id`，也没有 cid 解析
+  （写路径走 `_write(..., require_session=False)`）。
+- **`status` 可能是 `null`**：平台没给 `subStatus` 或给了认不出的值时，给 `status: null` + `raw_status`
+  原样 + warning `reception_status_missing`，**绝不猜成 `OFFLINE`**（猜错会让店主以为自己在离线）。
+- **写回执三态**：官方只看 `data.success` ⇒ 明确 `false` → 502 `protocol_error` 带平台原话；
+  **没有 `success` 字段** → `saved: false` + `platform_success: null` + warning `reception_no_echo`
+  （官方 UI 同样把「没有 success」当失败，所以这里不谎报成功），此时不记审计、不发事件。
+- **界面口径**：会话头部一个三档下拉（在线 / 小休 / 离线）+ 状态小字；切到非「在线」时小字用 `--warn` 色；
+  切换前必须弹二次确认（写明「整个账号的接待状态（所有会话一起变）」与小休的后果）；平台没返回时
+  头部下面整行显示后端中文原话；唯一写出口 `runImWrite`（`confirm: true` 字面量）。
+- 审计动作 `im_reception_set`，成功播 `chats.changed`；确认口径与其它写一致（服务层 `_truthy` 归一，
+  协议层只认字面量 `True`）。
+- 测试：`backend/tests/test_im_actions_api.py` 90 → **119 条**（新增 `ImReceptionProtocolTest` 10 /
+  `ImReceptionReadTest` 9 / `ImReceptionWriteTest` 11，含「没有 `success` 字段」与「平台没给状态」两条）。
+- **诚实边界**：两条接口一次真机请求都没发过（本机账号 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 面广，
+  且接待状态写会真的改账号设置）⇒ 参数形状只有 bundle 证据 + 离线单测。
+
+> **第四十六批证据链**：协议层自检 `C:\Users\Administrator\.dsh-tmp\check_im46.py` →
+> `logs/check_im46.log` `CHECKS=72 PROBLEMS=0`（常量逐字、`_reception_status` 归一与拒绝、确认严格性、
+> `parse_reception` 三态、服务层读 / 写路径含「没有 success」分支、路由挂载）；
+> `python -m unittest backend.tests.test_im_actions_api` → `Ran 119 tests ... OK`；
+> 全量 `TOTAL 59  PASS 59  FAIL 0  CASES 2441  SKIPPED 2`；
+> 三方单测 `Ran 132 tests ... OK`；对账 `specs=139 master=138 routes=140 targets=127 handlers=139 /
+> write_tools=65 / route_checked=140 / RECON OK`；接口面 `/openapi.json` = **199 条路径 / 217 个操作**；
+> 界面取证 `C:\Users\Administrator\.dsh-tmp\im46_panel_shots.py` → `PROBLEMS []`
+> （chip「接待：在线」、下拉三档、确认框文案、`im_posts []`；平台没返回时 chip「接待：平台未返回」
+> + 整行提示「平台没有返回接待状态（原样值：BUSY），这里不当作「离线」。」），
+> 截图 `logs/im46_panel_shots/{01-chats-reception-dark,02-reception-confirm-dark,03-reception-unknown-dark,04-reception-unknown-light}.png`。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**59 个测试文件、2412 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**59 个测试文件、2441 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -3058,7 +3094,7 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   从 `共 95 条` 变成 `共 56 条`（= 两个在售账号的 45 + 11），页面里再也搜不到 `3998190171`，
   只读探针（真 Edge）`has_deleted_account: false`、`page_errors: []`。
 - 真实 HTTP：只读 17 条 + 写路径 11 条（早期探针）；打包版接口面现在
-  `/openapi.json` = **198 条路径 / 215 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
+  `/openapi.json` = **199 条路径 / 217 个操作**（第 26 批 142/155，第 29 批 +4 条草稿箱；
   第三十二批 +10 条店铺资料/子账号；第三十三批 +4 条推广资金明细；第三十四批 +1 条商品数据；第三十五批 +1 条经营卡片；
   第三十六批 +1 条客服明细表 `GET /api/datacenter/{account_id}/cs/{kind}`；
   第三十七批 +6 条话术 `/api/quick-reply/*`（7 个操作）；第三十八批 +6 条订单处理
@@ -3069,10 +3105,11 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
    `GET|POST /api/items/{account_id}/{item_id}/fans-price`（2 个操作）；
   第四十三批 +3 条会话接管 `/api/im/{account_id}/sessions/{transfer,leave,rejoin}`；
    第四十四批 +1 条发布前预检 `POST /api/items/{account_id}/publish/precheck`；
-   第四十五批 +3 条赔付 / 维权 `/api/trade/{account_id}/{orders/{order_id}/compensations/{service_code},compensations/{service_code}/reasons,orders/{order_id}/compensations/{service_code}/refuse}`），
+   第四十五批 +3 条赔付 / 维权 `/api/trade/{account_id}/{orders/{order_id}/compensations/{service_code},compensations/{service_code}/reasons,orders/{order_id}/compensations/{service_code}/refuse}`）；
+   第四十六批 +2 条接待状态 `/api/im/{account_id}/reception`（GET|POST，账号级，不跟会话走）），
   均结构化信封、无 500。
-- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 134 / `MASTER_TOOLS` 133 /
-  `TOOL_ROUTES` 134，其中 **63 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
+- **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 139 / `MASTER_TOOLS` 138 /
+  `TOOL_ROUTES` 140，其中 **65 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
   FastAPI 端点接受 → `RECON OK`。MCP 端到端冒烟（真起 `mcp_server/server.py` 子进程打打包版）
   `tools/list` 返回 63 个工具（第 6 批的旧数字；`TOOL_ROUTES` 现在 134 条，本次未重跑该冒烟）。
 - **真实浏览器逐页冒烟 29/29 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
