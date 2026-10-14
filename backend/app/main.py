@@ -111,6 +111,12 @@ ROUTE_MODULES: List[str] = [
     # `POST /{account_id}/blacklist`、`/{account_id}/blacklist/remove`、`/{account_id}/cards`
     # 方法与路径都不重叠（`/remove` 是 POST，不会被 GET 抢先）。
     'im_actions',
+    # IM 工具族（官方卖家工作台 IM 页的「会话搜索 / 商品抽屉（我的宝贝 / TA的宝贝）/ 清未读」）：
+    # 与 `im_actions` 共用 `/api/im` 前缀，但协议来源不同模块（`xianyu/im_tools.py`）。
+    # 路径 `GET /{account_id}/sessions/search`、`GET /{account_id}/item-search`、
+    # `POST /{account_id}/unread/clean` 与已有的 `/{account_id}/sessions/{transfer,leave,rejoin}`
+    # （全是 POST，三段）不冲突：`sessions/search` 是 GET，且没有 GET 的 `sessions/{x}` 路由。
+    'im_tools',
     # 纠纷协商（官方卖家工作台「投诉 → 联系纠纷小二」：只读 3 + 写 4）：
     # `/api/disputes/{account_id}/...`。**独立前缀**，故意不并进 `/api/trade`（那边是订单族）
     # 也不并进 `/api/im`（那边是买家 IM 会话；这一族的 `conversationId` 是**纠纷会话**）。
