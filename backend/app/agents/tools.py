@@ -2995,6 +2995,27 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_adjust_price_render',
+            'description': '改价前先读这一单的渲染数据（官方 '
+                           'mtop.taobao.idle.trade.merchant.adjust.price.render）：当前商品价、'
+                           '订单总价、运费、商品信息与平台提示，用来预填改价输入框。'
+                           '**只读**，不会改价；account_id 与 order_id 都必填。'
+                           '商品价初值按官方口径（订单总价 − 运费）算，响应里的 '
+                           'item_price_derived=true 表示它是算出来的而不是平台直接给的。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '订单号'},
+                },
+                'required': ['account_id', 'order_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 主管 AI（只给 MCP 侧） ----------------
     {
         'type': 'function',
@@ -3388,6 +3409,8 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'trade_postage_refund_reasons': ['trade', 'postage_refund_refuse_reasons'],
     # ---- 第四十九批：订单备注（1 条写）----
     'trade_add_memo': ['trade_write', 'add_memo'],
+    # ---- 第五十批：改价渲染（1 条只读）----
+    'trade_adjust_price_render': ['trade_write', 'adjust_price_render'],
 
     'disputes_conversation': ['disputes', 'conversation'],
     'disputes_messages': ['disputes', 'history'],
@@ -3647,6 +3670,7 @@ _HANDLERS = {
     'trade_postage_refund_detail': lambda a: _dispatch_service('trade_postage_refund_detail', a),
     'trade_postage_refund_reasons': lambda a: _dispatch_service('trade_postage_refund_reasons', a),
     'trade_add_memo': lambda a: _dispatch_service('trade_add_memo', a),
+    'trade_adjust_price_render': lambda a: _dispatch_service('trade_adjust_price_render', a),
 
     'disputes_conversation': lambda a: _dispatch_service('disputes_conversation', a),
     'disputes_messages': lambda a: _dispatch_service('disputes_messages', a),

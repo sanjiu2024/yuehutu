@@ -87,6 +87,9 @@ NEW_TOOLS: Dict[str, Dict[str, Any]] = {
     'trade_postage_refund_reasons': {
         'module': 'trade', 'fn': 'postage_refund_refuse_reasons', 'verb': 'get',
         'path': '/api/trade/{account_id}/orders/{order_id}/postage-refund/refuse-reasons'},
+    'trade_adjust_price_render': {
+        'module': 'trade_write', 'fn': 'adjust_price_render', 'verb': 'get',
+        'path': '/api/trade/{account_id}/orders/{order_id}/adjust-price/render'},
     'datacenter_overview': {'module': 'datacenter', 'fn': 'overview', 'verb': 'get',
                             'path': '/api/datacenter/{account_id}/overview'},
     'datacenter_fans': {'module': 'datacenter', 'fn': 'fans', 'verb': 'get',

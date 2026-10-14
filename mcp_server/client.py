@@ -310,6 +310,11 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'path_params': ['account_id', 'order_id'],
         'body': ['memo', 'memo_group', 'confirm'],
     },
+    'trade_adjust_price_render': {
+        'method': 'GET',
+        'path': '/api/trade/{account_id}/orders/{order_id}/adjust-price/render',
+        'path_params': ['account_id', 'order_id'],
+    },
     'im_reception_status': {
         'method': 'GET', 'path': '/api/im/{account_id}/reception',
         'path_params': ['account_id'],

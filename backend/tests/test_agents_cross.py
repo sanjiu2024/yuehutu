@@ -581,6 +581,7 @@ class MasterChatTest(unittest.TestCase):
             'trade_postage_refund_detail', 'trade_postage_refund_reasons',
             # ---- 第四十九批：订单备注（1 条写）----
             'trade_add_memo',
+            'trade_adjust_price_render',
             'master_chat',
         ]
         self.assertEqual(tools.TOOL_NAMES, expected)
