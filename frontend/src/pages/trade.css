@@ -676,3 +676,20 @@ tbody tr.tr-detail-row {
   height: 14px;
   flex: none;
 }
+
+/* 第四十八批：拒绝退款的原因下拉（候选来自平台只读接口，不再让用户手抄 id） */
+.tr-field .tr-write-select {
+  width: 100%;
+  max-width: 420px;
+  min-height: 32px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 0.88rem;
+}
+
+.tr-field .tr-write-select:disabled {
+  opacity: 0.6;
+}

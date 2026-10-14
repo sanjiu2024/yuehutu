@@ -644,12 +644,21 @@ interface WriteExtra {
   compReasons: string[]
 }
 
+/** 一条平台给的拒绝原因（`refund.refuse.render` → `refuseReasonList[]`）。 */
+interface RefundReason {
+  refuse_reason_id?: string | null
+  reason_id?: string | null
+  reason_name?: string | null
+  app_only?: boolean
+}
+
 interface WriteFormSpec {
   title: string
   action: string
   desc: ReactNode
   fields: WriteFieldSpec[]
-  extras?: 'rate' | 'proof-kind' | 'close-reason' | 'delay-days' | 'pay-type' | 'remind-all' | 'compensate'
+  extras?: 'rate' | 'proof-kind' | 'close-reason' | 'delay-days' | 'pay-type' | 'remind-all'
+    | 'compensate' | 'refund-reasons'
   path: (accountId: string, value: (name: string) => string) => string
   body: (value: (name: string) => string, extra: WriteExtra) => Record<string, unknown>
   /** 额外校验：返回非空文案表示不通过（必填项由 `required` 统一判）。 */
@@ -767,14 +776,15 @@ const WRITE_SPECS: Record<WriteKind, WriteFormSpec> = {
   'refund-refuse': {
     title: '拒绝退款',
     action: '拒绝退款',
-    desc: <>平台接口 <code>mtop.taobao.idle.merchant.refund.refuse</code>；拒绝原因 id 来自平台只读的 <code>refund.refuse.render</code>。</>,
+    desc: <>平台接口 <code>mtop.taobao.idle.merchant.refund.refuse</code>。拒绝原因不再靠手抄：点下面的「读取平台原因」，从平台给的候选里选（官方把只能在手机 App 操作的那条置灰，我们同样禁用）。</>,
     fields: [
       { name: 'refund_id', label: '退款单号', required: true, placeholder: '退款单号' },
       { name: 'order_id', label: '订单号', required: true, placeholder: '订单号' },
-      { name: 'refuse_reason_id', label: '拒绝原因 id', required: true, placeholder: 'refuseReasonList[].refuseReasonId' },
+      { name: 'refuse_reason_id', label: '拒绝原因 id', required: true, placeholder: '点下面的「读取平台原因」自动填，也可以自己粘贴' },
       { name: 'proof_desc', label: '拒绝说明', multiline: true, placeholder: '可选，会作为 refuseProof.desc 提交' },
       { name: 'proof_urls', label: '凭证图片 URL', multiline: true, placeholder: '一行一个 https 图片地址' },
     ],
+    extras: 'refund-reasons',
     path: (accountId, value) => idPath(accountId, value, 'refund_id', 'refunds/{id}/refuse'),
     body: (value) => ({
       order_id: value('order_id'),
@@ -1104,6 +1114,13 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
   const [compPicked, setCompPicked] = useState<string[]>([])
   const [compWarnings, setCompWarnings] = useState<string[]>([])
   const [manualRefuse, setManualRefuse] = useState(false)
+  // 第四十八批：拒绝退款的原因（只读 `refund.refuse.render`）
+  const [rrBusy, setRrBusy] = useState(false)
+  const [rrError, setRrError] = useState('')
+  const [rrFetched, setRrFetched] = useState(false)
+  const [rrReasons, setRrReasons] = useState<RefundReason[] | null>(null)
+  const [rrFacts, setRrFacts] = useState<{ fee: unknown; negotiation: unknown; proof: unknown } | null>(null)
+  const [rrWarnings, setRrWarnings] = useState<string[]>([])
 
   const spec = WRITE_SPECS[kind]
   const group = groupOf(kind)
@@ -1133,6 +1150,11 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
     setCompPicked([])
     setCompFetched(false)
     setCompError('')
+    // 拒绝原因同理：换动作就作废，免得把上一单的原因带过去。
+    setRrReasons(null)
+    setRrFacts(null)
+    setRrFetched(false)
+    setRrError('')
   }
 
   /**
@@ -1318,6 +1340,64 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
 
   function toggleCompReason(reason: string) {
     setCompPicked((prev) => (prev.includes(reason) ? prev.filter((item) => item !== reason) : prev.concat(reason)))
+  }
+
+  /**
+   * 向平台要一次「拒绝退款」的可选原因（`GET …/refunds/{id}/refuse-reasons`，**只读**）。
+   *
+   * 以前这个表单让用户手抄 `refuseReasonList[].refuseReasonId` —— 等于把平台内部 id
+   * 丢给用户。官方把「只能在手机 App 操作」的那条置灰，我们同样禁用并写明原因。
+   * 三种结果分开说：数组 = 可选；**空数组** = 平台明确说没有；`null` = 平台没返回那个键。
+   */
+  async function fetchRefundReasons() {
+    const refundId = value('refund_id').trim()
+    if (!refundId) {
+      setRrError('先填「退款单号」，原因是从平台按单号读的。')
+      return
+    }
+    setRrBusy(true)
+    setRrError('')
+    try {
+      const orderId = value('order_id').trim()
+      const query = orderId ? `?order_id=${encodeURIComponent(orderId)}` : ''
+      const data = await api.get<Record<string, unknown>>(
+        tradePath(accountId, `/refunds/${encodeURIComponent(refundId)}/refuse-reasons${query}`),
+      )
+      const raw = data?.refuse_reasons
+      const list = Array.isArray(raw)
+        ? raw
+            .map((item) => {
+              const row = (item ?? {}) as Record<string, unknown>
+              return {
+                refuse_reason_id: row.refuse_reason_id === null || row.refuse_reason_id === undefined
+                  ? null
+                  : String(row.refuse_reason_id),
+                reason_id: row.reason_id === null || row.reason_id === undefined ? null : String(row.reason_id),
+                reason_name: row.reason_name === null || row.reason_name === undefined ? null : String(row.reason_name),
+                app_only: row.app_only === true,
+              }
+            })
+        : null
+      setRrReasons(list)
+      setRrFacts({
+        fee: data?.refund_fee,
+        negotiation: data?.refuse_negotiation,
+        proof: data?.refuse_proof,
+      })
+      setRrWarnings(normalizeWarnings(data?.warnings).map((item) => item.message || item.code))
+      setRrFetched(true)
+      // 只有唯一一个可选原因时直接填上（用户少点一次；仍然要他自己点确认）。
+      const usable = (list ?? []).filter((reason) => !reason.app_only && reason.refuse_reason_id)
+      if (usable.length === 1 && !value('refuse_reason_id').trim()) {
+        setValue('refuse_reason_id', usable[0].refuse_reason_id || '')
+      }
+    } catch (err) {
+      setRrReasons(null)
+      setRrWarnings([])
+      setRrFetched(false)
+      setRrError(errorText(err) || '读取拒绝原因失败，后端没有给出原因')
+    }
+    setRrBusy(false)
   }
 
   // 进到有「快递公司」的表单就自动拉一次（一次性，不轮询）；失败后由用户点按钮重试，不自动重试。
@@ -1718,6 +1798,76 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
 
                 {compError ? <Notice kind="warn">{compError}</Notice> : null}
                 {compWarnings.map((warning) => (
+                  <Notice key={warning} kind="warn">{warning}</Notice>
+                ))}
+              </div>
+            )}
+            {spec.extras === 'refund-reasons' && (
+              <div className="tr-field tr-write-reasons">
+                <span>
+                  平台给的拒绝原因
+                  <code className="tr-write-name">refund.refuse.render</code>
+                </span>
+                <span className="tr-write-inline">
+                  <button className="btn ghost sm" onClick={fetchRefundReasons} disabled={rrBusy || busy}>
+                    <IconRefresh size={14} /> {rrBusy ? '正在读取…' : '读取平台原因'}
+                  </button>
+                  <span className="tr-sub">只读接口，不会改动任何东西。</span>
+                </span>
+
+                {rrFetched && rrReasons && rrReasons.length > 0 && (
+                  <select
+                    className="tr-write-select"
+                    aria-label="平台给的拒绝原因"
+                    value={value('refuse_reason_id')}
+                    onChange={(event) => setValue('refuse_reason_id', event.target.value)}
+                  >
+                    <option value="">请选择原因</option>
+                    {rrReasons.map((reason) => (
+                      <option
+                        key={String(reason.refuse_reason_id ?? reason.reason_id ?? reason.reason_name)}
+                        value={String(reason.refuse_reason_id ?? '')}
+                        disabled={reason.app_only === true || !reason.refuse_reason_id}
+                      >
+                        {String(reason.reason_name ?? '（平台没给原因名）')}
+                        {reason.app_only ? '（只能在手机闲鱼 App 操作）' : ''}
+                        {!reason.refuse_reason_id ? '（平台没给可提交的 id）' : ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {rrFetched && rrReasons && rrReasons.length === 0 && (
+                  <Notice kind="warn">
+                    平台明确回了一个<strong>空数组</strong>：这笔退款现在没有可选的拒绝原因。
+                    别在这儿硬拒 —— 先去官方卖家工作台看一眼这笔退款。
+                  </Notice>
+                )}
+                {rrFetched && rrReasons === null && (
+                  <Notice kind="warn">
+                    平台<strong>没有返回原因列表键</strong>（这<strong>不是</strong>「没有原因」）。
+                    我们不替你编原因：请去官方卖家工作台确认当前可选值，或者先别拒绝。
+                  </Notice>
+                )}
+                {rrFacts && (
+                  <ul className="tr-write-facts">
+                    <li>
+                      退款金额（元）：
+                      {rrFacts.fee === null || rrFacts.fee === undefined || rrFacts.fee === ''
+                        ? '（平台没给，不补 0）'
+                        : String(rrFacts.fee)}
+                    </li>
+                    <li>
+                      官方建议先与买家协商：
+                      {rrFacts.negotiation === true ? '是' : rrFacts.negotiation === false ? '否' : '（平台没给）'}
+                    </li>
+                    <li>
+                      是否必须上传凭证：
+                      {rrFacts.proof === true ? '是' : rrFacts.proof === false ? '否' : '（平台没给）'}
+                    </li>
+                  </ul>
+                )}
+                {rrError ? <Notice kind="warn">{rrError}</Notice> : null}
+                {rrWarnings.map((warning) => (
                   <Notice key={warning} kind="warn">{warning}</Notice>
                 ))}
               </div>
