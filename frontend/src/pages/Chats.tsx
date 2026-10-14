@@ -17,7 +17,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { api, errorText, isNotReady } from '../api'
-import { AsyncBox, Badge, ConfirmDialog, Field, Modal, Switch, useToast } from '../components'
+import { AsyncBox, Badge, ConfirmDialog, Field, Modal, Notice, Switch, useToast } from '../components'
 import {
   IconBox,
   IconChat,
@@ -26,6 +26,7 @@ import {
   IconImage,
   IconInfo,
   IconRefresh,
+  IconSearch,
   IconSend,
   IconShield,
   IconSparkle,
@@ -378,6 +379,75 @@ function ModeIcon({ mode }: { mode: string }) {
 
 /* ---------------- 页面 ---------------- */
 
+/* ---- 第 47 批：平台会话搜索（只读）/ 清未读（账号级写）/ 商品抽屉（只读）---- */
+
+/** 平台会话搜索结果里的一行；认不出的字段是 null，界面显示「-」，不补 0。 */
+interface RemoteSession {
+  session_id?: string | null
+  title?: string | null
+  session_type?: number | null
+  unread?: number | null
+  last_message?: string | null
+  icon?: string | null
+}
+
+interface SessionSearchResult {
+  account_id?: string
+  keyword?: string
+  page?: number
+  size?: number
+  sessions?: RemoteSession[] | null
+  total?: number | null
+  cur_page?: number | null
+  api?: string
+  warnings?: Array<{ code?: string; message?: string } | string> | null
+}
+
+interface ClearUnreadResult {
+  account_id?: string
+  action?: string
+  kind?: string
+  saved?: boolean
+  platform_success?: boolean | null
+  cleared?: number | null
+  warnings?: Array<{ code?: string; message?: string } | string> | null
+}
+
+/** 商品抽屉里的一行（平台没给的字段一律 null）。 */
+interface ImToolItem {
+  item_id?: string | null
+  title?: string | null
+  pic_url?: string | null
+  price?: string | null
+  status?: string | null
+}
+
+interface ItemSearchResult {
+  account_id?: string
+  session_id?: string
+  role?: string
+  keyword?: string
+  page?: number
+  size?: number
+  items?: ImToolItem[] | null
+  has_more?: boolean | null
+  next_page?: number | null
+  api?: string
+  warnings?: Array<{ code?: string; message?: string } | string> | null
+}
+
+/** 后端的 warning 是 `{code, message}` 或字符串；统一取成能显示的一行。 */
+function warningLines(list?: Array<{ message?: string } | string> | null): string[] {
+  return (list || [])
+    .map((item) => (typeof item === 'string' ? item : item?.message || ''))
+    .filter((text) => Boolean(text))
+}
+
+const DRAWER_ROLES = [
+  { value: 'own', label: '我的宝贝' },
+  { value: 'other', label: 'TA的宝贝' },
+] as const
+
 export function ChatsPage() {
   const toast = useToast()
   const accounts = useAsync<Account[]>(() => api.get<Account[]>('/api/accounts'), [], true, ['accounts.changed'])
@@ -390,6 +460,13 @@ export function ChatsPage() {
   const [modeFilter, setModeFilter] = useState('')
   const [activeId, setActiveId] = useState<number | null>(null)
   const [syncing, setSyncing] = useState(false)
+  /* 第 47 批：会话搜索（本地过滤 + 平台搜索）与清未读 */
+  const [search, setSearch] = useState('')
+  const [remote, setRemote] = useState<SessionSearchResult | null>(null)
+  const [searching, setSearching] = useState(false)
+  const [searchError, setSearchError] = useState('')
+  const [clearOpen, setClearOpen] = useState(false)
+  const [clearing, setClearing] = useState(false)
 
   const conversations = useAsync<ConversationListResult>(
     () =>
@@ -514,6 +591,66 @@ export function ChatsPage() {
     }
   }
 
+  /** 本地过滤：买家名 / 商品短标题 / 最后一条消息，三个里命中一个就留下。 */
+  const keyword = search.trim().toLowerCase()
+  const visible = useMemo(() => {
+    if (!keyword) return list
+    return list.filter((conversation) => {
+      const haystack = [
+        peerName(conversation),
+        itemTitleOf(conversation.item_id),
+        lastMessageText(conversation),
+      ]
+        .join(' ')
+        .toLowerCase()
+      return haystack.includes(keyword)
+    })
+  }, [list, keyword, itemTitleOf])
+
+  /** 在平台上搜会话（只读）。结果只用于查看：平台结果没有本地会话行 id，点不开右侧会话。 */
+  const runPlatformSearch = async () => {
+    setSearching(true)
+    setSearchError('')
+    try {
+      const result = await api.get<SessionSearchResult>(`/api/im/${accountId}/sessions/search`, {
+        keyword: search.trim(),
+        page: 1,
+        size: 20,
+      })
+      setRemote(result)
+    } catch (err) {
+      setRemote(null)
+      setSearchError(errorText(err))
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  /** 清未读（写）：平台接口是账号级的，二次确认后才发，请求体带 confirm: true 字面量。 */
+  const clearUnread = async () => {
+    setClearing(true)
+    try {
+      const result = await api.post<ClearUnreadResult>(`/api/im/${accountId}/unread/clean`, {
+        kind: 'session',
+        confirm: true,
+      })
+      const lines = warningLines(result?.warnings)
+      const suffix = lines.length > 0 ? `（${lines[0]}）` : ''
+      const cleared = result?.cleared
+      if (cleared === null || cleared === undefined) {
+        toast.success(`平台已接受清未读请求${suffix}`)
+      } else {
+        toast.success(`已清 ${cleared} 个会话的未读${suffix}`)
+      }
+      setClearOpen(false)
+      conversations.reload()
+    } catch (err) {
+      toast.error(errorText(err))
+    } finally {
+      setClearing(false)
+    }
+  }
+
   return (
     <div className="ch-page">
       <div className="ch-toolbar">
@@ -539,8 +676,33 @@ export function ChatsPage() {
         <button className="btn" onClick={syncHistory} disabled={syncing}>
           <IconChat size={15} /> {syncing ? '同步中…' : '同步历史会话'}
         </button>
+        <input
+          className="ch-search"
+          type="search"
+          value={search}
+          placeholder="过滤会话（买家 / 商品 / 最后一条消息）"
+          aria-label="本地过滤会话"
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <button
+          className="btn"
+          onClick={() => void runPlatformSearch()}
+          disabled={searching || !accountId}
+          title={accountId ? '在闲鱼平台上搜这个账号的会话（只读，不改任何数据）' : '先在左边选一个账号'}
+        >
+          <IconSearch size={15} /> {searching ? '搜索中…' : '在平台搜'}
+        </button>
+        <button
+          className="btn"
+          onClick={() => setClearOpen(true)}
+          disabled={!accountId || clearing}
+          title={accountId ? '清空这个账号所有会话的未读（平台接口是账号级的，没有单会话参数）' : '先在左边选一个账号'}
+        >
+          <IconCheck size={15} /> 清未读
+        </button>
         <span className="ch-toolbar-count">
-          共 <b>{list.length}</b> 个会话
+          共 <b>{visible.length}</b> 个会话
+          {keyword && visible.length !== list.length && <>（本地共 {list.length} 个）</>}
           {unreadTotal > 0 && <> · 未读 <b>{unreadTotal}</b></>}
         </span>
       </div>
@@ -553,6 +715,59 @@ export function ChatsPage() {
             <span className="ch-list-count">{list.length} 个</span>
           </div>
           <div className="ch-list-body">
+            {remote && (
+              <div className="ch-remote">
+                <div className="ch-remote-head">
+                  <IconSearch size={14} />
+                  <span className="ch-remote-title">
+                    平台搜索{remote.keyword ? `：「${remote.keyword}」` : '（空关键词）'}
+                  </span>
+                  <span className="ch-remote-count">
+                    {remote.total === null || remote.total === undefined
+                      ? '条数：平台未返回'
+                      : `${remote.total} 条`}
+                  </span>
+                  <button className="btn ghost sm" onClick={() => setRemote(null)}>
+                    清除
+                  </button>
+                </div>
+                <p className="ch-remote-note">
+                  平台搜索结果只用于查看：它没有本地会话行 id，点不开右侧会话；要打开请在下面本地列表里点。
+                </p>
+                {searchError && (
+                  <Notice kind="error" onClose={() => setSearchError('')}>
+                    {searchError}
+                  </Notice>
+                )}
+                {warningLines(remote.warnings).map((text) => (
+                  <Notice key={text} kind="warn">
+                    {text}
+                  </Notice>
+                ))}
+                {remote.sessions === null || remote.sessions === undefined ? (
+                  <p className="ch-remote-note">平台没有返回会话列表字段（可能改了键名）。</p>
+                ) : remote.sessions.length === 0 ? (
+                  <p className="ch-remote-note">平台上没有匹配的会话。</p>
+                ) : (
+                  <ul className="ch-remote-list">
+                    {remote.sessions.map((session, index) => (
+                      <li key={session.session_id || `remote-${index}`} className="ch-remote-row">
+                        <span className="ch-remote-row-title">{session.title || '（平台没给标题）'}</span>
+                        <span className="ch-remote-row-meta">
+                          {session.session_id ? `会话 ${truncate(session.session_id, 14)}` : '会话 id 未返回'}
+                          {session.unread === null || session.unread === undefined
+                            ? ' · 未读未返回'
+                            : ` · 未读 ${session.unread}`}
+                        </span>
+                        {session.last_message && (
+                          <span className="ch-remote-row-last">{session.last_message}</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
             <AsyncBox
               loading={conversations.loading && !conversations.data}
               error={conversations.error}
@@ -561,8 +776,12 @@ export function ChatsPage() {
             >
               {list.length === 0 ? (
                 <ChatsEmpty hasAccount={Boolean(accountId)} syncing={syncing} onSync={syncHistory} />
+              ) : visible.length === 0 ? (
+                <p className="ch-filter-empty">
+                  本地列表里没有匹配「{search.trim()}」的会话（本地共 {list.length} 个）。可以点上面「在平台搜」去平台上找。
+                </p>
               ) : (
-                list.map((conversation) => {
+                visible.map((conversation) => {
                   const mode = modeLabel(conversation.mode)
                   const name = peerName(conversation)
                   const unread = Number(conversation.unread) || 0
@@ -624,6 +843,22 @@ export function ChatsPage() {
           )}
         </div>
       </div>
+
+      {clearOpen && (
+        <ConfirmDialog
+          title="清空这个账号所有会话的未读？"
+          message={
+            '平台的「清未读」接口是账号级的：它会把整个账号所有会话的未读一次清掉（接口没有单会话参数）。' +
+            '本地列表里的未读计数也会一起归零，并通知界面刷新。' +
+            (accountId ? `账号：${accountNames.get(accountId) || accountId}` : '')
+          }
+          confirmText="清未读"
+          danger
+          busy={clearing}
+          onConfirm={() => void clearUnread()}
+          onCancel={() => setClearOpen(false)}
+        />
+      )}
     </div>
   )
 }
@@ -763,6 +998,10 @@ function ChatWindow({
   )
   /** 待确认的接待状态切换（`null` = 没在确认）。 */
   const [receptionTarget, setReceptionTarget] = useState<ReceptionOption | null>(null)
+  /* 第 47 批：商品抽屉（我的宝贝 / TA的宝贝，只读） */
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [drawerRole, setDrawerRole] = useState<'own' | 'other'>('own')
+  const [drawerPage, setDrawerPage] = useState(1)
   const receptionStatus = reception.data?.status ?? null
   const receptionOptions = reception.data?.options ?? []
   const receptionText = (status: string | null) => {
@@ -901,6 +1140,41 @@ function ChatWindow({
   }
 
   const imBase = `/api/im/${conversation.account_id}`
+
+  /** 商品抽屉数据（只读）。`conversation_id` 交给后端换平台 cid；换不到会如实报 missing_cid。 */
+  const drawer = useAsync<ItemSearchResult>(
+    () =>
+      api.get<ItemSearchResult>(`${imBase}/item-search`, {
+        conversation_id: conversation.id,
+        role: drawerRole,
+        page: drawerPage,
+        size: 20,
+      }),
+    [conversation.id, conversation.account_id, drawerRole, drawerPage],
+    false,
+    ['items.updated'],
+  )
+
+  /** 打开商品抽屉：每次打开都从「我的宝贝」第一页重新查（懒加载，不常驻、不轮询）。 */
+  const openDrawer = () => {
+    setDrawerOpen(true)
+    setDrawerRole('own')
+    setDrawerPage(1)
+    drawer.reload()
+  }
+
+  const switchDrawerRole = (role: 'own' | 'other') => {
+    if (role === drawerRole) return
+    setDrawerRole(role)
+    setDrawerPage(1)
+    drawer.reload()
+  }
+
+  const drawerPageTo = (page: number) => {
+    if (page < 1) return
+    setDrawerPage(page)
+    drawer.reload()
+  }
 
   const toggleBlacklist = () => {
     if (blackState === true) {
@@ -1185,6 +1459,14 @@ function ChatWindow({
             title="把这个商品以卡片形式发给买家（会真的发一条消息）"
           >
             <IconTag size={14} /> 发商品卡片
+          </button>
+          <button
+            className="btn sm ghost"
+            onClick={openDrawer}
+            disabled={Boolean(imBusy)}
+            title="看看这个会话关联的「我的宝贝 / TA的宝贝」（只读，不改任何数据）"
+          >
+            <IconBox size={14} /> 商品
           </button>
           <button
             className="btn sm ghost"
@@ -1503,6 +1785,97 @@ function ChatWindow({
             />
           </Field>
           <p className="ch-im-hint">发出去就是给对方的一条真实消息，发完不能撤回。</p>
+        </Modal>
+      )}
+
+      {drawerOpen && (
+        <Modal
+          title={`商品 · ${name}`}
+          onClose={() => setDrawerOpen(false)}
+          wide
+          footer={
+            <button className="btn ghost" onClick={() => setDrawerOpen(false)}>
+              关闭
+            </button>
+          }
+        >
+          <div className="ch-drawer-tabs" role="tablist" aria-label="商品范围">
+            {DRAWER_ROLES.map((role) => (
+              <button
+                key={role.value}
+                type="button"
+                role="tab"
+                aria-selected={drawerRole === role.value}
+                className={`ch-drawer-tab${drawerRole === role.value ? ' active' : ''}`}
+                onClick={() => switchDrawerRole(role.value)}
+              >
+                {role.label}
+              </button>
+            ))}
+          </div>
+          <AsyncBox
+            loading={drawer.loading && !drawer.data}
+            error={drawer.error}
+            notReady={drawer.notReady}
+            onRetry={drawer.reload}
+          >
+            {warningLines(drawer.data?.warnings).map((text) => (
+              <Notice key={text} kind="warn">
+                {text}
+              </Notice>
+            ))}
+            {drawer.data?.items === null || drawer.data?.items === undefined ? (
+              <p className="ch-drawer-note">
+                {drawer.loading ? '正在查…' : '平台没有返回商品列表字段（可能改了键名）。'}
+              </p>
+            ) : drawer.data.items.length === 0 ? (
+              <p className="ch-drawer-note">
+                {drawerRole === 'own' ? '这个会话里没有你的商品。' : '这个会话里没有对方的商品。'}
+              </p>
+            ) : (
+              <ul className="ch-drawer-list">
+                {drawer.data.items.map((item, index) => (
+                  <li key={item.item_id || `item-${index}`} className="ch-drawer-row">
+                    {item.pic_url ? (
+                      <img className="ch-drawer-pic" src={item.pic_url} alt="" loading="lazy" />
+                    ) : (
+                      <span className="ch-drawer-pic ch-drawer-pic-empty" aria-hidden>
+                        <IconImage size={16} />
+                      </span>
+                    )}
+                    <span className="ch-drawer-body">
+                      <span className="ch-drawer-title">{item.title || '（平台没给标题）'}</span>
+                      <span className="ch-drawer-meta">
+                        {item.item_id ? `商品 ${truncate(item.item_id, 12)}` : '商品 id 未返回'}
+                        {item.price ? ` · ¥${item.price}` : ' · 价格未返回'}
+                        {item.status ? ` · ${item.status}` : ''}
+                      </span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="ch-drawer-foot">
+              <button
+                className="btn ghost sm"
+                disabled={drawerPage <= 1 || drawer.loading}
+                onClick={() => drawerPageTo(drawerPage - 1)}
+              >
+                上一页
+              </button>
+              <span className="ch-drawer-page">第 {drawerPage} 页</span>
+              <button
+                className="btn ghost sm"
+                disabled={drawer.loading || drawer.data?.has_more !== true}
+                onClick={() => drawerPageTo(drawerPage + 1)}
+              >
+                下一页
+              </button>
+              {drawer.data && (drawer.data.has_more === null || drawer.data.has_more === undefined) && (
+                <span className="ch-drawer-page">平台没给「还有下一页」标志</span>
+              )}
+            </div>
+          </AsyncBox>
         </Modal>
       )}
 
