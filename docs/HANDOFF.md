@@ -62,8 +62,8 @@
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_ap50_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 60  PASS 60  FAIL 0  CASES 2546  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_fans51_full&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 60  PASS 60  FAIL 0  CASES 2588  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -83,8 +83,8 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 97 modules transformed.
-   frontend/dist/assets/index-D1tij8ad.js (638.89 kB, gzip 200.91 kB)
-   frontend/dist/assets/index-C5I0n3Oo.css (156.01 kB, gzip 24.46 kB)
+   frontend/dist/assets/index-DrYgGT4R.js (640.87 kB, gzip 201.39 kB)
+   frontend/dist/assets/index-B1Z6zu0w.css (156.99 kB, gzip 24.60 kB)
 ```
 
 ```text
@@ -96,7 +96,7 @@ cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP
 ```
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18495"
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\ui_smoke.py --port 18497"
 -> UI SMOKE ALL OK  (29/29 页通过)   浏览器：Edge（与桌面版 WebView2 同引擎）
    截图目录：logs/ui_smoke
 ```
@@ -3246,10 +3246,49 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `scripts/contrast_audit.py --threshold 4.0` → `[dark] 0/29`、`[light] 0/29`、`NON_GET=[]`；
 > `scripts/a11y_audit.py` → 三类问题全 0、`焦点不可见的页面：[]`、`NON_GET=[]`。
 
+### 第五十一批：粉丝画像分组（只读，补全粉丝数据页原先永远空着的那一栏）（290~292）
+
+- **修的是一个真缺陷**：我们原先只在响应里找**一个**叫 `insights` 的列表
+  （`insights/insightList/fanInsights/list`），而官方「粉丝数据」页渲染的是
+  `fans.insights.query` 响应里的**四组具名列表** ⇒ 真机上「粉丝画像」那一栏**永远是空的**。
+- **取证（零平台请求，本地 bundle `logs/seller_discover/datacenter_main.js` 4,168,486 字符）**：
+  偏移 2452720 的 `rwe()` 逐字给出四组键 `buyerGenderList` / `fansTypeList` / `buyerProvinceList` /
+  `buyerEightTpList`；偏移 2490798 的性别映射（`M` 男、`F` 女，男在前）；
+  偏移 2491628 的八大人群顺序表（`未来之星 0 … 模糊人群 8`）。
+  `profileVal` 是**标签**不是数字；比例有 `usrRatio`（0~1）与 `usrRatioFormat`（`'12.34%'`）两种。
+- **落地**：`backend/app/xianyu/datacenter.py` 新增 `FANS_INSIGHT_GROUPS` / `FANS_GENDER_LABELS` /
+  `FANS_GENDER_ORDER` / `FANS_TYPE_ORDER` / `FANS_EIGHT_ORDER` + `parse_fans_insights()`
+  （认不出一组就返回 `None`）；`fans()` 多回一个 `insights_breakdown`；
+  `backend/app/services/datacenter.py` 加 `WARN_FANS_INSIGHTS_MISSING`（**只有一条 error 都没有时才附**，
+  免得无权限账号被叠一句「画像没解析出来」）。
+- **口径**：官方会把缺失的粉丝类型档位补成 `0.00%`，**我们不补**（仓库硬口径：平台没给就是 `null`）；
+  每组按占比从高到低排，没给比例的项排最后且 `ratio=null`（界面 `-`）。
+- 前端 `frontend/src/pages/Fans.tsx` + `datacenter.css`：粉丝画像卡改成四组小卡（名字 + 占比条 + 占比文字，
+  `ratio_text` 优先）；旧字段 `insights` 挪进 `<details>`（标题写明「没有名字的画像列表」），不删。
+- 测试：`backend/tests/test_datacenter_api.py` 223 → **237 条**（新增 `FansBreakdownTest` 14 条 +
+  夹具 `FANS_INSIGHTS_PAYLOAD` / `FANS_NO_BREAKDOWN` + `fans_payload()` 辅助函数——**真解析函数参与**，
+  避免假协议层自己编一份 breakdown 把解析口径测没了）。
+- 全量回归 **`TOTAL 60  PASS 60  FAIL 0  CASES 2588  SKIPPED 2`**（第 50 批 2546 → +42）；
+  `npx tsc --noEmit` `TSC_EXIT=0`；`npx vite build` `BUILD_EXIT=0`（97 modules，
+  `index-DrYgGT4R.js` 640.87 kB / `index-B1Z6zu0w.css` 156.99 kB）；
+  逐页冒烟 `UI SMOKE ALL OK (29/29 页通过)`（端口 18497）。
+- **接口面没变**：`/openapi.json` 仍 208 条路径 / 226 个操作，`TOOL_ROUTES` 仍 149、
+  `TOOL_SPECS` 148 / `MASTER_TOOLS` 147（只给已有响应加了一个字段，不新增路由与工具）。
+
+> **第五十一批证据链**：写覆盖审计 `logs/cov51.txt`；bundle 取证
+> `C:\Users\Administrator\.dsh-tmp\pick51.py` / `pick51b.py`（输出 `logs/pick51{,b}.txt`）；
+> 自检 `check_fans51.py` → `CHECKS=26 PROBLEMS=0`；正式测试
+> `cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_datacenter_api.py"` → `Ran 237 tests ... OK`；
+> 全量回归 `logs/fans51_run_all.log`（`XIANYU_APP_DIR=%TEMP%\xywb_fans51_full`）；
+> 前端 `logs/fans51_tsc.log` / `logs/fans51_build.log`；逐页冒烟 `logs/fans51_ui_smoke.log`（端口 18497）。
+> **诚实边界**：字段名与官方顺序表都是从 bundle 逐字取的，但**没有有权限账号的真机样本**
+> —— `usrRatio` / `usrRatioFormat` 究竟哪个出现、`profileVal` 的完整取值表仍待真机确认；
+> 本机账号（`2217970177348`）粉丝接口无权限，所以真机上这一栏仍是「权限 warning + 空」。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**60 个测试文件、2546 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**60 个测试文件、2588 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -3292,7 +3331,9 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
    第四十八批 +4 条退款处理只读（`refunds/{refund_id}/{refuse-reasons,detail}`、
    `orders/{order_id}/postage-refund/{detail,refuse-reasons}`）；
    第四十九批 +1 条订单备注 `POST /api/trade/{account_id}/orders/{order_id}/memo`；
-   第五十批 +1 条只读改价渲染 `GET /api/trade/{account_id}/orders/{order_id}/adjust-price/render`），
+   第五十批 +1 条只读改价渲染 `GET /api/trade/{account_id}/orders/{order_id}/adjust-price/render`；
+   第五十一批 **0 条新路由**（只给 `GET /api/datacenter/{account_id}/fans` 的响应加了
+   `insights_breakdown` 字段，路径与操作数都没变）），
   均结构化信封、无 500。
 - **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 148 / `MASTER_TOOLS` 147 /
   `TOOL_ROUTES` 149，其中 **67 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实

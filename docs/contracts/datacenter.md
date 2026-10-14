@@ -73,7 +73,30 @@
 `warnings: []`（逐接口失败的人话解释）、`source: "platform"`、
 `fetched_at`（`YYYY-MM-DD HH:MM:SS`，UTC）。
 
-`kind == 'fans'` 时另有 `insights`（画像列表，认不出为 `null`）。
+`kind == 'fans'` 时另有 `insights`（旧字段：没有名字的画像列表，认不出为 `null`）与
+`insights_breakdown`（**第 51 批**：性别 / 粉丝类型 / 省份 / 八大人群四组具名列表）：
+
+```jsonc
+{
+  "groups": {
+    "gender":     {"key": "gender",     "title": "性别分布", "platform_key": "buyerGenderList",
+                   "items": [{"name": "男", "ratio": 0.38, "ratio_text": null, "raw_label": "M", "raw": {}}]},
+    "fans_type":  {"key": "fans_type",  "title": "粉丝类型", "platform_key": "fansTypeList",   "items": []},
+    "province":   {"key": "province",   "title": "省份分布", "platform_key": "buyerProvinceList", "items": []},
+    "eight_type": {"key": "eight_type", "title": "八大人群", "platform_key": "buyerEightTpList",  "items": []}
+  },
+  "raw_keys": ["buyerGenderList", "fansTypeList", "buyerProvinceList", "buyerEightTpList"]
+}
+```
+
+- **一组都认不出就是 `null`**（不是 `{}`、不是空数组），并附中文 warning
+  （权限不足时**只留权限 warning**，不叠这一句）。
+- `name` 是界面用的中文名（性别 `M/F` → 男/女且男在前；粉丝类型去掉 `A_` 前缀并按 A→G 排；
+  八大人群按官方顺序表，表外的排最后）；`raw_label` 是平台原值。
+- `ratio` 是 0~1 浮点或 `null`（**平台没给就是 null，不补 0**）；`ratio_text` 是平台原话（`'12.34%'`）。
+  每组按占比从高到低排，没给比例的项排最后。
+- 官方会把缺失的粉丝类型档位补成 `0.00%`，**我们不补**（仓库硬口径：不造 0）。
+
 `kind == 'commodity'` 时另有 `items` / `columns` / `total` / `page` / `size` / `pages`（见 §1.3）。
 响应里出现「像指标但一个别名都没命中」的字段名时，另有 `unrecognized_keys`（最多 8 个）——
 这是**字段名猜错时的自证**，不是错误。
@@ -326,6 +349,9 @@ cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe 
    复验法（对照法）：拿有权限账号打一次 `month` 形态，错误从 `FAIL_SYS_BIZPARAM_MISSED`
    变成 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 就说明**参数被接受了**、只是没权限（参考 §4 里
    `cs.overview.summary` 补 `dateType` 前后的对照）。
-3. `fans.insights.query` 的返回结构（画像列表埋在哪个键下）。
+3. ~~`fans.insights.query` 的返回结构（画像列表埋在哪个键下）~~ —— **第 51 批已解决**：是四组具名列表
+   （`buyerGenderList` / `fansTypeList` / `buyerProvinceList` / `buyerEightTpList`，见 §1.2），
+   字段名与官方顺序表都从 bundle 逐字取证；但**没有有权限账号的真机样本**，所以
+   `usrRatio` / `usrRatioFormat` 究竟哪个出现、`profileVal` 的完整取值表仍待真机确认。
 4. 「字段名猜对了但平台回了**字符串数字**」时 `find_number` 判 `None` 且**不进**
    `unrecognized_keys`——用户看到的和无权限一模一样，自证机制不会提示。

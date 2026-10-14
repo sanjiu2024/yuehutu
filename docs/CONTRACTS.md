@@ -1292,6 +1292,31 @@ POST /api/items/{account_id}/publish/precheck
 【界面口径】订单页写面板「订单处理」→「订单改价」多了「读取平台当前价」按钮（唯一写出口仍是 `postWrite`）：
   读回来的两个数**只预填**两个输入框，平台没给就不填；并提示官方不接受「没有修改」的提交（原话「价格没有修改～」）。
 
+第五十一批（粉丝画像分组：**只读**，补全粉丝数据页原先永远空着的那一栏）
+【背景（真缺陷）】我们原先只在响应里找**一个**叫 `insights` 的列表（`insights/insightList/fanInsights/list`），
+  而官方「粉丝数据」页渲染的是 `fans.insights.query` 响应里的**四组具名列表** ⇒ 真机上「粉丝画像」永远是空的。
+【平台接口】`mtop.taobao.idle.seller.pc.datacompass.fans.insights.query` v1.0（本地 bundle 偏移 2452720 的 `rwe()`）
+  官方渲染顺序：`buyerGenderList`（性别）/ `fansTypeList`（粉丝类型）/ `buyerProvinceList`（省份）/
+  `buyerEightTpList`（八大人群）。`profileVal` 是**标签**不是数字；比例有 `usrRatio`（0~1 浮点）与
+  `usrRatioFormat`（`'12.34%'` 字符串）两种，谁在就用谁。
+【口径（全是官方原话/原表）】
+  - 性别：`M` → 男、`F` → 女，**男在前**（bundle 偏移 2490798）；
+  - 粉丝类型：`'A_流失粉'` … `'G_忠诚粉'`，界面**去掉 `X_` 前缀**并按 A→G 排；官方会把缺的档位补成 `0.00%`，
+    **我们不补**（仓库硬口径：平台没给就是 `null`，不造 0）；
+  - 八大人群：官方顺序表（bundle 偏移 2491628）`未来之星 0 / 学生群体 1 / 小康青年 2 / 小资青年 3 /
+    家有儿女 4 / 勤俭持家 5 / 资深中产 6 / 退休长辈 7 / 模糊人群 8`；表外的档位排最后；
+  - 每组**按占比从高到低**排，没给比例的项排最后且 `ratio=null`（界面显示 `-`）。
+【HTTP 面】`GET /api/datacenter/{account_id}/fans` 的 `data` 新增
+  `insights_breakdown`：`{groups:{<key>:{key,title,platform_key,items:[{name,ratio,ratio_text,raw_label,raw}]}},
+  raw_keys:[...]}`；**认不出任何一组就是 `null`**（不是 `{}`、不是空数组），此时附中文 warning
+  `平台没有返回粉丝画像分组（性别 / 粉丝类型 / 省份 / 八大人群），这一块暂时显示不出来。`；
+  账号没有「数据」权限时**只保留权限 warning**，不再叠一句「画像没解析出来」。
+  旧字段 `insights` 原样保留（不删，界面挪进 `<details>` 里，标题写明「没有名字的画像列表」）。
+【AI 侧】不新增工具：`datacenter_fans` 的返回里多了 `insights_breakdown`（同一字段名）。
+【界面口径】粉丝数据页「粉丝画像」卡：四组小卡（名字 + 占比条 + 占比文字），比例一律 `ratio_text` 优先；
+  为 `null` 时条为空、文字 `-`。
+
+
 【写接口的三条硬口径（所有 *_write 一律遵守）】
 1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /
    `confirm_required`），**一次平台请求都不发**；
