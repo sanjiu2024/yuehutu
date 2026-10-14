@@ -1318,6 +1318,29 @@ POST /api/items/{account_id}/publish/precheck
   为 `null` 时条为空、文字 `-`。
 
 
+第五十二批（商品老一代写接口补确认闸门：**修真缺陷**）
+【背景（真缺陷）】`items_edit` / `items_publish` / `items_batch_edit` 三个 AI 工具规格里**根本没有 `confirm`**，
+  服务层 `update_item` / `batch_update` / `downshelf` / `reshelf` / `publish_item` 也**完全没判**确认
+  ⇒ 只要知道接口，就能在没有任何确认的情况下改平台商品（价格 / 标题 / 库存 / 上下架 / 发布）。
+  这三个是「旧一代」工具（第 19 批那阵子写的），后加的写接口都走 `_confirm_gate`，它们被漏了。
+  **为什么五方对账 + 打包版写闸门都没抓到**：对账只看「路由声明了 `confirm` 吗」，而这三个**根本没声明**；
+  写闸门探针的 `CASES` 里也没有这 5 个端点（只覆盖了 `batch-offline` / `batch-delete` / `quick-edit` /
+  `fans-price`）⇒ 探针 `0/68` 一路绿了 30 多批。**两条防线都有覆盖面缺口**，这次一起补上。
+【服务层】`backend/app/services/items.py` 新增 `CONFIRM_CODE='confirmation_required'`、`_truthy(confirm)`、
+  `_confirm_gate(action, confirm)`（口径与 `item_templates` / `mcp_server` 一致：`True` / `'true'`（去空白小写）/
+  `== 1` 才算确认）；`update_item`（'修改商品'）、`batch_update`（'批量修改商品'）、`downshelf`（'下架商品'）、
+  `reshelf`（'重新上架商品'）、`publish_item`（'发布商品'）**函数第一件事**就是过闸门。
+  `batch_update` 内部逐件调用改成 `update_item(..., confirm=True)`（内部已确认，不再逐件要确认）。
+【HTTP 面】5 条正式路径 + 4 条老路径都从 body 原样取 `confirm`（**路由层不做 `bool()` 归一**，判断权只在服务层）：
+  `POST /api/items/{account_id}/{item_id}/edit`、`POST /api/items/{account_id}/publish`、
+  `POST /api/items/{account_id}/batch-edit`、`POST /api/items/{account_id}/{item_id}/delist`、
+  `POST /api/items/{account_id}/{item_id}/relist`；老的 `POST /api/items/batch`、`/publish`、`/downshelf`、`/reshelf`。
+  未确认一律 400 `confirmation_required`，**零平台请求**。
+【AI 侧】三个工具的规格补上 `confirm`（进 `required`）与中文写操作警示；`mcp_server/client.py` 三条
+  `TOOL_ROUTES` 的 `body` 加 `'confirm'` ⇒ **写工具 67 → 70 条**。
+【界面口径】商品页五个入口（编辑 / 批量修改 / 发布 / 上架 / 下架）本来就带 `confirm: true`，
+  这次只是把「界面上能点」与「接口层也拦」补齐；批量修改**只弹一次确认**，不会逐件弹。
+
 【写接口的三条硬口径（所有 *_write 一律遵守）】
 1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /
    `confirm_required`），**一次平台请求都不发**；
@@ -1326,7 +1349,7 @@ POST /api/items/{account_id}/publish/precheck
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
 【AI 侧】`TOOL_SPECS` 148 条 / `MASTER_TOOLS` 147 条（去掉 `master_chat` 防递归），
-其中 **67 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
+其中 **70 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
 `mcp_server/client.py::TOOL_ROUTES` 149 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text

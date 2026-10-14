@@ -63,7 +63,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_fans51_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 60  PASS 60  FAIL 0  CASES 2588  SKIPPED 2
+-> TOTAL 60  PASS 60  FAIL 0  CASES 2674  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -75,7 +75,7 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_xianyu_log
 ```text
 cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe backend\tests\test_mcp_server.py"
 -> Ran 67 tests ... OK        （含 RouteParamAlignmentTest：MCP 路由参数 ↔ 真实端点签名、
-                                WriteToolConfirmGateTest：67 条写路由不带 confirm 一律零 HTTP 请求）
+                                WriteToolConfirmGateTest：70 条写路由不带 confirm 一律零 HTTP 请求）
 ```
 
 ```text
@@ -83,14 +83,14 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 97 modules transformed.
-   frontend/dist/assets/index-4n-fv9gw.js (640.92 kB, gzip 201.47 kB)
+   frontend/dist/assets/index-bwukL4s-.js (641.00 kB, gzip 201.47 kB)
    frontend/dist/assets/index-B1Z6zu0w.css (156.99 kB, gzip 24.60 kB)
 ```
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon50&& C:\Python310\python.exe scripts\reconcile_tools.py"
 -> specs=148 master=147 routes=149 targets=136 handlers=148
-   write_tools=67  route_checked=149
+   write_tools=70  route_checked=149
    RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
    （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
 ```
@@ -3302,10 +3302,42 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > （真账号 409 `verification_required` + `login_state=need_relogin`（**账号登录态真的过期了，需要用户重新扫码**）、
 > 未知账号 404 `not_found`、未鉴权 401、`POST` 打到只读路径 405 `route_not_found`）。
 
+### 第五十二批：商品「旧一代」写接口补确认闸门（真缺陷）（293~294）
+
+- **真缺陷**：`items_edit` / `items_publish` / `items_batch_edit` 三个 AI 工具规格里**没有 `confirm`**，
+  服务层 `update_item` / `batch_update` / `downshelf` / `reshelf` / `publish_item` 也**完全没判确认**
+  ⇒ 知道接口就能在零确认的情况下改平台商品（价格 / 标题 / 库存 / 上下架 / 发布）。
+  它们是第 19 批那阵子的「旧一代」工具，后加的写接口都走 `_confirm_gate`，这三条被漏了。
+- **两条防线同时有覆盖面缺口**（所以 30 多批没抓到）：① 打包版写闸门 `probe_write_gate.py` 的 `CASES`
+  里商品端点只有 `batch_offline` / `batch_delete` / `quick_edit` / `set_fans_price` 四条；
+  ② `scripts/reconcile_tools.py` 的 `WRITE_PREFIX` 里也没有这三个名字 —— 对账只查「声明了 `confirm`
+  的是不是写工具」，而这三条**根本没声明**（反向盲区）。**两条一起补**：探针 +9 条（5 条正式路径 +
+  4 条老的无 account 路径），`WRITE_PREFIX` +3 个完整工具名（`write_tools` 67 → 70）。
+- 服务层：`CONFIRM_CODE='confirmation_required'` + `_truthy` + `_confirm_gate`（口径与 `item_templates`
+  一致：`True` / `'true'`（去空白小写）/ `== 1`）；`batch_update` 内部逐件调用改成
+  `update_item(..., confirm=True)`（否则整批会因为二次要确认而全部失败）。
+- 路由层：9 条（5 条正式 + 4 条老路径）都从 body **原样**取 `confirm`（不做 `bool()` 归一，判断权只在服务层）。
+- 测试：`test_services_items.py` 60 处调用点补 `confirm=True` + 新类 `ItemWriteConfirmGateTest`（7 条：
+  `FALSE_LIKE` 十种值、「闸门不碰 DB / 不写 operation_logs / 零平台调用」、批内不再二次要确认）；
+  `test_items_api.py` 19 处 body 补 `confirm` + 新类 `ItemWriteConfirmGateApiTest`（5 条写路由 400
+  `confirmation_required` + 零调用 + 价格不变）；`test_items_batch_warning.py` 4 处；`test_mcp_server.py`
+  计数 67 → 70 且 `test_unknown_fields_are_not_forwarded` 补 `confirm`；`test_agents_tools_workbench.py`
+  三个分派用例补 `confirm`（规格必填后 `call_tool` 在分派前就会拒）。
+- 验证：六个测试文件 `Ran 458 tests ... OK`；全量 **`TOTAL 60 PASS 60 FAIL 0 CASES 2674 SKIPPED 2`**；
+  对账 `specs=148 master=147 routes=149 targets=136 handlers=148 / write_tools=70 / route_checked=149 / RECON OK`；
+  前端 `TSC_EXIT=0` + `BUILD_EXIT=0`（97 modules, `index-bwukL4s-.js` 641.00 kB / `index-B1Z6zu0w.css` 156.99 kB）。
+- 界面：商品页五个入口本来就带 `confirm: true`（这次补的是接口层）；批量修改仍然只弹一次确认。
+
+> **第五十二批证据链**：`logs/cov52.txt`（写覆盖审计）；界面文案审计
+> `C:\Users\Administrator\.dsh-tmp\copy_audit.py`（78 条含「只读」字样的用户可见文案逐条核对 →
+> **全部属实**，其中「还没就绪」那类是 `notReady` 条件分支、不是假话）；**真缺陷是顺着「前端写出口复查」
+> 发现的**（AI 工具规格 + 服务层闸门）；打包版闸门探针扩到 **77 条**，先在源码后端上验
+> （`GATE FAILURES: 0 / 77`，`XYWB_PROBE_BASE`/`XYWB_PROBE_DATA` 可指向临时库）。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**60 个测试文件、2588 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**60 个测试文件、2674 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -3349,11 +3381,12 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
    `orders/{order_id}/postage-refund/{detail,refuse-reasons}`）；
    第四十九批 +1 条订单备注 `POST /api/trade/{account_id}/orders/{order_id}/memo`；
    第五十批 +1 条只读改价渲染 `GET /api/trade/{account_id}/orders/{order_id}/adjust-price/render`；
+   第五十二批 **0 条新路由**（只给 9 条**已有**写路由补上 `confirm` 闸门，路径与操作数都没变）；
    第五十一批 **0 条新路由**（只给 `GET /api/datacenter/{account_id}/fans` 的响应加了
    `insights_breakdown` 字段，路径与操作数都没变）），
   均结构化信封、无 500。
 - **AI 工具面（离线对账，`scripts/reconcile_tools.py`）**：`TOOL_SPECS` 148 / `MASTER_TOOLS` 147 /
-  `TOOL_ROUTES` 149，其中 **67 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
+  `TOOL_ROUTES` 149，其中 **70 条写工具**；对账同时校验每条 MCP 路由的 path/query/body 都被真实
   FastAPI 端点接受 → `RECON OK`。MCP 端到端冒烟（真起 `mcp_server/server.py` 子进程打打包版）
   `tools/list` 返回 63 个工具（第 6 批的旧数字；`TOOL_ROUTES` 现在 149 条，本次未重跑该冒烟）。
 - **真实浏览器逐页冒烟 29/29 页通过**（`scripts/ui_smoke.py`，Edge/WebView2 引擎，
@@ -3363,9 +3396,11 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   packaged_ui_smoke.py`，复用 `scripts/ui_smoke.py::run_browser` 但不启后端、直接打
   `127.0.0.1:18400` 与**真实 `%APPDATA%` 数据目录**，截图 `logs/packaged_ui_smoke/`）。
   与上一条的区别：上一条跑的是源码 + 临时库，这一条跑的是**用户手上那个 exe**。
-- **打包版 confirm 闸门 68 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
-  （`confirmation_required` / `confirm_required`），**`GATE FAILURES: 0 / 68`**（探针随批次扩过：
-  19 → 22 → 26 → 28 → 30 → 33 → 41 → 47 → 52 → 53 → 56 → 60 → 61 → 64 → 65 → 66 → 67 → 68）；确认那一腿**故意换成不存在的
+- **打包版 confirm 闸门 77 个写端点全部生效**（`probe_write_gate.py`）：未确认一律 400
+  （`confirmation_required` / `confirm_required`），**`GATE FAILURES: 0 / 77`**（探针随批次扩过：
+  19 → 22 → 26 → 28 → 30 → 33 → 41 → 47 → 52 → 53 → 56 → 60 → 61 → 64 → 65 → 66 → 67 → 68 → 77）；
+  第 52 批一次补 9 条（5 条商品正式写路径 + 4 条老路径）——**这 5 条正是从第 19 批到第 51 批
+  一直没被探针覆盖的那批**（它们当时压根没有闸门，探针也不查，所以两边一起漏）。确认那一腿**故意换成不存在的
   账号**（`SAFE_ACC`），闸门放行后本地查库直接 404 `not_found` / 400 `invalid_fields` / 409 —— 既证明闸门放行，
   又保证**零平台请求**（2026-10-12 00:35 之前那版拿真账号打过，三条写请求真到了闲鱼，见第二十五批 161）。
   第 32 批新增八条（`shop.profile_{nick,desc,avatar}` / `sub.{create,delete,mobile,roles,password}`）：
