@@ -958,12 +958,16 @@ class WriteToolDispatchTest(unittest.TestCase):
         calls = {
             'accounts_relogin': ({'account_id': 'acc-x'},
                                  'backend.app.services.accounts.relogin'),
-            'items_edit': ({'account_id': 'acc-x', 'item_id': 'it-1', 'price': 9.9},
+            # 三个商品写工具的规格里 `confirm` 是必填（第 52 批起服务层也真的判它），
+            # 这里补上才能走到分派 —— 被测的是「分派有没有断」，不是闸门本身。
+            'items_edit': ({'account_id': 'acc-x', 'item_id': 'it-1', 'price': 9.9,
+                            'confirm': True},
                            'backend.app.services.items.edit_from_args'),
-            'items_publish': ({'account_id': 'acc-x', 'title': 't', 'price': 9.9},
+            'items_publish': ({'account_id': 'acc-x', 'title': 't', 'price': 9.9,
+                               'confirm': True},
                               'backend.app.services.items.publish_from_args'),
             'items_batch_edit': ({'account_id': 'acc-x', 'item_ids': ['it-1'],
-                                  'patch': {'price_set': 9.9}},
+                                  'patch': {'price_set': 9.9}, 'confirm': True},
                                  'backend.app.services.items.batch_edit_from_args'),
             'items_sync': ({'account_id': 'acc-x'}, 'backend.app.services.items.sync_items'),
             'chats_send': ({'conversation_id': 1, 'content': '在的'},

@@ -125,6 +125,9 @@ WRITE_PREFIX = ('trade_write_', 'trade_address_', 'promotion_write_', 'qualifica
                 'qualification_oss', 'item_templates_create', 'item_templates_modify',
                 'item_templates_delete', 'item_templates_unbind',
                 'items_batch_offline', 'items_batch_delete', 'items_quick_edit',
+                # 第 52 批：商品「旧一代」三个写工具**原先根本没声明 confirm**，所以既没进这张表、
+                # 也没被第 4 步查到（反向盲区）——补上闸门后必须一起加进来。
+                'items_edit', 'items_publish', 'items_batch_edit',
                 # 改地址审批：只加这两条**完整写工具名**。故意不加 'trade_order_address_'，
                 # 那会把只读的 trade_order_address_request 一起误判成写工具。
                 'trade_order_address_agree', 'trade_order_address_refuse',

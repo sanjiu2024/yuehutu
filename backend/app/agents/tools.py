@@ -130,7 +130,8 @@ TOOL_SPECS: List[Dict[str, Any]] = [
         'type': 'function',
         'function': {
             'name': 'items_edit',
-            'description': '修改单个商品的价格/标题/描述/库存/图片。用户明确要求改某个商品时用；只传要改的字段。',
+            'description': '修改单个商品的价格/标题/描述/库存/图片。用户明确要求改某个商品时用；只传要改的字段。'
+                           + _WRITE_HINT + 'account_id 与 item_id 必填。',
             'parameters': {
                 'type': 'object',
                 'properties': {
@@ -141,8 +142,9 @@ TOOL_SPECS: List[Dict[str, Any]] = [
                     'description': {'type': 'string', 'description': '新描述，可省略'},
                     'stock': {'type': 'integer', 'description': '新库存，可省略'},
                     'images': {'type': 'array', 'items': {'type': 'string'}, 'description': '图片 URL 列表，可省略'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
                 },
-                'required': ['account_id', 'item_id'],
+                'required': ['account_id', 'item_id', 'confirm'],
                 'additionalProperties': False,
             },
         },
@@ -151,7 +153,8 @@ TOOL_SPECS: List[Dict[str, Any]] = [
         'type': 'function',
         'function': {
             'name': 'items_publish',
-            'description': '发布一个新商品到闲鱼。用户给了标题和价格让你上架时用。',
+            'description': '发布一个新商品到闲鱼。用户给了标题和价格让你上架时用。'
+                           + _WRITE_HINT + 'account_id、title 与 price 必填。',
             'parameters': {
                 'type': 'object',
                 'properties': {
@@ -161,8 +164,9 @@ TOOL_SPECS: List[Dict[str, Any]] = [
                     'description': {'type': 'string', 'description': '商品描述，可省略'},
                     'images': {'type': 'array', 'items': {'type': 'string'}, 'description': '图片 URL 列表，可省略'},
                     'category_id': {'type': 'string', 'description': '类目 id，可省略'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
                 },
-                'required': ['account_id', 'title', 'price'],
+                'required': ['account_id', 'title', 'price', 'confirm'],
                 'additionalProperties': False,
             },
         },
@@ -191,7 +195,8 @@ TOOL_SPECS: List[Dict[str, Any]] = [
         'type': 'function',
         'function': {
             'name': 'items_batch_edit',
-            'description': '批量改价/改标题。用户说「把某几个商品都降 10 块」这类批量操作时用。',
+            'description': '批量改价/改标题。用户说「把某几个商品都降 10 块」这类批量操作时用。'
+                           + _WRITE_HINT + 'account_id、item_ids 与 patch 必填。',
             'parameters': {
                 'type': 'object',
                 'properties': {
@@ -201,8 +206,9 @@ TOOL_SPECS: List[Dict[str, Any]] = [
                         'type': 'object',
                         'description': '改动内容，例如 {"price_delta": -10} 或 {"price_set": 99} 或 {"title_tpl": "..."}',
                     },
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
                 },
-                'required': ['account_id', 'item_ids', 'patch'],
+                'required': ['account_id', 'item_ids', 'patch', 'confirm'],
                 'additionalProperties': False,
             },
         },

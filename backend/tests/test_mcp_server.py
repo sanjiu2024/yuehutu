@@ -191,9 +191,11 @@ class ToolCallTest(ClientTestCase):
     def test_unknown_fields_are_not_forwarded(self):
         """模型多给的字段不能透传到后端（避免后端 422）。"""
         self.recorder.routes['/api/items/acc1/i1/edit'] = {'success': True, 'data': {}}
+        # `confirm` 是第 52 批补进这条路由的写闸门参数：这里必须显式点头，
+        # 否则会被客户端闸门挡下、根本发不出请求（被测的是「未知字段不透传」）。
         self.client.call_tool('items_edit', {'account_id': 'acc1', 'item_id': 'i1',
-                                             'price': 9.9, 'bogus': 'x'})
-        self.assertEqual(self.recorder.calls[-1]['body'], {'price': 9.9})
+                                             'price': 9.9, 'bogus': 'x', 'confirm': True})
+        self.assertEqual(self.recorder.calls[-1]['body'], {'price': 9.9, 'confirm': True})
 
     def test_finance_cycle_goes_out_as_from_to(self):
         """账期的线上名是 from/to：工具参数 cycle_from/cycle_to 必须被翻译。
@@ -953,10 +955,10 @@ class WriteToolConfirmGateTest(unittest.TestCase):
         return Recorder(), calls
 
     def test_every_write_route_refuses_without_confirm(self):
-        """46 条写路由逐个试：都不发请求、都回 confirm_required。"""
+        """70 条写路由逐个试：都不发请求、都回 confirm_required。"""
         write_routes = sorted(k for k, v in mcp_client.TOOL_ROUTES.items()
                               if 'confirm' in (v.get('body') or []))
-        self.assertEqual(len(write_routes), 67, '写工具数量变了就要同步复核这份清单')
+        self.assertEqual(len(write_routes), 70, '写工具数量变了就要同步复核这份清单')
         for name in write_routes:
             with self.subTest(tool=name):
                 client, calls = self._client()
@@ -993,7 +995,7 @@ class WriteToolConfirmGateTest(unittest.TestCase):
         self.assertEqual(seen, [('GET', '/api/accounts')])
 
     def test_confirm_routes_are_exactly_the_write_tools(self):
-        """反向断言：声明了 confirm 的 46 条，必须与 `agents/tools.py` 的写工具清单一致。"""
+        """反向断言：声明了 confirm 的 70 条，必须与 `agents/tools.py` 的写工具清单一致。"""
         from backend.app.agents import tools as agent_tools
         declared = {n for n, r in mcp_client.TOOL_ROUTES.items()
                     if 'confirm' in (r.get('body') or [])}
@@ -1004,7 +1006,7 @@ class WriteToolConfirmGateTest(unittest.TestCase):
             if 'confirm' in props:
                 write_specs.add(fn.get('name'))
         self.assertEqual(declared, write_specs)
-        self.assertEqual(len(declared), 67)
+        self.assertEqual(len(declared), 70)
 
     def test_truthy_helper_matches_service_layer(self):
         """与 `backend/app/services/item_templates.py::_truthy` 同一口径。"""
