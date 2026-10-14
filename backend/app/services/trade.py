@@ -245,3 +245,101 @@ def addresses(account_id: str) -> Dict[str, Any]:
     payload['account_id'] = account_id
     payload['api'] = api
     return _stamp(payload)
+
+
+# --------------------------------------------------------------------------- 退款处理（只读）
+
+
+def _warn(payload: Dict[str, Any], code: str, message: str) -> None:
+    payload.setdefault('warnings', []).append({'code': code, 'message': message})
+
+
+def _one(account_id: str, api: str, data: Any, version: str, parse, **extra: Any) -> Dict[str, Any]:
+    """单条只读的公共骨架（列表类走 `_list`）。字段校验必须已经在这一步之前做完。"""
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+    raw, failure = _call(client, api, data, version)
+    if failure:
+        return failure
+    payload = parse(raw)
+    payload.setdefault('warnings', [])
+    payload['account_id'] = account_id
+    payload['api'] = api
+    for key, value in extra.items():
+        payload[key] = value
+    return _stamp(payload)
+
+
+def refund_refuse_reasons(account_id: str, refund_id: Any, order_id: Any = '',
+                          refuse_reason_id: Any = '') -> Dict[str, Any]:
+    """拒绝退款的原因列表（`refund.refuse.render`）。
+
+    这是「拒绝退款」真正需要的接口：以前界面让用户手抄 `refuseReasonList[].refuseReasonId`，
+    等于把平台内部 id 丢给用户。官方把 `reasonId == 20653007` 那条置灰（只能在手机 App 操作），
+    我们同样在响应里标 `app_only` 并给出中文 `app_only_hint`。
+    """
+    if not _text(refund_id):
+        return common.fail('退款单号不能为空', 'invalid_fields')
+    api, data = trade_proto.refund_refuse_render_request(refund_id, refuse_reason_id)
+    payload = _one(account_id, api, data, trade_proto.REFUND_REFUSE_RENDER_VERSION,
+                   trade_proto.parse_refuse_render,
+                   refund_id=_text(refund_id), order_id=_text(order_id) or None)
+    if common.is_failure(payload):
+        return payload
+    if not payload.get('refuse_reasons_found'):
+        _warn(payload, 'refund_refuse_reasons_missing',
+              '平台没有返回拒绝原因列表（可能改了字段名）——先别提交拒绝。')
+    return payload
+
+
+def refund_detail(account_id: str, refund_id: Any, order_id: Any = '') -> Dict[str, Any]:
+    """退款详情（`refund.detail`）：官方按 `data.data.components[].render` 挑组件渲染。"""
+    if not _text(refund_id):
+        return common.fail('退款单号不能为空', 'invalid_fields')
+    api, data = trade_proto.refund_detail_request(refund_id, order_id)
+    payload = _one(account_id, api, data, trade_proto.REFUND_DETAIL_VERSION,
+                   trade_proto.parse_refund_detail,
+                   refund_id=_text(refund_id), order_id=_text(order_id) or None)
+    if common.is_failure(payload):
+        return payload
+    if not payload.get('components_found'):
+        _warn(payload, 'refund_detail_components_missing',
+              '平台没有返回详情组件（可能改了字段名）。')
+    return payload
+
+
+def postage_refund_detail(account_id: str, order_id: Any, refund_id: Any = '',
+                          refund_postage_type: Any = '') -> Dict[str, Any]:
+    """邮费退款详情（`postage.refund.detail.query`，响应 `data.module`）。"""
+    if not _text(order_id):
+        return common.fail('订单号不能为空', 'invalid_fields')
+    api, data = trade_proto.postage_refund_detail_request(order_id, refund_id, refund_postage_type)
+    payload = _one(account_id, api, data, trade_proto.POSTAGE_REFUND_DETAIL_VERSION,
+                   trade_proto.parse_postage_refund_detail,
+                   order_id=_text(order_id), refund_id=_text(refund_id) or None)
+    if common.is_failure(payload):
+        return payload
+    if not payload.get('detail_found'):
+        _warn(payload, 'postage_refund_detail_missing',
+              '平台没有返回邮费退款详情（可能改了字段名）。')
+    return payload
+
+
+def postage_refund_refuse_reasons(account_id: str, order_id: Any, refund_id: Any = '',
+                                  refund_postage_type: Any = '',
+                                  default_reason: Any = '') -> Dict[str, Any]:
+    """邮费退款拒绝原因（`postage.refund.refuse.reason.query`）：`data.module.reasons` 是字符串数组。"""
+    if not _text(order_id):
+        return common.fail('订单号不能为空', 'invalid_fields')
+    api, data = trade_proto.postage_refund_refuse_reasons_request(
+        order_id, refund_id, refund_postage_type, default_reason)
+    payload = _one(account_id, api, data, trade_proto.POSTAGE_REFUND_REFUSE_REASONS_VERSION,
+                   trade_proto.parse_postage_refuse_reasons,
+                   order_id=_text(order_id), refund_id=_text(refund_id) or None)
+    if common.is_failure(payload):
+        return payload
+    if not payload.get('reasons_found'):
+        _warn(payload, 'postage_refund_reasons_missing',
+              '平台没有返回拒绝原因列表（可能改了字段名）——先别提交拒绝。')
+    return payload

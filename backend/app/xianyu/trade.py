@@ -48,6 +48,38 @@ ORDER_DETAIL_API = 'mtop.taobao.idle.trade.merchant.full.info'
 ORDER_DETAIL_VERSION = '1.0'
 REFUND_LIST_API = 'mtop.taobao.idle.merchant.refund.list'
 REFUND_LIST_VERSION = '1.0'
+
+#: 退款处理页四条只读接口（bundle `idle-seller-trade/0.0.26/js/main.js` 静态取证）。
+#: `refund.refuse.render`：官方「拒绝原因」弹窗的数据源（**这是「拒绝退款」界面真正需要的**，
+#: 我们以前让用户手抄 `refuseReasonList[].refuseReasonId`，那是把平台内部 id 丢给用户）。
+REFUND_REFUSE_RENDER_API = 'mtop.taobao.idle.merchant.refund.refuse.render'
+REFUND_REFUSE_RENDER_VERSION = '1.0'
+#: `refund.detail`：退款详情，官方按 `data.data.components[].render` 挑组件渲染。
+REFUND_DETAIL_API = 'mtop.taobao.idle.merchant.refund.detail'
+REFUND_DETAIL_VERSION = '1.0'
+#: `postage.refund.detail.query`：邮费退款详情（响应 `data.module`）。
+POSTAGE_REFUND_DETAIL_API = 'mtop.taobao.idle.merchant.postage.refund.detail.query'
+POSTAGE_REFUND_DETAIL_VERSION = '1.0'
+#: `postage.refund.refuse.reason.query`：邮费退款拒绝原因，响应 `data.module.reasons`（**字符串数组**）。
+POSTAGE_REFUND_REFUSE_REASONS_API = 'mtop.taobao.idle.merchant.postage.refund.refuse.reason.query'
+POSTAGE_REFUND_REFUSE_REASONS_VERSION = '1.0'
+
+#: 官方把这条拒绝原因置灰（hover 提示「扫码去APP操作」，只给手机端入口）：
+#: 命中这些 `reasonId` 的原因我们同样置灰，并在响应里给出 `app_only` / `app_only_hint`。
+APP_ONLY_REASON_IDS: Tuple[str, ...] = ('20653007',)
+APP_ONLY_REASON_HINT = '这条原因只能在手机闲鱼 App 里操作（官方页面把它置灰并给了扫码入口）。'
+
+#: 官方退款详情组件名（`components[].render`），只用于给界面提示，**不参与解析判断**。
+REFUND_DETAIL_RENDERS: Tuple[str, ...] = (
+    'nodeStatusInfo',
+    'refundStatusInfo',
+    'bottomBar',
+    'progressDetail',
+    'basicRefundInfo',
+    'postageRefundInfo',
+    'refundDescribe',
+    'logisticsInfo',
+)
 RATE_LIST_API = 'mtop.taobao.idle.merchant.rate.list'
 RATE_LIST_VERSION = '1.0'
 COMPLAIN_LIST_API = 'mtop.taobao.idle.cco.shop.complain.list'
@@ -294,6 +326,47 @@ def refund_list_request(page: int = 1, size: int = 10, search_param: Any = None)
     return assert_read_only(REFUND_LIST_API), data
 
 
+
+
+def refund_refuse_render_request(refund_id: Any, refuse_reason_id: Any = '') -> Tuple[str, Dict[str, Any]]:
+    """拒绝原因弹窗的数据源。官方 `{refundId, refuseReasonId}`（后者是回填选中项，可省）。"""
+    data: Dict[str, Any] = {'refundId': _text(refund_id)}
+    if _text(refuse_reason_id):
+        data['refuseReasonId'] = _text(refuse_reason_id)
+    return assert_read_only(REFUND_REFUSE_RENDER_API), data
+
+
+def refund_detail_request(refund_id: Any, order_id: Any = '') -> Tuple[str, Dict[str, Any]]:
+    """退款详情。官方 `{orderId, refundId}`。"""
+    return assert_read_only(REFUND_DETAIL_API), {
+        'orderId': _text(order_id),
+        'refundId': _text(refund_id),
+    }
+
+
+def postage_refund_detail_request(order_id: Any, refund_id: Any = '',
+                                  refund_postage_type: Any = '') -> Tuple[str, Dict[str, Any]]:
+    """邮费退款详情。官方把 URL 上的 `refundPostageType` 一起带上。"""
+    data: Dict[str, Any] = {'orderId': _text(order_id)}
+    if _text(refund_id):
+        data['refundId'] = _text(refund_id)
+    if _text(refund_postage_type):
+        data['refundPostageType'] = _text(refund_postage_type)
+    return assert_read_only(POSTAGE_REFUND_DETAIL_API), data
+
+
+def postage_refund_refuse_reasons_request(order_id: Any, refund_id: Any = '',
+                                          refund_postage_type: Any = '',
+                                          default_reason: Any = '') -> Tuple[str, Dict[str, Any]]:
+    """邮费退款拒绝原因。官方 `prefetch: true`，`{orderId, refundId, refundPostageType, defaultReason}`。"""
+    data: Dict[str, Any] = {'orderId': _text(order_id)}
+    if _text(refund_id):
+        data['refundId'] = _text(refund_id)
+    if _text(refund_postage_type):
+        data['refundPostageType'] = _text(refund_postage_type)
+    if _text(default_reason):
+        data['defaultReason'] = _text(default_reason)
+    return assert_read_only(POSTAGE_REFUND_REFUSE_REASONS_API), data
 def rate_list_request(page: int = 1, size: int = 10) -> Tuple[str, Dict[str, Any]]:
     """评价列表。真机带不带 `queryType` 返回体一致（都是待评价/已评价订单 + rateItemVOList）。"""
     return assert_read_only(RATE_LIST_API), {
@@ -631,3 +704,94 @@ def parse_complaints(raw: Any) -> Dict[str, Any]:
 def parse_addresses(raw: Any) -> Dict[str, Any]:
     """退货地址响应。真机无权限；bundle 证据是 `data` 直接为数组。"""
     return {'addresses': [normalize_address(item) for item in items_of(raw)]}
+
+
+def _is_app_only(reason_id: Any) -> bool:
+    return _text(reason_id) in APP_ONLY_REASON_IDS
+
+
+def normalize_refuse_reason(entry: Any) -> Dict[str, Any]:
+    """一条拒绝原因：`{refuse_reason_id, reason_id, reason_name, app_only}`。
+
+    `refuse_reason_id` 是**要提交给平台的那个 id**；`reason_id` 只用来判断「官方置灰」。
+    """
+    reason_id = _or_none(_first(entry, 'reasonId', 'reason_id'))
+    return {
+        'refuse_reason_id': _or_none(_first(entry, 'refuseReasonId', 'refuse_reason_id')),
+        'reason_id': reason_id,
+        'reason_name': _or_none(_first(entry, 'reasonName', 'reason_name')),
+        'app_only': _is_app_only(reason_id),
+        'raw': entry,
+    }
+
+
+def parse_refuse_render(raw: Any) -> Dict[str, Any]:
+    """拒绝原因弹窗：`data.data.{refuseReasonList, refuseNegotiation, refuseProof, refundFee}`。"""
+    body = body_of(raw)
+    reasons_raw = _first(body, 'refuseReasonList', 'refuse_reason_list', 'reasons')
+    reasons = None
+    if isinstance(reasons_raw, list):
+        reasons = [normalize_refuse_reason(x) for x in reasons_raw]
+    return {
+        'refuse_reasons': reasons,
+        'refuse_reasons_found': isinstance(reasons_raw, list),
+        'refuse_negotiation': _or_none(_first(body, 'refuseNegotiation', 'refuse_negotiation')),
+        'refuse_proof': _or_none(_first(body, 'refuseProof', 'refuse_proof')),
+        'refund_fee': _or_none(_first(body, 'refundFee', 'refund_fee')),
+        'app_only_reason_ids': list(APP_ONLY_REASON_IDS),
+        'app_only_hint': APP_ONLY_REASON_HINT,
+        'body_keys': sorted(str(k) for k in body),
+    }
+
+
+def parse_refund_detail(raw: Any) -> Dict[str, Any]:
+    """退款详情：官方按 `data.data.components[].render` 挑组件渲染。
+
+    我们**原样透传组件列表**（每项带 `render` 与原始内容）并给出 `component_renders`，
+    不把组件内部字段猜成我们的字段名。
+    """
+    body = body_of(raw)
+    components_raw = _first(body, 'components', 'componentList', 'component_list')
+    components = None
+    if isinstance(components_raw, list):
+        components = [
+            {'render': _or_none(_first(x, 'render', 'type')), 'raw': x}
+            if isinstance(x, dict) else {'render': None, 'raw': x}
+            for x in components_raw
+        ]
+    renders = [c['render'] for c in (components or []) if c.get('render')]
+    return {
+        'components': components,
+        'components_found': isinstance(components_raw, list),
+        'component_renders': renders,
+        'known_renders': list(REFUND_DETAIL_RENDERS),
+        'body_keys': sorted(str(k) for k in body),
+    }
+
+
+def parse_postage_refund_detail(raw: Any) -> Dict[str, Any]:
+    """邮费退款详情（响应 `data.module`）：原样透传 + 两个已知布尔的安全归一。"""
+    body = body_of(raw)
+    processing = _first(body, 'existProcessingCompensate', 'exist_processing_compensate')
+    return {
+        'detail': body or None,
+        'detail_found': bool(body),
+        'exist_processing_compensate': None if processing is None else (
+            processing if isinstance(processing, bool) else _text(processing).lower() == 'true'
+        ),
+        'body_keys': sorted(str(k) for k in body),
+    }
+
+
+def parse_postage_refuse_reasons(raw: Any) -> Dict[str, Any]:
+    """邮费退款拒绝原因：响应 `data.module.reasons`，**元素是字符串**（官方直接当 label/value 用）。"""
+    body = body_of(raw)
+    reasons_raw = _first(body, 'reasons', 'reasonList', 'reason_list')
+    reasons = None
+    if isinstance(reasons_raw, list):
+        reasons = [_text(x) for x in reasons_raw]
+    return {
+        'reasons': reasons,
+        'reasons_found': isinstance(reasons_raw, list),
+        'body_keys': sorted(str(k) for k in body),
+    }

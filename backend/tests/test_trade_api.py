@@ -36,6 +36,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from backend.app.api import trade as trade_api  # noqa: E402
 from backend.app.core import db, security  # noqa: E402
+from backend.app.services import trade  # noqa: E402
 from backend.app.xianyu import trade as trade_proto  # noqa: E402
 from backend.tests.testenv import use_temp_app_dir  # noqa: E402
 
@@ -202,6 +203,89 @@ RATE_WITH_RECORD = {
     'message': 'SUCCESS::调用成功',
     'ret': ['SUCCESS::调用成功'],
 }
+
+#: `refund.refuse.render`：官方「拒绝原因」弹窗的数据源。
+#: **本组四条夹具来自 bundle 静态取证（`idle-seller-trade/0.0.26/js/main.js`），
+#: 没有真机样本** —— 字段名逐字来自官方代码，取值是示意值。
+REFUSE_RENDER = {
+    'success': True,
+    'data': {'data': {
+        'refuseReasonList': [
+            {'refuseReasonId': '20653006', 'reasonId': '20653006', 'reasonName': '买家已使用'},
+            {'refuseReasonId': '20653007', 'reasonId': '20653007', 'reasonName': '其他原因'},
+            {'refuseReasonId': '20653008', 'reasonId': '20653008', 'reasonName': '与买家协商一致'},
+        ],
+        'refuseNegotiation': False,
+        'refuseProof': True,
+        'refundFee': '0.00',
+    }},
+    'message': 'SUCCESS::调用成功',
+    'ret': ['SUCCESS::调用成功'],
+}
+#: 平台回了信封、但里面没有原因列表键（**必须给 null + warning，不能给 []**）
+REFUSE_RENDER_NO_LIST = {
+    'success': True,
+    'data': {'data': {'refuseNegotiation': False, 'refundFee': '0.00'}},
+    'message': 'SUCCESS::调用成功',
+    'ret': ['SUCCESS::调用成功'],
+}
+
+#: `refund.detail`：官方按 `components[].render` 挑组件渲染 ⇒ 我们原样透传
+REFUND_DETAIL = {
+    'success': True,
+    'data': {'data': {
+        'components': [
+            {'render': 'nodeStatusInfo', 'nodeStatus': 'REFUND_WAIT_SELLER_AGREE'},
+            {'render': 'basicRefundInfo', 'refundId': 'r-1', 'refundFee': '12.80'},
+            {'render': 'progressDetail', 'steps': []},
+        ],
+    }},
+    'message': 'SUCCESS::调用成功',
+    'ret': ['SUCCESS::调用成功'],
+}
+REFUND_DETAIL_NO_COMPONENTS = {
+    'success': True,
+    'data': {'data': {'refundId': 'r-1'}},
+    'message': 'SUCCESS::调用成功',
+    'ret': ['SUCCESS::调用成功'],
+}
+
+#: `postage.refund.detail.query`：响应在 `data.module`，官方读 `existProcessingCompensate`
+POSTAGE_DETAIL = {
+    'success': True,
+    'data': {'module': {'existProcessingCompensate': False, 'refundFee': '8.00',
+                        'status': 'WAIT_SELLER_AGREE'}},
+    'message': 'SUCCESS::调用成功',
+    'ret': ['SUCCESS::调用成功'],
+}
+POSTAGE_DETAIL_EMPTY = {
+    'success': True,
+    'data': {'module': {}},
+    'message': 'SUCCESS::调用成功',
+    'ret': ['SUCCESS::调用成功'],
+}
+
+#: `postage.refund.refuse.reason.query`：`data.module.reasons` 是**字符串数组**
+POSTAGE_REASONS = {
+    'success': True,
+    'data': {'module': {'reasons': ['邮费金额不对', '买家未协商', '其他原因']}},
+    'message': 'SUCCESS::调用成功',
+    'ret': ['SUCCESS::调用成功'],
+}
+POSTAGE_REASONS_NO_KEY = {
+    'success': True,
+    'data': {'module': {'defaultReason': '邮费金额不对'}},
+    'message': 'SUCCESS::调用成功',
+    'ret': ['SUCCESS::调用成功'],
+}
+
+#: 四条新路由（都是 GET，且都是**四段以上**路径 ⇒ 单独列出，供只读边界用例遍历）
+REFUND_PATHS = (
+    'refunds/r-1/refuse-reasons',
+    'refunds/r-1/detail',
+    'orders/o-1/postage-refund/detail',
+    'orders/o-1/postage-refund/refuse-reasons',
+)
 
 #: 真机原文：投诉列表没有权限
 COMPLAIN_DENIED = {'success': False, 'message': 'NO_PERMISSION::用户没有权限',
@@ -692,6 +776,166 @@ class AddressNormalizeTest(unittest.TestCase):
         # 真机可能给字符串 'true'；不是 bool 就给 None，不猜。
         self.assertIsNone(trade_proto.normalize_address({'defaultAddr': 'true'})['is_default'])
         self.assertIsNone(trade_proto.normalize_address({'defaultAddr': 1})['is_default'])
+
+
+
+
+class RefundHandlingReadTest(TradePageTest):
+    """退款处理四条只读（拒绝原因 / 退款详情 / 邮费退款详情与原因）。
+
+    这一组最容易犯的四个错：
+
+    1. 平台**没给**原因列表时给 `[]`（用户会以为「平台说没有原因」，其实是键没认出来）；
+    2. 把 `refuseReasonId`（要提交给平台的 id）与 `reasonId`（官方用来判断置灰）混为一谈；
+    3. 把官方置灰的那条（只能在手机 App 操作）也当成可选；
+    4. 把退款详情/邮费详情**猜**成我们的字段名（官方是 `components[].render` 与 `data.module` 原样透传）。
+    """
+
+    def setUp(self):
+        super().setUp()
+        seed_account()
+
+    # -- 拒绝原因（refuse.render） ----------------------------------------
+
+    def test_refuse_reasons_map_both_ids_and_flag_the_app_only_one(self):
+        self.fake.payloads[trade_proto.REFUND_REFUSE_RENDER_API] = REFUSE_RENDER
+        data = self.ok_data(f'{BASE}/{ACC}/refunds/r-1/refuse-reasons')
+        reasons = data['refuse_reasons']
+        self.assertEqual(len(reasons), 3, data)
+        self.assertEqual(reasons[0]['refuse_reason_id'], '20653006')
+        self.assertEqual(reasons[0]['reason_id'], '20653006')
+        self.assertEqual(reasons[0]['reason_name'], '买家已使用')
+        self.assertFalse(reasons[0]['app_only'])
+        self.assertTrue(reasons[1]['app_only'], '官方把 20653007 置灰（只能在 App 操作）')
+        self.assertIn('手机闲鱼 App', data['app_only_hint'])
+        self.assertEqual(list(data['app_only_reason_ids']), ['20653007'])
+        self.assertEqual(data['warnings'], [])
+        self.assertEqual(data['source'], 'platform')
+        self.assertTrue(data['fetched_at'])
+        self.assertEqual(data['refund_id'], 'r-1')
+
+    def test_refuse_reason_request_shape_matches_the_bundle(self):
+        self.fake.payloads[trade_proto.REFUND_REFUSE_RENDER_API] = REFUSE_RENDER
+        self.ok_data(f'{BASE}/{ACC}/refunds/r-1/refuse-reasons',
+                     '?order_id=o-1&refuse_reason_id=20653006')
+        call = self.fake.call_of(trade_proto.REFUND_REFUSE_RENDER_API)
+        self.assertEqual(call['data'], {'refundId': 'r-1', 'refuseReasonId': '20653006'})
+        self.assertEqual(call['v'], '1.0')
+
+    def test_refuse_reason_request_omits_the_optional_id(self):
+        self.fake.payloads[trade_proto.REFUND_REFUSE_RENDER_API] = REFUSE_RENDER
+        self.ok_data(f'{BASE}/{ACC}/refunds/r-1/refuse-reasons')
+        call = self.fake.call_of(trade_proto.REFUND_REFUSE_RENDER_API)
+        self.assertEqual(call['data'], {'refundId': 'r-1'})
+
+    def test_missing_reason_list_is_null_with_a_warning_not_an_empty_list(self):
+        self.fake.payloads[trade_proto.REFUND_REFUSE_RENDER_API] = REFUSE_RENDER_NO_LIST
+        data = self.ok_data(f'{BASE}/{ACC}/refunds/r-1/refuse-reasons')
+        self.assertIsNone(data['refuse_reasons'], '键没认出来 ≠ 平台说没有原因')
+        self.assertFalse(data['refuse_reasons_found'])
+        self.assertEqual([w['code'] for w in data['warnings']], ['refund_refuse_reasons_missing'])
+
+    def test_blank_refund_id_is_rejected_before_calling_platform(self):
+        result = trade.refund_refuse_reasons(ACC, '')
+        self.assertIs(result['success'], False, result)
+        self.assertEqual(result['code'], 'invalid_fields')
+        self.assertEqual(self.fake.calls, [], '字段校验必须早于建客户端')
+
+    # -- 退款详情（refund.detail） ----------------------------------------
+
+    def test_refund_detail_passes_components_through(self):
+        self.fake.payloads[trade_proto.REFUND_DETAIL_API] = REFUND_DETAIL
+        data = self.ok_data(f'{BASE}/{ACC}/refunds/r-1/detail', '?order_id=o-1')
+        self.assertEqual(data['component_renders'],
+                         ['nodeStatusInfo', 'basicRefundInfo', 'progressDetail'])
+        self.assertEqual(data['components'][1]['raw']['refundFee'], '12.80')
+        self.assertIn('nodeStatusInfo', data['known_renders'])
+        self.assertEqual(data['warnings'], [])
+        call = self.fake.call_of(trade_proto.REFUND_DETAIL_API)
+        self.assertEqual(call['data'], {'orderId': 'o-1', 'refundId': 'r-1'})
+
+    def test_refund_detail_without_components_warns(self):
+        self.fake.payloads[trade_proto.REFUND_DETAIL_API] = REFUND_DETAIL_NO_COMPONENTS
+        data = self.ok_data(f'{BASE}/{ACC}/refunds/r-1/detail')
+        self.assertIsNone(data['components'])
+        self.assertEqual([w['code'] for w in data['warnings']], ['refund_detail_components_missing'])
+
+    # -- 邮费退款详情（postage.refund.detail.query） -----------------------
+
+    def test_postage_detail_is_passed_through_with_one_normalized_flag(self):
+        self.fake.payloads[trade_proto.POSTAGE_REFUND_DETAIL_API] = POSTAGE_DETAIL
+        data = self.ok_data(f'{BASE}/{ACC}/orders/o-1/postage-refund/detail',
+                            '?refund_id=r-1&refund_postage_type=SELLER')
+        self.assertEqual(data['detail']['refundFee'], '8.00')
+        self.assertIs(data['exist_processing_compensate'], False)
+        self.assertEqual(data['warnings'], [])
+        call = self.fake.call_of(trade_proto.POSTAGE_REFUND_DETAIL_API)
+        self.assertEqual(call['data'], {'orderId': 'o-1', 'refundId': 'r-1',
+                                        'refundPostageType': 'SELLER'})
+
+    def test_postage_detail_empty_module_is_null_with_a_warning(self):
+        self.fake.payloads[trade_proto.POSTAGE_REFUND_DETAIL_API] = POSTAGE_DETAIL_EMPTY
+        data = self.ok_data(f'{BASE}/{ACC}/orders/o-1/postage-refund/detail')
+        self.assertIsNone(data['detail'])
+        self.assertIsNone(data['exist_processing_compensate'])
+        self.assertEqual([w['code'] for w in data['warnings']], ['postage_refund_detail_missing'])
+
+    def test_postage_detail_requires_an_order_id(self):
+        result = trade.postage_refund_detail(ACC, '')
+        self.assertIs(result['success'], False, result)
+        self.assertEqual(result['code'], 'invalid_fields')
+        self.assertEqual(self.fake.calls, [])
+
+    # -- 邮费退款拒绝原因（postage.refund.refuse.reason.query） -------------
+
+    def test_postage_reasons_are_strings(self):
+        self.fake.payloads[trade_proto.POSTAGE_REFUND_REFUSE_REASONS_API] = POSTAGE_REASONS
+        data = self.ok_data(f'{BASE}/{ACC}/orders/o-1/postage-refund/refuse-reasons',
+                            '?default_reason=%E9%82%AE%E8%B4%B9%E9%87%91%E9%A2%9D%E4%B8%8D%E5%AF%B9')
+        self.assertEqual(data['reasons'], ['邮费金额不对', '买家未协商', '其他原因'])
+        self.assertEqual(data['warnings'], [])
+        call = self.fake.call_of(trade_proto.POSTAGE_REFUND_REFUSE_REASONS_API)
+        self.assertEqual(call['data'], {'orderId': 'o-1', 'defaultReason': '邮费金额不对'})
+
+    def test_postage_reasons_without_the_key_is_null_with_a_warning(self):
+        self.fake.payloads[trade_proto.POSTAGE_REFUND_REFUSE_REASONS_API] = POSTAGE_REASONS_NO_KEY
+        data = self.ok_data(f'{BASE}/{ACC}/orders/o-1/postage-refund/refuse-reasons')
+        self.assertIsNone(data['reasons'])
+        self.assertEqual([w['code'] for w in data['warnings']], ['postage_refund_reasons_missing'])
+
+    # -- 边界 ------------------------------------------------------------
+
+    def test_the_four_new_routes_are_read_only(self):
+        for name in REFUND_PATHS:
+            path = f'{BASE}/{ACC}/{name}'
+            for method in ('post', 'put', 'patch', 'delete'):
+                resp = getattr(self.client, method)(path, headers=self.headers)
+                self.assertEqual(resp.status_code, 405, f'{method} {path} → {resp.status_code}')
+
+    def test_platform_refusal_is_a_platform_error_not_a_logout(self):
+        self.fake.payloads[trade_proto.REFUND_REFUSE_RENDER_API] = COMPLAIN_DENIED
+        body = self.fail(f'{BASE}/{ACC}/refunds/r-1/refuse-reasons', status=502)
+        self.assertEqual(body['code'], 'protocol_error')
+        self.assertIn('NO_PERMISSION', body['message'])
+        self.assertEqual(self.login_state(), 'active', '无权限 ≠ 掉线')
+
+    def test_unknown_account_is_404_and_never_calls_platform(self):
+        body = self.fail(f'{BASE}/trade_nobody/refunds/r-1/detail', status=404)
+        self.assertEqual(body['code'], 'not_found')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_missing_cookie_is_409(self):
+        db.execute('UPDATE account_credentials SET cookie=? WHERE account_id=?', ('', ACC))
+        body = self.fail(f'{BASE}/{ACC}/orders/o-1/postage-refund/refuse-reasons', status=409)
+        self.assertEqual(body['code'], 'verification_required')
+
+    def test_requests_require_login(self):
+        resp = self.get(f'{BASE}/{ACC}/refunds/r-1/refuse-reasons', headers={})
+        self.assertIn(resp.status_code, (401, 403), resp.text)
+
+    def login_state(self) -> str:
+        row = db.query('SELECT login_state FROM account_credentials WHERE account_id=?', (ACC,))
+        return (row[0]['login_state'] if row else '') or ''
 
 
 if __name__ == '__main__':
