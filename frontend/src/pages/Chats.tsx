@@ -1047,7 +1047,11 @@ function ChatWindow({
     if (!content) return
     setSending(true)
     try {
-      const result = await api.post<SendResult>(`/api/chats/${conversation.id}/send`, { content })
+      // 点「发送」就是用户的显式确认（买家会真的收到）⇒ 带上 confirm
+      const result = await api.post<SendResult>(`/api/chats/${conversation.id}/send`, {
+        content,
+        confirm: true,
+      })
       setInput('')
       // 后端在协议层未就绪时仍会落库本地消息，但 sent=false + warning
       if (result && result.sent === false) {
