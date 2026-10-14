@@ -3422,6 +3422,13 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 两个新测试单独跑：`test_mcp_routes_match_openapi` → `Ran 7 tests ... OK`、
 > `test_write_routes_have_gates` → `Ran 4 tests ... OK`；
 > 全量 `TOTAL 62 PASS 62 FAIL 0 CASES 2711 SKIPPED 2`。
+> 本批只加测试与文档，但 `desktop/desktop.spec` 用 `collect_submodules('backend')` 收包
+> （测试文件也在内）⇒ 仍然重打包并复验：exe **10,222,166 B / 2026-10-14 21:04:36**，
+> `--port 18400` `/api/health` 200 `frozen:true`；`probe_write_gate.py` → **`GATE FAILURES: 0 / 79`**；
+> `check_assets.py` → `ASSETS_MATCH=True`（`index-D50hq6iO.js` = `d1c8cdd18790`、
+> `index-B1Z6zu0w.css` = `4e2508c29138`）；`packaged_ui_smoke.py` → **29/29 页**；
+> `scripts/contrast_audit.py --threshold 4.0` → `[dark] 0/29`、`[light] 0/29`、`NON_GET=[]`；
+> `scripts/a11y_audit.py` → 无可访问名字的按钮 0 类、没有标签的输入框 0 类、焦点不可见页面 `[]`、`NON_GET=[]`。
 
 ## 四、已验证 / 未验证（诚实边界）
 
