@@ -166,6 +166,8 @@ WRITE_PREFIX = ('trade_write_', 'trade_address_', 'promotion_write_', 'qualifica
                 'im_set_reception',
                 # 第四十七批：清未读写只有这一条（同样用完整工具名，不加 'im_' 宽前缀）
                 'im_clear_unread',
+                # 第四十九批：订单备注写只有这一条
+                'trade_add_memo',
                 # 第四十一批：纠纷协商的四条写，同样只写完整名。
                 # 故意不加 'disputes_' 宽前缀，那会把只读的 disputes_conversation 一起误判。
                 'disputes_send_text', 'disputes_send_image', 'disputes_urge',

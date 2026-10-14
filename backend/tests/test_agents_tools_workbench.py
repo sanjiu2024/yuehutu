@@ -563,6 +563,10 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
     'im_clear_unread': {
         'module': 'im_tools', 'fn': 'clear_unread', 'confirm': True,
         'method': 'POST', 'path': '/api/im/{account_id}/unread/clean'},
+    # ---- 第四十九批：订单备注（写）----
+    'trade_add_memo': {
+        'module': 'trade_write', 'fn': 'add_memo', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/{order_id}/memo'},
 }
 
 WRITE_TOOL_NAMES = list(WRITE_TOOLS)
@@ -725,6 +729,8 @@ _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
     'im_set_reception': {
         'account_id': 'acc-x', 'status': 'ONLINE', 'confirm': False},
     'im_clear_unread': {'account_id': 'acc-x', 'kind': 'session', 'confirm': False},
+    'trade_add_memo': {
+        'account_id': 'acc-x', 'order_id': 'o1', 'memo': '已电话确认', 'confirm': False},
 }
 
 

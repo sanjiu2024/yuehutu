@@ -2973,6 +2973,28 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_add_memo',
+            'description': '给一笔订单写卖家备注（官方 mtop.taobao.idle.merchant.add.memo）。'
+                           '备注**不对买家展示**，只是卖家自己的标记；官方标记只有 1~5 五个旗标'
+                           '（没有文字名）。备注不许换行、emoji、白名单外的符号，最多 50 字。'
+                           + _WRITE_HINT,
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id'},
+                    'order_id': {'type': 'string', 'description': '订单号'},
+                    'memo': {'type': 'string', 'description': '备注内容（≤50 字，不许换行/emoji）'},
+                    'memo_group': {'type': 'integer', 'description': '标记 1~5（官方五个旗标，默认 1）'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才会真的写平台'},
+                },
+                'required': ['account_id', 'order_id', 'memo', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 主管 AI（只给 MCP 侧） ----------------
     {
         'type': 'function',
@@ -3364,6 +3386,8 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'trade_refund_detail': ['trade', 'refund_detail'],
     'trade_postage_refund_detail': ['trade', 'postage_refund_detail'],
     'trade_postage_refund_reasons': ['trade', 'postage_refund_refuse_reasons'],
+    # ---- 第四十九批：订单备注（1 条写）----
+    'trade_add_memo': ['trade_write', 'add_memo'],
 
     'disputes_conversation': ['disputes', 'conversation'],
     'disputes_messages': ['disputes', 'history'],
@@ -3622,6 +3646,7 @@ _HANDLERS = {
     'trade_refund_detail': lambda a: _dispatch_service('trade_refund_detail', a),
     'trade_postage_refund_detail': lambda a: _dispatch_service('trade_postage_refund_detail', a),
     'trade_postage_refund_reasons': lambda a: _dispatch_service('trade_postage_refund_reasons', a),
+    'trade_add_memo': lambda a: _dispatch_service('trade_add_memo', a),
 
     'disputes_conversation': lambda a: _dispatch_service('disputes_conversation', a),
     'disputes_messages': lambda a: _dispatch_service('disputes_messages', a),

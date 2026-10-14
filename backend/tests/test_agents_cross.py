@@ -579,6 +579,8 @@ class MasterChatTest(unittest.TestCase):
             # ---- 第四十八批：退款处理（4 条只读）----
             'trade_refund_refuse_reasons', 'trade_refund_detail',
             'trade_postage_refund_detail', 'trade_postage_refund_reasons',
+            # ---- 第四十九批：订单备注（1 条写）----
+            'trade_add_memo',
             'master_chat',
         ]
         self.assertEqual(tools.TOOL_NAMES, expected)
@@ -622,6 +624,7 @@ class MasterChatTest(unittest.TestCase):
             'trade_compensate_refuse',
             'im_set_reception',
             'im_clear_unread',
+            'trade_add_memo',
         ]
         for name in write_tools:
             spec = tools.get_tool(name)

@@ -304,6 +304,12 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'path_params': ['account_id', 'order_id', 'service_code'],
         'body': ['reason_choices', 'reason_desc', 'proof_urls', 'is_manual', 'confirm'],
     },
+    'trade_add_memo': {
+        'method': 'POST',
+        'path': '/api/trade/{account_id}/orders/{order_id}/memo',
+        'path_params': ['account_id', 'order_id'],
+        'body': ['memo', 'memo_group', 'confirm'],
+    },
     'im_reception_status': {
         'method': 'GET', 'path': '/api/im/{account_id}/reception',
         'path_params': ['account_id'],
