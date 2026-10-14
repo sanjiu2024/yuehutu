@@ -25,7 +25,7 @@
    `platform_errors.explain`，**不会**把账号写成 `need_relogin`。只有平台真的回
    `SESSION_EXPIRED`（`common._is_session_expired` 按类名/文案认）才会标掉线。
 
-## 1. HTTP（20 个 POST + 5 个只读 GET，全部要求登录）
+## 1. HTTP（21 个 POST + 5 个只读 GET，全部要求登录）
 
 | 方法 | 路径 | body | 说明 |
 | --- | --- | --- | --- |
@@ -48,6 +48,7 @@
 | POST | `/api/trade/{account_id}/orders/{order_id}/remind` | `{order_ids?, remind_all?, confirm}` | 提醒买家确认收货（见 §10） |
 | POST | `/api/trade/{account_id}/refunds/{refund_id}/postage-pay` | `{order_id, pay_type?, amount?, confirm}` | 支付运费退款，**这一步是真的付钱**（见 §10） |
 | POST | `/api/trade/{account_id}/complaints/{complain_id}/revoke` | `{confirm}` | 撤销投诉申请（见 §10） |
+| POST | `/api/trade/{account_id}/orders/{order_id}/memo` | `{memo, memo_group?, confirm}` | 订单备注，**不对买家展示**（见 §12） |
 | **GET** | `/api/trade/{account_id}/refunds/{refund_id}/verify-token` | —（无 body，**无 `confirm`**） | 退款凭证（只读，见 §7） |
 | **GET** | `/api/trade/{account_id}/orders/{order_id}/modify-address` | —（无 body，**无 `confirm`**） | 买家改地址申请（只读，见 §9） |
 | **GET** | `/api/trade/{account_id}/orders/{order_id}/close-reasons` | —（无 body，**无 `confirm`**） | 关单可选原因（只读，见 §10） |
@@ -459,3 +460,23 @@ refuseProofs: "[\"https://.../1.png\"]", isManual}`（两个 JSON 串都用紧�
 **未验证**：这条写接口**一次真机请求都没发过** —— 拒绝赔付会真的改动平台上的维权单据，不能为了验证去动用户的单子。
 只验到：路由注册、body 被端点接受、`confirm` 闸门拦得住假确认值、界面不点最终确认就零写请求。
 另有两条只读接口的真机响应形状也**没有**样例（本机账号对赔付族接口可能无权限）。
+
+## 12. 订单备注（**写**）`add_memo` — `mtop.taobao.idle.merchant.add.memo` v1.0
+
+`POST /api/trade/{account_id}/orders/{order_id}/memo`，body `{memo, memo_group?, confirm}`。
+
+| 字段 | 类型 | 来源与说明 |
+| --- | --- | --- |
+| `memo` | string | 备注正文，官方 `maxLength={50}`；**不对买家展示** |
+| `memo_group` | int 1~5 | 官方标记位（平台上五面小旗，**没有文字名**），默认 1 |
+| `confirm` | bool | 必须**字面量 `true`**，否则 400 `confirmation_required` 且零平台请求 |
+
+- 官方五条校验逐条照抄（空 / 换行 / emoji / 白名单外符号 / 超 50 字），文案就是平台原文；
+  服务层在建客户端**之前**校验完（纯本地、免费）。
+- 成功 `data = {action: 'trade_add_memo', saved, memo, memo_group, api, warnings}`；
+  平台拒绝（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 502 `protocol_error`，**不动 `login_state`**。
+- 读回：`normalize_order` 透出 `memo` / `memo_group`（`commonData` 与 `merchantCommonData` 两处都认），
+  平台没给是 `null`（不是空串）。
+- 测试：`backend/tests/test_trade_write_api.py::MemoTest`（协议形状 / 五条校验 / 闸门 / 审计 / 路由只 POST）
+  与 `backend/tests/test_trade_api.py::OrderMemoNormalizeTest`（读回四态）。
+- 未验证：真机未执行（会真的写平台备注），读回也没有真机样本。

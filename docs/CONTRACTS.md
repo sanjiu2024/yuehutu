@@ -1260,6 +1260,19 @@ POST /api/items/{account_id}/publish/precheck
 【界面口径】拒绝退款表单的 `refuse_reason_id` 由「读取平台原因」按钮填（唯一写出口仍是 `postWrite`，
   `confirm: true` 字面量）；用户仍然可以自己粘贴 id（保留逃生通道），但默认路径是从平台给的候选里选。
 
+第四十九批（订单备注：写接口 + 读回字段；备注**不对买家展示**）
+【平台接口】`mtop.taobao.idle.merchant.add.memo` v1.0（本地 bundle 偏移 2783896 / 923021）
+  `{orderId, memo, memoGroup}`；`memoGroup` 只有 **1~5**（平台上显示成五面小旗，**没有文字名**），默认 1。
+  官方五条校验逐条抄进后端：空 / 换行 / emoji / 白名单外符号 / ≤50 字（官方原文见 HANDOFF 第四十九批）。
+【HTTP 面】`POST /api/trade/{account_id}/orders/{order_id}/memo`  body `{memo, memo_group?, confirm}`
+  成功 `{success:true, data:{action:'trade_add_memo', saved, memo, memo_group, api, warnings}}`；
+  错误码：400 `confirmation_required` / 400 `invalid_fields` / 404 `not_found` /
+  409 `verification_required` / 502 `protocol_error` / 503 `xianyu_not_ready`。
+【读回字段】`normalize_order` 现在透出 `memo` / `memo_group`（`commonData` 与详情里的
+  `merchantCommonData` **两处都认**）；平台没给就是 `null`（**不是空串**，也不补 0）。
+【界面口径】订单页写面板「订单处理」tab 的「订单备注」模式：标记下拉只给 1~5 数字（写明官方只有旗标图、
+  没有文字名），并显示这一行**现在**的备注；提交仍走唯一写出口 `postWrite`（`confirm: true` 字面量）。
+
 【写接口的三条硬口径（所有 *_write 一律遵守）】
 1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /
    `confirm_required`），**一次平台请求都不发**；
@@ -1267,13 +1280,13 @@ POST /api/items/{account_id}/publish/precheck
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 146 条 / `MASTER_TOOLS` 145 条（去掉 `master_chat` 防递归），
-其中 **66 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
-`mcp_server/client.py::TOOL_ROUTES` 147 条。五方对账（specs / master / routes / service targets / handlers）
+【AI 侧】`TOOL_SPECS` 147 条 / `MASTER_TOOLS` 146 条（去掉 `master_chat` 防递归），
+其中 **67 条是写工具**（`required` 必含 `confirm`、MCP method 必为 `POST`、description 带中文警示）；
+`mcp_server/client.py::TOOL_ROUTES` 148 条。五方对账（specs / master / routes / service targets / handlers）
 + 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用 **`scripts/reconcile_tools.py`** 一键跑，必须 `RECON OK`：
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=146 master=145 routes=147 targets=134 handlers=146 / write_tools=66 / route_checked=147 / RECON OK
+-> specs=147 master=146 routes=148 targets=135 handlers=147 / write_tools=67 / route_checked=148 / RECON OK
 ```
 > 新增写工具后**必须**同步改两处，否则一定出现假阳性/漏网：① `scripts/reconcile_tools.py` 里的
 > `WRITE_PREFIX` 元组；② `backend/tests/test_agents_cross.py` 的工具名清单（**按 `TOOL_SPECS`
