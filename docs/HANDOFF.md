@@ -3153,6 +3153,15 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `C:\Users\Administrator\.dsh-tmp\trade48_panel_shots.py` → `PROBLEMS []`（下拉 4 个 option、
 > `app_only` 那条被禁用、探针**零写请求**），截图 `logs/trade48_panel_shots/01-refuse-reasons-dark.png`
 > 与 `02-refuse-confirm-dark.png`。
+> 重打包（`build_exe.ps1 -SkipFrontend`，exe **10,210,837 B / 2026-10-14 15:11:15**，
+> `--port 18400` `/api/health` 200 `frozen:true`）后打包版六项复验全绿：
+> `probe_write_gate.py` → **`GATE FAILURES: 0 / 67`**（本批四条全是只读，写端点条数不变）；
+> `trade48_packaged_probe.py`（只用不存在的账号 `9999999999999`，**零平台请求**）→ **`PROBLEMS []`**
+> （六条只读路径全 404 `not_found` —— **不是** `route_not_found`，说明四条路由确实进了冻结包；未鉴权 401）；
+> `packaged_ui_smoke.py` → **29/29 页**；`check_assets.py` → `ASSETS_MATCH=True`
+> （`index-CZLWk0s1.js` `329654e7b40f` / `index-BqEVQYpp.css` `fb8450df5ff1`）；
+> `scripts/contrast_audit.py --threshold 4.0` → `[dark] 0/29`、`[light] 0/29`、`NON_GET=[]`；
+> `scripts/a11y_audit.py` → 三类问题全 0、焦点不可见页面 `[]`。
 
 ## 四、已验证 / 未验证（诚实边界）
 
