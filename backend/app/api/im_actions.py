@@ -1,4 +1,5 @@
-"""IM 会话操作接口（官方闲鱼客服工作台「会话 → 拉黑买家 / 发商品卡片 / 转交 / 结束 / 重新发起」）。
+"""IM 会话操作接口（官方闲鱼客服工作台「会话 → 拉黑买家 / 发商品卡片 / 转交 / 结束 /
+重新发起」+ 账号级「接待状态（在线 / 小休 / 离线）」）。
 
 为什么单开 `/api/im` 而不并进 `/api/chats`：`/api/chats` 那一族是**消息通道**的只读视图
 （会话列表、历史消息、同步），路径里全是 `chats`；这一族是**对某个会话做一件事**
@@ -98,3 +99,27 @@ def session_rejoin(account_id: str, body: Dict[str, Any] = Body(default={}),
     return _envelope(im_actions.session_rejoin(
         account_id, session_id=body.get('session_id'),
         confirm=body.get('confirm'), conversation_id=body.get('conversation_id')))
+
+
+# ------------------------------------------------------------------ 接待状态（第 46 批）
+
+
+@router.get('/{account_id}/reception')
+def reception_status(account_id: str, user: Any = Depends(current_user)):
+    """当前接待状态（只读）：`status` ∈ `ONLINE` / `REST` / `OFFLINE`。
+
+    平台没给（或给了认不出的）状态时 `status` 是 `null` + warning —— 不是「离线」。
+    `options` 是官方那三个选项（在线 / 小休 / 离线），界面直接拿它渲染。
+    """
+    return _envelope(im_actions.reception_status(account_id))
+
+
+@router.post('/{account_id}/reception')
+def set_reception(account_id: str, body: Dict[str, Any] = Body(default={}),
+                  user: Any = Depends(current_user)):
+    """切换接待状态（写，`confirm=true` 才发；接口名里的 `repect` 是官方拼写）。
+
+    平台没回 `success` 字段时 `saved` 是 `false` + warning（官方界面同样显示「切换失败」）。
+    """
+    return _envelope(im_actions.set_reception(
+        account_id, body.get('status'), confirm=body.get('confirm')))

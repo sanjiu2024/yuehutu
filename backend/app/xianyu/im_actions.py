@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """IM 会话操作（官方闲鱼客服工作台的会话级动作）：拉黑状态查询 / 拉黑买家 / 解除拉黑 /
-给买家发商品卡片 / 转交会话 / 结束会话 / 重新发起聊天。
+给买家发商品卡片 / 转交会话 / 结束会话 / 重新发起聊天 / 接待状态查询 / 切换接待状态。
 
 **接口来源（静态 bundle 反解，零风控）**：官方 IM 微应用
 `https://g.alicdn.com/idle-pc/p-im-index/…/js/index.js`（3,071,011 B，单行压缩 JS），
@@ -19,6 +19,8 @@
 * `blacklist.remove` → **1.0**
 * `message.card.send` → **1.0**
 * `customer.deliver.session` / `customer.leave.session` / `customer.rejoin.session` → **1.0**
+* `pc.login.query`（接待状态查询）→ **1.0**
+* `pc.repect.status.edit`（切换接待状态）→ **1.0**（官方拼写就是 `repect`，少一个 c）
 
 所以构造器统一返回 **三元组 `(api, data, version)`**（`xianyu/logistics.py` 那一族是二元组，
 因为那一族三条全是 `v:"1.0"`）。服务层照返回值原样发
@@ -38,7 +40,7 @@
 （消息通道那边是另一回事：`backend/app/xianyu/im.py` 的 WS 帧确实用 `_with_goofish` 补后缀。）
 
 **未验证边界**：一次真机请求都没发过（第 40/43 批的验证红线是「零平台写请求」）。
-七条接口的参数形状与成功判据全部来自 bundle 静态证据。
+九条接口的参数形状与成功判据全部来自 bundle 静态证据。
 """
 from __future__ import annotations
 
@@ -81,6 +83,29 @@ SESSION_ID_MAX = 128
 
 #: 客服 uid 的长度上限（同上；官方 `targetUid` 是数字串）。
 TARGET_UID_MAX = 64
+
+#: 当前接待状态查询（只读）。bundle `js_008_vendors.js` @1871789 `y$()`：
+#: `{api:"mtop.taobao.idlemessage.pc.login.query", v:"1.0", needLoginPC:!0, data:{}}`，
+#: 官方只在 `ret[0] === 'SUCCESS::调用成功'` 时认成功；当前接待状态在 `data.subStatus`。
+RECEPTION_QUERY_API = 'mtop.taobao.idlemessage.pc.login.query'
+
+#: 切换接待状态（写）。bundle @1871530 `yY(eu)`：
+#: `{api:"mtop.taobao.idlemessage.pc.repect.status.edit", v:"1.0", needLoginPC:!0, data:{status:eu}}`，
+#: 回执读 `data.success`（布尔）。**官方接口名拼写就是 `repect`（少一个 c），照抄不改**。
+RECEPTION_EDIT_API = 'mtop.taobao.idlemessage.pc.repect.status.edit'
+
+#: 三个接待状态（bundle @1872149 官方枚举 `eC`：ONLINE / REST / OFFLINE）。
+RECEPTION_STATUSES: Tuple[str, ...] = ('ONLINE', 'REST', 'OFFLINE')
+
+#: 官方三个选项（bundle @2022805 `xg`，label 与 description 逐字照抄官方文案）。
+RECEPTION_OPTIONS: Tuple[Dict[str, str], ...] = (
+    {'status': 'ONLINE', 'label': '在线', 'description': '可接待买家'},
+    {'status': 'REST', 'label': '小休', 'description': '只能处理已接待买家，无法接收新消息'},
+    {'status': 'OFFLINE', 'label': '离线', 'description': '不接待买家'},
+)
+
+#: 平台可能返回「当前接待状态」的键（官方读 `subStatus`，其余是防御性别名）。
+SUB_STATUS_KEYS: Tuple[str, ...] = ('subStatus', 'sub_status', 'status')
 
 #: 写能力登记。`data` 是真实字段形状，`version` 是该接口的版本号（**逐条不同，别抄**），
 #: `evidence` 是 bundle 字符偏移 + 调用点原文片段。
@@ -125,13 +150,22 @@ WRITE_APIS: Dict[str, Dict[str, str]] = {
         'evidence': ('bundle js_008_vendors.js @1229870 `th(eu)` → `data:eu`，调用点 @1230857 '
                      '`th({sessionId:ef})`，成功 toast「重新发起聊天成功」，回执读 `data.success`'),
     },
+    'reception_set': {
+        'api': RECEPTION_EDIT_API,
+        'version': '1.0',
+        'data': '{status}',
+        'evidence': ('bundle js_008_vendors.js @1871530 `yY(eu)`：'
+                     '`{api:"…pc.repect.status.edit", v:"1.0", needLoginPC:!0, data:{status:eu}}`；'
+                     '官方成功 toast「状态切换成功」、失败「状态切换失败」'
+                     '（**接口名里的 `repect` 是官方拼写**，别改成 `recept`）'),
+    },
 }
 
 #: 只读接口（`assert_read` 用它）。
-READ_APIS: Tuple[str, ...] = (BLACKLIST_QUERY_API,)
+READ_APIS: Tuple[str, ...] = (BLACKLIST_QUERY_API, RECEPTION_QUERY_API)
 
-#: 只读接口的版本号（这一条是 1.0）。
-READ_VERSIONS: Dict[str, str] = {BLACKLIST_QUERY_API: '1.0'}
+#: 只读接口的版本号（这两条都是 1.0）。
+READ_VERSIONS: Dict[str, str] = {BLACKLIST_QUERY_API: '1.0', RECEPTION_QUERY_API: '1.0'}
 
 #: 写接口的 api → version（服务层按 api 查版本）。
 WRITE_VERSIONS: Dict[str, str] = {entry['api']: entry['version'] for entry in WRITE_APIS.values()}
@@ -222,6 +256,18 @@ def _target_uid(value: Any) -> str:
     return text
 
 
+def _reception_status(value: Any) -> str:
+    """接待状态：只认官方三个枚举值（去空白 + 大写后比对）。
+
+    大小写宽容是**本地归一**：官方 UI 只发大写，但调用方（尤其模型）写 `online`
+    很常见；把它规范成 `ONLINE` 再发，与平台要求的形状一致，不会造成歧义。
+    """
+    text = _text(value).strip().upper()
+    if text not in RECEPTION_STATUSES:
+        raise ValueError('接待状态只能是 ONLINE / REST / OFFLINE')
+    return text
+
+
 # --------------------------------------------------------------------------- 请求构造
 
 
@@ -278,6 +324,20 @@ def session_rejoin_request(session_id: Any, *,
     return api, {'sessionId': _session_id(session_id)}, WRITE_VERSIONS[api]
 
 
+def reception_query_request() -> Tuple[str, Dict[str, Any], str]:
+    """当前接待状态查询：`data:{}`（不带参数），版本 1.0。"""
+    api = assert_read(RECEPTION_QUERY_API)
+    return api, {}, READ_VERSIONS[api]
+
+
+def reception_set_request(status: Any, *,
+                          confirm: Any = None) -> Tuple[str, Dict[str, Any], str]:
+    """切换接待状态：`{status}`，版本 1.0。"""
+    _need_confirm(confirm)
+    api = assert_write(RECEPTION_EDIT_API)
+    return api, {'status': _reception_status(status)}, WRITE_VERSIONS[api]
+
+
 def request_of(action: str, **kwargs: Any) -> Tuple[str, Dict[str, Any], str]:
     """按动作名拼请求（服务层只在这里做一次动作 → 构造器的映射）。"""
     builders = {
@@ -287,6 +347,7 @@ def request_of(action: str, **kwargs: Any) -> Tuple[str, Dict[str, Any], str]:
         'session_deliver': session_deliver_request,
         'session_leave': session_leave_request,
         'session_rejoin': session_rejoin_request,
+        'reception_set': reception_set_request,
     }
     builder = builders.get(_text(action).strip())
     if builder is None:
@@ -412,3 +473,23 @@ def parse_session_action(raw: Any) -> Dict[str, Any]:
     parsed['returned_session_id'] = _text(returned) or None
     parsed['returned_session_id_key'] = returned_key
     return parsed
+
+
+def parse_reception(raw: Any) -> Dict[str, Any]:
+    """当前接待状态：归一成官方三个枚举值之一，认不出就是 `None`。
+
+    官方 UI 的映射是 `'ONLINE' → 在线`、`'REST' → 小休`、**其余一律当离线**；
+    我们**不照抄这个「其余」**：平台返回 `'BUSY'` 或什么都没返回时，界面必须显示
+    「平台没说」，而不是替平台宣布「你离线了」。`raw_status` 留原样供排查。
+    """
+    raw = decode_payload(raw)
+    body = _body(raw)
+    value, key = _first_key(body, SUB_STATUS_KEYS)
+    text = _text(value).strip().upper()
+    return {
+        'status': text if text in RECEPTION_STATUSES else None,
+        'raw_status': _text(value).strip() or None,
+        'status_key': key,
+        'body_keys': sorted(str(body_key) for body_key in body),
+        'found': bool(body),
+    }

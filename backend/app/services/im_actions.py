@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """IM 会话操作服务：拉黑状态（只读）+ 拉黑买家 / 解除拉黑 / 发商品卡片 / 转交会话 /
-结束会话 / 重新发起聊天（写）。
+结束会话 / 重新发起聊天（写）+ 接待状态（读 / 写）。
 
 协议层见 `xianyu/im_actions.py`（官方 IM bundle 静态取证，零平台请求）。这里只做三件事：
 拼请求、把平台返回翻成人能看的结果、把写操作的三步顺序钉死。
@@ -64,6 +64,20 @@ MISSING_CID_CODE = 'missing_cid'
 #: 会话还没有平台 cid 时的原因文本：说清「为什么」和「怎么办」，不糊一句「参数错误」。
 MISSING_CID_MESSAGE = ('这个会话还没有平台会话 id（cid）——先在会话页点一次「同步历史会话」，'
                        '拿到 cid 之后才能拉黑 / 发商品卡片。')
+
+#: 平台没给（或给了认不出的）接待状态时的 warning —— **绝不当成「离线」**。
+WARN_RECEPTION_MISSING = {
+    'code': 'reception_status_missing',
+    'message': '平台这一次没有返回当前接待状态（或返回了认不出的值），所以这里显示「状态没查到」。'
+               '这不代表你离线了 —— 点「刷新」再看一次。',
+}
+
+#: 切换接待状态时平台没回 `success` 字段 ⇒ 不谎报成功（官方的 UI 也把「没有 success」当失败）。
+WARN_RECEPTION_NO_ECHO = {
+    'code': 'reception_no_echo',
+    'message': '平台没有明确回执（没返回 success 字段），所以这次切换**可能没有生效**。'
+               '官方界面在同样的情况下也显示「状态切换失败」——请刷新确认。',
+}
 
 
 def _text(value: Any) -> str:
@@ -228,29 +242,72 @@ def blacklist_status(account_id: str, session_id: Any,
     })
 
 
+def reception_status(account_id: str) -> Dict[str, Any]:
+    """当前接待状态（`mtop.taobao.idlemessage.pc.login.query`，版本 1.0）。
+
+    平台没给（或给了认不出的）状态时 `status=None` + warning —— **不许替平台说「离线」**。
+    `options` 是官方那三个选项（我们自己常量，不依赖平台返回），界面直接拿它渲染。
+    """
+    try:
+        api, data, version = proto.reception_query_request()
+    except ValueError as exc:
+        return common.fail(str(exc), 'invalid_fields')
+
+    value, failure = _call(account_id, api, data, version)
+    if failure is not None:
+        return failure
+    if proto.envelope_error(value):
+        return _platform_failure(value, api, '平台没有返回接待状态')
+
+    parsed = proto.parse_reception(value)
+    warnings: List[Dict[str, Any]] = []
+    if not parsed['found'] or parsed['status'] is None:
+        warnings.append(dict(WARN_RECEPTION_MISSING))
+    return _stamp({
+        'account_id': account_id,
+        'status': parsed['status'],
+        'raw_status': parsed['raw_status'],
+        'options': [dict(option) for option in proto.RECEPTION_OPTIONS],
+        'api': api,
+        'warnings': warnings,
+    })
+
+
 # --------------------------------------------------------------------------- 写
 
 
 def _write(action: str, label: str, account_id: str, audit: str,
-           confirm: Any, parser: Any = None, **kwargs: Any) -> Dict[str, Any]:
-    """六条写接口共用的一条路：确认 → 字段校验 → 建客户端 → 发 → 判回执 → 记日志 + 播事件。
+           confirm: Any, parser: Any = None, require_session: bool = True,
+           no_echo_warning: Any = None, **kwargs: Any) -> Dict[str, Any]:
+    """七条写接口共用的一条路：确认 → 字段校验 → 建客户端 → 发 → 判回执 → 记日志 + 播事件。
 
     `session_id` / `conversation_id` 在**字段校验**那一步归一成平台 cid（见 `_resolve_session`），
     归一失败就当作字段问题直接返回，不会走到建客户端。
+    `require_session=False` 给**账号级**动作用（接待状态不属于任何会话，没有 sessionId 可解析）。
 
-    `parser` 默认用 `proto.parse_action`（只判信封）；会话接管族传
+    `parser` 默认用 `proto.parse_action`（只判信封）；会话接管族与接待状态传
     `proto.parse_session_action`（多认一层「平台自己说 success=false」）。
+
+    `no_echo_warning` 给「平台必须给回执才算成功」的动作（接待状态）：解析器说
+    `platform_success is None`（平台没这个字段）时，返回 `saved=False` + 这条 warning，
+    并且**不记审计、不发事件** —— 与 `fans_price` 那一族同口径：没回执就不声称改动生效了。
     """
     problem = _confirm_gate(label, confirm)
     if problem is not None:
         return problem
-    resolved, problem = _resolve_session(account_id, kwargs.pop('session_id', None),
-                                         kwargs.pop('conversation_id', None))
-    if problem is not None:
-        return problem
+    call_kwargs = dict(kwargs)
+    if require_session:
+        resolved, problem = _resolve_session(account_id, call_kwargs.pop('session_id', None),
+                                             call_kwargs.pop('conversation_id', None))
+        if problem is not None:
+            return problem
+        call_kwargs['session_id'] = resolved
+    else:
+        call_kwargs.pop('session_id', None)
+        call_kwargs.pop('conversation_id', None)
     try:
         # 归一成 True：服务层已经判过确认，协议层那道 `is True` 只防直接误用
-        api, data, version = proto.request_of(action, confirm=True, session_id=resolved, **kwargs)
+        api, data, version = proto.request_of(action, confirm=True, **call_kwargs)
     except ValueError as exc:
         return common.fail(str(exc), 'invalid_fields')
 
@@ -267,22 +324,27 @@ def _write(action: str, label: str, account_id: str, audit: str,
         return _platform_failure(value, api, parsed['platform_message'] or f'平台没有接受这次{label}')
 
     detail = {key: item for key, item in data.items() if key != 'sessionId'}
-    detail['session_id'] = data['sessionId']
-    common.log_operation(account_id, audit, data['sessionId'], True, detail)
-    common.publish(TOPIC, {
-        'account_id': account_id,
-        'session_id': data['sessionId'],
-        'action': action,
-    })
+    session_id: Any = data.get('sessionId')
+    if session_id is not None:
+        detail['session_id'] = session_id
+    # 「平台没给回执」= 不知道有没有生效：不记审计、不发事件、saved 说 false
+    no_echo = no_echo_warning is not None and parsed.get('platform_success') is None
+    if not no_echo:
+        common.log_operation(account_id, audit, session_id, True, detail)
+        common.publish(TOPIC, {
+            'account_id': account_id,
+            'session_id': session_id,
+            'action': action,
+        })
     payload: Dict[str, Any] = {
         'account_id': account_id,
         'action': action,
         'api': api,
-        'session_id': data['sessionId'],
-        'saved': True,
+        'session_id': session_id,
+        'saved': not no_echo,
         'submitted': dict(data),
         'platform_message': parsed['platform_message'],
-        'warnings': [],
+        'warnings': [dict(no_echo_warning)] if no_echo else [],
     }
     if 'itemId' in data:
         payload['item_id'] = data['itemId']
@@ -361,4 +423,19 @@ def session_rejoin(account_id: str, session_id: Any = None, confirm: Any = None,
     if result.get('action') == 'session_rejoin':
         # 与「拉黑 / 解除」同一条纪律：动作成功才补这个便于前端说话的名
         result['rejoined'] = True
+    return result
+
+
+def set_reception(account_id: str, status: Any, confirm: Any = None) -> Dict[str, Any]:
+    """切换接待状态（`mtop.taobao.idlemessage.pc.repect.status.edit`，版本 1.0）。
+
+    **平台没回 `success` 字段时判成「可能没生效」**（`saved=False` + warning，不记审计不发事件）：
+    官方界面在同样的情况下也弹「状态切换失败」。写操作宁可说「可能没生效」，
+    也不能替平台宣称成功。平台明确回 `success=false` 时由 `_write` 统一转成 502 并透出平台原话。
+    """
+    result = _write('reception_set', '切换接待状态', account_id, 'im_reception_set',
+                    confirm, parser=proto.parse_session_action, require_session=False,
+                    no_echo_warning=WARN_RECEPTION_NO_ECHO, status=status)
+    if result.get('action') == 'reception_set':
+        result['status'] = result['submitted'].get('status')
     return result

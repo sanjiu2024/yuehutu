@@ -98,6 +98,41 @@ REJOIN_SAYS_FALSE = {
     'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功'],
 }
 
+#: 接待状态只读（第 46 批）：官方读 `data.subStatus`。
+RECEPTION_ONLINE = {
+    'success': True, 'data': {'subStatus': 'ONLINE'},
+    'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功'],
+}
+RECEPTION_REST = {
+    'success': True, 'data': {'subStatus': 'REST'},
+    'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功'],
+}
+#: 平台给了一个我们不认识的值 —— **不许猜成离线**。
+RECEPTION_UNKNOWN = {
+    'success': True, 'data': {'subStatus': 'BUSY'},
+    'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功'],
+}
+#: 平台什么都没返回。
+RECEPTION_EMPTY = {
+    'success': True, 'data': {},
+    'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功'],
+}
+#: 切换接待状态：官方读业务体里的 `data.success`。
+RECEPTION_SET_OK = {
+    'success': True, 'data': {'success': True},
+    'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功'],
+}
+#: 平台只说信封成功、业务体里没有 success ⇒ 「可能没生效」（官方 UI 同样显示失败）。
+RECEPTION_SET_NO_ECHO = {
+    'success': True, 'data': {'code': 'success'},
+    'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功'],
+}
+#: 平台明确说没切换成功。
+RECEPTION_SET_FAIL = {
+    'success': True, 'data': {'success': False, 'message': '状态切换失败，请重试'},
+    'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功'],
+}
+
 #: 三条写路由 + 各自的接口名（confirm 由用例单独塞）。
 WRITE_ROUTES: List[tuple] = [
     ('POST', f'{BASE}/{ACC}/blacklist', {'session_id': SESSION}, proto.BLACKLIST_ADD_API),
@@ -105,6 +140,11 @@ WRITE_ROUTES: List[tuple] = [
      proto.BLACKLIST_REMOVE_API),
     ('POST', f'{BASE}/{ACC}/cards', {'session_id': SESSION, 'item_id': '9001'},
      proto.CARD_SEND_API),
+]
+
+#: 第 46 批的接待状态写路由（**账号级**：body 里没有 session_id）。
+RECEPTION_WRITE_ROUTES: List[tuple] = [
+    ('POST', f'{BASE}/{ACC}/reception', {'status': 'REST'}, proto.RECEPTION_EDIT_API),
 ]
 
 #: 会话接管的三条写路由（第 43 批）：转交 / 结束 / 重新发起。
@@ -192,6 +232,8 @@ def full_client(**overrides: Any) -> FakeImClient:
         proto.SESSION_DELIVER_API: SESSION_OK,
         proto.SESSION_LEAVE_API: SESSION_OK,
         proto.SESSION_REJOIN_API: REJOIN_OK,
+        proto.RECEPTION_QUERY_API: RECEPTION_ONLINE,
+        proto.RECEPTION_EDIT_API: RECEPTION_SET_OK,
     }
     payloads.update(overrides)
     return FakeImClient(payloads)
@@ -220,11 +262,12 @@ class ImActionsProtocolTest(unittest.TestCase):
         self.assertEqual(proto.WRITE_VERSIONS[proto.CARD_SEND_API], '1.0')
         self.assertEqual(proto.READ_VERSIONS[proto.BLACKLIST_QUERY_API], '1.0')
 
-    def test_whitelist_has_three_writes_and_one_read(self):
-        self.assertEqual(proto.READ_APIS, (proto.BLACKLIST_QUERY_API,))
+    def test_whitelist_has_the_registered_writes_and_reads(self):
+        self.assertEqual(proto.READ_APIS,
+                         (proto.BLACKLIST_QUERY_API, proto.RECEPTION_QUERY_API))
         self.assertEqual(proto.ACTIONS, ('blacklist_add', 'blacklist_remove', 'card_send',
                                          'session_deliver', 'session_leave',
-                                         'session_rejoin'))
+                                         'session_rejoin', 'reception_set'))
         for action, spec in proto.WRITE_APIS.items():
             self.assertIn(spec['api'], proto.ALL_APIS, action)
             self.assertTrue(spec['evidence'], action)
@@ -676,16 +719,18 @@ class ImRoutesTest(unittest.TestCase):
         self.assertIn(('/api/im/{account_id}/sessions/transfer', 'POST'), pairs)
         self.assertIn(('/api/im/{account_id}/sessions/leave', 'POST'), pairs)
         self.assertIn(('/api/im/{account_id}/sessions/rejoin', 'POST'), pairs)
-        self.assertEqual(len(im_api.router.routes), 7)
+        self.assertIn(('/api/im/{account_id}/reception', 'GET'), pairs)
+        self.assertIn(('/api/im/{account_id}/reception', 'POST'), pairs)
+        self.assertEqual(len(im_api.router.routes), 9)
 
     def test_main_registers_the_module(self):
         import backend.app.main as app_main
         self.assertIn('im_actions', app_main.ROUTE_MODULES)
 
-    def test_only_one_read_route(self):
+    def test_read_routes_are_the_two_expected(self):
         methods = [route.methods for route in im_api.router.routes]
         get_routes = [m for m in methods if 'GET' in m]
-        self.assertEqual(len(get_routes), 1)
+        self.assertEqual(len(get_routes), 2)
 
 
 class ImConversationIdTest(ImActionsPageTest):
@@ -995,6 +1040,232 @@ class ImSessionWriteTest(ImActionsPageTest):
         self.ok_data(f'{BASE}/{ACC}/sessions/leave',
                      {'session_id': SESSION, 'confirm': True})
         self.assertIn(SESSION, str(self.operations()[0]['detail']))
+
+
+class ImReceptionProtocolTest(unittest.TestCase):
+    """接待状态（第 46 批）：接口名、版本、请求形状、确认严格性、解析三态 —— 全部离线。"""
+
+    def test_api_names_are_verbatim(self):
+        self.assertEqual(proto.RECEPTION_QUERY_API,
+                         'mtop.taobao.idlemessage.pc.login.query')
+        # 官方拼写就是 repect（少一个 c）——**照抄不改**
+        self.assertEqual(proto.RECEPTION_EDIT_API,
+                         'mtop.taobao.idlemessage.pc.repect.status.edit')
+
+    def test_versions_and_whitelists(self):
+        self.assertEqual(proto.READ_VERSIONS[proto.RECEPTION_QUERY_API], '1.0')
+        self.assertEqual(proto.WRITE_VERSIONS[proto.RECEPTION_EDIT_API], '1.0')
+        self.assertIn(proto.RECEPTION_QUERY_API, proto.READ_APIS)
+        self.assertIn(proto.RECEPTION_EDIT_API, proto.WRITE_API_SET)
+        self.assertNotIn(proto.RECEPTION_QUERY_API, proto.WRITE_API_SET)
+        self.assertIn('reception_set', proto.ACTIONS)
+
+    def test_official_options_are_verbatim(self):
+        self.assertEqual([o['status'] for o in proto.RECEPTION_OPTIONS],
+                         ['ONLINE', 'REST', 'OFFLINE'])
+        self.assertEqual([o['label'] for o in proto.RECEPTION_OPTIONS],
+                         ['在线', '小休', '离线'])
+        self.assertEqual(proto.RECEPTION_OPTIONS[1]['description'],
+                         '只能处理已接待买家，无法接收新消息')
+
+    def test_query_request_shape(self):
+        self.assertEqual(proto.reception_query_request(),
+                         (proto.RECEPTION_QUERY_API, {}, '1.0'))
+
+    def test_set_request_shape_and_case_normalisation(self):
+        for value, want in (('ONLINE', 'ONLINE'), (' rest ', 'REST'), ('Offline', 'OFFLINE')):
+            self.assertEqual(proto.reception_set_request(value, confirm=True),
+                             (proto.RECEPTION_EDIT_API, {'status': want}, '1.0'), value)
+
+    def test_unknown_status_is_rejected(self):
+        for bad in ('BUSY', '', '   ', None, 3):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                proto.reception_set_request(bad, confirm=True)
+
+    def test_confirm_gate_is_identity_not_truthiness(self):
+        """`bool('false')` 是 True ⇒ 协议层只认字面量 True（归一在服务层）。"""
+        for bad in (None, False, 0, '', 'false', 'no', 'yes', 2, 'True', 'true', 1):
+            with self.assertRaises(proto.WriteNotConfirmed, msg=repr(bad)):
+                proto.reception_set_request('ONLINE', confirm=bad)
+        self.assertIsNotNone(proto.reception_set_request('ONLINE', confirm=True))
+
+    def test_request_of_dispatches_reception_set(self):
+        self.assertEqual(proto.request_of('reception_set', status='REST', confirm=True)[0],
+                         proto.RECEPTION_EDIT_API)
+
+    def test_parse_reception_three_states(self):
+        self.assertEqual(proto.parse_reception(RECEPTION_ONLINE)['status'], 'ONLINE')
+        self.assertEqual(proto.parse_reception(RECEPTION_REST)['status'], 'REST')
+        unknown = proto.parse_reception(RECEPTION_UNKNOWN)
+        self.assertIsNone(unknown['status'])
+        self.assertEqual(unknown['raw_status'], 'BUSY')
+        empty = proto.parse_reception(RECEPTION_EMPTY)
+        self.assertIsNone(empty['status'])
+        self.assertIsNone(empty['raw_status'])
+        self.assertFalse(empty['found'])
+
+    def test_parse_reception_reads_both_containers(self):
+        self.assertEqual(proto.parse_reception({'data': {'data': {'subStatus': 'OFFLINE'}}})['status'],
+                         'OFFLINE')
+
+
+class ImReceptionReadTest(ImActionsPageTest):
+    """只读接待状态：形状、三态、平台拒绝、凭据与鉴权。"""
+
+    def test_status_returns_the_enum_and_official_options(self):
+        data = self.get(f'{BASE}/{ACC}/reception').json()['data']
+        self.assertEqual(data['status'], 'ONLINE')
+        self.assertEqual(data['raw_status'], 'ONLINE')
+        self.assertEqual([o['status'] for o in data['options']], ['ONLINE', 'REST', 'OFFLINE'])
+        self.assertEqual(data['warnings'], [])
+        self.assertEqual(data['source'], 'platform')
+        self.assertTrue(data['fetched_at'])
+        call = self.fake.call_of(proto.RECEPTION_QUERY_API)
+        self.assertEqual(call['data'], {})
+        self.assertEqual(call['v'], '1.0')
+
+    def test_unknown_status_is_null_with_warning(self):
+        self.fake.payloads[proto.RECEPTION_QUERY_API] = RECEPTION_UNKNOWN
+        data = self.get(f'{BASE}/{ACC}/reception').json()['data']
+        self.assertIsNone(data['status'])
+        self.assertEqual(data['raw_status'], 'BUSY')
+        self.assertEqual([w['code'] for w in data['warnings']], ['reception_status_missing'])
+
+    def test_empty_body_is_null_with_warning(self):
+        self.fake.payloads[proto.RECEPTION_QUERY_API] = RECEPTION_EMPTY
+        data = self.get(f'{BASE}/{ACC}/reception').json()['data']
+        self.assertIsNone(data['status'])
+        self.assertEqual([w['code'] for w in data['warnings']], ['reception_status_missing'])
+
+    def test_read_uses_a_single_platform_call(self):
+        self.get(f'{BASE}/{ACC}/reception')
+        self.assertEqual(self.fake.apis(), [proto.RECEPTION_QUERY_API])
+
+    def test_platform_refusal_is_502_without_touching_login_state(self):
+        self.fake.payloads[proto.RECEPTION_QUERY_API] = NO_PERMISSION
+        resp = self.get(f'{BASE}/{ACC}/reception')
+        self.assertEqual(resp.status_code, 502, resp.text)
+        self.assertIn('无权限访问', resp.text)
+        self.assertEqual(self.operations(), [])
+        self.assertEqual(self.login_state(), 'active')
+
+    def test_session_expiry_is_409(self):
+        self.fake.errors[proto.RECEPTION_QUERY_API] = SessionExpiredError('过期了')
+        resp = self.get(f'{BASE}/{ACC}/reception')
+        self.assertEqual(resp.status_code, 409, resp.text)
+        self.assertEqual(resp.json()['code'], 'verification_required')
+        self.assertEqual(self.login_state(), 'need_relogin')
+        self.assertEqual(self.operations(), [])
+
+    def test_unknown_account_is_404_without_platform_call(self):
+        resp = self.get(f'{BASE}/nope_acc/reception')
+        self.assertEqual(resp.status_code, 404, resp.text)
+        self.assertEqual(resp.json()['code'], 'not_found')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_missing_credentials_is_409_without_platform_call(self):
+        db.execute('DELETE FROM account_credentials')
+        remove_fake_protocol()
+        install_fake_protocol(self.fake, with_factory=False)
+        resp = self.get(f'{BASE}/{ACC}/reception')
+        self.assertEqual(resp.status_code, 409, resp.text)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_without_token_is_401(self):
+        resp = self.client.get(f'{BASE}/{ACC}/reception', headers={})
+        self.assertEqual(resp.status_code, 401, resp.text)
+        self.assertEqual(self.fake.calls, [])
+
+
+class ImReceptionWriteTest(ImActionsPageTest):
+    """切换接待状态：确认闸门（遍历伪值）、字段校验、成功、回执三态、失败。"""
+
+    def test_confirm_gate_blocks_every_false_like_value(self):
+        for bad in FALSE_LIKE:
+            self.fake.calls.clear()
+            resp = self.post(f'{BASE}/{ACC}/reception', {'status': 'REST', 'confirm': bad})
+            self.assertEqual(resp.status_code, 400, (bad, resp.text))
+            self.assertEqual(resp.json()['code'], 'confirmation_required', bad)
+            self.assertEqual(self.fake.calls, [], bad)
+
+    def test_service_normalises_truthy_strings_and_numbers(self):
+        for good in (True, 'true', ' TRUE ', 1):
+            self.fake.calls.clear()
+            data = self.ok_data(f'{BASE}/{ACC}/reception', {'status': 'REST', 'confirm': good})
+            self.assertTrue(data['saved'], good)
+            self.assertEqual(self.fake.apis(), [proto.RECEPTION_EDIT_API], good)
+
+    def test_invalid_status_is_400_before_any_platform_call(self):
+        for bad in ('BUSY', '', None):
+            self.fake.calls.clear()
+            resp = self.post(f'{BASE}/{ACC}/reception', {'status': bad, 'confirm': True})
+            self.assertEqual(resp.status_code, 400, (bad, resp.text))
+            self.assertEqual(resp.json()['code'], 'invalid_fields', bad)
+            self.assertIn('ONLINE', resp.text)
+            self.assertEqual(self.fake.calls, [], bad)
+
+    def test_field_validation_runs_before_credential_check(self):
+        """掉线 + 状态非法 ⇒ 说状态，不说「去重新登录」。"""
+        db.execute('DELETE FROM account_credentials')
+        remove_fake_protocol()
+        install_fake_protocol(self.fake, with_factory=False)
+        resp = self.post(f'{BASE}/{ACC}/reception', {'status': 'BUSY', 'confirm': True})
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertEqual(resp.json()['code'], 'invalid_fields')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_happy_path_payload_audit_and_event(self):
+        before = len(self.topics(0))
+        data = self.ok_data(f'{BASE}/{ACC}/reception', {'status': 'rest', 'confirm': True})
+        self.assertTrue(data['saved'])
+        self.assertEqual(data['action'], 'reception_set')
+        self.assertEqual(data['status'], 'REST')
+        self.assertIs(data['platform_success'], True)
+        self.assertEqual(data['submitted'], {'status': 'REST'})
+        self.assertIsNone(data['session_id'])
+        call = self.fake.call_of(proto.RECEPTION_EDIT_API)
+        self.assertEqual(call['data'], {'status': 'REST'})
+        self.assertEqual(call['v'], '1.0')
+        self.assertEqual([row['action'] for row in self.operations()], ['im_reception_set'])
+        self.assertIn('chats.changed', self.topics(before))
+
+    def test_no_echo_does_not_claim_success(self):
+        """平台没回 `success` ⇒ `saved=False` + warning，**不记审计、不发事件**。"""
+        self.fake.payloads[proto.RECEPTION_EDIT_API] = RECEPTION_SET_NO_ECHO
+        before = len(self.topics(0))
+        data = self.ok_data(f'{BASE}/{ACC}/reception', {'status': 'ONLINE', 'confirm': True})
+        self.assertIs(data['saved'], False)
+        self.assertIsNone(data['platform_success'])
+        self.assertEqual([w['code'] for w in data['warnings']], ['reception_no_echo'])
+        self.assertEqual(self.operations(), [])
+        self.assertEqual(self.topics(before), [])
+
+    def test_platform_says_false_is_502_with_the_platform_words(self):
+        self.fake.payloads[proto.RECEPTION_EDIT_API] = RECEPTION_SET_FAIL
+        resp = self.post(f'{BASE}/{ACC}/reception', {'status': 'ONLINE', 'confirm': True})
+        self.assertEqual(resp.status_code, 502, resp.text)
+        self.assertIn('状态切换失败', resp.text)
+        self.assertEqual(self.operations(), [])
+
+    def test_session_expiry_is_409_and_marks_need_relogin(self):
+        self.fake.errors[proto.RECEPTION_EDIT_API] = SessionExpiredError('过期了')
+        resp = self.post(f'{BASE}/{ACC}/reception', {'status': 'ONLINE', 'confirm': True})
+        self.assertEqual(resp.status_code, 409, resp.text)
+        self.assertEqual(resp.json()['code'], 'verification_required')
+        self.assertEqual(self.login_state(), 'need_relogin')
+        self.assertEqual(self.operations(), [])
+
+    def test_unknown_account_is_404_after_confirm(self):
+        resp = self.post(f'{BASE}/nope_acc/reception', {'status': 'ONLINE', 'confirm': True})
+        self.assertEqual(resp.status_code, 404, resp.text)
+        self.assertEqual(resp.json()['code'], 'not_found')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_only_one_platform_call_per_action(self):
+        for _method, route, body, api in RECEPTION_WRITE_ROUTES:
+            self.fake.calls.clear()
+            self.ok_data(route, dict(body, confirm=True))
+            self.assertEqual(self.fake.apis(), [api], route)
 
 
 if __name__ == '__main__':
