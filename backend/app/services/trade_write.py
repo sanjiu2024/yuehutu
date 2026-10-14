@@ -188,6 +188,50 @@ def adjust_price(account_id: str, order_id: Any, modify_fee: Any, new_transport_
                    proto.parse_write_result, proto.ADJUST_PRICE_VERSION)
 
 
+def adjust_price_render(account_id: str, order_id: Any) -> Dict[str, Any]:
+    """改价前的渲染数据 —— **只读**，所以没有 `confirm`。
+
+    官方改价弹窗打开时先调它：拿当前商品价（官方口径 = 总价 − 运费）、当前运费、
+    商品信息与 `modifyPriceTips`，再拿这些值预填两个输入框、并且**只在有改动时才允许提交**
+    （官方两条校验：「商品价格必须不能为0～」「价格没有修改～」）。
+
+    我们之前的改价面板是空白输入框 —— 卖家得凭记忆手打两个数字，打错了就是改错价。
+    平台没给 module 时给 `found=False` + 一条中文 warning（不是「价格为 0」）。
+    """
+    failure = _missing(('订单号', order_id))
+    if failure:
+        return failure
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+    api, data = proto.adjust_price_render_request(order_id)
+    raw, failure = _call_api(client, api, data, proto.ADJUST_PRICE_RENDER_VERSION)
+    if failure:
+        return failure
+    payload = proto.parse_adjust_price_render(raw)
+    payload['account_id'] = account_id
+    payload['order_id'] = _text(order_id)
+    payload['api'] = api
+    warnings = []
+    if not payload.get('found'):
+        warnings.append({
+            'code': 'adjust_price_render_missing',
+            'message': '平台没有返回这一单的改价数据（可能改了字段名，或者这单不能改价），'
+                       '这里不替你编价格；可以手动填写，或者去官方卖家工作台改。',
+        })
+    elif payload.get('origin_item_price') is None:
+        # 官方口径：商品价初值 = 订单总价 − 运费（bundle 里的 `ej(totalPrice, '-', postFee)`），
+        # 所以「算出来的」是常态、不是异常，不该每次都弹 warning；
+        # 只有**算不出来**（缺总价或缺运费）才提示，并且绝不拿 0 顶上。
+        warnings.append({
+            'code': 'adjust_price_render_item_price_unknown',
+            'message': '平台没给订单总价或运费，算不出「改后商品价格」的初值；'
+                       '这里不替你编数字，可以去官方卖家工作台改，或者手动填。',
+        })
+    payload['warnings'] = warnings
+    return _stamp(payload)
+
+
 # --------------------------------------------------------------------------- 退款处理
 
 

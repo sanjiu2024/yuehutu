@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .trade import body_of, decode_payload, envelope_error, envelope_message
@@ -152,6 +153,26 @@ MEMO_GROUPS: Tuple[int, ...] = (1, 2, 3, 4, 5)
 #: 所以我们也不替平台编名字，只给编号并如实说明。
 MEMO_GROUP_HINT = '官方这五个标记只有旗标图标、没有文字说明，这里按编号显示。'
 
+#: 改价前的渲染数据（**只读**）。官方弹窗打开时先调它，再用返回值预填输入框
+#: （`js_008_vendors.js` 偏移 **807434**）：
+#: `eL=function(eu){return G({api:"mtop.taobao.idle.trade.merchant.adjust.price.render",
+#:     v:"1.0",data:{orderId:eu}})}`
+#: 官方解析（同处 `eF`）：
+#: `{modifyPriceInfo:[{id, itemInfo:{itemId,itemImage,itemTitle,itemInfoLines},
+#:   priceAndNum:{price:auctionPrice, num:buyNum, unit:'¥'}, totalDiscount:discountFee,
+#:   originTotalPrice:totalPrice, originItemPrice:totalPrice-postFee,
+#:   modifyPriceTips:modifyPriceTips||''}],
+#:  shipFeeInfo:{address, shipFee:postFee}}`；没有 module 时官方退化成
+#: `{modifyPriceInfo:[], shipFeeInfo:{address:'', shipFee:''}}`。
+#: 注意 `originItemPrice` 官方是 `totalPrice - postFee` 的**展示字符串**：我们只读平台
+#: 原值，平台没给就是 None，**不自己拿 totalPrice 减 postFee 造一个**。
+ADJUST_PRICE_RENDER_API = 'mtop.taobao.idle.trade.merchant.adjust.price.render'
+ADJUST_PRICE_RENDER_VERSION = '1.0'
+#: IM 侧还有一个同功能变体 `mtop.taobao.idle.trade.order.modify.price.render`
+#: （`{bizOrderId}`，交易 bundle 偏移 1831677）—— 我们用的是卖家工作台那一套（登录态就是
+#: 那个站点），**故意不实现 IM 侧变体**，免得同一件事两条路。
+ADJUST_PRICE_RENDER_TIPS_KEY = 'modifyPriceTips'
+
 #: 批量类接口的单次订单数上限（官方界面按页勾选，一页最多 10~20；这里给足余量）。
 MAX_ORDER_IDS = 50
 
@@ -173,9 +194,9 @@ WRITE_APIS: Tuple[str, ...] = (
     ADD_MEMO_API,
 ) + tuple(COMPLAIN_PROOF_APIS.values())
 
-#: 本模块里**只读**的接口（查退款凭证、查关单原因）。单独列出来，免得被误当成写接口
-#: 加进黑名单，也免得有人给它加 confirm 闸门 —— 它们不改变任何平台状态。
-READ_APIS: Tuple[str, ...] = (VERIFY_URL_API, CLOSE_REASON_API)
+#: 本模块里**只读**的接口（查退款凭证、查关单原因、改价前渲染）。单独列出来，免得被误当成
+#: 写接口加进黑名单，也免得有人给它加 confirm 闸门 —— 它们不改变任何平台状态。
+READ_APIS: Tuple[str, ...] = (VERIFY_URL_API, CLOSE_REASON_API, ADJUST_PRICE_RENDER_API)
 
 
 class WriteNotConfirmed(RuntimeError):
@@ -453,6 +474,18 @@ def close_reason_request(order_id: Any) -> Tuple[str, Dict[str, Any]]:
     return CLOSE_REASON_API, {'bizOrderId': order}
 
 
+def adjust_price_render_request(order_id: Any) -> Tuple[str, Dict[str, Any]]:
+    """改价前的渲染数据（只读，不要 confirm）。
+
+    官方弹窗打开时先调它拿「当前价 / 运费 / 平台提示」，再用返回值预填输入框；
+    没有它，卖家只能凭记忆手打两个数字（这也是我们之前的面板的样子）。
+    """
+    order = _text(order_id)
+    if not order:
+        raise ValueError('订单号不能为空')
+    return ADJUST_PRICE_RENDER_API, {'orderId': order}
+
+
 def delay_confirm_request(order_ids: Any, days: Any,
                           *, confirm: bool = False) -> Tuple[str, Dict[str, Any]]:
     """延长收货时间。`days` 只认官方那四档（3/5/7/10），`delayTime` 换算成秒。"""
@@ -644,3 +677,95 @@ def parse_memo(raw: Any) -> Dict[str, Any]:
         'memo_group': _int_or_none(body.get('memoGroup')) if body else None,
     })
     return payload
+
+
+def _decimal(value: Any) -> Optional[Decimal]:
+    """把平台的金额字符串读成 `Decimal`（`''`/非数字 → None，不猜 0）。"""
+    text = _text(value).strip()
+    if not text:
+        return None
+    try:
+        return Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _money(value: Optional[Decimal]) -> Optional[str]:
+    """金额展示：两位小数（官方 `ej()` 也是两位小数口径）。"""
+    if value is None:
+        return None
+    return str(value.quantize(Decimal('0.01')))
+
+
+def _render_body(raw: Any) -> Dict[str, Any]:
+    """取出改价渲染的业务体（真机容器有 `data.module` / `data.data.module` / `data` 三种）。"""
+    body = body_of(raw)
+    for _ in range(2):
+        if not isinstance(body, dict):
+            return {}
+        inner = body.get('module')
+        if isinstance(inner, dict):
+            body = decode_payload(inner)
+            continue
+        inner = body.get('data')
+        if isinstance(inner, dict):
+            body = decode_payload(inner)
+            continue
+        break
+    return body if isinstance(body, dict) else {}
+
+
+def parse_adjust_price_render(raw: Any) -> Dict[str, Any]:
+    """改价前的渲染数据（**只读**，官方读 `resp.data.module`）。
+
+    官方字段是展示用的：`merchantItemVO.{itemId,itemPicUrl,title,itemInfoLines}`、
+    `merchantPriceVO.{auctionPrice,buyNum,discountFee,totalPrice,postFee}`、
+    `address`、`modifyPriceTips`。
+
+    `origin_item_price`（官方「改后商品价格」输入框的初值）平台**不直接给**：官方是
+    `totalPrice - postFee` 算出来的 ⇒ 我们也照这个口径算，但**必须如实标注**
+    `item_price_derived=True`，界面据此说明「这是按官方口径（总价 − 运费）推的」。
+    平台自己给了 `originItemPrice` 就用平台的，`item_price_derived=False`。
+    两个数缺一个 ⇒ `None`，绝不拿 0 顶上。
+    """
+    body = _render_body(raw)
+    body = body if isinstance(body, dict) else {}
+    item = decode_payload(body.get('merchantItemVO'))
+    item = item if isinstance(item, dict) else {}
+    price = decode_payload(body.get('merchantPriceVO'))
+    price = price if isinstance(price, dict) else {}
+
+    platform_item_price = _decimal(body.get('originItemPrice'))
+    derived = False
+    if platform_item_price is None:
+        total = _decimal(price.get('totalPrice'))
+        post = _decimal(price.get('postFee'))
+        if total is not None and post is not None:
+            platform_item_price = total - post
+            derived = True
+
+    return {
+        'found': bool(body),
+        'order_id': _text(body.get('orderId')) or None,
+        'item': {
+            'item_id': _text(item.get('itemId')) or None,
+            'item_image': _text(item.get('itemPicUrl')) or None,
+            'item_title': _text(item.get('title')) or None,
+            'item_info_lines': _or_none(item.get('itemInfoLines')),
+        },
+        'price_and_num': {
+            'price': _or_none(price.get('auctionPrice')),
+            'num': _int_or_none(price.get('buyNum')),
+            'unit': _text(price.get('unit')) or None,
+        },
+        'total_discount': _or_none(price.get('discountFee')),
+        'origin_total_price': _or_none(price.get('totalPrice')),
+        'origin_item_price': _money(platform_item_price),
+        'item_price_derived': derived,
+        'modify_price_tips': _text(body.get(ADJUST_PRICE_RENDER_TIPS_KEY)),
+        'ship_fee_info': {
+            'address': _text(body.get('address')) or None,
+            'ship_fee': _or_none(price.get('postFee')),
+        },
+        'raw_keys': sorted(body.keys())[:20],
+    }

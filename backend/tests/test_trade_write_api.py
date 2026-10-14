@@ -135,6 +135,28 @@ COMP_REFUSE_UNAUTHORIZED = {'api': cp_proto.REFUSE_API, 'ret': ['SUCCESS::调用
 MEMO_OK = {'success': True, 'data': {'memo': '已电话确认', 'memoGroup': 2},
            'message': 'SUCCESS::调用成功'}
 MEMO_NO_ECHO = {'success': True, 'message': 'SUCCESS::调用成功'}
+
+ADJUST_RENDER_OK = {'success': True, 'message': 'SUCCESS::调用成功',
+                    'data': {'module': {
+                        'orderId': '42',
+                        'address': '浙江省杭州市',
+                        'modifyPriceTips': '改价后买家需重新确认',
+                        'merchantItemVO': {'itemId': 7, 'itemPicUrl': 'u', 'title': 'T'},
+                        'merchantPriceVO': {'auctionPrice': '199.00', 'buyNum': 1,
+                                            'discountFee': '10.00',
+                                            'totalPrice': '199.00', 'postFee': '10.00'}}}}
+ADJUST_RENDER_DERIVED = {'success': True, 'message': 'SUCCESS::调用成功',
+                         'data': {'module': {
+                             'orderId': '42',
+                             'merchantItemVO': {'itemId': 7},
+                             'merchantPriceVO': {'auctionPrice': '199.00', 'buyNum': 1,
+                                                 'totalPrice': '199.00', 'postFee': '10.00'}}}}
+ADJUST_RENDER_MISSING = {'success': True, 'message': 'SUCCESS::调用成功', 'data': {}}
+ADJUST_RENDER_NO_PRICES = {'success': True, 'message': 'SUCCESS::调用成功',
+                           'data': {'module': {'orderId': '42',
+                                               'merchantItemVO': {'itemId': 7},
+                                               'merchantPriceVO': {'buyNum': 1}}}}
+
 #: 确认闸门的反例（`True`/`'true'`/`1` 之外的都不算点头）
 FALSE_LIKE = (False, None, 0, 'false', 'FALSE', 'no', 'yes', '', [], {})
 
@@ -212,6 +234,7 @@ def full_client(**overrides: Any) -> FakeTradeClient:
         cp_proto.REFUSE_FORM_API: COMP_REASONS,
         cp_proto.REFUSE_API: COMP_REFUSE_OK,
         proto.ADD_MEMO_API: MEMO_OK,
+        proto.ADJUST_PRICE_RENDER_API: ADJUST_RENDER_OK,
     }
     payloads.update(overrides)
     return FakeTradeClient(payloads)
@@ -1482,6 +1505,150 @@ class MemoWriteTest(TradeWritePageTest):
 
     def test_requires_login(self):
         resp = self.post(self.PATH, {'memo': 'a', 'confirm': True}, headers={})
+        self.assertEqual(resp.status_code, 401, resp.text)
+
+
+class AdjustPriceRenderTest(TradeWritePageTest):
+    """只读：改价渲染（GET …/orders/{order_id}/adjust-price/render）。"""
+
+    def path(self, order_id: str = '42') -> str:
+        return BASE + '/%s/orders/%s/adjust-price/render' % (ACC, order_id)
+
+    # -- 协议层 ----------------------------------------------------------
+
+    def test_api_name_version_and_registration(self):
+        self.assertEqual(proto.ADJUST_PRICE_RENDER_API,
+                         'mtop.taobao.idle.trade.merchant.adjust.price.render')
+        self.assertEqual(proto.ADJUST_PRICE_RENDER_VERSION, '1.0')
+        self.assertIn(proto.ADJUST_PRICE_RENDER_API, proto.READ_APIS)
+        self.assertNotIn(proto.ADJUST_PRICE_RENDER_API, proto.WRITE_APIS)
+
+    def test_request_is_the_official_shape(self):
+        api, data = proto.adjust_price_render_request(42)
+        self.assertEqual(api, proto.ADJUST_PRICE_RENDER_API)
+        self.assertEqual(data, {'orderId': '42'})
+        self.assertEqual(proto.ADJUST_PRICE_RENDER_VERSION, '1.0')
+        with self.assertRaises(ValueError):
+            proto.adjust_price_render_request('')
+
+    def test_parse_keeps_every_money_field_as_string(self):
+        parsed = proto.parse_adjust_price_render(ADJUST_RENDER_OK)
+        self.assertTrue(parsed['found'])
+        self.assertEqual(parsed['order_id'], '42')
+        self.assertEqual(parsed['item']['item_id'], '7')
+        self.assertEqual(parsed['price_and_num']['price'], '199.00')
+        self.assertEqual(parsed['price_and_num']['num'], 1)
+        self.assertEqual(parsed['total_discount'], '10.00')
+        self.assertEqual(parsed['origin_total_price'], '199.00')
+        self.assertEqual(parsed['origin_item_price'], '189.00')
+        self.assertTrue(parsed['item_price_derived'], '官方口径是算出来的，必须如实标注')
+        self.assertEqual(parsed['ship_fee_info']['ship_fee'], '10.00')
+
+    def test_derived_item_price_is_a_fact_not_a_warning(self):
+        # 「按官方口径算的」是常态：正常响应**不该**带任何 warning。
+        resp = self.get(self.path())
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertTrue(data['item_price_derived'])
+        self.assertEqual(data['origin_item_price'], '189.00')
+        self.assertEqual(data['warnings'], [])
+
+    def test_missing_total_or_post_fee_gives_null_and_a_warning(self):
+        self.fake.payloads[proto.ADJUST_PRICE_RENDER_API] = ADJUST_RENDER_NO_PRICES
+        resp = self.get(self.path())
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertTrue(data['found'])
+        self.assertIsNone(data['origin_item_price'])
+        self.assertFalse(data['item_price_derived'])
+        self.assertEqual([w['code'] for w in data['warnings']],
+                         ['adjust_price_render_item_price_unknown'])
+
+    def test_parse_never_invents_numbers_when_module_is_missing(self):
+        parsed = proto.parse_adjust_price_render(ADJUST_RENDER_MISSING)
+        self.assertFalse(parsed['found'])
+        self.assertIsNone(parsed['origin_item_price'])
+        self.assertIsNone(parsed['ship_fee_info']['ship_fee'])
+        self.assertIsNone(parsed['price_and_num']['price'])
+        self.assertEqual(parsed['raw_keys'], [])
+
+    # -- 服务 + 路由 ------------------------------------------------------
+
+    def test_route_is_read_only_and_calls_the_platform_once(self):
+        resp = self.get(self.path())
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertTrue(data['found'])
+        self.assertEqual(data['warnings'], [])
+        self.assertEqual(data['source'], 'platform')
+        self.assertEqual(self.fake.apis(), [proto.ADJUST_PRICE_RENDER_API])
+        self.assertEqual(self.fake.call_of(proto.ADJUST_PRICE_RENDER_API)['data'],
+                         {'orderId': '42'})
+        self.assertEqual(self.fake.call_of(proto.ADJUST_PRICE_RENDER_API)['v'], '1.0')
+
+    def test_read_path_writes_no_operation_log(self):
+        self.get(self.path())
+        self.assertEqual([row['action'] for row in self.logs()], [])
+
+    def test_missing_module_is_a_warning_and_nulls_not_zeros(self):
+        self.fake.payloads[proto.ADJUST_PRICE_RENDER_API] = ADJUST_RENDER_MISSING
+        resp = self.get(self.path())
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertFalse(data['found'])
+        self.assertIsNone(data['origin_total_price'])
+        self.assertEqual([w['code'] for w in data['warnings']],
+                         ['adjust_price_render_missing'])
+
+    def test_missing_prices_never_become_zero(self):
+        self.fake.payloads[proto.ADJUST_PRICE_RENDER_API] = ADJUST_RENDER_NO_PRICES
+        data = self.get(self.path()).json()['data']
+        self.assertIsNone(data['origin_total_price'])
+        self.assertIsNone(data['price_and_num']['price'])
+        self.assertIsNone(data['ship_fee_info']['ship_fee'])
+
+    def test_empty_order_id_is_rejected_before_the_client(self):
+        from backend.app.services import trade_write as svc
+
+        original = svc._client
+
+        def boom(account_id: str):
+            raise AssertionError('字段校验必须在建客户端之前')
+
+        svc._client = boom  # type: ignore[assignment]
+        try:
+            result = svc.adjust_price_render(ACC, '')
+        finally:
+            svc._client = original  # type: ignore[assignment]
+        self.assertEqual(result.get('code'), 'invalid_fields')
+        self.assertEqual(result.get('message'), '订单号不能为空')
+
+    def test_post_on_the_read_path_is_not_allowed(self):
+        resp = self.post(self.path())
+        self.assertEqual(resp.status_code, 405, resp.text)
+
+    def test_platform_failure_is_a_protocol_error_and_not_a_logout(self):
+        self.fake.payloads[proto.ADJUST_PRICE_RENDER_API] = UNAUTHORIZED
+        resp = self.get(self.path())
+        self.assertEqual(resp.status_code, 502, resp.text)
+        payload = resp.json()
+        self.assertEqual(payload['code'], 'protocol_error')
+        self.assertIn('FAIL_BIZ_IDLE_USER_UNAUTHORIZED',
+                      json.dumps(payload, ensure_ascii=False))
+        self.assertEqual(self.login_state(), 'active', '无权限 ≠ 掉线，不许写成 need_relogin')
+
+    def test_missing_cookie_is_409_and_never_calls_platform(self):
+        seed_account(cookie='', login_state='active')
+        resp = self.get(self.path())
+        self.assertEqual(resp.status_code, 409, resp.text)
+        self.assertEqual(self.fake.apis(), [])
+
+    def test_unknown_account_is_404(self):
+        resp = self.get('/api/trade/nope/orders/42/adjust-price/render')
+        self.assertEqual(resp.status_code, 404, resp.text)
+
+    def test_requires_login(self):
+        resp = self.get(self.path(), headers={})
         self.assertEqual(resp.status_code, 401, resp.text)
 
 

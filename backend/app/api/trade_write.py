@@ -82,6 +82,21 @@ def adjust_price(
     ))
 
 
+@router.get('/{account_id}/orders/{order_id}/adjust-price/render')
+def adjust_price_render(
+    account_id: str,
+    order_id: str,
+    user=Depends(current_user),
+):
+    """改价前的渲染数据（**只读**）：`mtop.taobao.idle.trade.merchant.adjust.price.render`。
+
+    为什么是 GET：它只查不改（不改变任何平台状态、不动钱），所以**没有 `confirm` 闸门**。
+    官方改价弹窗打开时先调它，用返回值预填「改后商品价 / 改后运费」，
+    并且只在两个值真的变了时才允许提交（官方文案「价格没有修改～」）。
+    """
+    return _envelope(trade_write.adjust_price_render(account_id, order_id))
+
+
 @router.get('/{account_id}/refunds/{refund_id}/verify-token')
 def refund_verify_token(
     account_id: str,
