@@ -803,6 +803,34 @@
   max-width: 420px;
 }
 
+/* ---------------- 接待状态（第 46 批：在线 / 小休 / 离线） ---------------- */
+
+/* 头部那个接待状态下拉：跟按钮同高，别抢走「发商品卡片」的位置 */
+.ch-head-actions .ch-im-select.ch-im-reception {
+  min-width: 118px;
+  max-width: 168px;
+  height: 30px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.ch-head-actions .ch-im-select.ch-im-reception:disabled {
+  opacity: 0.6;
+}
+
+/* 读失败 / 平台没返回时的整行提示（头部下面一条，不挡住消息流） */
+.ch-reception-hint {
+  margin: 8px 12px 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+}
+
 /* ---------------- 窄屏 ---------------- */
 
 @media (max-width: 1000px) {

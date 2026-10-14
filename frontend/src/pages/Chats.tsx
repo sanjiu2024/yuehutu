@@ -33,6 +33,7 @@ import {
   IconUser,
   IconUsers,
   IconWarn,
+  IconWifi,
   IconXCircle,
 } from '../icons'
 import { ImageViewer } from '../ImageViewer'
@@ -93,6 +94,30 @@ interface ImActionResult {
   /** 只有「重新发起」成功才补的别名，便于前端说话。 */
   rejoined?: boolean
   warnings?: string[]
+}
+
+/** 接待状态的一项（官方三条：在线 / 小休 / 离线）。 */
+interface ReceptionOption {
+  status: string
+  label: string
+  description: string
+}
+
+/**
+ * 客服接待状态（第 46 批）。
+ *
+ * `status` **可能是 `null`**：平台没返回或返回了认不出的值时后端给 `null`
+ * ——「平台没说」绝不能显示成「离线」（那会让店主以为自己在离线）。
+ */
+interface ReceptionResult {
+  account_id: string
+  status: string | null
+  raw_status: string | null
+  options: ReceptionOption[]
+  api: string
+  warnings: string[]
+  fetched_at: string
+  source: string
 }
 
 /**
@@ -698,9 +723,10 @@ function ChatWindow({
     ['chats.changed'],
   )
   const [imBusy, setImBusy] = useState('')
-  /** 需要二次确认的会话级写操作：拉黑 / 解除（第 40 批）+ 转交 / 结束 / 重新发起（第 43 批）。 */
+  /** 需要二次确认的会话级写操作：拉黑 / 解除（第 40 批）+ 转交 / 结束 / 重新发起（第 43 批）
+   *  + 接待状态（第 46 批）。 */
   const [confirmKind, setConfirmKind] = useState<
-    '' | 'add' | 'remove' | 'transfer' | 'leave' | 'rejoin' | 'card'
+    '' | 'add' | 'remove' | 'transfer' | 'leave' | 'rejoin' | 'card' | 'reception'
   >('')
   const [cardOpen, setCardOpen] = useState(false)
   const [cardItemId, setCardItemId] = useState('')
@@ -723,6 +749,26 @@ function ChatWindow({
   const agentList = agents.data?.agents ?? null
   /** `true`/`false`/`null`（平台没说）/`undefined`（还没查出来）。 */
   const blackState = blacklist.data ? blacklist.data.is_in_black : undefined
+  /**
+   * 接待状态（第 46 批）。
+   *
+   * 账号级、不跟会话走：官方接口只认账号，所以用 `conversation.account_id`。
+   * 与拉黑状态一样订阅 `chats.changed` 静默重拉（**不轮询**）。
+   */
+  const reception = useAsync<ReceptionResult>(
+    () => api.get<ReceptionResult>(`/api/im/${conversation.account_id}/reception`),
+    [conversation.account_id, tick],
+    true,
+    ['chats.changed'],
+  )
+  /** 待确认的接待状态切换（`null` = 没在确认）。 */
+  const [receptionTarget, setReceptionTarget] = useState<ReceptionOption | null>(null)
+  const receptionStatus = reception.data?.status ?? null
+  const receptionOptions = reception.data?.options ?? []
+  const receptionText = (status: string | null) => {
+    const hit = receptionOptions.find((option) => option.status === status)
+    return hit ? hit.label : status || ''
+  }
   /** 用户是不是停在底部（往上翻历史时别把他拽回来）。 */
   const stickRef = useRef(true)
 
@@ -844,6 +890,7 @@ function ChatWindow({
       setConfirmKind('')
       setCardOpen(false)
       setTransferOpen(false)
+      setReceptionTarget(null)
       refresh()
       onRefreshList()
     } catch (err) {
@@ -876,6 +923,25 @@ function ChatWindow({
       `${imBase}/cards`,
       { conversation_id: conversation.id, item_id: itemId },
       '商品卡片已发出',
+    )
+  }
+
+  /* ---- 客服接待状态（第 46 批）：在线 / 小休 / 离线 ---- */
+
+  /** 点一个接待状态：先弹二次确认（真发平台），确认后才走唯一写出口。 */
+  const askReception = (option: ReceptionOption) => {
+    if (option.status === receptionStatus) return
+    setReceptionTarget(option)
+    setConfirmKind('reception')
+  }
+
+  const submitReception = () => {
+    const target = receptionTarget
+    if (!target) return
+    void runImWrite(
+      `${imBase}/reception`,
+      { status: target.status },
+      `接待状态已切到「${target.label}」`,
     )
   }
 
@@ -919,10 +985,14 @@ function ChatWindow({
     }
     if (confirmKind === 'card') {
       sendCard()
+      return
+    }
+    if (confirmKind === 'reception') {
+      submitReception()
     }
   }
 
-  /** 二次确认框的文案：五种会话级写操作各自把后果说清楚。 */
+  /** 二次确认框的文案：六种会话级写操作各自把后果说清楚。 */
   const confirmSpec = (): { title: string; message: string; ok: string; danger: boolean } => {
     if (confirmKind === 'remove') {
       return {
@@ -969,6 +1039,17 @@ function ChatWindow({
         danger: false,
       }
     }
+    if (confirmKind === 'reception') {
+      const target = receptionTarget
+      return {
+        title: target ? `把接待状态切到「${target.label}」？` : '切换接待状态？',
+        message: target
+          ? `${target.description}。这是整个账号的接待状态（所有会话一起变），会真的改平台上的设置。`
+          : '会真的改平台上的接待状态。',
+        ok: '切换',
+        danger: target?.status !== 'ONLINE',
+      }
+    }
     return {
       title: `拉黑「${name}」？`,
       message: '拉黑后对方不能再给你发消息，会真的改平台上的拉黑名单。',
@@ -987,6 +1068,21 @@ function ChatWindow({
           : blacklist.loading
             ? '正在查拉黑状态…'
             : '平台没有返回拉黑状态（可能这个账号没有该权限），仍可以尝试拉黑'
+
+  /** 接待状态的悬浮说明（`null` 时把平台原样值也写出来 —— 不当作「离线」）。 */
+  const receptionHint = reception.error
+    ? `接待状态没查到：${reception.error}`
+    : receptionStatus
+      ? `${receptionText(receptionStatus)}${
+          receptionOptions.find((option) => option.status === receptionStatus)?.description
+            ? `：${receptionOptions.find((option) => option.status === receptionStatus)?.description}`
+            : ''
+        }`
+      : reception.loading
+        ? '正在查接待状态…'
+        : `平台没有返回接待状态${
+            reception.data?.raw_status ? `（原样值：${reception.data.raw_status}）` : ''
+          }`
 
   const mode = modeLabel(conversation.mode)
   const confirmView = confirmSpec()
@@ -1039,6 +1135,22 @@ function ChatWindow({
                         : '拉黑状态：平台未返回'}
                 </span>
               )}
+              <span
+                className={`ch-sub-item${
+                  receptionStatus && receptionStatus !== 'ONLINE' ? ' ch-sub-warn' : ''
+                }`}
+                title={receptionHint}
+              >
+                <IconWifi size={13} />
+                接待：
+                {reception.error
+                  ? '没查到'
+                  : receptionStatus
+                    ? receptionText(receptionStatus)
+                    : reception.loading
+                      ? '查询中'
+                      : '平台未返回'}
+              </span>
             </div>
           </div>
         </div>
@@ -1098,6 +1210,25 @@ function ChatWindow({
           >
             <IconChat size={14} /> 重新发起
           </button>
+          {/* 接待状态（第 46 批）：账号级开关，选一个就弹二次确认（唯一写出口带 confirm: true） */}
+          <select
+            className="ch-im-select ch-im-reception"
+            aria-label="切换接待状态"
+            title={receptionHint}
+            value={receptionStatus || ''}
+            disabled={Boolean(imBusy) || reception.loading || receptionOptions.length === 0}
+            onChange={(event) => {
+              const option = receptionOptions.find((item) => item.status === event.target.value)
+              if (option) askReception(option)
+            }}
+          >
+            {!receptionStatus && <option value="">接待状态：没查到</option>}
+            {receptionOptions.map((option) => (
+              <option key={option.status} value={option.status}>
+                接待：{option.label}
+              </option>
+            ))}
+          </select>
           <button className="btn sm ghost" onClick={refresh}>
             <IconRefresh size={14} /> 刷新
           </button>
@@ -1115,6 +1246,17 @@ function ChatWindow({
           </button>
         </div>
       </div>
+
+      {/* 接待状态读失败或平台没返回时，把后端的中文原话摆出来（不静默、也不当成「离线」） */}
+      {(reception.error || (reception.data && !receptionStatus)) && (
+        <p className="ch-im-hint ch-im-warn ch-reception-hint">
+          {reception.error
+            ? `接待状态读失败：${reception.error}`
+            : `平台没有返回接待状态${
+                reception.data?.raw_status ? `（原样值：${reception.data.raw_status}）` : ''
+              }，这里不当作「离线」。`}
+        </p>
+      )}
 
       <div
         className="ch-stream"
