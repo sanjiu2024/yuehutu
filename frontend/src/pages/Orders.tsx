@@ -543,6 +543,8 @@ export type WriteKind =
   | 'resend'
   // ---- 第四十五批：赔付 / 维权（拒绝赔付，端点挂在 /api/trade 的 compensations 下）----
   | 'compensate-refuse'
+  // ---- 第四十九批：订单备注（官方 add.memo，备注不对买家展示）----
+  | 'memo'
 
 type WriteGroup = 'order' | 'ship' | 'price' | 'refund' | 'rate' | 'complain' | 'compensate'
 
@@ -552,6 +554,10 @@ export interface WriteDraft {
   orderId?: string
   refundId?: string
   complainId?: string
+  /** 打开「订单备注」时带上这一行已有的备注（平台没给就是空串）。 */
+  memo?: string
+  /** 已有的标记位 1~5（平台没给就是 undefined，面板里默认 1）。 */
+  memoGroup?: number
 }
 
 type WriteOutcome =
@@ -642,6 +648,8 @@ interface WriteExtra {
   manualRefuse: boolean
   /** 拒绝赔付选中的原因（候选来自只读的 refuse.render，多选）。 */
   compReasons: string[]
+  /** 订单备注的标记位 1~5（官方只有五个旗标图，没有文字名）。 */
+  memoGroup: string
 }
 
 /** 一条平台给的拒绝原因（`refund.refuse.render` → `refuseReasonList[]`）。 */
@@ -658,7 +666,7 @@ interface WriteFormSpec {
   desc: ReactNode
   fields: WriteFieldSpec[]
   extras?: 'rate' | 'proof-kind' | 'close-reason' | 'delay-days' | 'pay-type' | 'remind-all'
-    | 'compensate' | 'refund-reasons'
+    | 'compensate' | 'refund-reasons' | 'memo-group'
   path: (accountId: string, value: (name: string) => string) => string
   body: (value: (name: string) => string, extra: WriteExtra) => Record<string, unknown>
   /** 额外校验：返回非空文案表示不通过（必填项由 `required` 统一判）。 */
@@ -872,6 +880,38 @@ const WRITE_SPECS: Record<WriteKind, WriteFormSpec> = {
     body: (value) => ({ close_reason: value('close_reason').trim() }),
   },
 
+  /**
+   * 订单备注（第四十九批）：`mtop.taobao.idle.merchant.add.memo`。
+   * **备注不对买家展示**，只是卖家自己在后台的标记；官方标记位只有 1~5（平台上显示成五面小旗，
+   * 没有文字名）。官方校验：不许空、不许换行、不许 emoji、不许白名单外的符号，最多 50 字
+   * （后端把这些逐条抄了一遍）。
+   */
+  memo: {
+    title: '订单备注',
+    action: '写订单备注',
+    desc: (
+      <>
+        平台接口 <code>mtop.taobao.idle.merchant.add.memo</code>。
+        <strong>备注不对买家展示</strong>，只是你自己在后台的标记。最多 50 字，不能换行、不能带 emoji。
+      </>
+    ),
+    fields: [
+      { name: 'order_id', label: '订单号', required: true, placeholder: '订单号' },
+      {
+        name: 'memo',
+        label: '备注内容',
+        required: true,
+        multiline: true,
+        placeholder: '例如：已电话确认发货时间',
+        hint: '≤50 字；换行、emoji 和特殊符号平台自己会拦。',
+      },
+    ],
+    extras: 'memo-group',
+    path: (accountId, value) => idPath(accountId, value, 'order_id', 'orders/{id}/memo'),
+    body: (value, extra) => ({ memo: value('memo').trim(), memo_group: Number(extra.memoGroup) }),
+    check: (value) => (value('memo').trim().length > 50 ? '备注最多 50 字' : ''),
+  },
+
   delay: {
     title: '延长收货时间',
     action: '延长收货',
@@ -1011,6 +1051,7 @@ const WRITE_MODES: Partial<Record<WriteGroup, Array<{ value: WriteKind; label: s
     { value: 'close', label: '关闭订单' },
     { value: 'delay', label: '延长收货时间' },
     { value: 'remind', label: '提醒确认收货' },
+    { value: 'memo', label: '订单备注' },
   ],
   ship: [
     { value: 'ship', label: '自己联系物流' },
@@ -1044,7 +1085,7 @@ const GROUP_DEFAULT_KIND: Record<WriteGroup, WriteKind> = {
 }
 
 function groupOf(kind: WriteKind): WriteGroup {
-  if (kind === 'close' || kind === 'delay' || kind === 'remind') return 'order'
+  if (kind === 'close' || kind === 'delay' || kind === 'remind' || kind === 'memo') return 'order'
   if (kind === 'ship' || kind === 'ship-dummy' || kind === 'resend') return 'ship'
   if (kind === 'adjust-price') return 'price'
   if (kind === 'refund-agree' || kind === 'refund-refuse' || kind === 'postage-pay') return 'refund'
@@ -1054,7 +1095,7 @@ function groupOf(kind: WriteKind): WriteGroup {
 }
 
 /**
- * 交易写操作面板：8 个写端点收在一个弹窗里（评价页 / 投诉页不在写范围内，
+ * 交易写操作面板：16 个写端点收在一个弹窗里（评价页 / 投诉页不在写范围内，
  * 所以那两类操作以本面板的 tab 形式提供）。
  *
  * 每一次提交都要过 `ConfirmDialog`（危险色），确认文案写明「会真的改动闲鱼平台上的订单数据，
@@ -1073,6 +1114,7 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
     trade_ids: draft.orderId ?? '',
     refund_id: draft.refundId ?? '',
     complain_id: draft.complainId ?? '',
+    memo: draft.memo ?? '',
   }))
   const [rate, setRate] = useState('-1')
   const [anonymous, setAnonymous] = useState(false)
@@ -1114,6 +1156,8 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
   const [compPicked, setCompPicked] = useState<string[]>([])
   const [compWarnings, setCompWarnings] = useState<string[]>([])
   const [manualRefuse, setManualRefuse] = useState(false)
+  // 第四十九批：订单备注的标记位（1~5，官方只有旗标图，没有文字名）。
+  const [memoGroup, setMemoGroup] = useState(String(draft.memoGroup ?? 1))
   // 第四十八批：拒绝退款的原因（只读 `refund.refuse.render`）
   const [rrBusy, setRrBusy] = useState(false)
   const [rrError, setRrError] = useState('')
@@ -1414,7 +1458,7 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
     setError('')
     const outcome = await postWrite(
       spec.path(accountId, value),
-      spec.body(value, { rate, anonymous, proofKind, delayDays, payType, remindAll, manualRefuse, compReasons: compPicked }),
+      spec.body(value, { rate, anonymous, proofKind, delayDays, payType, remindAll, manualRefuse, compReasons: compPicked, memoGroup }),
     )
     setBusy(false)
     if (!outcome.ok) {
@@ -1802,6 +1846,27 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
                 ))}
               </div>
             )}
+            {spec.extras === 'memo-group' && (
+              <Field
+                label="备注标记（1~5）"
+                tip="官方只有五个旗标图、没有文字名，所以这里只给 1~5 的数字；选哪个只是你自己的分类习惯。"
+              >
+                <select
+                  className="tr-write-select"
+                  value={memoGroup}
+                  onChange={(event) => setMemoGroup(event.target.value)}
+                >
+                  {['1', '2', '3', '4', '5'].map((item) => (
+                    <option key={item} value={item}>标记 {item}</option>
+                  ))}
+                </select>
+                <div className="tr-sub">
+                  {draft.memo
+                    ? `这一行现在的备注：${draft.memo}（标记 ${draft.memoGroup ?? '-'}）`
+                    : '这一行现在没有备注。'}
+                </div>
+              </Field>
+            )}
             {spec.extras === 'refund-reasons' && (
               <div className="tr-field tr-write-reasons">
                 <span>
@@ -1937,6 +2002,7 @@ export function TradeWritePanel({ accountId, draft, onClose, onChanged }: {
                 {spec.extras === 'delay-days' && <li>days：{delayDays}（delayTime = {delayDays} × 86400 秒）</li>}
                 {spec.extras === 'pay-type' && <li>pay_type：{payType}</li>}
                 {spec.extras === 'remind-all' && <li>remind_all：{remindAll ? '是' : '否'}</li>}
+                {spec.extras === 'memo-group' && <li>memo_group：{memoGroup}</li>}
                 {spec.extras === 'compensate' && (
                   <li>
                     reason_choices：{compPicked.length > 0 ? compPicked.join('、') : '-'} · is_manual：
@@ -1992,6 +2058,10 @@ interface TradeOrder {
   buyer_apply_modify_address?: boolean | null
   consign_tips?: string[]
   buttons?: unknown[]
+  /** 卖家自己的备注（`commonData.memo`，第四十九批透出）。平台没给就是 null。 */
+  memo?: string | null
+  /** 备注标记位 1~5（`commonData.memoGroup`）。平台没给就是 null。 */
+  memo_group?: number | null
 }
 
 interface OrderTab { code: string; label: string | null; count: number | null }
@@ -2489,8 +2559,8 @@ export function OrdersPage() {
             <button
               className="btn sm danger"
               disabled={!accountId || !orderId}
-              title="订单处理：关闭订单 / 延长收货时间 / 提醒确认收货 —— 三个都会真的改动平台数据"
-              onClick={() => setWrite({ kind: 'close', orderId })}
+              title="订单处理：关闭订单 / 延长收货时间 / 提醒确认收货 / 订单备注 —— 都会真的改动平台数据"
+              onClick={() => setWrite({ kind: 'close', orderId, memo: String(row.memo ?? ''), memoGroup: row.memo_group ?? undefined })}
             >
               <IconClock size={13} /> 订单处理
             </button>
@@ -2549,7 +2619,7 @@ export function OrdersPage() {
           <button
             className="btn sm danger"
             disabled={!accountId}
-            title={accountId ? '13 个写端点都在这个面板里，每次都要二次确认' : '先选一个账号'}
+            title={accountId ? '16 个写端点都在这个面板里，每次都要二次确认' : '先选一个账号'}
             onClick={() => setWrite({ kind: 'close' })}
           >
             <IconShield size={14} /> 交易写操作
