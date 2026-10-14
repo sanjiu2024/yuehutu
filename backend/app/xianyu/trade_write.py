@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .trade import body_of, decode_payload, envelope_error, envelope_message
@@ -136,6 +137,21 @@ PC_TTID = '1@tbwang_mac_1.0.0#pc'
 COMPLAIN_REVOKE_API = 'mtop.taobao.idle.cco.shop.complain.apply.revoke'
 COMPLAIN_REVOKE_VERSION = '1.0'
 
+#: 订单备注（卖家自己的标记，**不对买家展示**）。两处官方调用点逐字相同
+#: （交易 bundle 偏移 **2783896**、`js_008_vendors.js` 偏移 923021）：
+#: `hO({api:"mtop.taobao.idle.merchant.add.memo",v:"1.0",data:{orderId,memo,memoGroup}})`。
+#: `memoGroup` 是 **1~5 的整数**（官方 `eL` 五张旗标图，`defaultValue:"1"`；读回时
+#: `Number(merchantCommonData.memoGroup)`）。`memo` 官方上限 **50 字**，不许换行 /
+#: emoji / 白名单外的符号（提示原文见 `memo_problem()`）；成功 toast「保存成功！」。
+#: 官方输入框 placeholder：「请输入订单备注信息，此备注信息不对用户展示」。
+ADD_MEMO_API = 'mtop.taobao.idle.merchant.add.memo'
+ADD_MEMO_VERSION = '1.0'
+MEMO_MAX_LENGTH = 50
+MEMO_GROUPS: Tuple[int, ...] = (1, 2, 3, 4, 5)
+#: 官方那五个标记**只有旗标图标**（`img.alicdn.com/...-45-45.png`），没有文字名 ——
+#: 所以我们也不替平台编名字，只给编号并如实说明。
+MEMO_GROUP_HINT = '官方这五个标记只有旗标图标、没有文字说明，这里按编号显示。'
+
 #: 批量类接口的单次订单数上限（官方界面按页勾选，一页最多 10~20；这里给足余量）。
 MAX_ORDER_IDS = 50
 
@@ -154,6 +170,7 @@ WRITE_APIS: Tuple[str, ...] = (
     BATCH_REMIND_API,
     POSTAGE_PAY_API,
     COMPLAIN_REVOKE_API,
+    ADD_MEMO_API,
 ) + tuple(COMPLAIN_PROOF_APIS.values())
 
 #: 本模块里**只读**的接口（查退款凭证、查关单原因）。单独列出来，免得被误当成写接口
@@ -166,8 +183,13 @@ class WriteNotConfirmed(RuntimeError):
 
 
 def require_confirm(confirm: bool, action: str) -> None:
-    """写操作闸门：未确认直接抛，绝不默认执行。"""
-    if not confirm:
+    """写操作闸门：**只认字面量 `True`**，未确认直接抛，绝不默认执行。
+
+    为什么不是 `if not confirm`：`bool('false')` 是 `True`、`bool(1)` 也是 `True` ——
+    宽松写法会让「字符串 false」把闸门顶开（第 38 批在路由层真踩过这个洞）。
+    服务层负责把 `'true'` / `1` 这类写法归一成 `True`（`_truthy`），协议层只认结果。
+    """
+    if confirm is not True:
         raise WriteNotConfirmed(f'{action} 是写操作，需要显式确认（confirm=True）后才会提交')
 
 
@@ -215,6 +237,38 @@ def _list_of(value: Any) -> List[Any]:
     if isinstance(value, (list, tuple)):
         return [item for item in value if item is not None and item != '']
     return [value]
+
+
+#: 官方备注校验用的两个正则，**逐字**抄自 bundle（偏移 2783896 一带）：
+#: 白名单 `^[\u4e00-\u9fa5a-zA-Z0-9\s，。！？；：""''（）【】《》、—.,:!?;'"()\[\]<>/\-]+$`
+#: 与 emoji 区间。官方只有这两条 + 换行 + 非空，长度由输入框 `maxLength:50` 兜。
+MEMO_ALLOWED_RE = re.compile(
+    r'^[\u4e00-\u9fa5a-zA-Z0-9\s，。！？；：\u201c\u201d\u2018\u2019（）【】《》、—.,:!?;\'\"()\[\]<>/\-]+$'
+)
+MEMO_EMOJI_RE = re.compile(
+    '[\U0001F600-\U0001F64F]|[\U0001F300-\U0001F5FF]|[\U0001F680-\U0001F6FF]'
+    '|[\U0001F1E0-\U0001F1FF]|[\u2600-\u26FF]|[\u2700-\u27BF]'
+)
+
+
+def memo_problem(memo: Any) -> str:
+    """订单备注的校验，返回 `''` 表示通过。
+
+    前四条**逐字照抄官方提示**（顺序也一致：非空 → 换行 → emoji → 白名单）；
+    长度那条是我们自己加的（官方靠输入框 `maxLength` 拦，接口层没有这句话）。
+    """
+    text = _text(memo)
+    if not text.strip():
+        return '输入内容不能为空~'
+    if '\n' in text or '\r' in text:
+        return '输入内容不支持换行~'
+    if MEMO_EMOJI_RE.search(text):
+        return '输入内容不支持emoji表情~'
+    if not MEMO_ALLOWED_RE.match(text):
+        return '输入内容包含不支持的特殊符号~'
+    if len(text) > MEMO_MAX_LENGTH:
+        return f'备注最多 {MEMO_MAX_LENGTH} 个字，现在有 {len(text)} 个'
+    return ''
 
 
 def yuan_to_fen(amount: Any) -> str:
@@ -445,6 +499,26 @@ def complain_revoke_request(complain_id: Any,
     return COMPLAIN_REVOKE_API, {'complainId': complain}
 
 
+def add_memo_request(order_id: Any, memo: Any, memo_group: Any = 1,
+                     *, confirm: bool = False) -> Tuple[str, Dict[str, Any]]:
+    """订单备注。`memoGroup` 只认 1~5（官方五张旗标图），`memo` 走 `memo_problem()`。
+
+    官方写的是**整份**（备注 + 标记一起发），所以这里两样都要给。
+    """
+    require_confirm(confirm, '订单备注')
+    order = _text(order_id)
+    if not order:
+        raise ValueError('订单号不能为空')
+    text = _text(memo)
+    problem = memo_problem(text)
+    if problem:
+        raise ValueError(problem)
+    group = _int_or_none(memo_group)
+    if group is None or group not in MEMO_GROUPS:
+        raise ValueError('订单标记只能是 1~5（官方五个旗标，没有文字名）')
+    return ADD_MEMO_API, {'orderId': order, 'memo': text, 'memoGroup': group}
+
+
 # --------------------------------------------------------------------------- 响应解析
 
 def parse_write_result(raw: Any) -> Dict[str, Any]:
@@ -550,5 +624,23 @@ def parse_batch_result(raw: Any) -> Dict[str, Any]:
         'total_num': _int_or_none(module.get('totalNum')),
         'success_num': _int_or_none(module.get('successNum')),
         'fail_order_infos': _or_none(module.get('failOrderInfos')),
+    })
+    return payload
+
+
+def parse_memo(raw: Any) -> Dict[str, Any]:
+    """订单备注的写入结果。
+
+    官方只看成功/失败（成功 toast「保存成功！」），**没有任何回执字段** ——
+    所以平台没给业务体时 `echoed=False`，服务层据此加 warning，
+    不谎报「平台已确认这条备注生效了」。
+    """
+    payload = parse_write_result(raw)
+    body = payload['platform_body']
+    body = body if isinstance(body, dict) else {}
+    payload.update({
+        'echoed': bool(body),
+        'memo': (_text(body.get('memo')) or None) if body else None,
+        'memo_group': _int_or_none(body.get('memoGroup')) if body else None,
     })
     return payload

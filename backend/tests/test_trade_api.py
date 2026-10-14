@@ -688,6 +688,39 @@ class TradePagingTest(TradePageTest):
                          {'pageNumber': 1, 'rowsPerPage': 50})
 
 
+class OrderMemoNormalizeTest(unittest.TestCase):
+    """`normalize_order` 要透出订单备注（第四十九批补的字段）。
+
+    **为什么单独钉**：备注写接口（`mtop.taobao.idle.merchant.add.memo`）写完之后，
+    界面得能把**当前**备注显示出来，否则用户只能靠「保存成功」猜。官方读回有两处：
+    订单列表行的 `commonData.memo/memoGroup` 与详情里的 `merchantCommonData.*`
+    （交易 bundle 偏移 2069748）⇒ 两处都认；**平台没给就是 None**，不许造空串。
+    """
+
+    def test_memo_comes_from_common_data(self):
+        out = trade_proto.normalize_order({'commonData': {'orderId': '1', 'memo': '已电话确认',
+                                                          'memoGroup': 3}})
+        self.assertEqual(out['memo'], '已电话确认')
+        self.assertEqual(out['memo_group'], 3)
+
+    def test_memo_falls_back_to_merchant_common_data(self):
+        out = trade_proto.normalize_order({'merchantCommonData': {'orderId': '1', 'memo': '老客户',
+                                                                  'memoGroup': '2'}})
+        self.assertEqual(out['memo'], '老客户')
+        self.assertEqual(out['memo_group'], 2)
+
+    def test_missing_memo_is_none_not_empty_string(self):
+        out = trade_proto.normalize_order({'commonData': {'orderId': '1'}})
+        self.assertIsNone(out['memo'])
+        self.assertIsNone(out['memo_group'])
+
+    def test_empty_memo_is_none(self):
+        out = trade_proto.normalize_order({'commonData': {'orderId': '1', 'memo': '',
+                                                          'memoGroup': 1}})
+        self.assertIsNone(out['memo'])
+        self.assertEqual(out['memo_group'], 1)
+
+
 class AddressNormalizeTest(unittest.TestCase):
     """`normalize_address` 的字段口径（bundle 两处读法都要认，但绝不造字段）。
 

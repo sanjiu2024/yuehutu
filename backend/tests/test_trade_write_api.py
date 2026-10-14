@@ -130,6 +130,11 @@ COMP_REFUSE_FAIL = {'api': cp_proto.REFUSE_API, 'ret': ['SUCCESS::调用成功']
 COMP_REFUSE_UNAUTHORIZED = {'api': cp_proto.REFUSE_API, 'ret': ['SUCCESS::调用成功'],
                             'data': {'module': {'success': False,
                                                 'failReason': 'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问'}}}
+#: 第四十九批：订单备注（`mtop.taobao.idle.merchant.add.memo`）—— 官方这条**没有回执字段**，
+#: 成功只有信封；`MEMO_NO_ECHO` 就是「平台收下了但什么都没回」的真实形状。
+MEMO_OK = {'success': True, 'data': {'memo': '已电话确认', 'memoGroup': 2},
+           'message': 'SUCCESS::调用成功'}
+MEMO_NO_ECHO = {'success': True, 'message': 'SUCCESS::调用成功'}
 #: 确认闸门的反例（`True`/`'true'`/`1` 之外的都不算点头）
 FALSE_LIKE = (False, None, 0, 'false', 'FALSE', 'no', 'yes', '', [], {})
 
@@ -206,6 +211,7 @@ def full_client(**overrides: Any) -> FakeTradeClient:
         cp_proto.DETAIL_API: COMP_DETAIL,
         cp_proto.REFUSE_FORM_API: COMP_REASONS,
         cp_proto.REFUSE_API: COMP_REFUSE_OK,
+        proto.ADD_MEMO_API: MEMO_OK,
     }
     payloads.update(overrides)
     return FakeTradeClient(payloads)
@@ -1366,6 +1372,117 @@ class CompensateRoutesTest(CompensatePageTest):
     def test_get_on_the_write_path_is_not_allowed(self):
         resp = self.get(self.refuse_path())
         self.assertIn(resp.status_code, (404, 405), resp.text)
+
+
+class MemoWriteTest(TradeWritePageTest):
+    """第四十九批：订单备注（`mtop.taobao.idle.merchant.add.memo`）。
+
+    这条接口最容易犯的三个错：把「备注不对买家展示」写成对买家可见、把官方四条校验
+    提示换成人话（用户核对时对不上）、平台没回执时谎报「已生效」。
+    """
+
+    PATH = BASE + '/%s/orders/1/memo' % ACC
+
+    def setUp(self):
+        super().setUp()
+        self.fake.payloads[proto.ADD_MEMO_API] = MEMO_OK
+
+    # -- 协议层 ----------------------------------------------------------
+
+    def test_api_name_version_and_registration(self):
+        self.assertEqual(proto.ADD_MEMO_API, 'mtop.taobao.idle.merchant.add.memo')
+        self.assertEqual(proto.ADD_MEMO_VERSION, '1.0')
+        self.assertIn(proto.ADD_MEMO_API, proto.WRITE_APIS)
+        self.assertNotIn(proto.ADD_MEMO_API, proto.READ_APIS)
+        # 只读层的写黑名单必须是写协议层的**超集**
+        self.assertIn(proto.ADD_MEMO_API, trade_proto.WRITE_APIS)
+
+    def test_request_is_the_official_shape(self):
+        api, data = proto.add_memo_request('123', '已电话确认', 2, confirm=True)
+        self.assertEqual(api, proto.ADD_MEMO_API)
+        self.assertEqual(data, {'orderId': '123', 'memo': '已电话确认', 'memoGroup': 2})
+        self.assertEqual(proto.add_memo_request('1', 'a', confirm=True)[1]['memoGroup'], 1)
+
+    def test_group_must_be_one_to_five(self):
+        for value in (0, 6, 'x', None, ''):
+            with self.assertRaises(ValueError, msg=repr(value)):
+                proto.add_memo_request('1', 'a', value, confirm=True)
+
+    def test_protocol_gate_only_accepts_literal_true(self):
+        for value in (False, None, 'false', 0, 'no', 1, 'true', ' TRUE '):
+            with self.assertRaises(proto.WriteNotConfirmed, msg=repr(value)):
+                proto.add_memo_request('1', 'a', 1, confirm=value)
+
+    def test_official_validation_messages_are_reused_verbatim(self):
+        cases = (('', '输入内容不能为空~'),
+                 ('第一行\n第二行', '输入内容不支持换行~'),
+                 ('带表情😀', '输入内容不支持emoji表情~'),
+                 ('特殊￥符号', '输入内容包含不支持的特殊符号~'),
+                 ('x' * 51, '备注最多 50 个字，现在有 51 个'))
+        for memo, expected in cases:
+            self.assertEqual(proto.memo_problem(memo), expected, memo)
+        for good in ('普通备注', 'A1 空格 与标点，。！？', 'a-b/c(1)[2]<3>'):
+            self.assertEqual(proto.memo_problem(good), '', good)
+
+    def test_parse_memo_reports_missing_echo(self):
+        parsed = proto.parse_memo(MEMO_OK)
+        self.assertTrue(parsed['echoed'])
+        self.assertEqual(parsed['memo'], '已电话确认')
+        self.assertEqual(parsed['memo_group'], 2)
+        parsed = proto.parse_memo(MEMO_NO_ECHO)
+        self.assertFalse(parsed['echoed'])
+        self.assertIsNone(parsed['memo'])
+        self.assertIsNone(parsed['memo_group'])
+
+    # -- 服务层 / 路由 ---------------------------------------------------
+
+    def test_confirm_gate_blocks_every_false_like_value(self):
+        for value in ('false', 'no', '0', 0, '', None, 2):
+            payload = self.fail(self.PATH, {'memo': 'a', 'confirm': value})
+            self.assertEqual(payload.get('code'), 'confirmation_required', repr(value))
+        self.assertEqual(self.fake.calls, [], '没确认却发了平台请求')
+
+    def test_bad_memo_is_rejected_before_the_client(self):
+        payload = self.fail(self.PATH, {'memo': '带😀', 'confirm': True})
+        self.assertEqual(payload.get('code'), 'invalid_fields')
+        self.assertIn('emoji', payload.get('message', ''))
+        self.assertEqual(self.fake.calls, [], '字段校验必须早于建客户端')
+
+    def test_happy_path_sends_the_official_payload_and_audits(self):
+        data = self.ok_data(self.PATH, {'memo': '已电话确认', 'memo_group': 2, 'confirm': True})
+        self.assertEqual(self.fake.apis(), [proto.ADD_MEMO_API])
+        self.assertEqual(self.fake.call_of(proto.ADD_MEMO_API)['data'],
+                         {'orderId': '1', 'memo': '已电话确认', 'memoGroup': 2})
+        self.assertEqual(data.get('action'), 'trade_add_memo')
+        self.assertEqual(data.get('submitted'), {'memo_length': 5, 'memo_group': '2'})
+        self.assertFalse(data.get('warnings'), data.get('warnings'))
+        self.assertIn('trade_add_memo', [row['action'] for row in self.logs()])
+
+    def test_missing_echo_becomes_a_warning_not_a_lie(self):
+        self.fake.payloads[proto.ADD_MEMO_API] = MEMO_NO_ECHO
+        data = self.ok_data(self.PATH, {'memo': 'a', 'confirm': True})
+        codes = [item.get('code') for item in (data.get('warnings') or [])]
+        self.assertEqual(codes, ['trade_memo_no_echo'])
+        self.assertIn('核对', json.dumps(data, ensure_ascii=False))
+
+    def test_platform_failure_is_passed_through_and_not_a_logout(self):
+        self.fake.payloads[proto.ADD_MEMO_API] = NO_PERMISSION
+        payload = self.fail(self.PATH, {'memo': 'a', 'confirm': True}, status=502)
+        self.assertEqual(payload.get('code'), 'protocol_error')
+        self.assertIn('NO_PERMISSION', payload.get('message', ''))
+        self.assertEqual(self.login_state(), 'active', '无权限 ≠ 掉线')
+        rows = [dict(row) for row in self.logs()]
+        self.assertTrue(any(row['action'] == 'trade_add_memo' and not row['success'] for row in rows),
+                        rows)
+
+    def test_route_shape_and_method(self):
+        paths = {(route.path, tuple(sorted(getattr(route, 'methods', ()))))
+                 for route in trade_write_api.router.routes}
+        self.assertIn((BASE + '/{account_id}/orders/{order_id}/memo', ('POST',)), paths)
+
+    def test_requires_login(self):
+        resp = self.post(self.PATH, {'memo': 'a', 'confirm': True}, headers={})
+        self.assertEqual(resp.status_code, 401, resp.text)
 
 
 if __name__ == '__main__':

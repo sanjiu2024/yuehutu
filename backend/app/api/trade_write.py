@@ -470,3 +470,21 @@ def compensate_refuse(
         account_id, order_id, service_code, body.get('reason_choices'),
         body.get('reason_desc') or '', body.get('proof_urls'),
         body.get('is_manual', False), confirm=body.get('confirm')))
+
+
+@router.post('/{account_id}/orders/{order_id}/memo')
+def add_memo(
+    account_id: str,
+    order_id: str,
+    body: Dict[str, Any] = Body(default={}, description='{memo, memo_group?, confirm}'),
+    user=Depends(current_user),
+):
+    """订单备注：`mtop.taobao.idle.merchant.add.memo`。
+
+    **这条备注不对买家展示**（官方 placeholder 原话），只是卖家自己的标记；
+    `memo_group` 是 1~5 的整数（官方五张旗标图，没有文字名）。
+    校验提示逐字照抄官方（非空 / 换行 / emoji / 白名单），上限 50 字。
+    """
+    return _envelope(trade_write.add_memo(
+        account_id, order_id, body.get('memo'), body.get('memo_group', 1),
+        confirm=body.get('confirm')))

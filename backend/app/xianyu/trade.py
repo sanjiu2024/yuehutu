@@ -135,6 +135,8 @@ WRITE_APIS = (
     # 漏一个 `test_trade_write_api.py` 的断言就红。
     'mtop.taobao.idle.merchant.postage.refund.pay',
     'mtop.taobao.idle.cco.shop.complain.apply.revoke',
+    # 第四十九批（订单备注）：同样是写协议层的超集要求，漏一个断言就红。
+    'mtop.taobao.idle.merchant.add.memo',
 )
 
 
@@ -480,6 +482,11 @@ def normalize_order(item: Any) -> Dict[str, Any]:
     tips = common.get('consignTipsText')
     consign_tips = [_text(tip.get('text')) for tip in tips or []
                     if isinstance(tip, dict) and _text(tip.get('text'))]
+    # 订单备注（卖家自己的标记，不对买家展示）：官方写回读 `merchantCommonData.{memo,memoGroup}`
+    # （交易 bundle 偏移 2069748），列表行里也有落在 `commonData` 的；两处都认，缺就是 None。
+    merchant = item.get('merchantCommonData') if isinstance(item.get('merchantCommonData'), dict) else {}
+    memo = common.get('memo') if common.get('memo') is not None else merchant.get('memo')
+    memo_group = common.get('memoGroup') if common.get('memoGroup') is not None else merchant.get('memoGroup')
     return {
         'order_id': _text(common.get('orderId')) or None,
         'item_id': _text(common.get('itemId')) or None,
@@ -501,6 +508,8 @@ def normalize_order(item: Any) -> Dict[str, Any]:
         'buyer_apply_modify_address': (common.get('buyerApplyModifyAddress')
                                        if isinstance(common.get('buyerApplyModifyAddress'), bool) else None),
         'consign_tips': consign_tips or None,
+        'memo': _text(memo) or None,
+        'memo_group': _int_or_none(memo_group),
         'columns': columns or None,
         'buttons': _buttons_of(item),
     }

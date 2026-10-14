@@ -783,6 +783,42 @@ def complain_revoke(account_id: str, complain_id: Any, *,
     return result
 
 
+def add_memo(account_id: str, order_id: Any, memo: Any, memo_group: Any = 1, *,
+             confirm: Any = False) -> Dict[str, Any]:
+    """订单备注（`mtop.taobao.idle.merchant.add.memo`）。
+
+    **这条备注不对买家展示**（官方输入框 placeholder 原话），只是卖家自己的标记；
+    官方把备注与标记**整份**提交（`memo` + `memoGroup` 1~5）。
+    校验提示逐字照抄官方（非空 / 换行 / emoji / 白名单），50 字上限由我们自己拦。
+    平台这条**没有回执字段**，所以成功但拿不到业务体时只加 warning ——
+    不谎报「平台已确认这条备注生效了」。
+    """
+    if not _truthy(confirm):
+        return _confirm_required('订单备注')
+    failure = _missing(('订单号', order_id), ('备注内容', memo))
+    if failure:
+        return failure
+    try:
+        api, data = proto.add_memo_request(order_id, memo, memo_group, confirm=True)
+    except (proto.WriteNotConfirmed, ValueError) as exc:
+        code = CONFIRM_CODE if isinstance(exc, proto.WriteNotConfirmed) else 'invalid_fields'
+        return common.fail(str(exc), code)
+    audit = {'memo_length': len(_text(memo)), 'memo_group': _text(memo_group)}
+    payload = _submit(account_id, 'trade_add_memo', _text(order_id),
+                      lambda: (api, data), proto.parse_memo, proto.ADD_MEMO_VERSION,
+                      audit=audit)
+    if common.is_failure(payload):
+        return payload
+    if not payload.get('echoed'):
+        payload['warnings'] = [{
+            'code': 'trade_memo_no_echo',
+            'message': ('平台接受了这次提交，但这条接口没有回执字段 —— '
+                        '无法确认备注是否已生效，请到闲鱼订单页核对。'),
+        }]
+    payload['submitted'] = audit
+    return payload
+
+
 # --------------------------------------------------------------------------- 赔付 / 维权服务
 #
 #   detail.query   @831798  v1.0  {orderId, serviceCode} + **valueType:'string'**（只读）
