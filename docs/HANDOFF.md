@@ -3381,6 +3381,14 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 闸门探针 `C:\Users\Administrator\.dsh-tmp\probe_write_gate.py` 新增两条用例
 > （`orders.ship` / `chats.send`，路径故意用**不存在的 id**，确认腿在本地查库就失败、
 > 零平台请求）⇒ 用例数 77 → 79。
+> 重打包（`build_exe.ps1 -SkipFrontend`，exe **10,222,214 B / 2026-10-14 20:24:57**，`--port 18400`
+> `/api/health` 200 `frozen:true`）后打包版复验全绿：`probe_write_gate.py` → **`GATE FAILURES: 0 / 79`**
+> （`orders.ship` / `chats.send` 未确认与 `confirm=false` 都是 400 `confirmation_required`，
+> 确认腿打不存在的 id → 404 `not_found` / 400 `invalid_fields`，**零平台请求**）；
+> `check_assets.py` → `ASSETS_MATCH=True`（`index-D50hq6iO.js` = `d1c8cdd18790`、
+> `index-B1Z6zu0w.css` = `4e2508c29138`）；`packaged_ui_smoke.py` → **29/29 页**；
+> `scripts/contrast_audit.py --threshold 4.0` → `[dark] 0/29`、`[light] 0/29`、`NON_GET=[]`；
+> `scripts/a11y_audit.py` → 无可访问名字的按钮 0 类、没有标签的输入框 0 类、焦点不可见页面 `[]`、`NON_GET=[]`。
 
 ## 四、已验证 / 未验证（诚实边界）
 
