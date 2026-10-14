@@ -304,6 +304,14 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'path_params': ['account_id', 'order_id', 'service_code'],
         'body': ['reason_choices', 'reason_desc', 'proof_urls', 'is_manual', 'confirm'],
     },
+    'im_reception_status': {
+        'method': 'GET', 'path': '/api/im/{account_id}/reception',
+        'path_params': ['account_id'],
+    },
+    'im_set_reception': {
+        'method': 'POST', 'path': '/api/im/{account_id}/reception',
+        'path_params': ['account_id'], 'body': ['status', 'confirm'],
+    },
     'disputes_conversation': {
         'method': 'GET', 'path': '/api/disputes/{account_id}/conversation',
         'path_params': ['account_id'], 'query': ['order_id', 'refund_id', 'dispute_id'],

@@ -161,6 +161,9 @@ WRITE_PREFIX = ('trade_write_', 'trade_address_', 'promotion_write_', 'qualifica
                 # 否则只读的 im_blacklist_status 会被误判成写工具）。
                 'im_session_deliver', 'im_session_leave', 'im_session_rejoin',
     'trade_compensate_refuse',
+                # 第四十六批：接待状态写只有这一条，同样用完整工具名
+                # （故意不加 'im_' 宽前缀，否则只读的 im_reception_status 会被误判）。
+                'im_set_reception',
                 # 第四十一批：纠纷协商的四条写，同样只写完整名。
                 # 故意不加 'disputes_' 宽前缀，那会把只读的 disputes_conversation 一起误判。
                 'disputes_send_text', 'disputes_send_image', 'disputes_urge',

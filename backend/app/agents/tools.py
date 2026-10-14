@@ -2792,6 +2792,42 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'im_reception_status',
+            'description': '查当前客服接待状态（只读）：ONLINE 在线 / REST 小休 / OFFLINE 离线。'
+                           '平台没返回时 status 是 null 且带 warning（**不是离线**）。account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'im_set_reception',
+            'description': '切换客服接待状态（在线 / 小休 / 离线）——切到「小休」后收不到新消息。'
+                           + _WRITE_HINT + 'account_id / status 必填，status 只能是 '
+                           'ONLINE / REST / OFFLINE。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'status': {'type': 'string', 'enum': ['ONLINE', 'REST', 'OFFLINE'],
+                               'description': '目标接待状态：在线 / 小休 / 离线'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'status', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 主管 AI（只给 MCP 侧） ----------------
     {
         'type': 'function',
@@ -3173,6 +3209,8 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'trade_compensate_detail': ['trade_write', 'compensate_detail'],
     'trade_compensate_reasons': ['trade_write', 'compensate_refuse_form'],
     'trade_compensate_refuse': ['trade_write', 'compensate_refuse'],
+    'im_reception_status': ['im_actions', 'reception_status'],
+    'im_set_reception': ['im_actions', 'set_reception'],
 
     'disputes_conversation': ['disputes', 'conversation'],
     'disputes_messages': ['disputes', 'history'],
@@ -3422,6 +3460,8 @@ _HANDLERS = {
     'trade_compensate_detail': lambda a: _dispatch_service('trade_compensate_detail', a),
     'trade_compensate_reasons': lambda a: _dispatch_service('trade_compensate_reasons', a),
     'trade_compensate_refuse': lambda a: _dispatch_service('trade_compensate_refuse', a),
+    'im_reception_status': lambda a: _dispatch_service('im_reception_status', a),
+    'im_set_reception': lambda a: _dispatch_service('im_set_reception', a),
 
     'disputes_conversation': lambda a: _dispatch_service('disputes_conversation', a),
     'disputes_messages': lambda a: _dispatch_service('disputes_messages', a),

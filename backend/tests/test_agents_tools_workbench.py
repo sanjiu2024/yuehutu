@@ -66,6 +66,9 @@ NEW_TOOLS: Dict[str, Dict[str, Any]] = {
     'trade_compensate_reasons': {
         'module': 'trade_write', 'fn': 'compensate_refuse_form', 'verb': 'get',
         'path': '/api/trade/{account_id}/compensations/{service_code}/reasons'},
+    'im_reception_status': {
+        'module': 'im_actions', 'fn': 'reception_status', 'verb': 'get',
+        'path': '/api/im/{account_id}/reception'},
     'datacenter_overview': {'module': 'datacenter', 'fn': 'overview', 'verb': 'get',
                             'path': '/api/datacenter/{account_id}/overview'},
     'datacenter_fans': {'module': 'datacenter', 'fn': 'fans', 'verb': 'get',
@@ -536,6 +539,9 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
         'module': 'trade_write', 'fn': 'compensate_refuse', 'confirm': True,
         'method': 'POST',
         'path': '/api/trade/{account_id}/orders/{order_id}/compensations/{service_code}/refuse'},
+    'im_set_reception': {
+        'module': 'im_actions', 'fn': 'set_reception', 'confirm': True,
+        'method': 'POST', 'path': '/api/im/{account_id}/reception'},
 }
 
 WRITE_TOOL_NAMES = list(WRITE_TOOLS)
@@ -695,6 +701,8 @@ _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
     'trade_compensate_refuse': {
         'account_id': 'acc-x', 'order_id': 'o1', 'service_code': 's1',
         'reason_choices': ['原因A'], 'proof_urls': ['http://x/1.png'], 'confirm': False},
+    'im_set_reception': {
+        'account_id': 'acc-x', 'status': 'ONLINE', 'confirm': False},
 }
 
 
