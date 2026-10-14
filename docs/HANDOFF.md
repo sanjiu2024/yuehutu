@@ -3233,6 +3233,18 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `specs=148 master=147 routes=149 targets=136 handlers=148 / write_tools=67 / route_checked=149 / RECON OK`；
 > 接口面 `/openapi.json` = **208 条路径 / 226 个操作**；前端 `TSC_EXIT=0` + `BUILD_EXIT=0`（97 modules，
 > `index-D1tij8ad.js` 638.89 kB / `index-C5I0n3Oo.css` 156.01 kB）；真实浏览器逐页冒烟 `29/29`。
+> 界面取证 `C:\Users\Administrator\.dsh-tmp\ap50_panel_shots.py`（源码 + 临时库 + 拦截全部 `/api/**`，
+> 零平台请求）→ `PROBLEMS=0`：点「改价」页签 → 点「读取平台当前价」只发 **1 次** GET 渲染接口，
+> 两个输入框被预填 `189.00` / `10.00`，面板写明「官方口径 = 订单总价 − 运费」与「平台不接受『没有修改』」，
+> **零写请求**；截图 `logs/ap50_panel_shots/{01-orders-page-dark,02-adjust-panel-dark}.png`。
+> 重打包（`build_exe.ps1 -SkipFrontend`，exe **10,216,550 B / 2026-10-14 17:09:12**，`--port 18400`
+> `/api/health` 200 `frozen:true`）后打包版复验全绿：`probe_write_gate.py` → **`GATE FAILURES: 0 / 68`**；
+> 打包版只读探针 `ap50_packaged_probe.py` → `PROBLEMS=0`（真账号 409 `verification_required`、
+> 未知账号 404 `not_found`、`POST` 打到只读路径 405 `route_not_found`、未鉴权 401、空订单号 404）；
+> `check_assets.py` → `ASSETS_MATCH=True`（`index-D1tij8ad.js` = `bbb17c961469`、
+> `index-C5I0n3Oo.css` = `774219ca9113`）；`packaged_ui_smoke.py` → **29/29 页**；
+> `scripts/contrast_audit.py --threshold 4.0` → `[dark] 0/29`、`[light] 0/29`、`NON_GET=[]`；
+> `scripts/a11y_audit.py` → 三类问题全 0、`焦点不可见的页面：[]`、`NON_GET=[]`。
 
 ## 四、已验证 / 未验证（诚实边界）
 
