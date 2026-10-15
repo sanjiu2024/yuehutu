@@ -1979,7 +1979,7 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             'name': 'trade_address_add',
             'description': '新增退货地址（**写操作，会真的在闲鱼上新增一条退货地址**）。'
                            + _WRITE_HINT + 'account_id 与联系人信息必填。'
-                           '我们没有区域码来源：area_id 拿不到就不要传，不要自己编一个。',
+                           'area_id 必填：先用 logistics_divisions 从省逐级取到区，把叶子节点的 value 原样传进来；不要自己编。',
             'parameters': {
                 'type': 'object',
                 'properties': {
@@ -1991,13 +1991,13 @@ TOOL_SPECS: List[Dict[str, Any]] = [
                     'district_name': {'type': 'string', 'description': '区/县'},
                     'detail_address': {'type': 'string', 'description': '详细地址'},
                     'area_id': {'type': 'string',
-                                'description': '区域码；我们没有区域码来源，拿不到就不传，别编'},
+                                'description': '区域码（必填）；用 logistics_divisions 取到的叶子节点 value，别自己编'},
                     'default_addr': {'type': 'boolean',
                                      'description': '是否设为默认地址；不传就按平台默认'},
                     'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
                 },
                 'required': ['account_id', 'contact_name', 'mobile_phone', 'province_name',
-                             'city_name', 'district_name', 'detail_address', 'confirm'],
+                             'city_name', 'district_name', 'detail_address', 'area_id', 'confirm'],
                 'additionalProperties': False,
             },
         },
@@ -2008,7 +2008,7 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             'name': 'trade_address_update',
             'description': '修改退货地址（**写操作，会真的改动闲鱼上的退货地址**）。'
                            + _WRITE_HINT + 'account_id、contact_id 与联系人信息必填。'
-                           '我们没有区域码来源：area_id 拿不到就不要传，不要自己编一个。',
+                           'area_id 必填：先用 logistics_divisions 从省逐级取到区，把叶子节点的 value 原样传进来；不要自己编。',
             'parameters': {
                 'type': 'object',
                 'properties': {
@@ -2021,14 +2021,14 @@ TOOL_SPECS: List[Dict[str, Any]] = [
                     'district_name': {'type': 'string', 'description': '区/县'},
                     'detail_address': {'type': 'string', 'description': '详细地址'},
                     'area_id': {'type': 'string',
-                                'description': '区域码；我们没有区域码来源，拿不到就不传，别编'},
+                                'description': '区域码（必填）；用 logistics_divisions 取到的叶子节点 value，别自己编'},
                     'default_addr': {'type': 'boolean',
                                      'description': '是否设为默认地址；不传就按平台默认'},
                     'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
                 },
                 'required': ['account_id', 'contact_id', 'contact_name', 'mobile_phone',
                              'province_name', 'city_name', 'district_name', 'detail_address',
-                             'confirm'],
+                             'area_id', 'confirm'],
                 'additionalProperties': False,
             },
         },
@@ -3807,7 +3807,8 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             'name': 'logistics_divisions',
             'description': ('区域码（省 / 市 / 区，只读）。不传 token 回根节点（31 个省）；'
                             '要下一级就把上一级选项里的 division_token 原样传回来。'
-                            '填退货地址的 area_id 用叶子节点的 division_id（整数）。'),
+                            '填退货地址的 area_id 用叶子节点的 value（形如 110101/东城区，与官方级联口径一致）；'
+                            '真机只证明裸 id（330106）也能过平台的必填校验，两种写法是否等价未取证。'),
             'parameters': {
                 'type': 'object',
                 'properties': {
@@ -4237,7 +4238,7 @@ def _items_batch_publish(args: Dict[str, Any]) -> Dict[str, Any]:
     first_failure: Optional[Dict[str, Any]] = None
     for row in rows:
         if not isinstance(row, dict):
-            failed.append({'id': '', 'message': 'item 必须是对象'})
+            failed.append({'id': '', 'code': 'invalid_row', 'message': 'item 必须是对象'})
             continue
         item = dict(row)
         row_confirm = item.pop('confirm', None)  # 行里的 confirm 不能当发布载荷发出去

@@ -674,11 +674,12 @@ _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
     'trade_address_add': {
         'account_id': 'acc-x', 'contact_name': '张三', 'mobile_phone': '13800000000',
         'province_name': '浙江省', 'city_name': '杭州市', 'district_name': '西湖区',
-        'detail_address': '文一西路 1 号', 'confirm': False},
+        'detail_address': '文一西路 1 号', 'area_id': '330106/西湖区', 'confirm': False},
     'trade_address_update': {
         'account_id': 'acc-x', 'contact_id': 'addr-1', 'contact_name': '张三',
         'mobile_phone': '13800000000', 'province_name': '浙江省', 'city_name': '杭州市',
-        'district_name': '西湖区', 'detail_address': '文一西路 1 号', 'confirm': False},
+        'district_name': '西湖区', 'detail_address': '文一西路 1 号',
+        'area_id': '330106/西湖区', 'confirm': False},
     'trade_address_delete': {
         'account_id': 'acc-x', 'contact_id': 'addr-1', 'confirm': False},
     'trade_address_set_default': {
