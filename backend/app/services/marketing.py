@@ -31,7 +31,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from ..core import db
 from ..xianyu import marketing as proto
-from . import common
+from . import common, platform_errors
 
 #: 四个页面各自的对外 kind（= 路由末段）。
 KINDS: Tuple[str, ...] = ('items', 'tasks', 'price-competitiveness', 'records')
@@ -200,14 +200,19 @@ _FUNC_LABELS = {_PROTOCOL_FUNC[kind]: _LABELS[kind] for kind in KINDS}
 
 
 def _warnings(errors: Dict[str, str]) -> list:
-    """把逐接口错误翻成人话。无权限单独说，因为「一屏 -」的根因就是它。"""
+    """把逐接口错误翻成人话。无权限单独说，因为「一屏 -」的根因就是它。
+
+    与 `services/datacenter.py::_warnings` 同一口径：判据走
+    `platform_errors.is_permission`、人话走 `platform_errors.permission_hint`，
+    本地只补「哪个接口 / 后果」（审计问题 13）。
+    """
     messages = []
     for label, text in (errors or {}).items():
         name = _FUNC_LABELS.get(label) or _LABELS.get(label) or label
-        if 'UNAUTHORIZED' in text or '无权限' in text:
+        if platform_errors.is_permission(text):
             messages.append(
-                f'平台拒绝访问「{name}」接口：这个账号没有「营销」业务权限，'
-                '对应指标显示 -。换个有营销权限的卖家账号再试。'
+                f'平台拒绝访问「{name}」接口（对应指标显示 -）：'
+                f'{platform_errors.permission_hint(text)}'
             )
         else:
             messages.append(f'平台「{name}」接口调用失败：{text}，对应指标显示 -。')

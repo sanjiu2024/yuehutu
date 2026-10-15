@@ -24,7 +24,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, Tuple
 
 from ..core import db
-from . import common
+from . import common, platform_errors
 
 #: 进程内缓存存活秒数。数据组页面的指标是「天粒度」，5 分钟内重复进出页面不必再打平台。
 CACHE_TTL_SECONDS = 300
@@ -194,14 +194,20 @@ _LABELS = {
 
 
 def _warnings(errors: Dict[str, str]) -> list:
-    """把逐接口错误翻成人话。无权限单独说，因为「一屏 -」的根因就是它。"""
+    """把逐接口错误翻成人话。无权限单独说，因为「一屏 -」的根因就是它。
+
+    判据与「没权限」那句人话都不在这里：判据走 `platform_errors.is_permission`
+    （按错误码词边界认，不再就地写 `'UNAUTHORIZED' in text`），文案走
+    `platform_errors.permission_hint`。同一句人话全站只有一份（审计问题 13）。
+    这里只补两件本地才知道的事：哪个接口、后果是「指标显示 -」。
+    """
     messages = []
     for label, text in (errors or {}).items():
         name = _LABELS.get(label, label)
-        if 'UNAUTHORIZED' in text or '无权限' in text:
+        if platform_errors.is_permission(text):
             messages.append(
-                f'平台拒绝访问{name}接口：这个账号没有「数据」权限，'
-                '对应指标显示 -。换个有数据权限的卖家账号再试。'
+                f'平台拒绝访问{name}接口（对应指标显示 -）：'
+                f'{platform_errors.permission_hint(text)}'
             )
         else:
             messages.append(f'平台{name}接口调用失败：{text}，对应指标显示 -。')

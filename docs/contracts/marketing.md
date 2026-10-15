@@ -139,7 +139,7 @@
 | `items` / `tasks` / `records` | 列表，**空数组与「没拿到」都归一成 `null`** |
 | `page_kind` | `"task"` 或 `"item"`（`tasks` 二选一命中了哪个 `pageResult`） |
 | `user_task_info` | `result.userTrafficTaskInfo` 原样 |
-| `warnings` | 逐接口中文告警；**无权限**单独一条：「平台拒绝访问「营销商品数据」接口：这个账号没有「营销」业务权限…」 |
+| `warnings` | 逐接口中文告警；**无权限**单独一条：「平台拒绝访问「营销商品数据」接口（对应指标显示 -）：这个账号没有开通这个功能的权限…」（判据与文案来自 `platform_errors.is_permission` / `permission_hint`，与数据页同一份） |
 | `unrecognized_keys` | 响应里像指标却一个别名都没命中的键（仅提示） |
 
 **本地 400 校验**（参数形态置信度只有「中」，错的挡在本地比让平台猜更好）：

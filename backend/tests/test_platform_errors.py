@@ -225,6 +225,31 @@ class ReadPathRefusalTest(unittest.TestCase):
         self.assertIn('没有开通', hint)
         self.assertIn('不是登录掉线', hint)
 
+    def test_permission_judgement_is_one_place(self):
+        """「没权限」的判据只有 `pe.is_permission` 一处（审计问题 13）。
+
+        `services/datacenter.py` / `services/marketing.py` 原来各自写
+        `'UNAUTHORIZED' in text or '无权限' in text`，于是同一个平台码在
+        「算不算没权限」这件事上有两份判据。
+        """
+        self.assertTrue(pe.is_permission(
+            'XianyuError: FAIL_BIZ_IDLE_USER_UNAUTHORIZED'))
+        self.assertTrue(pe.is_permission(
+            '协议层调用失败: MTOP 调用失败 [x]: NO_PERMISSION::用户没有权限'))
+        # 真机 logs 里有只透传人话、没带码的行。
+        self.assertTrue(pe.is_permission('XianyuError: 无权限访问'))
+        # `FAIL_SYS_NO_PERMISSION` 是**另一个码**，别套这两个码的解释（与 explain 同口径）。
+        self.assertFalse(pe.is_permission('FAIL_SYS_NO_PERMISSION::无权限操作'))
+        self.assertFalse(pe.is_permission('XianyuError: boom'))
+
+    def test_permission_hint_reuses_the_single_wording(self):
+        """「没权限」的人话全站一份：认不出具体码时复用已收录的那句，不编新解释。"""
+        expected = pe.hint_for('FAIL_BIZ_IDLE_USER_UNAUTHORIZED')
+        self.assertEqual(pe.permission_hint('无权限访问'), expected)
+        self.assertEqual(
+            pe.permission_hint('FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问'), expected)
+        self.assertIn('不是登录掉线', pe.permission_hint('NO_PERMISSION::用户没有权限'))
+
     def test_qualification_system_errors_are_not_blamed_on_the_user(self):
         busy = pe.explain(
             '协议层调用失败: MTOP 调用失败 '

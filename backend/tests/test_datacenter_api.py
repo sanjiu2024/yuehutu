@@ -601,7 +601,7 @@ class DataCenterApiTest(unittest.TestCase):
         self.assertEqual(data['metrics']['visits'], 124.0)
         self.assertIsNone(data['metrics']['exposure'])
         self.assertEqual(len(data['warnings']), 1)
-        self.assertIn('没有「数据」权限', data['warnings'][0])
+        self.assertIn('没有开通这个功能的权限', data['warnings'][0])
         # warnings 是给用户看的：只许出现中文业务名，不许漏 `overview` 这种内部调用名
         self.assertIn('数据总览', data['warnings'][0])
         self.assertNotIn('overview', data['warnings'][0])
@@ -675,12 +675,12 @@ class DataCenterApiTest(unittest.TestCase):
         self.assertTrue(all(value is None for value in overview['metrics'].values()),
                         overview['metrics'])
         self.assertEqual(len(overview['warnings']), 2, overview['warnings'])
-        self.assertIn('没有「数据」权限', overview['warnings'][0])
+        self.assertIn('没有开通这个功能的权限', overview['warnings'][0])
         for path in (f'{BASE}/{ACC}/fans', f'{BASE}/{ACC}/customer-service'):
             data = self.ok_data(path)
             self.assertTrue(all(value is None for value in data['metrics'].values()), path)
             self.assertTrue(data['warnings'], f'{path} 必须解释为什么是 -')
-            self.assertIn('没有「数据」权限', data['warnings'][0], path)
+            self.assertIn('没有开通这个功能的权限', data['warnings'][0], path)
         cs = self.ok_data(f'{BASE}/{ACC}/customer-service')
         self.assertIn('客服数据', cs['warnings'][0], 'warnings 不许漏内部调用名')
 
@@ -989,7 +989,7 @@ class DataCenterProtocolTest(unittest.TestCase):
         warnings = datacenter_service._warnings(
             {'overview': 'XianyuError: FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问'})
         self.assertEqual(len(warnings), 1)
-        self.assertIn('没有「数据」权限', warnings[0])
+        self.assertIn('没有开通这个功能的权限', warnings[0])
 
     def test_card_permission_denied_returns_errors_instead_of_raising(self):
         """真协议层：无权限**不许抛**（抛了界面上就是四个红框 + 一屏 mtop 原文）。
@@ -1174,7 +1174,7 @@ class CommodityTest(DataCenterApiTest):
         install_fake_protocol(self.proto)
         data = self.ok_data(f'{BASE}/{ACC}/commodity')
         self.assertIsNone(data['rows'])
-        self.assertTrue(any('没有「数据」权限' in w for w in data['warnings']), data['warnings'])
+        self.assertTrue(any('没有开通这个功能的权限' in w for w in data['warnings']), data['warnings'])
         self.assertTrue(any('商品数据' in w for w in data['warnings']), data['warnings'])
         for warning in data['warnings']:
             self.assertNotIn('commodity', warning, 'warnings 里不许漏内部调用名')
@@ -1371,7 +1371,7 @@ class CardTest(DataCenterApiTest):
         self.proto.payloads['card'] = card_payload(errors={
             'card': 'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问'})
         data = self.ok_data(f'{BASE}/{ACC}/card/seller')
-        self.assertTrue(any('没有「数据」权限' in w for w in data['warnings']), data['warnings'])
+        self.assertTrue(any('没有开通这个功能的权限' in w for w in data['warnings']), data['warnings'])
 
     def test_permission_denied_does_not_also_blame_the_field_names(self):
         """「这个账号没权限」与「平台可能改了字段名」不能同时说 —— 后者会把人往错方向带。"""
@@ -1381,7 +1381,7 @@ class CardTest(DataCenterApiTest):
         data = self.ok_data(f'{BASE}/{ACC}/card/seller')
         self.assertEqual(len(data['warnings']), 1, data['warnings'])
         self.assertIn('经营概况', data['warnings'][0])
-        self.assertIn('没有「数据」权限', data['warnings'][0])
+        self.assertIn('没有开通这个功能的权限', data['warnings'][0])
 
     def test_platform_error_is_502_with_protocol_error(self):
         seed_account()
@@ -1579,7 +1579,7 @@ class CsListTest(DataCenterApiTest):
         data = self.ok_data(f'{BASE}/{ACC}/cs/detail')
         self.assertEqual(len(data['warnings']), 1, data['warnings'])
         self.assertIn('客服明细', data['warnings'][0])
-        self.assertIn('没有「数据」权限', data['warnings'][0])
+        self.assertIn('没有开通这个功能的权限', data['warnings'][0])
 
     def test_unknown_kind_is_400_and_never_calls_the_platform(self):
         seed_account()
@@ -1719,14 +1719,14 @@ class FansBreakdownTest(DataCenterApiTest):
         self.assertIn(datacenter_service.WARN_FANS_INSIGHTS_MISSING, data['warnings'])
 
     def test_permission_denied_keeps_only_the_permission_warning(self):
-        """账号没有「数据」权限时已经有权限 warning，不再叠一句「画像没解析出来」。"""
+        """账号没有开通这个功能的权限时已经有权限 warning，不再叠一句「画像没解析出来」。"""
         seed_account()
         self.proto.payloads['fans'] = fans_payload(FANS_NO_BREAKDOWN, errors={
             'insights': 'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问'})
         data = self.ok_data(f'{BASE}/{ACC}/fans')
         self.assertIsNone(data['insights_breakdown'])
         self.assertNotIn(datacenter_service.WARN_FANS_INSIGHTS_MISSING, data['warnings'])
-        self.assertTrue(any('没有「数据」权限' in text for text in data['warnings']), data['warnings'])
+        self.assertTrue(any('没有开通这个功能的权限' in text for text in data['warnings']), data['warnings'])
 
     def test_other_kinds_do_not_carry_the_breakdown(self):
         seed_account()

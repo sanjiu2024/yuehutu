@@ -97,9 +97,11 @@ PLATFORM_ERROR_HINTS: Tuple[Tuple[str, str], ...] = (
         '这不是登录掉线，重新扫码不会变好；换一个有权限的账号再试。',
     ),
     (
-        # 真机（2026-10-12 只读巡检）：资质管理的模板 / 可复用资质回这个。
+        # 真机：2026-10-12 资质管理（模板 / 可复用资质）回这个；2026-10-16 投放域
+        # （mtop.taobao.idle.ad.package.info / …campaign.log.query）也回同一个码
+        # ⇒ 它是资质与投放共用的平台侧系统异常，人话里别再写死「资质服务」。
         'E_AD_BP_COMMON_SYSTEM_EXCEPTION',
-        '平台的资质服务自己报错了（原话「闲鱼太累了，请稍后再试」），'
+        '平台侧自己报错了（原话「闲鱼太累了，请稍后再试」），'
         '不是你的资料或权限问题。过几分钟点「重试」；一直这样就是平台侧故障，等它恢复。',
     ),
     (
@@ -117,6 +119,15 @@ RISK_ERROR_CODES: Tuple[str, ...] = ('FAIL_SYS_USER_VALIDATE', 'RGV587_ERROR')
 SESSION_ERROR_CODES: Tuple[str, ...] = (
     'FAIL_SYS_SESSION_EXPIRED',
     'FAIL_SYS_TOKEN_EXOIRED',
+)
+
+#: 权限类错误码（调用方据此提示「账号没开这个功能」，而不是「掉线 / 网络错误」）。
+#: 只收真机见过的两个码；判定用 `is_permission`，别在调用点再写一遍子串判据
+#: （审计问题 13：`services/datacenter.py` 与 `services/marketing.py` 曾各写一份
+#: `'UNAUTHORIZED' in text or '无权限' in text`，同一个平台码讲两种人话）。
+PERMISSION_ERROR_CODES: Tuple[str, ...] = (
+    'FAIL_BIZ_IDLE_USER_UNAUTHORIZED',
+    'NO_PERMISSION',
 )
 
 _CODE_CACHE: Dict[str, 're.Pattern[str]'] = {}
@@ -184,6 +195,33 @@ def is_risk(text: Any) -> bool:
 def is_session_expired(text: Any) -> bool:
     """这段文案是不是登录态类错误码。"""
     return bool(find_code_in(text, SESSION_ERROR_CODES))
+
+
+def is_permission(text: Any) -> bool:
+    """这段文案是不是「平台明确答复：这个账号没权限」。
+
+    先按**词边界**认 `PERMISSION_ERROR_CODES` 里的码，认不出再退到平台原文里的
+    裸「无权限访问」—— 真机 logs 里有只透传人话、没带码的行（例如
+    `mtop.taobao.idlemessage.customer.leave.session: 无权限访问`）。退路只认这一个
+    整句，不认裸「无权限」：`FAIL_SYS_NO_PERMISSION::无权限操作` 是**另一个码**，
+    套上这两个码的解释就等于讲错原因。
+
+    不收裸 `'UNAUTHORIZED'` 子串（原来两处调用点的写法）：它会命中任何含这个词的
+    码，包括将来出现的**同前缀新码**；已知的两个码都能按词边界精确命中。
+    """
+    if find_code_in(text, PERMISSION_ERROR_CODES):
+        return True
+    return '无权限访问' in str(text or '')
+
+
+def permission_hint(text: Any) -> str:
+    """「无权限」类文案 -> 全站统一的那一句人话（调用方只补「哪个接口 / 后果」）。
+
+    具体码认不出时退到 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 的解释：平台原文里的人话
+    就是「无权限访问」，与这个码同义（`explain()` 返回空串时不编新解释，
+    而是复用已收录的这句）。
+    """
+    return explain(text) or hint_for('FAIL_BIZ_IDLE_USER_UNAUTHORIZED')
 
 
 def find_code_in(text: Any, codes: Tuple[str, ...]) -> str:

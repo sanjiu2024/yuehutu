@@ -522,7 +522,7 @@ class MarketingApiTest(_MarketingHttpBase):
         self.assertTrue(all(value is None for value in data['metrics'].values()))
         self.assertEqual(len(data['warnings']), 1)
         text = data['warnings'][0]
-        self.assertIn('业务权限', text)
+        self.assertIn('没有开通这个功能的权限', text)
         self.assertIn('营销商品数据', text)
         self.assertNotIn('重新登录', text)
         self.assertEqual(self.login_state(), 'active', '无权限不该写 need_relogin')
@@ -725,7 +725,7 @@ class MarketingEndToEndTest(_MarketingHttpBase):
         self.assertEqual(resp.status_code, 200, resp.text)
         data = resp.json()['data']
         self.assertTrue(all(value is None for value in data['metrics'].values()))
-        self.assertIn('业务权限', data['warnings'][0])
+        self.assertIn('没有开通这个功能的权限', data['warnings'][0])
         self.assertEqual(len(fake.calls), 1)
 
     def test_link_error_on_the_real_protocol_layer_is_502(self):
