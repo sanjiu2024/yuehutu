@@ -641,6 +641,33 @@ class ListItemsCallTest(ProtocolCase):
         self.assertEqual([int(p['pageNumber']) for p in calls], [1, 2, 3])
         self.assertEqual(result['next_page'], 0)
 
+    def test_list_items_reports_complete_when_platform_says_no_next(self):
+        """翻到头 -> `complete=True`：商品同步据此判定「平台真的没有这件商品」。
+
+        服务层只在 `complete is True` 时才把「本地有、这次没出现」的商品标成已下架，
+        所以这个标志必须由协议层如实给出（真机 2026-10-15：44 件全在列表里，翻 3 页到头）。
+        """
+        client, _stub = make_client({
+            ITEM_LIST_API: {'itemTopicList': [list_card('9001', 'A', '1')],
+                            'totalCount': 1, 'nextPage': False},
+        })
+        result = run(client.list_items())
+        self.assertIs(result['complete'], True)
+
+    def test_list_items_reports_incomplete_when_capped_by_max_pages(self):
+        """跑满 max_pages 被截断 -> `complete=False`：这时「没出现」可能只是没翻到，
+        服务层据此**不动**本地状态（否则会把在售商品误标成已下架）。
+        """
+        def responder(payload):
+            number = int(payload['pageNumber'])
+            return {'itemTopicList': [list_card(str(9000 + number), 'A', str(number))],
+                    'totalCount': 0, 'nextPage': True}
+
+        client, _stub = make_client({ITEM_LIST_API: responder})
+        result = run(client.list_items(max_pages=2))
+        self.assertIs(result['complete'], False)
+        self.assertEqual([i['item_id'] for i in result['items']], ['9001', '9002'])
+
     def test_has_next_page_handles_both_shapes(self):
         """`nextPage` 两种形态都要认：布尔开关 / 数字页码（纯函数，离线可测）。"""
         from backend.app.xianyu.client import _has_next_page

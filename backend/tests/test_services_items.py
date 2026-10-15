@@ -644,6 +644,48 @@ class ItemsServiceTest(unittest.TestCase):
         self.assertEqual(len(logs), 2)
         self.assertEqual(logs[0]['success'], 1)
 
+    # --------------------------------- 平台列表里没有的商品 = 已被下架（真机 45 行 vs 44 条）
+
+    def test_sync_marks_items_missing_from_complete_list_off_shelf(self):
+        """平台列表**翻到头**时，本地有、平台没有 = 平台上已被下架/删除，本地要跟着改。
+
+        真机证据（2026-10-15，账号 2217970177348）：本地 45 行、平台列表 44 条，被下架的
+        那件（1085479546711）不在列表里。旧逻辑只 upsert 不清理 ⇒ 本地永远显示「在售」，
+        与平台 `itemDO.itemStatus=-2 / 已下架` 相反。
+        """
+        self.seed('A1', status='on_sale')
+        self.seed('A2', status='on_sale')
+        self.seed('A3', status='sold')
+        install_fake_protocol(self.client)
+        self.client.list_result = {'items': [
+            {'item_id': 'A1', 'title': '商品A1', 'price': 49.9, 'stock': 3, 'status': 'on_sale'},
+        ], 'complete': True}
+
+        result = items.sync_items('acc1')
+        self.assertEqual(result['off_shelf_missing'], 1)
+        rows = {r['item_id']: dict(r) for r in db.query('SELECT * FROM items')}
+        self.assertEqual(rows['A1']['status'], 'on_sale')
+        self.assertEqual(rows['A2']['status'], 'off_shelf')
+        self.assertEqual(rows['A3']['status'], 'sold')  # 已卖出不是「被下架」，不动
+        logs = db.query("SELECT * FROM operation_logs WHERE action = 'sync_items'")
+        self.assertIn('off_shelf_missing', logs[0]['detail'] or '')
+
+    def test_sync_keeps_status_when_list_may_be_truncated(self):
+        """列表**没翻到头**（跑满 max_pages 被截断）时不许动本地状态：
+        「这次没出现」可能只是没翻到，改了会把在售商品误标成已下架。
+        """
+        self.seed('A1', status='on_sale')
+        self.seed('A2', status='on_sale')
+        install_fake_protocol(self.client)
+        self.client.list_result = {'items': [
+            {'item_id': 'A1', 'title': '商品A1', 'price': 49.9, 'stock': 3, 'status': 'on_sale'},
+        ], 'complete': False}
+
+        result = items.sync_items('acc1')
+        self.assertEqual(result['off_shelf_missing'], 0)
+        rows = {r['item_id']: dict(r) for r in db.query('SELECT * FROM items')}
+        self.assertEqual(rows['A2']['status'], 'on_sale')
+
     # ------------------------------------------------- 库存：不拿 1 冒充（真机列表卡没库存字段）
 
     def _real_frame_list(self, *item_ids: str) -> dict:

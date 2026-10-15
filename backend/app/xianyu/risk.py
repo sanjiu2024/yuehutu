@@ -38,7 +38,16 @@ RISK_CONTROL_MARKERS = (
     '哎哟喂',
     '被挤爆',
     'FAIL_SYS_FLOW_LIMIT',
-    '请稍后重试',
+    # 「请稍后重试」**不许单独当标记**（2026-10-15 真机反例）：我们自己的载荷被平台
+    # 拒掉时回的是 `FAIL_BIZ_IDLEITEM_UNKNOWN_THROWABLE::发布失败，请稍后重试吧!` /
+    # `FAIL_BIZ_JSON_ERROR::发布失败，请稍后重试吧!` —— 这是业务失败（平台不认我们的
+    # 提交体），却被这条标记判成风控：账号被本地熔断 60s（COOLDOWN_STEPS 首档）、
+    # `risk_state` 里多一条假命中，用户在风控页看到一次根本没发生的风控，
+    # 同进程后续调用还会被 `RiskControlError 账号处于风控冷却中` 拦下。
+    # 真正见过的限流文案是 `FAIL_BIZ_USER_SHOW_SYSTEM_ERROR::亲，小闲鱼有点忙，请稍后重试哦`
+    # （`logs/firsthand_probe.json`），所以只认这两个**具体**特征。
+    '小闲鱼有点忙',
+    'FAIL_BIZ_USER_SHOW_SYSTEM_ERROR',
     'SM::',
 )
 

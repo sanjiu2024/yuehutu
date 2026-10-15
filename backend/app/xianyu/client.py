@@ -468,6 +468,10 @@ class XianyuClient:
         **翻页判据看 ``nextPage`` 的布尔/数字两种形态**（见 ``_has_next_page``），
         不再把布尔 ``true`` 当成页码 1 —— 那正是「永远只显示 20 件」的根因。
         ``totalCount`` 真机恒为 0，所以对外 ``total`` 用实际拿到的条数兜底。
+
+        ``complete=True`` 表示**翻到了头**（平台说没有下一页）：调用方（商品同步）
+        据此判断「本地有、这次没出现」= 平台上真的没有这件商品。跑满 ``max_pages``
+        时为 ``False`` —— 那时「没出现」可能只是没翻到，不能据此改本地状态。
         """
         page_size = max(1, min(int(page_size or ITEM_LIST_PAGE_SIZE), 100))
         max_pages = max(1, int(max_pages or 1))
@@ -476,6 +480,9 @@ class XianyuClient:
         groups: List[Dict[str, Any]] = []
         total = 0
         next_page = 0
+        #: 是否把平台列表翻到了头（平台说「没有下一页」）。翻页跑满 ``max_pages``
+        #: 说明可能被截断 —— 调用方靠它区分「列表就是这些」与「只翻到第 25 页」。
+        exhausted = True
 
         for index in range(max_pages):
             number = int(page_number or 1) + index
@@ -521,9 +528,13 @@ class XianyuClient:
                 break
             if index + 1 < max_pages:
                 await asyncio.sleep(ITEM_LIST_PAGE_DELAY)
+        else:
+            # 跑满 max_pages 都没遇到「平台说没有下一页」⇒ 列表可能还有，别当成全部。
+            exhausted = False
 
         return {'items': items, 'total': total or len(items), 'next_page': next_page,
-                'groups': groups, 'page': int(page_number or 1), 'size': page_size}
+                'groups': groups, 'page': int(page_number or 1), 'size': page_size,
+                'complete': exhausted}
 
     # -- 订单 -------------------------------------------------------------
 

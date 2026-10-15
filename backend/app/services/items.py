@@ -1374,16 +1374,47 @@ def sync_items(account_id: str) -> Any:
         ok += 1
         synced_ids.append(item_id)
 
+    # 平台列表**翻到头**时，本地有、平台没有的商品 = 已被下架/删除：把本地状态改成
+    # off_shelf。真机证据（2026-10-15，账号 2217970177348）：本地 45 行、平台列表 44 条，
+    # 被下架的那件（1085479546711）**不在列表里**；旧逻辑只 upsert 不清理，本地永远
+    # 显示「在售」，与平台 `itemDO.itemStatus=-2 / 已下架` 正好相反 —— 商品页会骗人。
+    # **只在 `complete` 为 True 时动**：翻页被 max_pages 截断时「没出现」可能只是没翻到，
+    # 那时改状态会把在售商品误标成已下架。
+    stale: List[str] = []
+    if isinstance(value, dict) and value.get('complete') is True:
+        known = set(synced_ids)
+        for row in db.query('SELECT item_id, status FROM items WHERE account_id = ?',
+                            (account_id,)):
+            item_id = str(row['item_id'] or '')
+            if not item_id or item_id in known:
+                continue
+            if str(row['status'] or '') in ('off_shelf', 'sold'):
+                continue
+            stale.append(item_id)
+        if stale:
+            marks = ','.join('?' for _ in stale)
+            with db.tx():
+                db.execute(
+                    "UPDATE items SET status = 'off_shelf', updated_at = CURRENT_TIMESTAMP "
+                    f'WHERE account_id = ? AND item_id IN ({marks})',
+                    (account_id, *stale),
+                )
+            _publish_updated(account_id, stale, 'sync')
+            logger.warning('同步发现 {} 件商品已不在平台列表，本地标记为已下架 account={} ids={}',
+                           len(stale), account_id, stale[:10])
+
     refresh = _refresh_unknown_stock(account_id, client)
     refreshed = refresh['refreshed']
     common.log_operation(account_id, 'sync_items', '', True,
                          {'count': ok, 'stock_refreshed': refreshed,
-                          'stock_refresh_stopped': refresh['stopped']})
+                          'stock_refresh_stopped': refresh['stopped'],
+                          'off_shelf_missing': len(stale)})
     common.publish('items.synced', {'account_id': account_id, 'count': ok,
                                     'stock_refreshed': refreshed})
     _publish_updated(account_id, synced_ids, 'sync')
     result: Dict[str, Any] = {'account_id': account_id, 'count': ok,
                               'stock_refreshed': refreshed,
+                              'off_shelf_missing': len(stale),
                               'items': list_items(account_id=account_id)['items']}
     if refresh['stopped']:
         result['stock_refresh_stopped'] = refresh['stopped']

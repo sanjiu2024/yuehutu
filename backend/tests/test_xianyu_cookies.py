@@ -112,6 +112,19 @@ class RiskControlTest(unittest.TestCase):
             self.assertTrue(risk.is_session_expired(message))
             self.assertFalse(risk.is_risk_control_error(message))
 
+    def test_business_failure_is_not_risk(self):
+        """真机反例（2026-10-15）：平台拒掉我们载荷的业务失败文案里带「请稍后重试」，
+        不许当成风控。误判的代价：账号被本地熔断 60s（COOLDOWN_STEPS 首档）、
+        `risk_state` 多一条假命中（风控页显示一次没发生的风控）、同进程后续调用全被
+        `RiskControlError 账号处于风控冷却中` 拦下。
+        """
+        for message in ('FAIL_BIZ_IDLEITEM_UNKNOWN_THROWABLE::发布失败，请稍后重试吧!',
+                        '协议层调用失败，仅本地生效: FAIL_BIZ_JSON_ERROR::发布失败，请稍后重试吧!'):
+            self.assertFalse(risk.is_risk_control_error(message))
+        # 真见过的限流文案（logs/firsthand_probe.json）仍然要认，不能把标记删干净
+        self.assertTrue(risk.is_risk_control_error(
+            'FAIL_BIZ_USER_SHOW_SYSTEM_ERROR::亲，小闲鱼有点忙，请稍后重试哦'))
+
     def test_cooldown_ladder(self):
         self.assertEqual(risk.COOLDOWN_STEPS, (60, 180, 300, 600, 1200))
 
