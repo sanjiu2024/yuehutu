@@ -9,8 +9,11 @@
 4. 把 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 之类的平台拒绝当成掉线，让用户白扫一次码；
 5. 偷偷补上官方有、我们**没有码源**的 `division` / `areaId`（区域码查不到，不能猜）。
 
-**一次真机写请求都没发过**（本机两个账号登录态都过期，不允许为了验证去改平台收货地址）。
-这里用假协议层钉住「字段形状与官方 bundle 逐字一致」，平台是否接受仍属未验证。
+**第 61 批已打过真机 add**（证据 `logs/write61/05_address_add.json`、`05b_address_add_with_area.json`、
+`05d_address_add_full_raw.json`）：平台原话是不带 `areaId` 回
+`FAIL_SYS_BIZPARAM_MISSED::缺少业务参数areaId`，只补 `areaId` 再回
+`FAIL_SYS_BIZPARAM_MISSED::缺少业务参数defaultAddr` —— 两者都是平台硬必填。
+这里用假协议层钉住「字段形状与官方 bundle 逐字一致」。
 
 跑法（仓库根目录）：
     cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\\Python310\\python.exe backend\\tests\\test_address_write_api.py"
@@ -55,7 +58,7 @@ PLAIN_OK = {'success': True, 'data': {}, 'message': 'SUCCESS::调用成功',
 NO_PERMISSION = {'success': False, 'message': 'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问',
                  'ret': ['FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问']}
 
-#: 一份合法的表单（四个接口共用的字段）
+#: 一份合法的表单（四个接口共用的字段；`area_id` / `default_addr` 是平台硬必填，见文件头）
 FORM = {
     'contact_name': '张三',
     'mobile_phone': '13800138000',
@@ -63,6 +66,8 @@ FORM = {
     'city_name': '杭州市',
     'district_name': '西湖区',
     'detail_address': '文一西路 969 号 1 幢 101 室',
+    'area_id': '330106',
+    'default_addr': True,
 }
 
 
@@ -268,16 +273,24 @@ class AddressWriteProtocolTest(unittest.TestCase):
             'cityName': '杭州市',
             'districtName': '西湖区',
             'detailAddress': '文一西路 969 号 1 幢 101 室',
+            'areaId': '330106',
+            'defaultAddr': True,
         })
-        # 官方有 division（级联数组）与 areaId（区域码），我们没有码源 —— 一个都不许出现
+        # 官方有 division（级联数组），我们没有码源 —— 不许出现
         self.assertNotIn('division', data)
-        self.assertNotIn('areaId', data)
+        # 协议层口径仍是「调用方给了才发」：显式给空值就不发这两个键（不伪造）
+        _api, bare = proto.add_request(**{**FORM, 'area_id': '', 'default_addr': None},
+                                       confirm=True)
+        self.assertNotIn('areaId', bare)
+        self.assertNotIn('defaultAddr', bare)
 
     def test_optional_fields_only_when_given(self):
-        _api, data = proto.add_request(**FORM, area_id='330106', default_addr=True, confirm=True)
+        """协议层口径：`areaId` / `defaultAddr` 只在调用方**显式**给出时才发（不伪造）。"""
+        bare = {k: v for k, v in FORM.items() if k not in ('area_id', 'default_addr')}
+        _api, data = proto.add_request(**bare, area_id='330106', default_addr=True, confirm=True)
         self.assertEqual(data['areaId'], '330106')
         self.assertIs(data['defaultAddr'], True)
-        _api, data = proto.add_request(**FORM, area_id='', default_addr=None, confirm=True)
+        _api, data = proto.add_request(**bare, area_id='', default_addr=None, confirm=True)
         self.assertNotIn('areaId', data)
         self.assertNotIn('defaultAddr', data)
 
@@ -388,7 +401,9 @@ class AddressFieldValidationTest(AddressWritePageTest):
 
     def test_field_validation_runs_before_credential_check(self):
         seed_account(cookie='')  # 没有 Cookie：建客户端一定失败
-        payload = self.fail(self.add_path(), {'confirm': True}, status=400)
+        # area_id / default_addr 先给全，才能走到「联系人姓名」这一条
+        payload = self.fail(self.add_path(), {**FORM, 'contact_name': '', 'confirm': True},
+                            status=400)
         self.assertEqual(payload.get('code'), 'invalid_fields')
         self.assertIn('联系人姓名', payload.get('message', ''))
         self.assertEqual(self.fake.calls, [])
@@ -429,6 +444,36 @@ class AddressFieldValidationTest(AddressWritePageTest):
         self.assertEqual(payload.get('code'), 'invalid_fields')
         self.assertEqual(self.fake.calls, [])
 
+    def test_missing_area_id_is_invalid_fields_and_never_calls_platform(self):
+        """平台硬必填：第 61 批真机不带 areaId 时回 FAIL_SYS_BIZPARAM_MISSED::缺少业务参数areaId。"""
+        body = {k: v for k, v in FORM.items() if k != 'area_id'}
+        payload = self.fail(self.add_path(), {**body, 'confirm': True}, status=400)
+        self.assertEqual(payload.get('code'), 'invalid_fields')
+        self.assertIn('area_id', payload.get('message', ''))
+        self.assertEqual(self.fake.calls, [])
+
+    def test_area_id_without_default_addr_is_invalid_fields_and_never_calls_platform(self):
+        """只补 areaId 也不行：平台第二个缺的就是 defaultAddr（真机原话）。"""
+        body = {k: v for k, v in FORM.items() if k != 'default_addr'}
+        payload = self.fail(self.add_path(), {**body, 'confirm': True}, status=400)
+        self.assertEqual(payload.get('code'), 'invalid_fields')
+        self.assertIn('default_addr', payload.get('message', ''))
+        self.assertEqual(self.fake.calls, [])
+
+    def test_blank_area_id_is_invalid_fields_and_never_calls_platform(self):
+        """空白串不算「给了区域码」：真机拿 '   ' 打过去平台回
+        `FAIL_SYS_BIZPARAM_TYPE_ERROR::业务参数类型错误areaId`，所以本地就拦下。"""
+        payload = self.fail(self.add_path(),
+                            {**FORM, 'area_id': '   ', 'confirm': True}, status=400)
+        self.assertEqual(payload.get('code'), 'invalid_fields')
+        self.assertIn('area_id', payload.get('message', ''))
+        self.assertEqual(self.fake.calls, [])
+
+    def test_default_addr_false_is_accepted_and_sent(self):
+        """`default_addr` 是布尔：False 表示「不设为默认」，是合法值（只有 None 才算缺）。"""
+        self.ok_data(self.add_path(), {**FORM, 'default_addr': False, 'confirm': True})
+        self.assertIs(self.fake.call_of(proto.ADD_API)['data']['defaultAddr'], False)
+
 
 # --------------------------------------------------------------------------- 四个接口
 
@@ -443,6 +488,7 @@ class AddressWriteHappyPathTest(AddressWritePageTest):
             'contactName': '张三', 'mobilePhone': '13800138000', 'provinceName': '浙江省',
             'cityName': '杭州市', 'districtName': '西湖区',
             'detailAddress': '文一西路 969 号 1 幢 101 室',
+            'areaId': '330106', 'defaultAddr': True,
         })
         self.assertEqual(data['action'], 'add')
         self.assertEqual(data['contact_id'], 'C10086')
@@ -456,12 +502,16 @@ class AddressWriteHappyPathTest(AddressWritePageTest):
         self.ok_data(self.add_path(), {**FORM, 'mobile_phone': '138 0013-8000', 'confirm': True})
         self.assertEqual(self.fake.call_of(proto.ADD_API)['data']['mobilePhone'], '13800138000')
 
-    def test_area_id_is_sent_only_when_given(self):
-        self.ok_data(self.add_path(), {**FORM, 'area_id': '330106', 'confirm': True})
-        self.assertEqual(self.fake.call_of(proto.ADD_API)['data']['areaId'], '330106')
-        self.fake.calls.clear()
+    def test_area_id_and_default_addr_reach_the_platform(self):
+        """两者都是平台硬必填（服务层预检），所以 HTTP 这条路一定会带上。
+
+        协议层「调用方给了才发」的缺省形状由 test_optional_fields_only_when_given 钉住。
+        """
         self.ok_data(self.add_path(), {**FORM, 'confirm': True})
-        self.assertNotIn('areaId', self.fake.call_of(proto.ADD_API)['data'])
+        data = self.fake.call_of(proto.ADD_API)['data']
+        self.assertEqual(data['areaId'], '330106')
+        self.assertIs(data['defaultAddr'], True)
+        self.assertEqual(len(self.fake.calls), 1)
 
     def test_add_without_echo_is_a_warning_not_a_fake_id(self):
         self.fake = full_client(**{proto.ADD_API: ADD_NO_ECHO})

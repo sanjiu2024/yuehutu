@@ -54,7 +54,7 @@
 | POST | `/api/trade/{account_id}/evaluations` | `{trade_ids, feedback, rate, image_urls, anonymous, confirm}` | 卖家评价（回评走同一个接口） |
 | POST | `/api/trade/{account_id}/complaints/{complain_id}/refuse` | `{proof_desc, proof_urls, confirm}` | 投诉拒绝（举证反驳） |
 | POST | `/api/trade/{account_id}/complaints/{complain_id}/proof` | `{proof_desc, proof_urls, kind, confirm}` | 投诉举证，`kind` 见 §3 |
-| POST | `/api/trade/{account_id}/addresses` | `{contact_name, mobile_phone, province_name, city_name, district_name, detail_address, area_id?, default_addr?, confirm}` | 退货地址新增（见 §8） |
+| POST | `/api/trade/{account_id}/addresses` | `{contact_name, mobile_phone, province_name, city_name, district_name, detail_address, area_id, default_addr, confirm}` | 退货地址新增（**`area_id`/`default_addr` 平台硬必填**，见 §8） |
 | POST | `/api/trade/{account_id}/addresses/{contact_id}/update` | 同上 | 退货地址编辑（见 §8） |
 | POST | `/api/trade/{account_id}/addresses/{contact_id}/delete` | `{confirm}` | 退货地址删除，**不可撤销**（见 §8） |
 | POST | `/api/trade/{account_id}/addresses/{contact_id}/default` | `{confirm}` | 设为默认退货地址（见 §8） |
@@ -203,12 +203,13 @@ cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe 
 缺字段/缺 Cookie/掉线/账号不存在、平台没返回的计数是 `None`；
 外加 §7 退款凭证的 11 条（形状、没有闸门、空串→`None`、无权限是 502 且不改登录态、
 无 Cookie 零平台请求、404/401、路由是 GET、只读接口不在写黑名单、解析器不编 token）。
-**§8 退货地址另有 39 条**在 `backend/tests/test_address_write_api.py`：17 条纯协议函数
-（四条 API 名逐字、写白名单与只读黑名单互斥、四种非法 `confirm` 全抛、可选键只在给了才出现、
-`is_success` 五态、`contact_id_of` 不造 ID）、4 条未确认闸门（零平台调用）、7 条字段校验
-（含「校验先于凭据检查」）、8 条 happy path（手机号去空格横线、`areaId` 只在给了才发、
-无回显 → `no_contact_id`）、7 条平台失败（无权限 502 且不改登录态、掉线 409 并回写、
-无 Cookie 零调用、404/401）、4 条路由 method 全 POST。
+**§8 退货地址另有 43 条**在 `backend/tests/test_address_write_api.py`：纯协议函数
+（四条 API 名逐字、写白名单与只读黑名单互斥、四种非法 `confirm` 全抛、可选键只在显式给出时才出现、
+`is_success` 五态、`contact_id_of` 不造 ID）、未确认闸门（零平台调用）、字段校验
+（含「校验先于凭据检查」；第 61 批新增 3 条 400 `invalid_fields` **零平台调用**：`area_id` 缺失、
+`area_id` 全空白、`default_addr` 缺失 —— 外加 1 条 `default_addr=False` 是合法值、会原样发给平台）、
+happy path（手机号去空格横线、`areaId`/`defaultAddr` 抵达平台、无回显 → `no_contact_id`）、
+平台失败（无权限 502 且不改登录态、掉线 409 并回写、无 Cookie 零调用、404/401）、路由 method 全 POST。
 **全部用假协议层（`install_fake_protocol`），不打真实闲鱼平台。**
 
 ## 7. 退款凭证（**只读**）`refund_verify_token`
@@ -270,7 +271,7 @@ POST /api/trade/{account_id}/addresses/{contact_id}/default
 
 | action | api | data |
 | --- | --- | --- |
-| `add`（偏移 3143703） | `mtop.alibaba.idle.seller.platform.merchant.delivery.address.add` | `{contactName, mobilePhone, provinceName, cityName, districtName, detailAddress, areaId?, defaultAddr?}` |
+| `add`（偏移 3143703） | `mtop.alibaba.idle.seller.platform.merchant.delivery.address.add` | `{contactName, mobilePhone, provinceName, cityName, districtName, detailAddress, areaId, defaultAddr}`（后两个**平台硬必填**，见下方「诚实偏离」） |
 | `update`（3143951） | `…address.update` | 同上 + `contactId` |
 | `delete`（3144220） | `…address.delete` | `{contactId}` |
 | `set_default`（3144501） | `…address.set.default` | `{contactId}` |
@@ -289,11 +290,28 @@ POST /api/trade/{account_id}/addresses/{contact_id}/default
 - **成功判据**：客户端没报错 **且** 平台 `code == 'success'`；平台没给 `code` 时以客户端结论为准
   （这四个接口不读响应体，`set.default` 成功可能是空对象）。
 - 拿不到 `contact_id` → `null` + warning `no_contact_id`（**不造**假 ID，让用户重拉列表）。
-- **诚实偏离（区域码）**：官方表单还有 `division`（级联 `{label,value}` 数组）与隐藏 `areaId`
-  （区级区域码）。我们没有码源（`mtop.taobao.idle.division.all.get` 对本机账号
+- **`area_id` / `default_addr` 是平台硬必填（第 61 批真机取证，2026-10-16）**：官方表单里
+  `areaId` 是**隐藏字段**（由级联 `division` 选中后带出），声明里看着可选，实际两个都不能少。
+  真机逐条（原始回执 `logs/write61/05_address_add.json`、`05b_address_add_with_area.json`、
+  `05d_address_add_full_raw.json`）：
+  - 只给名字、不给 `areaId` → 502 `FAIL_SYS_BIZPARAM_MISSED::缺少业务参数areaId`
+  - 补 `areaId`、不给 `defaultAddr` → 502 `FAIL_SYS_BIZPARAM_MISSED::缺少业务参数defaultAddr`
+  - 两个都给 → 参数校验**过了**，才轮到权限：502 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问`
+    （本机账号没有退货地址权限；**请求未写成任何数据，无需回滚**）
+  ⇒ 服务层把两者当必填**本地预检**（`_address_fields_problem`，`services/trade_write.py`）：
+  缺 `area_id`（空串/空白/`None`）或 `default_addr is None` → 400 `invalid_fields`，
+  **一个平台请求都不发**。理由：平台原话「缺少业务参数」会让用户以为是我们挂了，而这两个值
+  是调用方必须给的事实。钉它的用例见 `test_address_write_api.py` 里三条 400 零调用用例
+  （`area_id` 缺失 / `area_id` 全空白 / `default_addr` 缺失）与一条 `default_addr=False` 合法值用例。
+- **预检顺序**：`confirm` → `area_id` → `default_addr` → 其余字段（姓名 / 手机号 / 省市区 / 详址）。
+  理由：前两个是平台硬必填且**调用方（前端级联选择器）**该给的值，先说它们，用户才不会以为
+  「名字填对了就能发」。代价：`test_field_validation_runs_before_credential_check` 必须先把这两个
+  字段给全，才能走到「联系人姓名」那一条。
+- **诚实偏离（区域码）**：我们**没有码源**（`mtop.taobao.idle.division.all.get` 对本机账号
   `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`）⇒ **不伪造区域码、也不发形状不对的 `division`**：
-  只发省 / 市 / 区三个**名字**，`area_id` 留空就**根本不发这个键**。平台若因此拒绝，
-  错误原文原样显示，不会把失败说成成功。
+  只发省 / 市 / 区三个**名字** + 调用方给出的 `area_id`。协议层 `xianyu/address_write.py`
+  仍是「调用方给了才发这个键」—— 我们**不猜码**，只是不再在服务层把它静默丢掉。
+  平台若拒绝，错误原文原样显示，不会把失败说成成功。
 - **只读侧字段**：`normalize_address` 认**两套键**（bundle 里只读页与写页读法不同）——
   只读页 `{addressId,name,phoneNum,address,defaultAddr}`，写页编辑弹窗
   `{contactId,contactName,mobilePhone,provinceName,cityName,districtName,detailAddress}`；

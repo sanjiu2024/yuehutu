@@ -463,8 +463,29 @@ def _too_long(label: str, value: Any, limit: int) -> Optional[Dict[str, Any]]:
 
 def _address_fields_problem(contact_name: Any, mobile_phone: Any, province_name: Any,
                             city_name: Any, district_name: Any,
-                            detail_address: Any) -> Optional[Dict[str, Any]]:
-    """必填 + 长度 + 手机号 —— **纯本地**，所以排在建客户端之前（掉线时也该先报「名字没填」）。"""
+                            detail_address: Any, area_id: Any = None,
+                            default_addr: Any = None) -> Optional[Dict[str, Any]]:
+    """必填 + 长度 + 手机号 —— **纯本地**，所以排在建客户端之前（掉线时也该先报「字段没填」，
+    而不是「去重新登录」）。
+
+    `area_id` / `default_addr` 是**平台侧硬必填**（第 61 批真机取证，见
+    `logs/write61/05_address_add.json` 与 `05b_address_add_with_area.json`）：
+
+    - 两个都不给 -> `FAIL_SYS_BIZPARAM_MISSED::缺少业务参数areaId`
+    - 只补 `areaId` -> `FAIL_SYS_BIZPARAM_MISSED::缺少业务参数defaultAddr`
+    - 补上 `areaId` 之后才轮到权限校验（本账号随后回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`）
+
+    所以这里把两者当必填在本地拦下：平台原话是「缺少业务参数」，而用户看到 502
+    只会以为是我们挂了。返回 400 `invalid_fields` + 说清「官方页面的区级区域码」，
+    与「不伪造 areaId」的协议层口径一致（我们仍然不猜码，只是不再静默丢掉它）。
+    """
+    if _text(area_id).strip() == '':
+        return common.fail(
+            '退货地址需要区级区域码 area_id（平台硬必填，官方页面取自区域级联选择；'
+            '本项目没有码源，必须由调用方给出）', 'invalid_fields')
+    if default_addr is None:
+        return common.fail('退货地址需要 default_addr（平台硬必填，是否设为默认地址）',
+                           'invalid_fields')
     failure = _missing(('联系人姓名', contact_name), ('联系方式', mobile_phone),
                        ('所在省', province_name), ('所在市', city_name), ('所在区', district_name),
                        ('详细地址', detail_address))
@@ -517,14 +538,16 @@ def address_add(account_id: str, contact_name: Any, mobile_phone: Any, province_
                 *, confirm: Any = False) -> Dict[str, Any]:
     """新增退货地址（`mtop.alibaba.idle.seller.platform.merchant.delivery.address.add`）。
 
-    **三步顺序：确认 → 字段校验 → 建客户端**。`area_id` 是区级区域码，我们没有来源，
-    留空就**不发这个键**（不伪造）；官方还会发 `division` 级联数组，我们故意不发
-    （理由见 `xianyu/address_write.py` 的模块 docstring）。
+    **三步顺序：确认 → 字段校验 → 建客户端**。`area_id`（区级区域码）与 `default_addr`
+    是**平台硬必填**（第 61 批真机取证：不给前者回 `缺少业务参数areaId`，补上后者回
+    `缺少业务参数defaultAddr`，见 `logs/write61/05_address_add.json` / `05b_…` / `05d_…`）
+    ⇒ 本地预检拦下，缺就 400，不往平台发。我们仍然**不伪造**区域码：码值必须由调用方给出，
+    官方那个 `division` 级联数组也照旧不发（理由见 `xianyu/address_write.py` 的模块 docstring）。
     """
     if not _truthy(confirm):
         return _confirm_required('新增退货地址')
     failure = _address_fields_problem(contact_name, mobile_phone, province_name, city_name,
-                                      district_name, detail_address)
+                                      district_name, detail_address, area_id, default_addr)
     if failure:
         return failure
     return _address_submit(account_id, 'add', {
@@ -546,7 +569,7 @@ def address_update(account_id: str, contact_id: Any, contact_name: Any, mobile_p
     if failure:
         return failure
     failure = _address_fields_problem(contact_name, mobile_phone, province_name, city_name,
-                                      district_name, detail_address)
+                                      district_name, detail_address, area_id, default_addr)
     if failure:
         return failure
     return _address_submit(account_id, 'update', {
