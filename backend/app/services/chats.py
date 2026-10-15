@@ -64,6 +64,28 @@ SYSTEM_MSG_TYPES = ('system', 'card')
 #: 命中 `SYSTEM_MSG_TYPES` 时给调用方的结构化拒发原因（和 `MODE_NOT_AUTO_CODE` 同形）。
 SYSTEM_MESSAGE_CODE = 'system_message'
 
+#: 三个**全局开关**的设置键（`settings` 表，默认值见 `backend/app/core/config.py`）。
+#:
+#: 第 55 批之前这三个键只活在 `config.DEFAULT_SETTINGS` 与 `GET /api/settings` 的返回里，
+#: 生产代码**一次都没读过**（`grep -rn "human_takeover" backend/app` 只命中它自己的定义）
+#: —— 用户在设置里把 AI 关掉、把范围改成 off、设了「人工回复后 N 秒不插话」，
+#: AI 照样开口。现在这三个开关真的生效，拒发原因都有结构化 code。
+AI_ENABLED_SETTING = 'ai.enabled'
+AUTO_REPLY_SCOPE_SETTING = 'chat.auto_reply_scope'
+HUMAN_TAKEOVER_SETTING = 'chat.human_takeover_seconds'
+
+#: `chat.auto_reply_scope` 的合法取值（见 `config.py` 注释 all|items_only|off）。
+#: 认不出的值按 `all` 处理且**不报错**：设置项是自由文本，写错一个字母不该让 AI 整个停摆。
+AUTO_REPLY_SCOPES = ('all', 'items_only', 'off')
+
+#: `ai.enabled=false` 时的结构化拒发原因（**总开关**，一关全停）。
+AI_DISABLED_CODE = 'ai_disabled'
+#: 范围设成 off / items_only 但这条会话不在范围内时的结构化拒发原因。
+SCOPE_OFF_CODE = 'auto_reply_scope_off'
+SCOPE_ITEMS_ONLY_CODE = 'auto_reply_scope_items_only'
+#: 人工刚回过、还在「不插话」窗口内时的结构化拒发原因。
+HUMAN_TAKEOVER_CODE = 'human_takeover'
+
 SENDER_BY_ROLE = {
     'buyer': ('in', 'buyer'),
     'user': ('in', 'buyer'),
@@ -793,6 +815,102 @@ def _account_reply_gate(account_id: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _setting_int(key: str, default: int = 0) -> int:
+    """读一个整数设置项；读不出 / 不是数字就当 `default`（不抛异常）。"""
+    raw = common.get_setting(key, '')
+    try:
+        return int(float(str(raw).strip() or default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _global_reply_gate() -> Optional[Dict[str, Any]]:
+    """全局 AI 开关判据（第 55 批）：`ai.enabled` 与 `chat.auto_reply_scope=off`。
+
+    `items_only` 要看会话的 `item_id`，在 `_scope_gate` 里判。
+    """
+    if not common.truthy(common.get_setting(AI_ENABLED_SETTING, 'true'), True):
+        return {
+            'success': False,
+            'code': AI_DISABLED_CODE,
+            'message': 'AI 总开关（ai.enabled）已关闭，AI 不自动回复',
+        }
+    scope = str(common.get_setting(AUTO_REPLY_SCOPE_SETTING, 'all') or 'all').strip().lower()
+    if scope == 'off':
+        return {
+            'success': False,
+            'code': SCOPE_OFF_CODE,
+            'message': '自动回复范围（chat.auto_reply_scope）设成了 off，AI 不自动回复',
+        }
+    return None
+
+
+def _scope_gate(conversation: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """`items_only` 范围判据：只回「挂着商品」的会话，别的会话不开口。"""
+    scope = str(common.get_setting(AUTO_REPLY_SCOPE_SETTING, 'all') or 'all').strip().lower()
+    if scope != 'items_only':
+        return None
+    if str(conversation.get('item_id') or '').strip():
+        return None
+    return {
+        'success': False,
+        'code': SCOPE_ITEMS_ONLY_CODE,
+        'message': '自动回复范围是「只回挂着商品的会话」，这条会话没有关联商品，AI 不自动回复',
+    }
+
+
+def _human_takeover_gate(conversation: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """「人工回复后 N 秒内 AI 不插话」判据（第 55 批）。
+
+    `chat.human_takeover_seconds <= 0` 表示不限制（默认 0，保持旧行为）。
+    判据是**最近一条人工外发消息有多新**（`direction='out'` 且 `sender='human'`）。
+
+    时间差交给 SQLite 算：`messages.created_at` 是 `CURRENT_TIMESTAMP`（UTC），
+    用 Python 的本地时间相减会整整差一个时区（本机 UTC+8）。
+
+    这一条与「人工回复后会话切 manual」（`send_manual` 的既有行为）不重复：
+    走本机界面回的会切 manual，但**卖家在手机/网页版自己回的消息**是平台侧同步进来的，
+    不切模式 —— 那时只有这个窗口能拦住 AI 插话。
+    """
+    seconds = _setting_int(HUMAN_TAKEOVER_SETTING, 0)
+    if seconds <= 0:
+        return None
+    row = db.query_one(
+        "SELECT CAST((julianday('now') - julianday(created_at)) * 86400 AS REAL) AS age "
+        "FROM messages WHERE conversation_id = ? AND direction = 'out' AND sender = 'human' "
+        'ORDER BY id DESC LIMIT 1',
+        (conversation.get('id'),),
+    )
+    if row is None or row['age'] is None:
+        return None
+    age = float(row['age'])
+    if age > seconds:
+        return None
+    return {
+        'success': False,
+        'code': HUMAN_TAKEOVER_CODE,
+        'message': f'卖家 {int(age)} 秒前刚人工回过这条会话，{seconds} 秒内 AI 不插话',
+    }
+
+
+def _auto_reply_gate(conversation: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """AI 自动回复的**全部**开关判据（第 55 批收口）。
+
+    顺序：全局总开关 -> 范围 -> 人工接管窗口 -> 账号级开关。
+    返回结构化拒绝信封，或 None（放行）。生成侧（`handle_incoming`）与投递侧
+    （`deliver_ai_reply`）共用同一份判据，绕开任何一侧都不会漏开关。
+    """
+    for gate in (
+        _global_reply_gate(),
+        _scope_gate(conversation),
+        _human_takeover_gate(conversation),
+        _account_reply_gate(conversation.get('account_id')),
+    ):
+        if gate is not None:
+            return gate
+    return None
+
+
 def _account_exists(account_id: Any) -> bool:
     """账号是否在 `accounts` 表里（任务 C3：不存在就不许建会话）。"""
     account_id = str(account_id or '')
@@ -939,7 +1057,10 @@ def handle_incoming(
     - **要新建会话时必须先确认账号存在**（任务 C3）：`account_id='nope_acc'` 以前
       会 200 并凭空建出一个「幽灵会话」，出现在对话列表里。
     - 不生成 AI 时也会带回**结构化原因**（`ai_result.code`）：
-      `mode_not_auto`（人工接管/关闭）或 `account_auto_reply_off`（账号级开关）。
+      `mode_not_auto`（人工接管/关闭）、`system_message`（不是买家在说话）、
+      `ai_disabled`（`ai.enabled` 总开关关了）、`auto_reply_scope_off` /
+      `auto_reply_scope_items_only`（范围设置）、`human_takeover`（人工刚回过、还在窗口内）、
+      `account_auto_reply_off`（账号级开关）。
     """
     if _find_conversation(conversation_id) is None:
         if not (account_id and peer_user_id):
@@ -994,7 +1115,7 @@ def handle_incoming(
             'message': '这条不是买家说的话（系统/卡片消息），AI 不自动回复',
         }
     else:
-        ai_result = _account_reply_gate(conversation.get('account_id'))
+        ai_result = _auto_reply_gate(conversation)
 
     reply_info: Optional[Dict[str, Any]] = None
     ai_message = None
@@ -1127,11 +1248,13 @@ def deliver_ai_reply(
     调用方用它覆盖落库时那条 `sent_ok=False` 的旧快照）。
 
     不发送的情况都必须留下原因：`mode != 'auto'`（人工接管 / 关闭）、
+    全局开关关掉（`ai.enabled=false` / 范围 `off` / 范围 `items_only` 但这条会话没挂商品 /
+    人工刚回过还在 `chat.human_takeover_seconds` 窗口内，第 55 批）、
     账号级开关关掉（`enabled=0` / `auto_reply=0`，任务 B3）、
     缺平台会话 id（HTTP 手动灌入的来信没有 cid）、账号正在风控冷却中。
 
-    这是投递侧的第二道账号级闸门：即使调用方绕开 `handle_incoming` 直接投递，
-    账号开关关掉时也不许发出去。
+    这是投递侧的第二道闸门：即使调用方绕开 `handle_incoming` 直接投递，
+    任何一道开关关掉时也不许发出去（判据与生成侧共用 `_auto_reply_gate`）。
     """
     row = _find_conversation(conversation_id)
     if row is None:
@@ -1146,12 +1269,12 @@ def deliver_ai_reply(
             conversation, message_id, sent=False, code=MODE_NOT_AUTO_CODE,
             message=f'会话处于 {conversation.get("mode")} 模式，AI 回复不自动发送',
         )
-    gate = _account_reply_gate(account_id)
+    gate = _auto_reply_gate(conversation)
     if gate is not None:
         return _finish_ai_send(
             conversation, message_id, sent=False,
             code=str(gate.get('code') or ACCOUNT_OFF_CODE),
-            message=str(gate.get('message') or '账号级开关已关闭 AI 回复，未发送'),
+            message=str(gate.get('message') or '开关已关闭 AI 回复，未发送'),
         )
     if not text:
         return _finish_ai_send(

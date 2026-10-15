@@ -1307,5 +1307,173 @@ class SendManualConfirmGateTest(_ChatsTestBase):
             chats.send_manual(999, 'x', confirm=True)['code'], 'not_found')
 
 
+class ReplySettingsGateTest(_ChatsTestBase):
+    """第 55 批：三个**全局开关**必须真的拦住 AI。
+
+    `ai.enabled` / `chat.auto_reply_scope` / `chat.human_takeover_seconds` 在此之前
+    只活在 `config.DEFAULT_SETTINGS` 与 `GET /api/settings` 的返回里，生产代码一次都没读过
+    —— 用户在设置里把 AI 关掉，AI 照样开口。这里逐个钉住「关掉就真的不发」。
+    """
+
+    KEYS = ('ai.enabled', 'chat.auto_reply_scope', 'chat.human_takeover_seconds')
+
+    def setUp(self):
+        super().setUp()
+        for key in self.KEYS:
+            db.execute('DELETE FROM settings WHERE key = ?', (key,))
+
+    def put(self, key, value):
+        db.execute(
+            'INSERT INTO settings(key, value) VALUES(?,?) '
+            'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+            (key, str(value)),
+        )
+
+    def fake_runtime(self, calls):
+        module = types.ModuleType(RUNTIME_MODULE)
+
+        async def reply_for_message(conversation_id, message_id):
+            calls.append((conversation_id, message_id))
+            return {'ok': True, 'reply': 'AI 回一句', 'role': 'item'}
+
+        module.reply_for_message = reply_for_message  # type: ignore[attr-defined]
+        sys.modules[RUNTIME_MODULE] = module
+
+    def incoming(self, conv, text='在吗'):
+        calls = []
+        self.fake_runtime(calls)
+        try:
+            result = chats.handle_incoming(conv['id'], text)
+        finally:
+            clear_module(RUNTIME_MODULE)
+        return result, calls
+
+    # ------------------------------------------------------------------ 默认全开
+    def test_defaults_let_the_ai_reply(self):
+        """三个键都不设（= 出厂默认）时行为不变：AI 照常回复。"""
+        self.make_account()
+        conv = self.make_conversation()
+        result, calls = self.incoming(conv)
+        self.assertEqual(len(calls), 1)
+        self.assertIsNotNone(result['ai_reply'])
+        self.assertTrue(result['ai_result']['success'])
+
+    # ---------------------------------------------------------------- ai.enabled
+    def test_ai_disabled_stops_the_ai(self):
+        self.make_account()
+        conv = self.make_conversation()
+        self.put('ai.enabled', 'false')
+        result, calls = self.incoming(conv)
+        self.assertEqual(calls, [])
+        self.assertIsNone(result['ai_reply'])
+        self.assertEqual(result['ai_result']['code'], chats.AI_DISABLED_CODE)
+        # 买家那条消息照旧落库（只是不生成 AI 回复）。
+        self.assertEqual(len(db.query('SELECT * FROM messages')), 1)
+
+    def test_ai_disabled_is_enforced_on_the_delivery_side_too(self):
+        """投递侧第二道闸门：绕开 `handle_incoming` 直投也不许发出去。"""
+        self.make_account()
+        conv = self.make_conversation()
+        install_client(self.client)
+        msg = chats.append_message(conv['id'], 'buyer', '在吗')
+        self.put('ai.enabled', 'false')
+        result = chats.deliver_ai_reply(conv['id'], msg['id'], '草稿', cid='cid-1')
+        self.assertFalse(result['sent'])
+        self.assertEqual(result['code'], chats.AI_DISABLED_CODE)
+        self.assertEqual(self.client.sent, [])
+
+    # ------------------------------------------------------------------ 范围设置
+    def test_scope_off_stops_the_ai(self):
+        self.make_account()
+        conv = self.make_conversation()
+        self.put('chat.auto_reply_scope', 'off')
+        result, calls = self.incoming(conv)
+        self.assertEqual(calls, [])
+        self.assertEqual(result['ai_result']['code'], chats.SCOPE_OFF_CODE)
+
+    def test_scope_items_only_skips_conversations_without_item(self):
+        self.make_account()
+        conv = self.make_conversation()
+        self.put('chat.auto_reply_scope', 'items_only')
+        result, calls = self.incoming(conv)
+        self.assertEqual(calls, [])
+        self.assertEqual(result['ai_result']['code'], chats.SCOPE_ITEMS_ONLY_CODE)
+
+    def test_scope_items_only_replies_for_conversations_with_item(self):
+        self.make_account()
+        conv = chats.ensure_conversation(
+            'acc1', 'buyer9', peer_nickname='买家9', item_id='it-1',
+        )
+        self.put('chat.auto_reply_scope', 'items_only')
+        result, calls = self.incoming(conv)
+        self.assertEqual(len(calls), 1)
+        self.assertIsNotNone(result['ai_reply'])
+
+    def test_unknown_scope_is_treated_as_all(self):
+        """设置项是自由文本：写错一个字母不该让 AI 整个停摆（按 all 处理）。"""
+        self.make_account()
+        conv = self.make_conversation()
+        self.put('chat.auto_reply_scope', 'ALL_ITEMS')
+        result, calls = self.incoming(conv)
+        self.assertEqual(len(calls), 1)
+        self.assertIsNotNone(result['ai_reply'])
+
+    # -------------------------------------------------------------- 人工接管窗口
+    def test_takeover_window_blocks_the_ai_right_after_a_human_reply(self):
+        self.make_account()
+        conv = self.make_conversation()
+        self.put('chat.human_takeover_seconds', '300')
+        chats.append_message(conv['id'], 'human', '我自己回他了', sent_ok=True)
+        result, calls = self.incoming(conv)
+        self.assertEqual(calls, [])
+        self.assertEqual(result['ai_result']['code'], chats.HUMAN_TAKEOVER_CODE)
+        self.assertIn('300 秒内', result['ai_result']['message'])
+
+    def test_takeover_window_expires(self):
+        self.make_account()
+        conv = self.make_conversation()
+        self.put('chat.human_takeover_seconds', '300')
+        msg = chats.append_message(conv['id'], 'human', '很久以前回的', sent_ok=True)
+        # 时间差由 SQLite 自己算（created_at 是 UTC），这里把那条人工消息推回 10 分钟前。
+        db.execute(
+            "UPDATE messages SET created_at = datetime('now', '-600 seconds') WHERE id = ?",
+            (msg['id'],),
+        )
+        result, calls = self.incoming(conv)
+        self.assertEqual(len(calls), 1)
+        self.assertIsNotNone(result['ai_reply'])
+
+    def test_takeover_window_zero_means_no_limit(self):
+        self.make_account()
+        conv = self.make_conversation()
+        self.put('chat.human_takeover_seconds', '0')
+        chats.append_message(conv['id'], 'human', '刚回的', sent_ok=True)
+        result, calls = self.incoming(conv)
+        self.assertEqual(len(calls), 1)
+        self.assertIsNotNone(result['ai_reply'])
+
+    def test_takeover_window_ignores_ai_messages(self):
+        """窗口只看人工消息：AI 自己刚回过不该把自己关掉。"""
+        self.make_account()
+        conv = self.make_conversation()
+        self.put('chat.human_takeover_seconds', '300')
+        chats.append_message(conv['id'], 'ai:item', 'AI 刚回过', ai_generated=True, sent_ok=True)
+        result, calls = self.incoming(conv)
+        self.assertEqual(len(calls), 1)
+        self.assertIsNotNone(result['ai_reply'])
+
+    def test_takeover_window_is_enforced_on_the_delivery_side_too(self):
+        self.make_account()
+        conv = self.make_conversation()
+        install_client(self.client)
+        msg = chats.append_message(conv['id'], 'buyer', '在吗')
+        self.put('chat.human_takeover_seconds', '300')
+        chats.append_message(conv['id'], 'human', '我自己回', sent_ok=True)
+        result = chats.deliver_ai_reply(conv['id'], msg['id'], '草稿', cid='cid-1')
+        self.assertFalse(result['sent'])
+        self.assertEqual(result['code'], chats.HUMAN_TAKEOVER_CODE)
+        self.assertEqual(self.client.sent, [])
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
