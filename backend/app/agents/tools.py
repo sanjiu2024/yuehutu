@@ -4226,7 +4226,9 @@ def _chats_messages(args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _items_batch_publish(args: Dict[str, Any]) -> Dict[str, Any]:
-    """逐条真的上架。口径与 POST /api/items/{account_id}/batch-publish 完全一致。"""
+    """逐条真的上架。行级口径与 POST /api/items/{account_id}/batch-publish 一致
+    （每行的 confirm 覆盖整体、失败项带 id + code + message）；响应字段名用 published。
+    """
     from ..services import common as common_mod
     from ..services import items as items_service
 

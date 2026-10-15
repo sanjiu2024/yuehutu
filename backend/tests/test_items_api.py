@@ -1075,5 +1075,43 @@ class ItemPublishDataApiTest(ItemsApiTest):
                 self.assertEqual(resp.status_code, 405, resp.text)
 
 
+
+
+# --------------------------------------------------------------- 批量发布的失败项形状（第 61 批）
+
+class BatchPublishFailureShapeApiTest(ItemsApiTest):
+    """批上架失败项必须是 `id` + `code` + `message` 三键（与 delist/relist 等服务层端点同形）。
+
+    第 61 批小审查发现：`POST /batch-publish` 只回 `{id, message}`，而 AI 侧 `items_batch_publish`
+    自称「口径完全一致」却回三键，前端 `showBatchNotice` 也按 `code` 分流。
+    """
+
+    def test_non_dict_row_carries_invalid_row_code(self):
+        seed_account()
+        resp = self.client.post(f'/api/items/{ACC}/batch-publish',
+                                json={'items': ['nope'], 'confirm': True}, headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        failed = resp.json()['data']['failed']
+        self.assertEqual(len(failed), 1, resp.text)
+        self.assertEqual(failed[0]['id'], '')
+        self.assertEqual(failed[0]['code'], 'invalid_row')
+        self.assertEqual(failed[0]['message'], 'item 必须是对象')
+
+    def test_platform_failure_keeps_the_service_code(self):
+        from unittest import mock
+
+        seed_account()
+
+        def spy(account_id, payload, *, confirm=None):
+            return {'success': False, 'code': 'platform_error', 'message': '平台拒绝了'}
+
+        with mock.patch('backend.app.services.items.publish_item', spy):
+            resp = self.client.post(f'/api/items/{ACC}/batch-publish',
+                                    json={'items': [{'item_id': 'A1'}], 'confirm': True},
+                                    headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        failed = resp.json()['data']['failed']
+        self.assertEqual([(f['id'], f['code']) for f in failed],
+                         [('A1', 'platform_error')], resp.text)
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -478,11 +478,16 @@ def _address_fields_problem(contact_name: Any, mobile_phone: Any, province_name:
     所以这里把两者当必填在本地拦下：平台原话是「缺少业务参数」，而用户看到 502
     只会以为是我们挂了。返回 400 `invalid_fields` + 说清「官方页面的区级区域码」，
     与「不伪造 areaId」的协议层口径一致（我们仍然不猜码，只是不再静默丢掉它）。
+
+    第 61 批起**有码源**：`GET /api/logistics/{account_id}/divisions`
+    （`mtop.cainiao.geography.frontend.divisionsinfo.get`）可从省逐级取到区，
+    所以 400 文案指向它，而不是「本项目没有码源」。
     """
     if _text(area_id).strip() == '':
         return common.fail(
-            '退货地址需要区级区域码 area_id（平台硬必填，官方页面取自区域级联选择；'
-            '本项目没有码源，必须由调用方给出）', 'invalid_fields')
+            '退货地址需要区级区域码 area_id（平台硬必填；先用 GET /api/logistics/'
+            '{account_id}/divisions 从省逐级取到区，传叶子节点的 value，形如 110101/东城区）',
+            'invalid_fields')
     if default_addr is None:
         return common.fail('退货地址需要 default_addr（平台硬必填，是否设为默认地址）',
                            'invalid_fields')

@@ -7,7 +7,8 @@
    （三步顺序必须是 **确认 → 字段校验 → 建客户端**）；
 3. 编造平台没回显的 `contactId`（官方新增后是重拉列表找新条目，从不读响应体）；
 4. 把 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 之类的平台拒绝当成掉线，让用户白扫一次码；
-5. 偷偷补上官方有、我们**没有码源**的 `division` / `areaId`（区域码查不到，不能猜）。
+5. 偷偷补上官方有、我们**不伪造**的 `division` / `areaId`（码源是
+   `GET /api/logistics/{account_id}/divisions`，但调用方没给就一个字节都不发）。
 
 **第 61 批已打过真机 add**（证据 `logs/write61/05_address_add.json`、`05b_address_add_with_area.json`、
 `05d_address_add_full_raw.json`）：平台原话是不带 `areaId` 回
@@ -276,7 +277,7 @@ class AddressWriteProtocolTest(unittest.TestCase):
             'areaId': '330106',
             'defaultAddr': True,
         })
-        # 官方有 division（级联数组），我们没有码源 —— 不许出现
+        # 官方有 division（级联数组）—— 我们不伪造、不许出现
         self.assertNotIn('division', data)
         # 协议层口径仍是「调用方给了才发」：显式给空值就不发这两个键（不伪造）
         _api, bare = proto.add_request(**{**FORM, 'area_id': '', 'default_addr': None},

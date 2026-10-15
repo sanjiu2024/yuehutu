@@ -198,7 +198,8 @@ def batch_publish(account_id: str, payload: Dict[str, Any] = Body(...), user=Dep
     results = []
     for row in rows:
         if not isinstance(row, dict):
-            results.append((None, {'success': False, 'message': 'item 必须是对象'}))
+            results.append((None, {'success': False, 'code': 'invalid_row',
+                                   'message': 'item 必须是对象'}))
             continue
         # 每一行自己也可以带 confirm（逐条确认）；行里的 confirm 必须 pop 掉，
         # 否则会被当成发布载荷的一个字段发给协议层。
@@ -209,8 +210,13 @@ def batch_publish(account_id: str, payload: Dict[str, Any] = Body(...), user=Dep
         results.append((item.get('item_id') or item.get('id') or '',
                         items.publish_item(account_id, item, confirm=confirm)))
     ok = sum(1 for _, r in results if not common.is_failure(r))
+    # 失败项与服务层端点（delist / relist 等）同形：id + code + message
+    # （AI 侧 items_batch_publish 早已是三键，前端 showBatchNotice 也按 code 分流）。
     return _envelope({'total': len(rows), 'ok': ok,
-                      'failed': [{'id': str(rid or ''), 'message': r.get('message', '')}
+                      'failed': [{'id': str(rid or ''),
+                                  'code': r.get('code') if isinstance(r, dict) else None,
+                                  'message': (r.get('message', '') if isinstance(r, dict)
+                                              else str(r))}
                                  for rid, r in results if common.is_failure(r)]})
 
 

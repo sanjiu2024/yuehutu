@@ -18,10 +18,11 @@
 **诚实偏离（重要，不要偷偷补）**：官方新增/编辑表单里除了下面这些字段，还有一个
 `division`（三元素 `{label,value}` 级联数组，来自 `DivisionSelect`）与一个隐藏的 `areaId`
 （**区级区域码**，官方 `areaId = dist.value || values.areaId`）。
-我们没有区域码来源（`mtop.taobao.idle.division.all.get` 对本机账号是
-`FAIL_BIZ_IDLE_USER_UNAUTHORIZED`），所以：
+`mtop.taobao.idle.division.all.get` 对本机账号是 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`，但
+**第 61 批找到了另一个可用码源** `mtop.cainiao.geography.frontend.divisionsinfo.get`
+（服务层 `GET /api/logistics/{account_id}/divisions`，见 `xianyu/division.py`），所以：
 
-- **不伪造** `areaId`：调用方给了才发这个键；
+- **不伪造** `areaId`：协议层仍是调用方给了才发这个键（服务层已把它当硬必填）；
 - **不发形状不对的** `division`：只发 `provinceName` / `cityName` / `districtName` 三个名字。
 
 平台若不接受，错误原文会原样透出（`envelope_error`），不会被说成成功。
@@ -58,7 +59,8 @@ WRITE_APIS: Dict[str, Dict[str, str]] = {
     'add': {
         'api': ADD_API,
         'data': '{contactName, mobilePhone, provinceName, cityName, districtName, detailAddress,'
-                ' defaultAddr?, areaId?}（官方还发 division 级联数组，我们没有码源，故意不发）',
+                ' defaultAddr?, areaId?}（官方还发 division 级联数组，我们不伪造、故意不发；'
+                'areaId 的码源见 xianyu/division.py）',
         'evidence': 'bundle @3143703 声明 / 组件 @3780900~3782550 的 onOk() 组装 payload',
     },
     'update': {
