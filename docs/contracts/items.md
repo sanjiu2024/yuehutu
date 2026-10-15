@@ -124,10 +124,10 @@
 
 | 候选 | 为什么不接 |
 | --- | --- |
-| `mtop.alibaba.idle.seller.platform.idle.category.query` | dc bundle `@2494759` 只有**声明**、调用点 0；且那个 bundle 是「数据」组，与商品发布无关 |
+| `mtop.alibaba.idle.seller.platform.idle.category.query` | ~~不接~~ → **已接（第 63 批 task-23，见 §7）**；原理由：dc bundle `@2494759` 只有**声明**、调用点 0；且那个 bundle 是「数据」组，与商品发布无关 |
 | `mtop.taobao.idle.item.pc.category.list` | js `@1804756`，请求 `{params: JSON.stringify({industryId, sourceId})}`：来自 bundle **老区段**（`@1804740` 附近是老登录/PC 初始化代码，不是发布页），且 `industryId` 来源未证；发布页已有 `publish.categories` |
-| `mtop.alibaba.idle.seller.pc.common.item.search` | js bundle 调用点 0；它属于**商品列表**域（不是发布表单数据源）。字段形状已登记在 `docs/contracts/item_templates.md` §4，留给「商品管理页」那一批 |
-| `mtop.alibaba.idle.seller.platform.item.operate.report.get` | js `@3081396` 只有声明、调用点 0，请求字段形状未知（不猜参数） |
+| `mtop.alibaba.idle.seller.pc.common.item.search` | ~~不接~~ → **已接（第 63 批 task-23，见 §7）**；原理由：js bundle 调用点 0；它属于**商品列表**域（不是发布表单数据源）。字段形状已登记在 `docs/contracts/item_templates.md` §4，留给「商品管理页」那一批 |
+| `mtop.alibaba.idle.seller.platform.item.operate.report.get` | ~~不接~~ → **已接（第 63 批 task-23，见 §7）**；原理由：js `@3081396` 只有声明、调用点 0，请求字段形状未知（不猜参数）。真机已证**必须有 `itemId`** |
 | `client.recommend_category`（已有） | 它是「按标题**猜**类目」（`kgraph.property.recommend` v2.0），不是「按类目拿候选值」，**替代不了**本文件这 5 个 |
 | 相邻发现（登记备查，本批不实现） | `mtop.taobao.idle.kgraph.property.search`（js `@3074998`，调用点 `@4058080`/`@4058567`：`{inputText:'', channelCatId, propertyId:20000, scene:'seller_platform'}` → `res.data.data.searchList`，元素 `{valueName, valueId}`）；`mtop.alibaba.idle.seller.platform.cpv.category`（js `@3074239`，调用点 0）；`mtop.alibaba.idle.item.pc.draft.search`（草稿箱） |
 
@@ -154,3 +154,100 @@
 3. ~~`brands` / `models` 的元素字段名~~ —— **已解（2026-10-16 真机）**：`brands` 元素是 **`{value,label}`**（68 条，如 `{value:'642468970',label:'NIORFNIO'}`，都是字符串），不是 `valueId`/`valueName`；`models` 那次 0 条，形状仍未见到。
 4. `publish.categories` 的 `valueType:'string'` 是否真的必要（官方这么发，我们照抄；若真机报参数错，去掉它）。
 5. 型号 `count == 0` 与「这个类目本来就没型号」的区分：真机（2026-10-16）`models` 与 `category-properties` 都回 **200 + 空数组 + `platform_code=success`**，**两者仍不可分辨**，只能靠 `platform_code`。
+
+## 编辑失败不改本地（第 63 批）
+
+`POST /api/items/{account_id}/{item_id}/edit` 的平台失败语义与上下架（第 61 批）对齐：
+**平台 CALL_ERROR 时本地字段一个字节都不改**。
+
+- 顺序：`_push_update`（推平台）**先**，本地 `UPDATE items` **后**；平台没确认就不落库。
+- 平台拒绝 → HTTP 200 + `data.synced=false`、`data.updated_fields=[]`、
+  `data.failed=[{id, code: 'protocol_error', message}]`，message 是平台原文 + 中文前缀
+  `平台修改失败，本地未改动: `，并落一条 `success=0` 的 `operation_logs`。
+- 一条都没改成 ⇒ **不发** `items.updated`。
+- 协议层没就绪（`CALL_MISSING`，平台一次请求都没发出）仍是既定「本地优先」口径：
+  本地照改 + `warning` 说明「协议层尚未实现商品修改，改动仅本地生效」。
+
+回归：`backend/tests/test_items_api.py::ItemEditPlatformFailureApiTest`、
+`backend/tests/test_services_items.py`（平台拒绝 / 未知错误码透传两条已按新口径改写）。
+
+## 7. 商品读 5 条（第 63 批 task-23，独立模块 `items_read`）
+
+**为什么另开模块**：`backend/app/services/items.py` 被 task-24 占用，且这 5 条属「商品读/管理」域
+（列表、类目字典、筛选词、发布前预取），与发布表单数据源不同域。故新建
+`backend/app/xianyu/items_read.py` + `backend/app/services/items_read.py` + `backend/app/api/items_read.py`，
+HTTP 前缀独立 `/api/items-read`（**故意不并进 `/api/items`**，不与 task-24 抢同一份路由文件）。
+
+| # | HTTP | 协议层函数 | api | 请求 data | bundle 证据 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `GET /api/items-read/{account_id}/search` | `search_items` | `mtop.alibaba.idle.seller.pc.common.item.search` | `{pageNo, pageSize, bizType:'commonPro', searchRequest:'<JSON 字符串>', itemStatus:'0,-9'}` + 可选 `orderField`/`orderType` | js `@3071624`（调用点 1） |
+| 2 | `GET /api/items-read/{account_id}/categories` | `category_query` | `mtop.alibaba.idle.seller.platform.idle.category.query` | `params` 原样透传（默认无 data） | dc `@2494750` |
+| 3 | `GET /api/items-read/{account_id}/operate-report` | `operate_report` | `mtop.alibaba.idle.seller.platform.item.operate.report.get` | `params` 原样透传（**真机证必须有 `itemId`**） | js `@3081396` |
+| 4 | `GET /api/items-read/{account_id}/search-terms` | `search_terms` | `mtop.taobao.idle.seller.platform.item.pc.fix.search.term.query` | 无 data | js `@3075400` |
+| 5 | `GET /api/items-read/{account_id}/preget` | `preget` | `mtop.idle.pc.idleitem.preget` | `{itemId, sourceId, publishScene:'firstHandPublish'}` | js `@3062151` |
+
+- 查询参数：1 号 `keyword/page/size/item_status/biz_type/order_field/order_type/search_request`
+  （`page` 1..100000、`size` 1..50，越界 **422**）；2/3 号 `params`（**JSON 对象字符串**）；
+  4 号无参；5 号 `item_id`/`source_id`/`publish_scene`（`source_id` 缺省空串、`publish_scene` 缺省 `firstHandPublish`）。
+- **`searchRequest` 是 JSON 字符串**（不是对象）：bundle 原文是 `JSON.stringify(...)` 后塞进去。
+  本模块把 `keyword` 包成 `{"keyword": "..."}` 再 `json.dumps`；调用方也可用 `search_request` 直接给整串。
+- 响应解析：列表认 `itemSearchResponseList`（`itemList`/`list`/`rows`/`items` 容错），
+  总数认 `total`（`totalCount`/`count` 容错）；认不出就是 `null`/`[]`，**绝不编数**。
+- 筛选词只收 `returnService`/`sendGoodsTime`/`serviceGuarantee` 三组（`TERM_GROUPS`），
+  元素 `{key,value}` 两键都非空才留。
+- 错误语义与 §2 同：账号前置检查（400/404/409）、模块缺失 503 `xianyu_not_ready`、
+  协议层抛异常 502 `protocol_error`、**平台业务码非 `success` 仍 200 + `platform_code` 原样带出**。
+- 契约键：`{account_id, kind, api, platform_code, fetched_at(UTC), source:'platform'}` + 按需 `platform_message`；
+  1 号另有 `rows`/`total`，4 号 `terms`，5 号 `need_up_first_hand_item`/`industry_id`，2/3 号 `data`。
+- 协议层函数（模块级 async、client 作入参，不动冻结的 `client.py`）：
+  `search_items(client, keyword, page, size, item_status, biz_type, search_request, order_field, order_type)` /
+  `category_query(client, params)` / `operate_report(client, params)` / `search_terms(client)` /
+  `preget(client, item_id, source_id, publish_scene)`，每个都回 `sent`（实际发出的 data，探针看这个）。
+
+### 7.1 真机只读复打第一轮（2026-10-16，账号 2217970177348 月狐兔_）
+
+DB 一致性拷贝（`sqlite3` 的 `Connection.backup()`）到 `%TEMP%\xywb_live63\data\app.db`（602112 bytes），
+生产库只读；原始响应 `logs/items_read63/raw63.json`（脚本 `C:\Users\Administrator\.dsh-tmp\ir63_probe.py`）。
+
+| # | 接口 | 入参 | 结果（逐条如实） |
+| --- | --- | --- | --- |
+| 1 | `search_items` | 无参默认 | 成功：`platform_code=success`、**rows=20**、**total=44**、message=成功 |
+| 2 | `category_query` | 无参 | `platform_code=success`，业务体是**数组**（形状见 §7.2） |
+| 3 | `operate_report` | 无参 | **502 `protocol_error`**，平台原文 `MTOP 调用失败 [...operate.report.get]: FAIL_SYS_BIZPARAM_MISSED::缺少业务参数itemId` ⇒ **必须有 `itemId`** |
+| 4 | `search_terms` | 无参 | `platform_code=success`，`terms={returnService:2, sendGoodsTime:3, serviceGuarantee:19}`（19 项与旧登记吻合） |
+| 5 | `preget` | 空 `itemId` | **502**，平台原文 `FAIL_BIZ_USER_SHOW_SYSTEM_ERROR::亲，小闲鱼有点忙，请稍后重试哦` |
+| — | 5 条 GET（HTTP 轮，TestClient 打真实路由） | 无参 | 5 条**全 502** `protocol_error`，message `协议层调用失败: 账号处于风控冷却中，还需 59s` |
+
+### 7.2 真机第二轮（带真实 `itemId`，2026-10-16）
+
+item_id 取自第一轮 `search_items` 的 `rows[0]`：**`1088306808784`**；原始响应 `logs/items_read63/raw63b.json`。
+
+| 接口 | 入参 | 结果（逐条如实） |
+| --- | --- | --- |
+| `operate_report` | 探针误传 **dict** `{itemId: ...}` | **400 `invalid_fields`** `params 必须是 JSON 对象字符串` —— 服务层只收 JSON **字符串**（探针口径错，非实现缺陷）；带字符串 `'{"itemId":"1088306808784"}'` 的复打**未做成**（见 §8.7） |
+| `category_query` | 同上误传 dict | 同上 400 |
+| `preget` | 真实 `itemId=1088306808784` | **502**，平台原文 `FAIL_BIZ_USER_SHOW_SYSTEM_ERROR::亲，小闲鱼有点忙，请稍后重试哦`；`client.py` 日志 `[2217970177348] 命中风控，冷却 60s: FAIL_BIZ_USER_SHOW_SYSTEM_ERROR::...` ⇒ **这条平台文案就是本账号的风控信号**（不是「参数错」） |
+| `search_terms` | 无参复打 | **502** `protocol_error`，冷却中（`preget` 触发的 60s 冷却） |
+| HTTP `/search`、`/search-terms` | TestClient | **502** `protocol_error`，`账号处于风控冷却中，还需 35s / 27s` |
+
+- **风控额度共享且会被平台文案触发**：第一轮的 `preget`（空 id）就已经把账号打进 60s 冷却，
+  所以第一轮 HTTP 轮 5 条全 502 的根因是**冷却**，不是路由写错。冷却被映射成 **502 `protocol_error`**
+  （语义更像 **429**）；`client.py` 本批冻结、与其它模块同行为，**是否单独映射留给 Lead 定**。
+- **新证据（`category_query` 业务体形状）**：数组元素与 §1 的 `categories` 同形 ——
+  `{categoryId: 126866937, categoryLevel: 1, categoryName: '3C数码配件', childrenCategoryDOs: [{... 递归 ...}]}`，
+  深层节点带 `leaf`/`root`（`false`）。⇒ §8.6 部分已解。
+- 探针口径：service 层调用 + `common.respond` 取状态码；HTTP 轮用 `TestClient(create_app())`
+  + 在**拷贝库**上临时插入 `users('probe63')` 签发的 token（生产库只读）。
+
+## 8. 未确定项（第 63 批新增，真机后回来改）
+
+6. ~~`idle.category.query` 的业务体形状~~ —— **部分已解（2026-10-16 第二轮）**：是数组，
+   元素 `{categoryId, categoryLevel, categoryName, childrenCategoryDOs:[递归]}`（与发布页 `selectIdleCategories` 同形）；
+   **但本模块的解析还没按这个形状提升字段**（只回 `data` 原样），要不要提升成 `options` 由 Lead 定。
+7. `operate.report.get` 带 `itemId` 后的**响应形状**未知：本轮只证了「不给 itemId → `FAIL_SYS_BIZPARAM_MISSED`」；
+   带字符串参数的复打被风控冷却挡住，**未做成**。
+8. `preget` 需要真实 `itemId` 才可能成功：真实 id 也回 `FAIL_BIZ_USER_SHOW_SYSTEM_ERROR`，
+   而该文案已被 `client.py` 判为风控 ⇒ **本账号当时处于风控**，无法区分「参数不对」与「风控挡住」。
+9. `common.item.search` 的 `searchRequest` 里还有哪些筛选键（bundle 里被 `JSON.stringify`，看不到）。
+10. 风控冷却（60s）被映射成 502 `protocol_error` 是否要改（更像 429 + `Retry-After`）；`client.py` 冻结，需 Lead 定。
+

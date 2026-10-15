@@ -67,6 +67,11 @@ ROUTE_MODULES: List[str] = [
     'notify',
     'datacenter',
     'item_templates',
+    # 商品读 5 条（只读）：`/api/items-read/{account_id}/{search|categories|`
+    # `operate-report|search-terms|preget}`。**独立前缀**，故意不并进 `/api/items` ——
+    # 那边 `GET /{account_id}/{item_id}` 会把任何两段路径的第二段当商品 ID
+    # （`templates` 那次踩过），`items-read` 混进去必然出事。
+    'items_read',
     # 营销（只读）：`/api/marketing/{account_id}/{items|tasks|price-competitiveness|records}`。
     'marketing',
     # 推广写（投放计划增删改停启）：`/api/promotion/write/...`。挂在 `promotion`（只读）之后：
