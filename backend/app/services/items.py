@@ -1530,6 +1530,236 @@ def publish_precheck(account_id: str, payload: Dict[str, Any]) -> Any:
     }
 
 
+# --------------------------------------------------------------------------- 发布数据源（只读）
+#
+# 官方「商品发布 / 编辑」表单的 select 数据源：类目树、品牌、型号、类目属性候选值、类目搜索。
+# 协议层单开在 `backend/app/xianyu/item_publish.py`（**为什么单开写在那个文件头**：
+# `item_write.py` 只登记写接口且带 `assert_write` 守卫，只读数据源塞进去会毁掉守卫语义；
+# `client.py` 本批冻结）。这里与 `datacenter` 同形态：`common.protocol_module` 懒导入 +
+# `_BoundProtocol` + `common.call_method`，协议层拿不到就给 `not_ready`(503) ——
+# **绝不把「协议层没装」当成「这个类目下没有品牌」**（那会让用户以为类目选错了）。
+#
+# 5 个接口全部**只读**，所以没有 `confirm` 闸门（`test_write_routes_have_gates.py` 只扫非 GET 路由）。
+
+def _text(value: Any) -> str:
+    """`None` → 空串（本文件只在发布数据源这一段用；平台字段名/值可能不是字符串）。"""
+    return '' if value is None else str(value)
+
+
+class _BoundProtocol:
+    """把「模块级协议函数」和「调用它的 client」绑成可交给 `call_method` 的对象。
+
+    与 `services/datacenter.py::_BoundProtocol` **逐字同形**：`common.call_method` 在协议层
+    抛登录态过期时要用**第一个参数**去回写 `need_relogin`（读它的 `cookie_id` /
+    `account_id`）。直接传协议模块的话，模块身上没有账号身份，掉线就写不回库里 ——
+    界面会一直显示「已登录」，用户只能自己猜到要重新扫码。
+    """
+
+    def __init__(self, module: Any, client: Any) -> None:
+        self._module = module
+        self._client = client
+
+    @property
+    def account_id(self) -> str:
+        # 真 `XianyuClient` 没有 `account_id`（只有 `cookie_id` / `persist_account_id`）
+        return str(getattr(self._client, 'account_id', '')
+                   or getattr(self._client, 'persist_account_id', '') or '')
+
+    @property
+    def cookie_id(self) -> str:
+        return str(getattr(self._client, 'cookie_id', '') or '')
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._module, name)
+
+
+#: 协议模块名（`common.protocol_module('item_publish')` → `backend.app.xianyu.item_publish`）
+PUBLISH_DATA_MODULE = 'item_publish'
+
+#: 协议层函数名（服务层用同一串名字去 `call_method`）
+CATEGORIES_CALL = 'fetch_categories'
+BRANDS_CALL = 'fetch_brands'
+MODELS_CALL = 'fetch_models'
+CATEGORY_PROPERTIES_CALL = 'fetch_category_properties'
+SEARCH_CATEGORIES_CALL = 'fetch_search_categories'
+
+#: 平台业务码（bundle 里品牌/型号的成功判据就是它）
+PLATFORM_SUCCESS = 'success'
+
+
+def _publish_data_call(name: str, client: Any, *args: Any):
+    """调协议层的 `name(client, ...)`，返回 `(payload, failure)`。
+
+    * 协议模块不在 → `not_ready`(503)（不是「没有数据」）；
+    * 协议层抛异常 → `common.call_failed` 翻信封（登录态过期给 409 + `need_relogin`，
+      其余 502 `protocol_error`）。与 `services/datacenter.py::_call` 逐字同口径。
+    """
+    module = common.protocol_module(PUBLISH_DATA_MODULE)
+    if module is None:
+        return None, common.not_ready(
+            '协议层未提供商品发布数据源接口（backend.app.xianyu.item_publish）')
+    status, value = common.call_method(_BoundProtocol(module, client), (name,), client, *args)
+    if status != common.CALL_OK:
+        failure = common.call_failed(status, value)
+        return None, failure or common.fail('商品发布数据源接口调用失败', 'protocol_error')
+    return (value if isinstance(value, dict) else {}), None
+
+
+def _publish_data_options(name: str, client: Any, *args: Any):
+    """取候选值，返回 `(options, meta, failure)`；`meta` 里有 `api` / `code` / `message`。
+
+    三种结果必须能分辨（与 `services/item_templates.py` 的 `total=null` 同一条原则）：
+    * 平台回了候选值 → 非空列表；
+    * 平台明确回了空 → 空列表 + 200（**如实说「平台没给」**）；
+    * 协议层拿不到 / 调用失败 → 失败信封，**不是** 200 + 空列表。
+    """
+    payload, failure = _publish_data_call(name, client, *args)
+    if failure is not None:
+        return None, None, failure
+    payload = payload or {}
+    options = payload.get('options')
+    meta = {
+        'api': _text(payload.get('api')),
+        'code': _text(payload.get('code')),
+        'message': _text(payload.get('message')),
+    }
+    if not isinstance(options, list):
+        return None, meta, common.fail('商品发布数据源协议层没有返回候选值', 'protocol_error')
+    return options, meta, None
+
+
+def _publish_data_envelope(account_id: str, kind: str, options: List[Any],
+                           meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """候选值的统一信封（5 个接口共用一个形状，AI/前端只要认一次）。
+
+    `source` 固定 `'platform'`、`fetched_at` 是 UTC 秒级时间戳 —— 与
+    `services/item_templates.py` 一致，方便前端显示「什么时候拉的」。
+    """
+    meta = meta or {}
+    result: Dict[str, Any] = {
+        'account_id': account_id,
+        'kind': kind,
+        'options': options,
+        'count': len(options),
+        'platform_code': meta.get('code') or None,
+        'fetched_at': time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime()),
+        'source': 'platform',
+    }
+    if meta.get('api'):
+        result['api'] = meta['api']
+    if meta.get('message'):
+        result['platform_message'] = meta['message']
+    return result
+
+
+def _publish_data_prepare(account_id: str):
+    """5 个只读接口共用的前置检查：账号存在 → Cookie/登录态 → 建客户端。
+
+    `_client`（从 `services/trade.py` 借来，全仓只此一份）已经把「账号不存在 → 404」
+    与「没 Cookie / 需重登 → 409 + `need_relogin`」做完了；`common.get_client` 再补上
+    「Cookie 存在但建不出客户端」这一类。**顺序不能反**：账号 id 打错被报成 503
+    「后端未就绪」会让人以为该重试。
+    """
+    if not _text(account_id).strip():
+        return None, common.fail('account_id 不能为空', 'bad_request')
+    client, err = _client(account_id)
+    if client is None:
+        return None, err or common.not_ready()
+    return client, None
+
+
+def publish_categories(account_id: str) -> Any:
+    """发布页**类目树**（无参）：`mtop.alibaba.idle.seller.platform.item.publish.categories`。
+
+    官方发布页的类目是**多级联动**下拉，所以 `options` 里每一项都带 `children`（递归）。
+    """
+    client, failure = _publish_data_prepare(account_id)
+    if failure is not None:
+        return failure
+    options, meta, failure = _publish_data_options(CATEGORIES_CALL, client)
+    if failure is not None:
+        common.log_operation(account_id, 'publish_categories', '', False,
+                             failure.get('message', ''))
+        return failure
+    return _publish_data_envelope(account_id, 'categories', options, meta)
+
+
+def publish_brands(account_id: str, category_id: Any) -> Any:
+    """按类目取**品牌**：`...item.publish.brands`（`channelCategoryId` 必填）。
+
+    官方是两个入参都非空才发请求，这里同样：类目为空直接 `invalid_fields`(400)，
+    **一次平台请求都不发**（省一次必然失败的调用，也让错误落在「你还没选类目」上）。
+    """
+    if category_id in (None, '') or not _text(category_id).strip():
+        return common.fail('category_id 不能为空（品牌要按类目取）', 'invalid_fields')
+    client, failure = _publish_data_prepare(account_id)
+    if failure is not None:
+        return failure
+    options, meta, failure = _publish_data_options(BRANDS_CALL, client, category_id)
+    if failure is not None:
+        common.log_operation(account_id, 'publish_brands', '', False, failure.get('message', ''))
+        return failure
+    return _publish_data_envelope(account_id, 'brands', options, meta)
+
+
+def publish_models(account_id: str, category_id: Any, brand_id: Any) -> Any:
+    """按类目 + 品牌取**型号**：`...item.publish.models`（两个入参都必填）。
+
+    两个都校验在**建客户端之前**（与 `services/item_templates.py` 的三步顺序同口径）：
+    纯本地、免费，账号掉线时也该先说「缺品牌 id」而不是「去重新登录」。
+    """
+    if category_id in (None, '') or not _text(category_id).strip():
+        return common.fail('category_id 不能为空（型号要按类目取）', 'invalid_fields')
+    if brand_id in (None, '') or not _text(brand_id).strip():
+        return common.fail('brand_id 不能为空（型号要按品牌取）', 'invalid_fields')
+    client, failure = _publish_data_prepare(account_id)
+    if failure is not None:
+        return failure
+    options, meta, failure = _publish_data_options(MODELS_CALL, client, category_id, brand_id)
+    if failure is not None:
+        common.log_operation(account_id, 'publish_models', '', False, failure.get('message', ''))
+        return failure
+    return _publish_data_envelope(account_id, 'models', options, meta)
+
+
+def publish_category_properties(account_id: str, category_id: Any) -> Any:
+    """按类目取**属性/成色候选值**：`...item.pc.category.property.query`（需 `categoryId`）。
+
+    **未真机验证**（协议层文件头写了理由：响应字段名没有消费侧代码可对照）。所以这里
+    只保证「拿到什么返回什么」，解析不出候选值时是 200 + 空列表 + `platform_code`，
+    让 Lead 的真机探针能一眼看出是「平台回了空」还是「我们认不出字段」。
+    """
+    if category_id in (None, '') or not _text(category_id).strip():
+        return common.fail('category_id 不能为空（属性要按类目取）', 'invalid_fields')
+    client, failure = _publish_data_prepare(account_id)
+    if failure is not None:
+        return failure
+    options, meta, failure = _publish_data_options(CATEGORY_PROPERTIES_CALL, client, category_id)
+    if failure is not None:
+        common.log_operation(account_id, 'publish_category_properties', '', False,
+                             failure.get('message', ''))
+        return failure
+    return _publish_data_envelope(account_id, 'category_properties', options, meta)
+
+
+def publish_search_categories(account_id: str) -> Any:
+    """**类目搜索**（无参）：`...item.pc.search.categories`。
+
+    与 `publish_categories` 是两个不同的接口（官方一个在发布页、一个在商品列表筛选页），
+    但响应里都是 `selectIdleCategories`；保留两条是为了让真机探针能分别验证，
+    而不是把「筛选页能用」当成「发布页也能用」。
+    """
+    client, failure = _publish_data_prepare(account_id)
+    if failure is not None:
+        return failure
+    options, meta, failure = _publish_data_options(SEARCH_CATEGORIES_CALL, client)
+    if failure is not None:
+        common.log_operation(account_id, 'publish_search_categories', '', False,
+                             failure.get('message', ''))
+        return failure
+    return _publish_data_envelope(account_id, 'search_categories', options, meta)
+
+
 # ---------------- 工具面适配（主管 AI / MCP 的扁平参数 → 服务面签名）----------------
 # **为什么适配层放在服务层**：`backend/tests/test_agents_tools_workbench.py:807` 那条
 # 对账会拿 `_SERVICE_TARGETS` 每个目标函数的签名去比工具 spec 的 `properties`，两边

@@ -114,6 +114,60 @@ def reshelf(payload: Dict[str, Any] = Body(...), user=Depends(current_user)):
     return _envelope(items.reshelf(ids, confirm=payload.get('confirm')))
 
 
+# --------------------------------------------------------------------------- 发布数据源（只读 GET）
+#
+# 官方「商品发布 / 编辑」表单的 5 个 select 数据源（协议层 `backend/app/xianyu/item_publish.py`，
+# 服务层 `services/items.py` 的「发布数据源」段）。全部 **GET + 只读**：
+# 不落库、不播事件，所以没有 `confirm` 闸门。
+#
+# **路径形状**：`/api/items/{account_id}/publish/*`（account_id 在前，与 `.../publish/precheck`
+# 同一族）。`/api/items/{account_id}/publish` 本身是 POST，不冲突。
+# 声明位置**必须在 `GET /{account_id}/{item_id}` 之前**（文件头那条规矩），否则
+# `{item_id}` 会把 `publish` 吞掉。
+
+@router.get('/{account_id}/publish/categories')
+def publish_categories(account_id: str, user=Depends(current_user)):
+    """发布页类目树（无参，多级联动；每项带递归的 `children`）。"""
+    return _envelope(items.publish_categories(account_id))
+
+
+@router.get('/{account_id}/publish/brands')
+def publish_brands(
+    account_id: str,
+    category_id: str = Query(default='', description='分类路径最后一级 id（channelCategoryId）'),
+    user=Depends(current_user),
+):
+    """按类目取品牌。`category_id` 必填，为空 → 400 `invalid_fields`（一次平台请求都不发）。"""
+    return _envelope(items.publish_brands(account_id, category_id))
+
+
+@router.get('/{account_id}/publish/models')
+def publish_models(
+    account_id: str,
+    category_id: str = Query(default='', description='类目 id（channelCategoryId）'),
+    brand_id: str = Query(default='', description='品牌 id（brandValueId）'),
+    user=Depends(current_user),
+):
+    """按类目 + 品牌取型号。**两个都必填**（官方任一为空就不发请求）。"""
+    return _envelope(items.publish_models(account_id, category_id, brand_id))
+
+
+@router.get('/{account_id}/publish/category-properties')
+def publish_category_properties(
+    account_id: str,
+    category_id: str = Query(default='', description='类目 id（categoryId）'),
+    user=Depends(current_user),
+):
+    """按类目取属性/成色候选值。**未真机验证**（见 `docs/contracts/items.md`）。"""
+    return _envelope(items.publish_category_properties(account_id, category_id))
+
+
+@router.get('/{account_id}/publish/search-categories')
+def publish_search_categories(account_id: str, user=Depends(current_user)):
+    """类目搜索（无参；响应形状**未真机验证**）。"""
+    return _envelope(items.publish_search_categories(account_id))
+
+
 # --------------------------------------------------------------------------- 带 account_id 的正式路径
 
 

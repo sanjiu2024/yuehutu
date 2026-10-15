@@ -32,6 +32,8 @@ if str(REPO_ROOT) not in sys.path:
 from fastapi.testclient import TestClient  # noqa: E402
 
 from backend.app.core import db, events, security  # noqa: E402
+from backend.app.services import common as common_module  # noqa: E402
+from backend.app.xianyu import item_publish as real_publish_proto  # noqa: E402
 from backend.app.main import create_app  # noqa: E402
 from backend.tests.testenv import use_temp_app_dir  # noqa: E402
 
@@ -685,6 +687,258 @@ class ItemWriteConfirmGateApiTest(ItemsApiTest):
                                         headers=self.headers)
                 self.assertEqual(resp.status_code, 400, resp.text)
                 self.assertEqual(resp.json()['code'], 'confirmation_required')
+
+
+# --------------------------------------------------------------------------- 发布数据源（第 60 批）
+
+#: 发布数据源路由用到的 5 个协议函数名（`services/items.py` 里的 `*_CALL` 常量）
+PUBLISH_DATA_CALLS = (
+    'fetch_categories', 'fetch_brands', 'fetch_models',
+    'fetch_category_properties', 'fetch_search_categories',
+)
+
+
+def seed_account(account_id: str = ACC, cookie: str = 'unb=1; _m_h5_tk=abc_123',
+                 login_state: str = 'ok') -> None:
+    """建账号 + 凭据（发布数据源路由的前置检查要看这两张表）。"""
+    db.execute('INSERT OR REPLACE INTO accounts(id, nickname, enabled) VALUES(?,?,1)',
+               (account_id, account_id))
+    db.execute(
+        'INSERT OR REPLACE INTO account_credentials(account_id, cookie, login_state) '
+        'VALUES(?,?,?)', (account_id, cookie, login_state))
+
+
+class PublishDataFakeClient:
+    """假客户端：只记 mtop 调用，按 api 名回**平台形状**的响应。"""
+
+    def __init__(self):
+        self.calls: List[Dict[str, Any]] = []
+        self.responses: Dict[str, Dict[str, Any]] = {
+            'mtop.alibaba.idle.seller.platform.item.publish.categories': {
+                'code': 'success',
+                'data': {'selectIdleCategories': [
+                    {'categoryId': 100, 'categoryName': '手机', 'categoryLevel': 1,
+                     'leaf': False,
+                     'childrenCategoryDOs': [
+                         {'categoryId': 101, 'categoryName': '智能手机', 'categoryLevel': 2,
+                          'leaf': True}]},
+                ]},
+            },
+            'mtop.alibaba.idle.seller.platform.item.publish.brands': {
+                'code': 'success',
+                'data': {'selectIdleBrandValues': [{'valueId': 9, 'valueName': 'Apple'}]},
+            },
+            'mtop.alibaba.idle.seller.platform.item.publish.models': {
+                'code': 'success',
+                'data': {'selectIdleModelValues': [{'valueId': 7, 'valueName': 'iPhone 15'}]},
+            },
+            'mtop.taobao.idle.seller.platform.item.pc.category.property.query': {
+                'code': 'success',
+                'data': {'fineness': [
+                    {'propertyId': 20000, 'propertyName': '成色',
+                     'valueList': [{'valueId': '95', 'valueName': '95新'}]}]},
+            },
+            'mtop.taobao.idle.seller.platform.item.pc.search.categories': {
+                'code': 'success',
+                'data': {'selectIdleCategories': [{'categoryId': 5, 'categoryName': '耳机'}]},
+            },
+        }
+
+    async def mtop(self, api: str, data: Any = None, v: str = '1.0', **kwargs: Any):
+        self.calls.append({'api': api, 'data': data, 'v': v, 'kwargs': kwargs})
+        return {'success': True, 'data': self.responses.get(api, {})}
+
+
+def install_fake_publish_client(client: PublishDataFakeClient) -> types.ModuleType:
+    """把假 \`client\` 协议模块塞进 sys.modules：\`common.get_client\` 优先用它的 \`get_client\` 工厂。"""
+    module = types.ModuleType('backend.app.xianyu.client')
+    module.get_client = lambda account_id: client  # type: ignore[attr-defined]
+    module.XianyuClient = PublishDataFakeClient  # type: ignore[attr-defined]
+    sys.modules['backend.app.xianyu.client'] = module
+    return module
+
+
+def install_fake_publish_protocol(client: PublishDataFakeClient) -> types.ModuleType:
+    """把假 `item_publish` 协议模块塞进 sys.modules（`common.protocol_module` 懒导入它）。
+
+    **真协议层的 5 个 fetch_* 函数不在这里重写**：服务层只通过
+    `common.call_method(_BoundProtocol(module, client), (name,), client, ...)` 找函数名，
+    所以假模块只要同名可调用即可 —— 请求形状由
+    `backend/tests/test_xianyu_item_publish.py` 用 MockTransport 单独钉死。
+    """
+    module = types.ModuleType('backend.app.xianyu.item_publish')
+    module.get_client = lambda account_id: client  # type: ignore[attr-defined]
+    for name in PUBLISH_DATA_CALLS:
+        setattr(module, name, getattr(real_publish_proto, name))
+    sys.modules['backend.app.xianyu.item_publish'] = module
+    return module
+
+
+def remove_fake_publish_protocol() -> None:
+    sys.modules.pop('backend.app.xianyu.item_publish', None)
+
+
+class ItemPublishDataApiTest(ItemsApiTest):
+    """发布数据源 5 条只读 GET 路由（类目 / 品牌 / 型号 / 属性 / 类目搜索）。"""
+
+    def setUp(self):
+        super().setUp()
+        self.fake = PublishDataFakeClient()
+        # 两件都要装：假 client 模块让 \`common.get_client\` 不去建真客户端（否则测试会真联网），
+        # 假 item_publish 模块让 \`common.protocol_module('item_publish')\` 拿到它。
+        install_fake_publish_client(self.fake)
+        install_fake_publish_protocol(self.fake)
+
+    def tearDown(self):
+        remove_fake_publish_protocol()
+        remove_fake_protocol()
+        # **必须清干净**：accounts / account_credentials 是跨用例共享的表，
+        # 留下一个带 Cookie 的账号会让同文件里「协议层没就绪 → 503」这类用例
+        # 改成真建客户端、真联网（实测就是这么坏的）。
+        db.execute('DELETE FROM account_credentials WHERE account_id = ?', (ACC,))
+        db.execute('DELETE FROM accounts WHERE id = ?', (ACC,))
+        super().tearDown()
+
+    def test_routes_are_registered_before_item_id(self):
+        """5 条路径必须真注册（缺了会被 `GET /{account_id}/{item_id}` 吞成 404「商品不存在」）。"""
+        # 走 openapi：`app.routes` 里是 `_IncludedRouter`（子路由被包了一层，没有 `.path`）
+        paths = set(self.client.app.openapi()['paths'])
+        for path in ('/api/items/{account_id}/publish/categories',
+                     '/api/items/{account_id}/publish/brands',
+                     '/api/items/{account_id}/publish/models',
+                     '/api/items/{account_id}/publish/category-properties',
+                     '/api/items/{account_id}/publish/search-categories'):
+            self.assertIn(path, paths, path)
+
+    def test_categories_route(self):
+        seed_account()
+        resp = self.client.get(f'/api/items/{ACC}/publish/categories', headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertTrue(body['success'], resp.text)
+        data = body['data']
+        self.assertEqual(data['kind'], 'categories')
+        self.assertEqual(data['count'], 1)
+        self.assertEqual(data['platform_code'], 'success')
+        self.assertEqual(data['source'], 'platform')
+        option = data['options'][0]
+        self.assertEqual(option['category_id'], '100')
+        self.assertEqual(option['category_name'], '手机')
+        self.assertEqual(option['children'][0]['category_id'], '101')
+        self.assertTrue(option['children'][0]['leaf'])
+
+    def test_brands_route_passes_category_id(self):
+        seed_account()
+        resp = self.client.get(f'/api/items/{ACC}/publish/brands?category_id=100',
+                               headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertEqual(data['kind'], 'brands')
+        self.assertEqual(data['options'], [{'value': '9', 'label': 'Apple'}])
+
+    def test_models_route_needs_both_ids(self):
+        seed_account()
+        # 缺 brand_id → 400，且**一次平台请求都不发**
+        resp = self.client.get(f'/api/items/{ACC}/publish/models?category_id=100',
+                               headers=self.headers)
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertEqual(resp.json()['code'], 'invalid_fields')
+        self.assertEqual(self.fake.calls, [])
+        resp = self.client.get(f'/api/items/{ACC}/publish/models?category_id=100&brand_id=9',
+                               headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json()['data']['options'], [{'value': '7', 'label': 'iPhone 15'}])
+
+    def test_category_properties_route(self):
+        seed_account()
+        resp = self.client.get(f'/api/items/{ACC}/publish/category-properties?category_id=100',
+                               headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertEqual(data['kind'], 'category_properties')
+        self.assertEqual(data['options'][0]['property_name'], '成色')
+        self.assertEqual(data['options'][0]['values'], [{'value': '95', 'label': '95新'}])
+
+    def test_search_categories_route(self):
+        seed_account()
+        resp = self.client.get(f'/api/items/{ACC}/publish/search-categories',
+                               headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertEqual(data['kind'], 'search_categories')
+        self.assertEqual(data['options'][0]['category_name'], '耳机')
+
+    def test_empty_options_are_200_not_failure(self):
+        """平台回了空候选值 → 200 + 空列表（如实说「平台没给」），**不是**失败、更不是编数据。"""
+        seed_account()
+        self.fake.responses[
+            'mtop.alibaba.idle.seller.platform.item.publish.categories'] = {
+                'code': 'success', 'data': {'selectIdleCategories': []}}
+        resp = self.client.get(f'/api/items/{ACC}/publish/categories', headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertEqual(data['options'], [])
+        self.assertEqual(data['count'], 0)
+        self.assertEqual(data['platform_code'], 'success')
+
+    def test_platform_permission_code_is_surfaced(self):
+        """平台回无权限 → 仍 200（链路是通的），但 `platform_code` 必须原样带出来。"""
+        seed_account()
+        self.fake.responses[
+            'mtop.alibaba.idle.seller.platform.item.publish.categories'] = {
+                'code': 'FAIL_BIZ_IDLE_USER_UNAUTHORIZED', 'msg': '无权限访问', 'data': None}
+        resp = self.client.get(f'/api/items/{ACC}/publish/categories', headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertEqual(data['platform_code'], 'FAIL_BIZ_IDLE_USER_UNAUTHORIZED')
+        self.assertEqual(data['platform_message'], '无权限访问')
+        self.assertEqual(data['options'], [])
+
+    def test_unknown_account_is_404_and_no_platform_call(self):
+        resp = self.client.get('/api/items/no_such_acc/publish/categories',
+                               headers=self.headers)
+        self.assertEqual(resp.status_code, 404, resp.text)
+        self.assertEqual(resp.json()['code'], 'not_found')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_missing_cookie_is_409_and_no_platform_call(self):
+        """账号在、但没有 Cookie → 409 `verification_required`，且一次平台都不打。"""
+        seed_account(cookie='')
+        resp = self.client.get(f'/api/items/{ACC}/publish/categories', headers=self.headers)
+        self.assertEqual(resp.status_code, 409, resp.text)
+        self.assertEqual(resp.json()['code'], 'verification_required')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_protocol_module_missing_is_503_not_empty_options(self):
+        """协议层没装 → 503 `xianyu_not_ready`，**绝不能**当成「这个类目下没有候选值」。"""
+        seed_account()
+        # 真模块在仓库里是存在的，所以「没装」只能用 patch 模拟：让
+        # common.protocol_module 对 'item_publish' 返回 None（其余名字照旧，
+        # 否则 common.get_client 也拿不到 client）。
+        real = common_module.protocol_module
+
+        def _missing(name: str):
+            return None if name == 'item_publish' else real(name)
+
+        common_module.protocol_module = _missing
+        try:
+            resp = self.client.get(f'/api/items/{ACC}/publish/categories',
+                                   headers=self.headers)
+        finally:
+            common_module.protocol_module = real
+        self.assertEqual(resp.status_code, 503, resp.text)
+        self.assertFalse(resp.json()['success'], resp.text)
+        self.assertEqual(resp.json()['code'], 'xianyu_not_ready')
+
+    def test_route_is_get_only(self):
+        """只读数据源不许有写方法：POST 一律 405。"""
+        seed_account()
+        for suffix in ('categories', 'brands', 'models', 'category-properties',
+                       'search-categories'):
+            with self.subTest(suffix=suffix):
+                resp = self.client.post(f'/api/items/{ACC}/publish/{suffix}',
+                                        json={}, headers=self.headers)
+                self.assertEqual(resp.status_code, 405, resp.text)
 
 
 if __name__ == '__main__':

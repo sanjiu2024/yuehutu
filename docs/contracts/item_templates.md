@@ -189,6 +189,10 @@
 我们这边对应的是 `GET /api/items`（本地库 + `sync_items` 同步）。官方页面只读部分多出这些
 （**本次只登记，不实现**；证据 `logs/seller_discover/item_templates_goods-manage.json` + bundle `@4076279` 起）：
 
+> 第 60 批（task-15）已实现其中一部分：`item.pc.search.categories`、
+> `item.pc.category.property.query`，以及发布页的 `item.publish.{categories,brands,models}`
+> —— 契约见 `docs/contracts/items.md`（5 条只读 GET）。下表其余项**仍未实现**。
+
 | 能力 | 平台 api | 证据要点 |
 | --- | --- | --- |
 | 状态 tab 计数（在售/已下架/审核中…） | `mtop.taobao.idle.seller.platform.pc.item.status.statistics` | 无参；`data:[{field:'itemStatus', statusValue:'0,-9', total:45, type:1}, …]`（`statusName` 在控制台是乱码，以 `statusValue` 为准；状态码表见 bundle `@2236013 MapStatus`） |
