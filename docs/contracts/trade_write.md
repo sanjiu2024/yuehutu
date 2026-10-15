@@ -307,10 +307,15 @@ POST /api/trade/{account_id}/addresses/{contact_id}/default
   理由：前两个是平台硬必填且**调用方（前端级联选择器）**该给的值，先说它们，用户才不会以为
   「名字填对了就能发」。代价：`test_field_validation_runs_before_credential_check` 必须先把这两个
   字段给全，才能走到「联系人姓名」那一条。
-- **诚实偏离（区域码）**：我们**没有码源**（`mtop.taobao.idle.division.all.get` 对本机账号
-  `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`）⇒ **不伪造区域码、也不发形状不对的 `division`**：
-  只发省 / 市 / 区三个**名字** + 调用方给出的 `area_id`。协议层 `xianyu/address_write.py`
-  仍是「调用方给了才发这个键」—— 我们**不猜码**，只是不再在服务层把它静默丢掉。
+- **区域码码源（第 61 批补齐）**：`mtop.taobao.idle.division.all.get` 对本机账号仍是
+  `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`，但官方级联用的是另一个接口
+  `mtop.cainiao.geography.frontend.divisionsinfo.get`（见 `docs/contracts/logistics.md`），
+  现在有 `GET /api/logistics/{account_id}/divisions` 可逐级取到区。**`area_id` 的格式**：
+  官方 bundle 提交的是叶子节点的 `value`（`divisionId + '/' + names.CN`，如 `110101/东城区`）；
+  真机只证明**裸 `divisionId`**（`330106`）能过平台的必填校验，两种写法是否等价**未取证**
+  ⇒ 服务层原样透传，不替调用方改写。HTTP 声明里 `area_id?` 仍标可选，是为了让服务层给人话
+  400（`invalid_fields`）而不是 FastAPI 的 422；**AI 工具侧已把 `area_id` 写进 required**。
+  协议层 `xianyu/address_write.py` 仍是「调用方给了才发这个键」—— 我们**不猜码**，
   平台若拒绝，错误原文原样显示，不会把失败说成成功。
 - **只读侧字段**：`normalize_address` 认**两套键**（bundle 里只读页与写页读法不同）——
   只读页 `{addressId,name,phoneNum,address,defaultAddr}`，写页编辑弹窗

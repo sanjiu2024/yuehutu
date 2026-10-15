@@ -966,8 +966,11 @@ POST /api/trade/{account_id}/addresses/{contact_id}/default    {confirm}
        -- 四条 mtop（bundle 偏移 3143703 / 3143951 / 3144220 / 3144501）：
           `…merchant.delivery.address.{add,update,delete,set.default}`。
        -- 官方表单里还有 `division`（级联 `{label,value}` 数组）与隐藏 `areaId`（区级区域码）；
-          **我们没有区域码来源**（`mtop.taobao.idle.division.all.get` 对本机账号无权限），
-          所以不伪造：只发省 / 市 / 区三个**名字**，`area_id` 留空就**根本不发这个键**。
+          **第 61 批起有码源**：`GET /api/logistics/{account_id}/divisions`
+          （`mtop.cainiao.geography.frontend.divisionsinfo.get`）逐级取到区，把叶子节点的 `value` 当 `area_id`
+          （官方 bundle 口径；真机只证明裸 `divisionId` 也能过必填校验，两者是否等价未取证）。
+          `area_id` / `default_addr` 现在是**服务层硬必填**（缺 → 400 `invalid_fields`、零平台调用），
+          不再「留空就不发这个键」。
        -- 官方这四个接口**根本没读响应体**（只给了 toast 文案），所以成功判据是
           「客户端没报错 **且** 平台 `code == 'success'`」；拿不到 contact_id 时给 `null`
           + warning `no_contact_id`，**不造**假 ID。
@@ -1110,7 +1113,8 @@ GET  /api/logistics/{account_id}/divisions?token=&page_index=        -- 区域�
         --   `{divisionToken,pageIndex,bizEntrance:'idle_fish'}` + `value_type='division'`；
         --   **真实数据在信封的 `data.data`**（比常规多嵌一层）：`{divisions,totalCount,totalPage,pageIndex,pageSize,parentToken}`；
         --   `CN` → 31 省、`CN^^^北京` → 1 市、再下一级 → 17 区；元素键 `divisionId`（整数）/`divisionToken`/
-        --   `names.CN`/`level`/`divisionLeaf`。退货地址提交的 `areaId` 就是叶子节点的 `divisionId`。
+        --   `names.CN`/`level`/`divisionLeaf`。退货地址提交的 `areaId` 用叶子节点的 `value`
+        --   （`divisionId + '/' + names.CN`，官方 bundle 口径；真机只证明裸 `divisionId` 也能过必填校验）。
         --   平台**没给** `divisions` 键 → 空列表 + 中文 warning（与「这个上级确实没有下级」区分开）。
         -- 上面两条物流只读（`unconsign-detail` / `delivery-place`）形状未真机取证，`detail` 原样透出，不猜字段。
         -- AI 侧 3 个只读工具：`logistics_unconsign_detail` / `logistics_delivery_place` / `logistics_divisions`。

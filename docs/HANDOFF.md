@@ -83,7 +83,7 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 97 modules transformed.
-   frontend/dist/assets/index-BhT_UXe6.js (648.74 kB, gzip 206.02 kB)
+   frontend/dist/assets/index-BhT_UXe6.js (719,837 B，gzip 204,331 B；vite 报的「648.74 kB」是**字符数**口径 —— 这个 chunk 有 33,609 个中文字符，UTF-8 下每字 3 字节，别当字节数用)
    frontend/dist/assets/index-BpLeM6Kv.css (158.94 kB, gzip 24.97 kB)
 ```
 

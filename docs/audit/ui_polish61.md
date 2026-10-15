@@ -106,7 +106,13 @@ dist/assets/index-Bwt5EUxM.js   646.35 kB │ gzip: 205.13 kB
 BUILD_EXIT=0
 ```
 
-产物：`dist/index.html` 0.40 kB、`dist/assets/index-BpLeM6Kv.css` 158.94 kB（gzip 24.97）、`dist/assets/index-Bwt5EUxM.js` 646.35 kB（gzip 205.13）。CSS 与 JS 哈希与改动前一致（本轮没动样式、JS 增量在 format.ts 的几十行内），未新增任何 chunk。
+产物：`dist/index.html` 0.40 kB、`dist/assets/index-BpLeM6Kv.css` 158.94 kB（gzip 24.97）、`dist/assets/index-Bwt5EUxM.js` 646.35 kB（gzip 205.13）。未新增任何 chunk。
+
+> **第 61 批收尾追加（2026-10-16）**：本文件写作时只跑了 `vite build`；之后区域码三级级联又改了前端，
+> **收尾已带前端重打包**：最终 `dist/闲鱼AI工作台/闲鱼AI工作台.exe` = **10,295,397 B / 02:22:40**，
+> 打包内 `index-BhT_UXe6.js`（719,837 B，gzip 204,331 B）+ `index-BpLeM6Kv.css`（158,948 B），
+> 五件套全过（`ASSETS_MATCH=True` / 29/29 页 / 对比度 dark 0/29、light 0/29 / a11y 三类 0）。
+> 上面那次运行的 `index-Bwt5EUxM.js` 已被 `index-BhT_UXe6.js` 取代，不再是最新产物。
 
 ## 4. 改动清单与边界
 
@@ -118,11 +124,13 @@ frontend/src/pages/Chats.tsx            | 消息气泡时间改相对时间 + ti
 frontend/src/pages/Notifications.tsx    | 通知时间改相对时间 + title
 frontend/src/pages/Items.tsx            | 3 处确认按钮动词化
 frontend/src/pages/Promotion.tsx        | 1 处确认按钮动词化
+frontend/src/pages/ReturnAddresses.tsx  | 区域码省 / 市 / 区三级级联（第 61 批收尾加入）
 docs/audit/ui_polish61.md               | 本文件（新增）
 ```
 
 - **未改**：`frontend/src/api.ts` 的请求路径与字段（本轮只动了 `ConfirmDialog` 的文案 prop）、`backend/**`、`mcp_server/**`、`scripts/**`、`docs/CONTRACTS.md`、`docs/HANDOFF.md`、`docs/交接文档.md`、`styles.css`。
-- **未新增依赖**、未 `git add/commit`、未重打包、未跑 `scripts/build_exe.ps1`。
+- **未新增依赖**、未 `git add/commit`。**本文件写作时**未重打包、未跑 `scripts/build_exe.ps1`；
+  第 61 批收尾已带前端重打包（见上文「收尾追加」）。
 
 ## 5. 未完成 / 未验证
 
