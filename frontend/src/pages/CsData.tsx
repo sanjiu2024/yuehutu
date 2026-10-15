@@ -192,7 +192,7 @@ function CsListTable({ accountId, kind, start, end }: {
           {rows === null && (
             <Notice kind="warn">
               平台没有返回这张明细表（`rows` 是空的）—— 这不是「这段时间没有数据」（那是空表）。
-              点「重试」再看一次；如果一直这样，多半是这个账号没有「数据」权限。
+              点「重试」再看一次；如果一直这样，多半是这次查询的入参平台没接受，或平台侧服务繁忙。
             </Notice>
           )}
           {Array.isArray(rows) && rows.length > 0 && (

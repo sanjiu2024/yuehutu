@@ -172,7 +172,7 @@ function Breakdown({ breakdown }: { breakdown: FansBreakdown | null | undefined 
     return (
       <Notice kind="warn">
         平台这次<strong>没有返回</strong>粉丝画像分组（性别 / 粉丝类型 / 省份 / 八大人群）。这不代表「没有粉丝」——
-        可能是账号没有「数据」权限，也可能是平台改了字段名。
+        可能是这次查询的入参平台没接受，也可能是平台改了字段名。
       </Notice>
     )
   }
@@ -209,7 +209,7 @@ function Insights({ insights }: { insights: InsightRow[] | null | undefined }) {
     return (
       <Notice kind="warn">
         平台这次<strong>没有返回</strong>粉丝画像（<code>insights</code> 为 null）。这不代表「没有画像」——
-        可能是账号没有数据权限，也可能是平台没提供。
+        可能是这次查询的入参平台没接受，也可能是平台没提供。
       </Notice>
     )
   }

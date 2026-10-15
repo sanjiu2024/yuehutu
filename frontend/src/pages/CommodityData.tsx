@@ -14,6 +14,8 @@
  * 三条不能破的口径：
  *  1. 平台没给的值显示 `-`，**绝不补 0**（0 是「真的没人看」，null 是「没取到」）。
  *  2. 无权限 ≠ 掉线：`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 只给 null + 中文 warning，不提示重新扫码。
+ *     第 62 批更正：这一族此前回的「无权限」其实是缺 `idle_site_biz_code` 头导致的误判，
+ *     修好后平台改回 `INPUT_PARAM_ILLEGAL`（入参问题），所以页面文案不再指向「没权限」。
  *  3. 本页无写操作，刷新一律走 `reload()`，不轮询（只订阅 `accounts.changed`）。
  *
  * 官方渲染规则（从官方 bundle 抄的，不是我们发明的）：**第一行该列的值 < 1 时，
@@ -378,7 +380,7 @@ export function CommodityDataPage() {
               {items === null && (
                 <Notice kind="warn">
                   平台没有返回商品行（`items`）。这**不是**「一件商品都没有」，而是这一列数据没取到 ——
-                  常见原因是这个账号没有「数据」权限，或平台侧服务繁忙。别把它当成 0。
+                  常见原因是这次查询的入参平台没接受，或平台侧服务繁忙。别把它当成 0。
                 </Notice>
               )}
               {items !== null && columnsReturnedEmpty && (

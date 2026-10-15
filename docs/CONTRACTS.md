@@ -683,9 +683,11 @@ GET    /api/promotion/ad/{account_id}/messages/{message_id}
 POST   /api/promotion/ad/{account_id}/messages/read            {message_ids:[...],confirm}
        -- 前缀 /api/promotion/ad，契约 docs/contracts/ad.md。唯一写动作是「投放消息标记已读」：
        --   confirm 只认字面 true，且走 §9 的 Idempotency-Key。
-       --   真机（2026-10-16）：6 条只读 200（apis 静态目录 / account-info / groups / groups/data / messages / messages/unread），
-       --   3 条打到平台被拒（package-info、campaign-log → `E_AD_BP_COMMON_SYSTEM_EXCEPTION`；item-search → `E_AD_BP_COMMON_PARAM_NULL` 缺必填），
-       --   2 条未打（bid-estimates 缺合法枚举、message.detail 该账号 total=0）。形状原本由 bundle fish-ad-pc/0.0.12/js/main.js 反查，
+       --   真机（2026-10-16）：6 条只读 200（apis 静态目录 / account-info / groups / groups/data / messages / messages/unread）；
+       --   另 4 条当时被拒（package-info、campaign-log → `E_AD_BP_COMMON_SYSTEM_EXCEPTION`；item-search → `E_AD_BP_COMMON_PARAM_NULL`）。
+       --   **第 62 批查明是少发官方调用点恒定带的业务键**：item-search 的 tab/needTabs、package-info 与 bid-estimates 的 entityType/entityList、
+       --   campaign-log 的 operatorType/operationType；补齐后真机只读复打 **4/4 全部 200**（`logs/fail62/kurumi/`，逐条见 docs/contracts/ad.md §8）；
+       --   残包由服务层翻 400 `invalid_fields`（不再把平台的 502 文案直接透出）。形状原本由 bundle fish-ad-pc/0.0.12/js/main.js 反查，
        --   偏移与搜索串写在 docs/contracts/ad.md 与 backend/app/xianyu/ad.py 每条 docstring。
        --   计划/活动的写族仍由 services/ad_write.py 覆盖，本批没有重复实现。
 GET    /api/promotion/{account_id}/overview?start=YYYYMMDD&end=YYYYMMDD
@@ -753,6 +755,11 @@ GET    /api/security-center/{account_id}
       --   两个都不是账号掉线，别误判成掉线去让用户重扫码。真机 2026-10-10 验证：带上 `COMMONPRO`
       --   后 score.get / violation.list 都 SUCCESS（闲气值 100、违规 3 条）。客户端入口
       --   `XianyuClient._security_headers()`，`mtop(..., extra_headers=...)` 是通用逃生口。
+      --   **第 62 批更正**：这个头不是安全中心专属 —— `XianyuClient.mtop()` 现在默认带
+      --   `idle_site_biz_code = mtop.SITE_BIZ_CODE`（唯一来源），`_security_headers()` 只额外补
+      --   `origin/referer`。此前只有安全/商品模板族手工带，导致 `mtop.*.seller.platform.*` 一族
+      --   （数据页 datacompass、商品发布类目、订单 backfill）全被误判成「账号没权限」，
+      --   证据与 17 个变体对照见 `docs/audit/permission_rootcause62.md`。
       -- 日期与分页：`start`/`end` 只认 `YYYYMMDD`（格式错或 from>to → 400 `invalid_fields`；
       --   都空 = 最近 7 天）；`size` 必须 1~50（越界 400）。报表族参数照官方 bundle 调用点：
       --   `{startDate,endDate,pageNum,pageSize,includeEndDate:true,allPeriod:false}`；
@@ -823,6 +830,10 @@ POST /api/sub-accounts/{account_id}/{sub_id}/password  {password,confirm}
 
 【只读 · 数据】`docs/contracts/datacenter.md`
 GET /api/datacenter/{account_id}/overview?start=YYYYMMDD&end=YYYYMMDD
+        -- 第 62 批：自定义区间必须发官方形状 `dateType='customDate'` + `dateRange='YYYYMMDD|YYYYMMDD'`（竖线字符串）。
+        --   原先发 `month` + `ms` + `date[]` 时平台回业务体 `INPUT_PARAM_ILLEGAL`、三页指标全 null；跨度硬限 31 天（服务层先回 400 `invalid_fields`）。
+        --   指标解析先读横幅 `data.graphBannerBenchData.bannerDataList`（指标名在**值**里：{name:'onlCnt', data:45}），百分比优先取 `dataFormat`。
+        --   真机复验三页首次有值：总览 168/45/26、粉丝 5/2、客服 18/71.03/1874.25（`logs/fail62/dc_after62.json`）。
 GET /api/datacenter/{account_id}/shop-stats?session_id=       -- 第 61 批：会话维度店铺统计（只读；AI 工具 `datacenter_shop_stats`）
 GET /api/datacenter/{account_id}/item-status-statistics       -- 第 61 批：商品状态统计（只读；AI 工具 `datacenter_item_status_statistics`）
         -- 这两条**不走** `services/datacenter.py::_call` 的 metrics 键校验（那是四张经营卡片的口径，
