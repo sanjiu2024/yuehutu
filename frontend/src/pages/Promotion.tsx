@@ -542,7 +542,7 @@ export function PromotionPage() {
       danger
       busy={busy}
       title={`确认执行「${label(draft.action)}」`}
-      confirmText="确认执行"
+      confirmText={`确认${label(draft.action)}`}
       onCancel={() => setConfirming(false)}
       onConfirm={run}
       message={<>

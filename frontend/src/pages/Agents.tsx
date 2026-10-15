@@ -31,6 +31,7 @@ import {
 } from '../icons'
 import {
   agentLabel,
+  formatRelativeTime,
   formatTime,
   kindLabel,
   payloadSummary,
@@ -494,7 +495,7 @@ export function AgentsPage() {
                       const raw = prettyJson(message.payload)
                       return (
                         <tr key={message.id}>
-                          <td className="ag-nowrap dim">{formatTime(message.created_at)}</td>
+                          <td className="ag-nowrap dim" title={formatTime(message.created_at)}>{formatRelativeTime(message.created_at)}</td>
                           <td className="ag-nowrap">{agentLabel(message.from_agent)}</td>
                           <td className="ag-nowrap">{agentLabel(message.to_agent)}</td>
                           <td className="ag-nowrap">
@@ -607,7 +608,7 @@ export function AgentsPage() {
                       const status = run.status || '未知'
                       return (
                         <tr key={run.id} className={failed ? 'ag-row-bad' : undefined}>
-                          <td className="ag-nowrap dim">{formatTime(run.created_at)}</td>
+                          <td className="ag-nowrap dim" title={formatTime(run.created_at)}>{formatRelativeTime(run.created_at)}</td>
                           <td className="ag-nowrap">
                             <Badge tone="muted">{roleName(run.role)}</Badge>
                           </td>

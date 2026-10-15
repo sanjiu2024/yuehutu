@@ -39,7 +39,7 @@ import {
 } from '../icons'
 import { ImageViewer } from '../ImageViewer'
 import { useAsync } from '../hooks/useAsync'
-import { formatClock, formatDuration, formatTime, modeLabel, roleName, senderLabel, truncate } from '../format'
+import { formatClock, formatDuration, formatRelativeTime, formatTime, modeLabel, roleName, senderLabel, truncate } from '../format'
 import { subscribeTopics } from '../ws'
 import type {
   Account,
@@ -1616,7 +1616,7 @@ function ChatWindow({
                   <span className={`ch-sender-tag${isHuman ? ' human' : isAi ? ' ai' : ''}`}>
                     {senderLabel(message.sender)}
                   </span>
-                  <span>{formatTime(message.created_at)}</span>
+                  <span title={formatTime(message.created_at)}>{formatRelativeTime(message.created_at)}</span>
                 </div>
                 {images.length > 0 && (
                   <div className={`ch-msg-media${images.length > 1 ? ' multi' : ''}`}>

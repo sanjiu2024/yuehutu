@@ -1,6 +1,6 @@
 /** 应用外壳：左侧导航 + 顶部栏 + 10 个页面；未登录时显示登录页。 */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, clearToken, errorText, getToken, isNotReady, setToken, setUnauthorizedHandler } from './api'
 import {
   Badge,
@@ -265,6 +265,13 @@ function Shell() {
     if (page === 'chats') setUnread(0)
   }, [page])
 
+  // 切换页面时把主内容区滚回顶部：商品/订单这类长列表滚到很下面再点左侧菜单，
+  // 新页面会停在半空中（顶部标题和筛选栏都看不见），得先往上滚一段才知道自己在哪。
+  const contentRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    contentRef.current?.scrollTo({ top: 0 })
+  }, [page])
+
   if (!authed) {
     return <LoginPage onSuccess={() => setAuthed(true)} theme={theme} onThemeChange={changeTheme} />
   }
@@ -349,7 +356,7 @@ function Shell() {
             <ThemeToggle theme={theme} onChange={changeTheme} />
           </div>
         </header>
-        <div className="content">
+        <div className="content" ref={contentRef}>
           {/* key=page 让切页面时错误边界自动复位；否则一个页面崩了会一直卡在错误态 */}
           <ErrorBoundary key={page} onReset={() => goto(page)}>
             {page === 'overview' && <OverviewPage onGoto={goto} />}

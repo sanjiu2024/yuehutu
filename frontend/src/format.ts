@@ -1,7 +1,8 @@
 /** 展示层小工具：时间/金额/角色名/JSON 美化。 */
 
-export function formatTime(value?: string | number | null): string {
-  if (value === undefined || value === null || value === '') return '-'
+/** 解析后端三种时间形态（unix 秒/毫秒、UTC 无时区字符串、已格式化字符串）；认不出返回 null。 */
+function toDate(value?: string | number | null): Date | null {
+  if (value === undefined || value === null || value === '') return null
   let date: Date
   if (typeof value === 'number') {
     // 后端 risk_state 用 unix 秒
@@ -14,9 +15,39 @@ export function formatTime(value?: string | number | null): string {
     const normalized = /[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : value.replace(' ', 'T') + 'Z'
     date = new Date(normalized)
   }
-  if (Number.isNaN(date.getTime())) return String(value)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+export function formatTime(value?: string | number | null): string {
+  if (value === undefined || value === null || value === '') return '-'
+  const date = toDate(value)
+  if (!date) return String(value)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+/**
+ * 「人话」相对时间：刚刚 / 12 分钟前 / 3 小时前 / 昨天 14:30 / 09-28 14:30 / 2025-09-28 14:30。
+ *
+ * 为什么要有：列表里每一行都铺 `2026-10-16 01:53:14` 这 19 个字符，卖家扫「这条多久前的」
+ * 还得自己减一次 —— 后台类产品的基线（千牛、有赞）都是相对时间 + 悬浮看全量。
+ * **只用于列表/气泡这类「看新旧」的位置**，详情、审计、导出仍用 `formatTime` 全量。
+ * 解析不出来就回落 `formatTime`（不猜、不画 1970）；未来时间（本机时钟漂移）也回落全量。
+ */
+export function formatRelativeTime(value?: string | number | null, now: Date = new Date()): string {
+  const date = toDate(value)
+  if (!date) return formatTime(value)
+  const diff = now.getTime() - date.getTime()
+  if (diff < 0) return formatTime(value)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}`
+  if (diff < 60_000) return '刚刚'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+  const dayStamp = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  if (dayStamp(date) === dayStamp(now)) return `${Math.floor(diff / 3_600_000)} 小时前`
+  if (dayStamp(date) === dayStamp(new Date(now.getTime() - 86_400_000))) return `昨天 ${clock}`
+  if (date.getFullYear() === now.getFullYear()) return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${clock}`
+  return `${dayStamp(date)} ${clock}`
 }
 
 export function formatClock(value?: string | number | null): string {

@@ -1204,7 +1204,7 @@ export function ItemsPage() {
         <ConfirmDialog
           title={confirmAction.title}
           message={confirmAction.message}
-          confirmText="确认执行"
+          confirmText={confirmAction.title}
           danger
           busy={busy}
           onCancel={() => setConfirmAction(null)}
@@ -3145,7 +3145,7 @@ function QuickEditModal({
         <ConfirmDialog
           title="确认改价 / 改库存"
           danger
-          confirmText="确认提交"
+          confirmText={priceChanged && quantityChanged ? '确认改价改库存' : priceChanged ? '确认改价' : '确认改库存'}
           busy={saving}
           message={
             <>
@@ -3484,7 +3484,7 @@ function FansPriceModal({ item, onClose, onDone }: { item: Item; onClose: () => 
         <ConfirmDialog
           title="确认保存粉丝价"
           danger
-          confirmText="确认提交"
+          confirmText="确认保存粉丝价"
           busy={saving}
           message={
             <>

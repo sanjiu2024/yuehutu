@@ -14,6 +14,7 @@ import { api } from '../api'
 import { Badge, Notice } from '../components'
 import { useAsync } from '../hooks/useAsync'
 import { IconBell, IconRefresh, IconWifi } from '../icons'
+import { formatRelativeTime, formatTime } from '../format'
 import { TradeError, isNeedRelogin, isPermissionDenied, money, num, useTradeAccounts, when } from './Orders'
 import './notifications.css'
 
@@ -203,7 +204,7 @@ export function NotificationsPage() {
                       <div className="nt-channel-head">
                         <strong title={channel.title}>{channel.title || '-'}</strong>
                         {channel.kind && <Badge tone="muted">{channel.kind}</Badge>}
-                        <span className="nt-time">{channel.time ? when(channel.time) : ''}</span>
+                        <span className="nt-time" title={channel.time ? formatTime(when(channel.time)) : ''}>{channel.time ? formatRelativeTime(when(channel.time)) : ''}</span>
                       </div>
                       {channel.body && <p className="nt-body">{channel.body}</p>}
                       {!channel.body && !channel.title && <pre className="tr-raw">{text(item) || '-'}</pre>}

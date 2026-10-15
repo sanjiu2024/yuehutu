@@ -12,13 +12,16 @@
  *  4. 新增 / 编辑 / 删除 / 设为默认**已经实现**，全部走
  *     `POST /api/trade/{account_id}/addresses[...]`，body 一律带字面量 `confirm: true`，
  *     UI 侧还有一道 `ConfirmDialog danger`。写请求只在用户点完确认之后才发出去。
- *  5. **诚实边界**：官方新增/编辑表单里还有「所在地区」级联（`division`，`{label,value}` 数组）
- *     和一个隐藏的 `areaId`（区级区域码）。我们没有区域码来源，**不伪造**：
- *     只发省 / 市 / 区三个**名字**，`area_id` 留空就**根本不发这个键**。
- *     平台若因此拒绝，错误原文会原样显示 —— 不会把失败说成「已成功」。
+ *  5. **所在地区三级级联（第 61 批）**：官方新增/编辑表单里的「所在地区」级联和隐藏的
+ *     `areaId`（区级区域码）现在**有了真区域码来源** —— `GET /api/logistics/{account_id}/divisions`
+ *     （省 / 市 / 区三级，`value` 是官方格式 `divisionId/名称`）。选到区级后把该 `value` 写进
+ *     `area_id`，`province_name` / `city_name` / `district_name` 跟随各级 `label` 自动填（仍可手改）。
+ *     级联的终止判据是 **`level >= 4`**（官方 bundle 口径）：真机上区级的 `divisionLeaf` 是
+ *     `false`，不能拿它当终止判据。取不到区域码时级联显示人话 + 「重试」，**不伪造**任何一个码；
+ *     `area_id` 为空时本地就拦住（平台硬必填），不留到平台去报错。
  */
 
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api, errorText } from '../api'
 import { Badge, ConfirmDialog, Field, Modal, Notice, useToast } from '../components'
 import { useAsync } from '../hooks/useAsync'
@@ -143,6 +146,9 @@ function validate(form: AddressForm): string[] {
   if (!form.province_name.trim()) problems.push('省')
   if (!form.city_name.trim()) problems.push('市')
   if (!form.district_name.trim()) problems.push('区/县')
+  // 平台硬必填 areaId（真机报错 FAIL_SYS_BIZPARAM_MISSED::缺少业务参数areaId）——
+  // 与其发出去换一条平台错误，不如在本地就说清楚怎么补
+  if (!form.area_id.trim()) problems.push('区域码（选完省 / 市 / 区自动生成）')
 
   const detail = form.detail_address.trim()
   if (!detail) problems.push('详细地址')
@@ -158,6 +164,160 @@ function factsOf(path: string, body: Record<string, unknown>): string[] {
   }
   facts.push('confirm = true')
   return facts
+}
+
+/** 平台区域码根 token（真机 `'CN'` → 31 个省）。 */
+const ROOT_TOKEN = 'CN'
+
+interface Division {
+  division_id?: number | null
+  division_token?: string | null
+  label?: string | null
+  /** 官方格式 `divisionId/名称`；区级这一条就是平台硬必填的 `area_id`。 */
+  value?: string | null
+  level?: number | null
+  is_leaf?: boolean | null
+  abb_name?: string | null
+  pinyin?: string | null
+}
+
+interface DivisionsResult {
+  token?: string | null
+  divisions?: Division[]
+  count?: number
+  warnings?: Array<{ code?: string; message?: string }>
+  [key: string]: unknown
+}
+
+/**
+ * 省 / 市 / 区三级级联（数据来自 `GET /api/logistics/{account_id}/divisions`）。
+ *
+ * 选到区级后把该级 `value`（官方格式 `divisionId/名称`）写进 `area_id`，三级 `label`
+ * 分别填进 `province_name` / `city_name` / `district_name`（用户仍可手改）。
+ * 编辑已有地址时按名字回显：一级列表回来若名字能对上就自动往下拉，逐级复原。
+ * 取不到数据时给人话 + 「重试」，**不伪造**任何区域码。
+ */
+function DivisionCascade({ accountId, form, patchForm }: {
+  accountId: string
+  form: AddressForm
+  patchForm: (patch: Partial<AddressForm>) => void
+}) {
+  const [lists, setLists] = useState<Record<number, Division[]>>({})
+  const [busy, setBusy] = useState(0)
+  const [error, setError] = useState('')
+
+  const load = useCallback(async (level: number, token: string) => {
+    if (!accountId || !token) return
+    setBusy(level)
+    setError('')
+    try {
+      const result = await api.get<DivisionsResult>(
+        `/api/logistics/${encodeURIComponent(accountId)}/divisions`,
+        { token, page_index: 1 },
+      )
+      setLists((prev) => ({ ...prev, [level]: result?.divisions ?? [] }))
+    } catch (err) {
+      setLists((prev) => ({ ...prev, [level]: [] }))
+      setError(errorText(err))
+    } finally {
+      setBusy(0)
+    }
+  }, [accountId])
+
+  useEffect(() => {
+    setLists({})
+    setError('')
+    load(1, ROOT_TOKEN)
+  }, [load])
+
+  const provinces = lists[1] ?? []
+  const cities = lists[2] ?? []
+  const provinceToken = provinces.find((item) => item.label === form.province_name)?.division_token ?? ''
+  const cityToken = cities.find((item) => item.label === form.city_name)?.division_token ?? ''
+
+  // 上级一变就把下级拉一遍（编辑回显也走这条路：名字能对上就自动往下）
+  useEffect(() => {
+    if (provinceToken) load(2, provinceToken)
+    else setLists((prev) => ({ ...prev, 2: [] }))
+  }, [provinceToken, load])
+  useEffect(() => {
+    if (cityToken) load(3, cityToken)
+    else setLists((prev) => ({ ...prev, 3: [] }))
+  }, [cityToken, load])
+
+  function optionsOf(level: 1 | 2 | 3, current: string) {
+    const list = lists[level] ?? []
+    const options = list.map((item, index) => (
+      <option key={`${item.division_token ?? item.value ?? index}`} value={item.label ?? ''}>
+        {item.label || item.division_token || '（平台没给名字）'}
+      </option>
+    ))
+    // 编辑已有地址时平台给的名字可能不在这一级列表里 —— 原样留一个选项，不静默清空
+    if (current && !list.some((item) => item.label === current)) {
+      options.unshift(<option key="__current" value={current}>{current}（当前值）</option>)
+    }
+    return options
+  }
+
+  function pick(level: 1 | 2 | 3, label: string) {
+    if (level === 1) {
+      patchForm({ province_name: label, city_name: '', district_name: '', area_id: '' })
+      return
+    }
+    if (level === 2) {
+      patchForm({ city_name: label, district_name: '', area_id: '' })
+      return
+    }
+    const hit = (lists[3] ?? []).find((item) => item.label === label)
+    patchForm({ district_name: label, area_id: hit?.value ?? '' })
+  }
+
+  return (
+    <>
+      <Field label="所在地区（省 / 市 / 区）" tip="按平台区域码逐级选；选到区级会自动生成下面的区域码">
+        <div style={{ display: 'flex', gap: 8 }}>
+          <select
+            title="按区域码选省"
+            style={{ flex: 1 }}
+            value={form.province_name}
+            disabled={busy === 1}
+            onChange={(event) => pick(1, event.target.value)}
+          >
+            <option value="">{busy === 1 ? '加载中…' : '请选择省'}</option>
+            {optionsOf(1, form.province_name)}
+          </select>
+          <select
+            title="按区域码选市"
+            style={{ flex: 1 }}
+            value={form.city_name}
+            disabled={!provinceToken || busy === 2}
+            onChange={(event) => pick(2, event.target.value)}
+          >
+            <option value="">{!provinceToken ? '先选省' : busy === 2 ? '加载中…' : '请选择市'}</option>
+            {optionsOf(2, form.city_name)}
+          </select>
+          <select
+            title="按区域码选区/县"
+            style={{ flex: 1 }}
+            value={form.district_name}
+            disabled={!cityToken || busy === 3}
+            onChange={(event) => pick(3, event.target.value)}
+          >
+            <option value="">{!cityToken ? '先选市' : busy === 3 ? '加载中…' : '请选择区/县'}</option>
+            {optionsOf(3, form.district_name)}
+          </select>
+        </div>
+      </Field>
+      {error && (
+        <Notice kind="warn">
+          取不到区域码：{error}
+          <button className="btn sm" style={{ marginLeft: 8 }} onClick={() => load(1, ROOT_TOKEN)}>
+            重试
+          </button>
+        </Notice>
+      )}
+    </>
+  )
 }
 
 export function ReturnAddressesPage() {
@@ -215,6 +375,8 @@ export function ReturnAddressesPage() {
         city_name: field('city_name'),
         district_name: field('district_name'),
         detail_address: field('detail_address'),
+        // 平台给了区域码就回显（回不去也不要紧：级联会按名字逐级复原）
+        area_id: field('area_id'),
         default_addr: row.is_default === true,
       },
     })
@@ -408,10 +570,11 @@ export function ReturnAddressesPage() {
       {!accountId && <Notice kind="info">先在上方选一个账号，没有账号就没退货地址可看。</Notice>}
 
       <Notice kind="info">
-        写操作（新增 / 编辑 / 删除 / 设为默认）只发省 / 市 / 区三个<strong>名字</strong>。
-        官方表单里还有一个「所在地区」级联（<code>division</code>）和一个隐藏的 <code>areaId</code>（区级区域码），
-        我们<strong>没有区域码来源，不伪造</strong>：<code>area_id</code> 留空就根本不发这个键。
-        平台要是因此拒绝，下面会原样显示它的错误原文 —— 不会说成「已成功」。
+        写操作会带上平台<strong>硬必填</strong>的 <code>area_id</code>（区级区域码）：
+        表单里的「所在地区」按平台区域码逐级选（省 / 市 / 区），选到<strong>区级</strong>后自动生成，
+        并顺带填好省 / 市 / 区三个名字（仍可手改）。
+        取不到区域码时级联会给人话提示和「重试」，<strong>不伪造</strong>任何一个码；
+        平台要是仍拒绝，下面会原样显示它的错误原文 —— 不会说成「已成功」。
       </Notice>
 
       {notes.length > 0 && (
@@ -498,32 +661,36 @@ export function ReturnAddressesPage() {
                 onChange={(event) => patchForm({ mobile_phone: event.target.value })}
               />
             </Field>
-            <Field label="省" tip="必填">
+            <div className="ra-form-wide">
+              <DivisionCascade accountId={accountId} form={form} patchForm={patchForm} />
+            </div>
+            <Field label="省" tip="由上方级联自动填，必填，可手改">
               <input
                 title="平台字段 province_name"
                 value={form.province_name}
                 onChange={(event) => patchForm({ province_name: event.target.value })}
               />
             </Field>
-            <Field label="市" tip="必填">
+            <Field label="市" tip="由上方级联自动填，必填，可手改">
               <input
                 title="平台字段 city_name"
                 value={form.city_name}
                 onChange={(event) => patchForm({ city_name: event.target.value })}
               />
             </Field>
-            <Field label="区/县" tip="必填">
+            <Field label="区/县" tip="由上方级联自动填，必填，可手改">
               <input
                 title="平台字段 district_name"
                 value={form.district_name}
                 onChange={(event) => patchForm({ district_name: event.target.value })}
               />
             </Field>
-            <Field label="区级区域码（选填）" tip="区/县的行政区划代码，例如 330106；不清楚就留空，平台若因此拒绝会显示原因">
+            <Field label="区域码（自动生成）" tip="平台硬必填（areaId）：由省 / 市 / 区自动生成，不用手填">
               <input
                 title="平台字段 area_id"
                 value={form.area_id}
-                onChange={(event) => patchForm({ area_id: event.target.value })}
+                readOnly
+                placeholder="选完省 / 市 / 区后自动生成"
               />
             </Field>
             <div className="ra-form-wide">
