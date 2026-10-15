@@ -334,34 +334,20 @@ def cs_routing(account_id: str, page: Any = '', size: Any = '') -> Dict[str, Any
 #    而不是「去重新登录」。
 
 #: 未确认时的错误码（`common.FAIL_STATUS` 里没有它 ⇒ 默认 400）。
-CONFIRM_CODE = 'confirmation_required'
+CONFIRM_CODE = common.CONFIRM_CODE
 
 WARN_NO_GROUP_ID = '平台没有回显新分组的 id，请重新拉一次分组列表确认'
 WARN_RULE_NOT_ECHOED = ('平台没有回显保存后的分流规则（官方前端也是重拉列表确认）——'
                         '这次提交已经发出，配置是否生效请点「刷新」看平台当前值')
 
 
-def _truthy(value: Any) -> bool:
-    """只有 `True` / `'true'` / `1` 算点头（与 `items` / `item_templates` /
-    `trade_write` / `drafts` / `mcp_server.client` 同口径）。
-
-    `bool('false')` 是 `True` —— 对「会真的改动卖家客服分流配置」的写操作，
-    把用户明确的拒绝当成同意是危险的。
-    """
-    if value is True:
-        return True
-    if isinstance(value, str):
-        return value.strip().lower() == 'true'
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value == 1
-    return False
+#: 判据单点：services/common.confirm_truthy（宽松档，全仓唯一一份实现）。
+_truthy = common.confirm_truthy
 
 
 def _confirm_gate(action: str, confirm: Any) -> Optional[Dict[str, Any]]:
-    if _truthy(confirm):
-        return None
-    return common.fail(
-        f'{action} 是写操作，必须显式确认（confirm=true）后才会提交到闲鱼', CONFIRM_CODE)
+    """写路径第一道闸门：**只判确认**，不碰库、不碰账号、不碰平台。"""
+    return common.confirm_required(action, confirm, message=f'{action} 是写操作，必须显式确认（confirm=true）后才会提交到闲鱼')
 
 
 def _build_write(action: str, kwargs: Dict[str, Any]

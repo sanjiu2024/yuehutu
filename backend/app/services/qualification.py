@@ -275,10 +275,11 @@ def submit_packages(account_id: str, request: Any = None, confirm: Any = False
     ``confirm is not True`` → ``confirm_required``（400），**没有任何副作用**。
     业务对象原样进 ``requestJson``，服务层不翻译字段（无 bundle 证据）。
     """
-    if confirm is not True:
-        return common.fail(
-            '提交资质会真实改变账号的资质状态（不可逆），必须显式确认 confirm=true',
-            'confirm_required')
+    problem = common.confirm_required(
+        '提交资质', confirm, strict=True,
+        message='提交资质会真实改变账号的资质状态（不可逆），必须显式确认 confirm=true')
+    if problem is not None:
+        return problem
     body, failure = _business_body(request)
     if failure:
         return failure
@@ -294,10 +295,11 @@ def submit_packages(account_id: str, request: Any = None, confirm: Any = False
 def oss_credential(account_id: str, request: Any = None, confirm: Any = False
                    ) -> Dict[str, Any]:
     """**写平台**：取 OSS 上传凭证（上传资质材料的第一步）。同样需要 ``confirm=True``。"""
-    if confirm is not True:
-        return common.fail(
-            '申请 OSS 上传凭证是提交资质的第一步，必须显式确认 confirm=true',
-            'confirm_required')
+    problem = common.confirm_required(
+        '申请 OSS 上传凭证', confirm, strict=True,
+        message='申请 OSS 上传凭证是提交资质的第一步，必须显式确认 confirm=true')
+    if problem is not None:
+        return problem
     body, failure = _business_body(request)
     if failure:
         return failure

@@ -27,29 +27,18 @@ __all__ = [
 ]
 
 #: 未确认时返回的错误码（与 `services/trade_write.py` 保持一致）。
-CONFIRM_CODE = 'confirmation_required'
+CONFIRM_CODE = common.CONFIRM_CODE
 
 
 def _confirm_required(action: str) -> Dict[str, Any]:
-    return common.fail(
-        f'{action} 是写操作，需要显式确认（confirm=true）后才会提交',
-        CONFIRM_CODE,
-    )
+    """未确认信封：判据与措辞都走 services/common 单点。"""
+    return common.confirm_failure(
+        action, message=f'{action} 是写操作，需要显式确认（confirm=true）后才会提交')
 
 
-def _truthy(value: Any) -> bool:
-    """只有字面量 `True` / `'true'` / `1` 才算确认。
+#: 判据单点：services/common.confirm_truthy（宽松档，全仓唯一一份实现）。
+_truthy = common.confirm_truthy
 
-    与 `services/trade_write.py::_truthy`、`services/items.py::_truthy`、
-    `mcp_server/client.py::_truthy` 同一口径 —— 三条路（HTTP / 主管 AI / MCP）必须对
-    「什么算点头」有完全一样的判断。`bool('false')` 是 True、`not 'false'` 是 False，
-    所以既不能用 `bool()`、也不能用裸的 confirm 真假判断。
-    """
-    if value is True:
-        return True
-    if isinstance(value, str):
-        return value.strip().lower() == 'true'
-    return value == 1
 
 def _missing(*pairs: Tuple[str, Any]) -> Optional[Dict[str, Any]]:
     """必填校验：空串/纯空白/None 都算缺失。"""

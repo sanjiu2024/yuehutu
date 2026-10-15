@@ -74,8 +74,11 @@ def actions_catalog() -> Dict[str, Any]:
 
 def _write(account_id: str, action: str, payload: Any = None, confirm: Any = False) -> Dict[str, Any]:
     """所有写操作的唯一出口：确认 -> 白名单 -> 账号 -> 协议层 -> 信封。"""
-    if confirm is not True:
-        return common.fail('写操作必须显式确认（confirm=true）后才会执行', 'confirm_required')
+    problem = common.confirm_required(
+        action, confirm, strict=True,
+        message='写操作必须显式确认（confirm=true）后才会执行')
+    if problem is not None:
+        return problem
     if action in UNSUPPORTED:
         return common.fail(UNSUPPORTED[action], 'unsupported')
     if action not in protocol.WRITE_APIS:

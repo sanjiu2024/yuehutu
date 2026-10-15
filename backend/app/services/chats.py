@@ -635,31 +635,16 @@ def _push_message(client: Any, conversation: Any, text: str, cid: str = '') -> O
 
 
 #: 未确认时返回的业务码（`common.FAIL_STATUS` 里没有它 ⇒ 默认 400）。
-CONFIRM_CODE = 'confirmation_required'
+CONFIRM_CODE = common.CONFIRM_CODE
 
 
-def _truthy(value: Any) -> bool:
-    """只有字面量 `True` / `'true'` / `1` 才算确认，别的（含 `'false'`、`'yes'`）都不算。
-
-    与 `services/items.py::_truthy`、`services/orders.py::_truthy`、
-    `mcp_server/client.py::_truthy` 同一口径 —— 三条路（HTTP / 主管 AI / MCP）
-    必须对「什么算点头」有完全一样的判断。
-    """
-    if value is True:
-        return True
-    if isinstance(value, str):
-        return value.strip().lower() == 'true'
-    return value == 1
+#: 判据单点：services/common.confirm_truthy（宽松档，全仓唯一一份实现）。
+_truthy = common.confirm_truthy
 
 
 def _confirm_gate(action: str, confirm: Any) -> Optional[Dict[str, Any]]:
     """写路径第一道闸门：**只判确认**，不碰库、不碰账号、不碰平台。"""
-    if _truthy(confirm):
-        return None
-    return common.fail(
-        f'{action} 是写操作，需要显式确认（confirm=true）后才会提交到闲鱼',
-        CONFIRM_CODE,
-    )
+    return common.confirm_required(action, confirm)
 
 
 def send_manual(conversation_id: Any, text: str, *, confirm: Any = None) -> Any:

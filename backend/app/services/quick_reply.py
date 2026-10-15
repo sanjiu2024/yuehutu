@@ -32,7 +32,7 @@ from . import common
 from .trade import _client
 
 #: 未确认时返回的业务码（`common.FAIL_STATUS` 里没有它 ⇒ 默认 400）。
-CONFIRM_CODE = 'confirmation_required'
+CONFIRM_CODE = common.CONFIRM_CODE
 
 #: 写成功后广播的 topic（前端 `useAsync` 订阅它做静默重拉）。
 TOPIC = 'quick_reply.changed'
@@ -69,23 +69,13 @@ def _stamp(payload: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
-def _truthy(value: Any) -> bool:
-    """只有字面量 `True` / `'true'` / `1` 才算确认（与 items / drafts / MCP 同口径）。"""
-    if value is True:
-        return True
-    if isinstance(value, str):
-        return value.strip().lower() == 'true'
-    return value == 1
+#: 判据单点：services/common.confirm_truthy（宽松档，全仓唯一一份实现）。
+_truthy = common.confirm_truthy
 
 
 def _confirm_gate(action: str, confirm: Any) -> Optional[Dict[str, Any]]:
-    """写路径第一道闸门：**只判确认**，不碰账号、不碰平台。"""
-    if _truthy(confirm):
-        return None
-    return common.fail(
-        f'{action} 是写操作，会真的改动闲鱼上的快捷回复（不是只改本地），需要显式确认（confirm=true）',
-        CONFIRM_CODE,
-    )
+    """写路径第一道闸门：**只判确认**，不碰库、不碰账号、不碰平台。"""
+    return common.confirm_required(action, confirm, message=f'{action} 是写操作，会真的改动闲鱼上的快捷回复（不是只改本地），需要显式确认（confirm=true）')
 
 
 def _value_message(value: Any) -> str:

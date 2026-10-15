@@ -16,7 +16,7 @@ from ..xianyu import shop_profile as proto
 from . import common
 from .trade import _client, _stamp, _text
 
-CONFIRM_CODE = 'confirmation_required'
+CONFIRM_CODE = common.CONFIRM_CODE
 
 PROFILE_FIELDS = (
     'user_nick',
@@ -32,24 +32,14 @@ WARN_DETAIL_EMPTY = '平台没有返回店铺资料（响应里没有任何已�
 WARN_PLATFORM_MESSAGE = '平台没有明确说成功，但也（在没有失败码的情况下）没有说不成功'
 
 
-def _truthy(value: Any) -> bool:
-    """只有 True / 'true' / 1 / '1' 算点头（与 items / item_templates / shop 同口径）。"""
-    if value is True:
-        return True
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value == 1
-    if isinstance(value, str):
-        return value.strip().lower() == 'true' or value.strip() == '1'
-    return False
+#: 判据单点：services/common.confirm_truthy（宽松档，全仓唯一一份实现）。
+_truthy = common.confirm_truthy
 
 
 def _confirm_gate(action: str, confirm: Any) -> Optional[Dict[str, Any]]:
-    if _truthy(confirm):
-        return None
-    return common.fail(
-        '这是写操作，会真的改动闲鱼上的店铺资料，必须显式 confirm=true',
-        CONFIRM_CODE, action=action,
-    )
+    """写路径第一道闸门：**只判确认**，不碰账号、不碰平台。"""
+    return common.confirm_required(action, confirm, message='这是写操作，会真的改动闲鱼上的店铺资料，必须显式 confirm=true',
+                                   extra={'action': action})
 
 
 def _platform_failure(value: Any, api: str) -> Dict[str, Any]:

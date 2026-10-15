@@ -143,26 +143,19 @@ def list_templates(account_id: str = '', page: str = '', size: str = '',
 #   3. 拿不到的一律 `None`，不拿 `0` / `''` 冒充。
 
 #: 未确认时返回的业务码。
-CONFIRM_CODE = 'confirmation_required'
+CONFIRM_CODE = common.CONFIRM_CODE
 
 #: 模版名长度上限（官方表单与 bundle 都按 30 字校验）。
 TEMPLATE_NAME_MAX = 30
 
 
 def _confirm_required(action: str) -> Dict[str, Any]:
-    return common.fail(
-        f'{action} 是写操作，需要显式确认（confirm=true）后才会提交到闲鱼',
-        CONFIRM_CODE,
-    )
+    """未确认信封：判据与措辞都走 services/common 单点。"""
+    return common.confirm_failure(action)
 
 
-def _truthy(value: Any) -> bool:
-    """只有字面量 `True` / `'true'` / `1` 才算确认，别的（含 `'false'`、`'yes'`）都不算。"""
-    if value is True:
-        return True
-    if isinstance(value, str):
-        return value.strip().lower() == 'true'
-    return value == 1
+#: 判据单点：services/common.confirm_truthy（宽松档，全仓唯一一份实现）。
+_truthy = common.confirm_truthy
 
 
 def _blank(value: Any) -> bool:
@@ -240,18 +233,8 @@ def _write_result(account_id: str, action: str, outcome: Dict[str, Any],
 
 
 def _confirm_gate(action: str, confirm: Any) -> Optional[Dict[str, Any]]:
-    """写路径的第一道闸门：**只判确认**，不碰账号、不碰平台。
-
-    `confirm` 走显式关键字：HTTP 端点把 `body.confirm` 取出来传进来，AI / MCP 工具路径
-    直接按服务函数签名传 —— 两条路都用同一个参数，不会一条能确认、另一条永远确认不了。
-
-    三步顺序是 **确认 → 字段校验 → 建客户端**：确认在最前（未确认时连字段错都不该报，
-    否则会误导用户以为「填对了就能发」）；字段校验在建客户端之前（纯本地、免费，
-    账号掉线时也该先告诉他「名称没填」而不是「去重新登录」）。
-    """
-    if not _truthy(confirm):
-        return _confirm_required(f'运费模版{action}')
-    return None
+    """写路径第一道闸门：**只判确认**，不碰库、不碰账号、不碰平台。"""
+    return common.confirm_required(f'运费模版{action}', confirm)
 
 
 def _write_facade(account_id: str):

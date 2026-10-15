@@ -16,7 +16,7 @@ from ..xianyu import sub_account as proto
 from . import common
 from .trade import _client, _stamp, _text
 
-CONFIRM_CODE = 'confirmation_required'
+CONFIRM_CODE = common.CONFIRM_CODE
 
 WARN_ROLES_MISSING = '平台没有返回岗位列表（响应里没有岗位数组），这不等于「没有岗位」'
 WARN_NO_SUB_ID = '平台没有回显新建子账号的 id，请重新拉一次列表确认'
@@ -24,23 +24,14 @@ WARN_NO_SUB_ID = '平台没有回显新建子账号的 id，请重新拉一次�
 PUBLIC_KEY_FAILED = '平台没有返回密码加密用的公钥（sub.account.sub.pk），这次没有提交任何东西'
 
 
-def _truthy(value: Any) -> bool:
-    if value is True:
-        return True
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value == 1
-    if isinstance(value, str):
-        return value.strip().lower() == 'true' or value.strip() == '1'
-    return False
+#: 判据单点：services/common.confirm_truthy（宽松档，全仓唯一一份实现）。
+_truthy = common.confirm_truthy
 
 
 def _confirm_gate(action: str, confirm: Any) -> Optional[Dict[str, Any]]:
-    if _truthy(confirm):
-        return None
-    return common.fail(
-        '这是写操作，会真的改动闲鱼上的子账号，必须显式 confirm=true',
-        CONFIRM_CODE, action=action,
-    )
+    """写路径第一道闸门：**只判确认**，不碰账号、不碰平台。"""
+    return common.confirm_required(action, confirm, message='这是写操作，会真的改动闲鱼上的子账号，必须显式 confirm=true',
+                                   extra={'action': action})
 
 
 def _value_message(value: Any) -> str:

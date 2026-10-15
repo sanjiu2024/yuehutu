@@ -944,34 +944,20 @@ def reshelf(item_ids: Sequence[Any], account_id: Optional[str] = None,
 # 而不是「去重新登录」。
 
 #: 未确认时返回的业务码（`common.FAIL_STATUS` 里没有它 ⇒ 默认 400）。
-CONFIRM_CODE = 'confirmation_required'
+CONFIRM_CODE = common.CONFIRM_CODE
 
 #: 单次批量写请求的 id 上限。官方页面一次选几十个没问题，但请求体是逗号串，
 #: 给个上限挡住「把整个店铺塞进一次请求」这种误用（真实账号 45 件远在限内）。
 BATCH_WRITE_LIMIT = 200
 
 
-def _truthy(value: Any) -> bool:
-    """只有字面量 `True` / `'true'` / `1` 才算确认，别的（含 `'false'`、`'yes'`）都不算。
-
-    与 `services/item_templates.py::_truthy`、`mcp_server/client.py::_truthy` 同一口径 ——
-    三条路（HTTP / 主管 AI / MCP）必须对「什么算点头」有完全一样的判断。
-    """
-    if value is True:
-        return True
-    if isinstance(value, str):
-        return value.strip().lower() == 'true'
-    return value == 1
+#: 判据单点：services/common.confirm_truthy（宽松档，全仓唯一一份实现）。
+_truthy = common.confirm_truthy
 
 
 def _confirm_gate(action: str, confirm: Any) -> Optional[Dict[str, Any]]:
     """写路径第一道闸门：**只判确认**，不碰账号、不碰平台。"""
-    if _truthy(confirm):
-        return None
-    return common.fail(
-        f'{action} 是写操作，需要显式确认（confirm=true）后才会提交到闲鱼',
-        CONFIRM_CODE,
-    )
+    return common.confirm_required(action, confirm)
 
 
 def _clean_ids(item_ids: Any) -> List[str]:

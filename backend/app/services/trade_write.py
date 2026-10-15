@@ -29,17 +29,16 @@ from . import common
 from .trade import _client, _stamp, _text
 
 #: 未确认时的失败码：`common.FAIL_STATUS` 里没有它 → `common.respond` 落到 400。
-CONFIRM_CODE = 'confirmation_required'
+CONFIRM_CODE = common.CONFIRM_CODE
 
 
 # --------------------------------------------------------------------------- 前置检查
 
 
 def _confirm_required(action: str) -> Dict[str, Any]:
-    return common.fail(
-        f'{action} 是写操作，需要显式确认（confirm=true）后才会提交',
-        CONFIRM_CODE,
-    )
+    """未确认信封：判据与措辞都走 services/common 单点。"""
+    return common.confirm_failure(
+        action, message=f'{action} 是写操作，需要显式确认（confirm=true）后才会提交')
 
 
 def _missing(*pairs: Tuple[str, Any]) -> Optional[Dict[str, Any]]:
@@ -411,19 +410,8 @@ def complain_business_failure(result: Dict[str, Any]) -> Optional[Dict[str, Any]
 # --------------------------------------------------------------------------- 退货地址（写）
 
 
-def _truthy(value: Any) -> bool:
-    """只有字面量 `True` / `'true'` / `1` 才算确认，别的（含 `'false'`、`'yes'`）都不算。
-
-    与 `services/items.py::_truthy`、`services/item_templates.py::_truthy`、
-    `mcp_server/client.py::_truthy` 同一口径 —— 三条路（HTTP / 主管 AI / MCP）必须对
-    「什么算点头」有完全一样的判断。改退货地址是不可撤销的写操作，`"confirm": "false"`
-    这种字符串**绝不能**被当成点头。
-    """
-    if value is True:
-        return True
-    if isinstance(value, str):
-        return value.strip().lower() == 'true'
-    return value == 1
+#: 判据单点：services/common.confirm_truthy（宽松档，全仓唯一一份实现）。
+_truthy = common.confirm_truthy
 
 
 def _mobile_problem(value: Any) -> Optional[Dict[str, Any]]:

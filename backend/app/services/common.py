@@ -89,6 +89,71 @@ def respond(result: Any) -> Tuple[int, Any]:
     return 200, {'success': True, 'data': result}
 
 
+# --------------------------------------------------------------------------- 确认闸门
+
+#: 未确认时返回的业务码（common.FAIL_STATUS 里没有它 ⇒ respond() 默认给 400）。
+CONFIRM_CODE = 'confirmation_required'
+
+#: 严格档的业务码：只认字面 True 的两族（广告写入 / 资质写平台）历史上用它。
+STRICT_CONFIRM_CODE = 'confirm_required'
+
+#: 宽松档默认措辞。
+CONFIRM_MESSAGE = '{action} 是写操作，需要显式确认（confirm=true）后才会提交到闲鱼'
+
+
+def confirm_truthy(value: Any) -> bool:
+    """**宽松档判据**：只有字面量 True / 'true'（忽略大小写与首尾空白）/ 1 才算点头。
+
+    别的（含 'false'、'yes'、'1'、0）都不算 —— bool('false') 是 True，所以既不能用
+    bool()、也不能用裸的 confirm 真假判断。AI / MCP 客户端可能把布尔发成字符串，
+    故 'true' 也算点头。
+
+    这是**全仓唯一一份**宽松判据（原 services/*.py 13+ 份复制的 _truthy 已收敛到这里）。
+    mcp_server/client.py::_truthy 是 MCP 侧的独立一份，改这里要同步看那里。
+    """
+    if value is True:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() == 'true'
+    return value == 1
+
+
+def confirm_accepted(confirm: Any, *, strict: bool = False) -> bool:
+    """两档语义的判据入口。
+
+    - strict=False（默认，宽松档）：走 confirm_truthy —— True / 'true' / 1 都算；
+    - strict=True（严格档）：**只认字面 True**，1 / 'true' 一律拒。
+      广告写入（services/ad_write.py）与资质写平台（services/qualification.py）
+      属这一档，其测试把该口径锁成预期，不许放松。
+    """
+    if strict:
+        return confirm is True
+    return confirm_truthy(confirm)
+
+
+def confirm_failure(action: str, *, message: str = '', code: str = '',
+                    strict: bool = False,
+                    extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """未确认时的失败信封（措辞 / 码 / 附加字段由调用方给，判据在 confirm_accepted）。"""
+    payload = fail(message or CONFIRM_MESSAGE.format(action=action),
+                   code or (STRICT_CONFIRM_CODE if strict else CONFIRM_CODE))
+    payload.update(extra or {})
+    return payload
+
+
+def confirm_required(action: str, confirm: Any, *, strict: bool = False,
+                     message: str = '', code: str = '',
+                     extra: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """写路径第一道闸门：**只判确认**，不碰库、不碰账号、不碰平台。
+
+    已确认 → None；未确认 → common.fail() 信封（FAIL_STATUS 没登记 ⇒ HTTP 400）。
+    13+ 个服务模块的 _confirm_gate / _confirm_required 都是这一份实现的薄包装。
+    """
+    if confirm_accepted(confirm, strict=strict):
+        return None
+    return confirm_failure(action, message=message, code=code, strict=strict, extra=extra)
+
+
 # --------------------------------------------------------------------------- 日志与事件
 
 
