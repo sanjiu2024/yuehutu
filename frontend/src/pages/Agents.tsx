@@ -24,6 +24,7 @@ import {
   IconLink,
   IconMaster,
   IconRefresh,
+  IconSettings,
   IconTag,
   IconUsers,
   IconXCircle,
@@ -87,6 +88,106 @@ function RoleIcon({ role }: { role: string }) {
       return <IconAgents size={16} />
   }
 }
+
+/** 三个全局 AI 回复开关（第 55 批）。
+ *
+ * 以前 `ai.enabled` / `chat.auto_reply_scope` / `chat.human_takeover_seconds` 只存在于
+ * `settings` 表与 `GET /api/settings` 的返回里，生产代码一次都没读过 —— 界面上没有入口，
+ * 就算从接口写进去也毫无作用。现在后端真的按它们拦 AI，这里给一个能改的入口。
+ *
+ * 三个值都是字符串（`settings` 表就是 key/value 文本），保存时统一转成字符串发出去。
+ */
+function AutoReplySettingsCard() {
+  const toast = useToast()
+  const settings = useAsync<Record<string, string>>(() => api.get<Record<string, string>>('/api/settings'), [], true, [])
+  const [loaded, setLoaded] = useState(false)
+  const [enabled, setEnabled] = useState(true)
+  const [scope, setScope] = useState('all')
+  const [takeover, setTakeover] = useState('0')
+  const [saving, setSaving] = useState(false)
+
+  // 只灌一次草稿：之后以用户改的为准，别被静默重拉覆盖掉。
+  useEffect(() => {
+    const data = settings.data
+    if (!data || loaded) return
+    setEnabled(String(data['ai.enabled'] ?? 'true').trim().toLowerCase() !== 'false')
+    setScope(String(data['chat.auto_reply_scope'] ?? 'all').trim().toLowerCase() || 'all')
+    setTakeover(String(data['chat.human_takeover_seconds'] ?? '0').trim() || '0')
+    setLoaded(true)
+  }, [settings.data, loaded])
+
+  async function save(): Promise<void> {
+    setSaving(true)
+    try {
+      await api.put('/api/settings', {
+        'ai.enabled': enabled ? 'true' : 'false',
+        'chat.auto_reply_scope': scope,
+        'chat.human_takeover_seconds': String(takeover || '0'),
+      })
+      toast.success('已保存：AI 自动回复按新开关执行')
+      settings.reload()
+    } catch (err) {
+      toast.error(errorText(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="ag-card">
+      <div className="ag-card-head">
+        <div className="ag-card-title">
+          <IconSettings size={14} /> AI 自动回复开关
+        </div>
+        <div className="ag-card-meta">
+          {settings.loading ? '加载中…' : '只影响 AI 自动回复，你自己发的消息不受影响'}
+        </div>
+      </div>
+      <div className="ag-card-body">
+        <AsyncBox
+          loading={settings.loading}
+          error={settings.error}
+          notReady={settings.notReady}
+          onRetry={settings.reload}
+        >
+          <div className="ag-settings">
+            <Switch
+              checked={enabled}
+              onChange={(next) => setEnabled(next)}
+              label="AI 总开关（ai.enabled）：关掉之后 AI 不再自动回任何买家"
+            />
+            <label className="ag-setting-row">
+              <span>自动回复范围（chat.auto_reply_scope）</span>
+              <select value={scope} onChange={(event) => setScope(event.target.value)}>
+                <option value="all">all：所有会话都自动回</option>
+                <option value="items_only">items_only：只回挂着商品的会话</option>
+                <option value="off">off：一律不自动回</option>
+              </select>
+            </label>
+            <label className="ag-setting-row">
+              <span>人工回复后不插话（chat.human_takeover_seconds，秒；0 = 不限制）</span>
+              <input
+                type="number"
+                min={0}
+                value={takeover}
+                onChange={(event) => setTakeover(event.target.value)}
+              />
+            </label>
+            <div className="ag-setting-actions">
+              <button className="btn primary" onClick={save} disabled={saving || !loaded}>
+                {saving ? '保存中…' : '保存'}
+              </button>
+              <span className="ag-setting-hint">
+                关掉 AI 或把范围设成 off 之后，买家来信照旧落库、会话页照旧能人工回，只是 AI 不再开口。
+              </span>
+            </div>
+          </div>
+        </AsyncBox>
+      </div>
+    </div>
+  )
+}
+
 
 export function AgentsPage() {
   const toast = useToast()
@@ -255,6 +356,8 @@ export function AgentsPage() {
           hint={failedRuns > 0 ? 'status 非 ok 或带 error 原文' : '没有失败记录'}
         />
       </div>
+
+      <AutoReplySettingsCard />
 
       <div className="ag-card">
         <div className="ag-card-head">
