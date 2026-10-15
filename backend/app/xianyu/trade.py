@@ -270,9 +270,10 @@ def items_of(raw: Any) -> List[Any]:
 def paging_of(raw: Any) -> Dict[str, Any]:
     """分页/服务器时间。
 
-    真机 refund.list / rate.list 的 `totalCount` / `nextPage` / `lastEndRow` /
-    `serverTime` 是**信封顶层**的（`data` 的兄弟键），sold.get 未取到完整尾部 ⇒
-    拿不到就是 None。
+    真机的落点不统一：`sold.get` 的 `totalCount` / `nextPage` / `lastEndRow` 在
+    `data.module` 里（2026-10-15 实测同一账号 `total_count=15`，见 `logs/order_sync57/`），
+    refund.list / rate.list 的在**信封顶层**（`data` 的兄弟键）—— 所以下面把 raw /
+    `body_of(raw)` / 外层 `data` 三处合并着找；三处都没有才返回 None（**不猜**）。
     """
     raw = decode_payload(raw)
     outer = _outer_data(raw)

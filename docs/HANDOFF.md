@@ -3581,15 +3581,19 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 的金额退路 `auction_price × buy_num` 与平台口径不符（真机 `auctionPrice=199.00` / `buyNum=1` 而
 > `totalPrice=8.00`）⇒ 删除，金额缺失就落 `None`；③ `list_orders` 的注释/文档写「`sold.get` 分页字段
 > 取不到」与盘上证据相反（实测 `total_count=15`），翻页改用 `total_count`；④ 文档里的
-> `services/orders.py:184` 行号（插入 `_to_float`/`_order_fields` 后已移到 `:228`）、交接文档 §10 第 8 行
+> `services/orders.py:184` 行号（插入 `_to_float`/`_order_fields` 后已移到 `:227`）、交接文档 §10 第 8 行
 > 表格列数、以及「`GET /api/orders` → 15 行」的口径（实际那次 `size=5`，15 行在 `sync_response.json` 里）。
 > 修正后 `TOTAL 63 PASS 63 FAIL 0 CASES 2737 SKIPPED 2`、`reconcile_tools.py` → RECON OK。
-> 重打包产物 **`10,226,229 B / 2026-10-15 12:12:27`**（端口 18400），五件套复验：闸门 `GATE FAILURES: 0 / 79`、
+> 重打包产物 **`10,226,364 B / 2026-10-15 12:23:49`**（端口 18400），五件套复验：闸门 `GATE FAILURES: 0 / 79`、
 > `ASSETS_MATCH=True`、`PACKAGED UI SMOKE 29/29`、`[dark] BAD_PAGES 0/29` / `[light] 0/29`、a11y 三类 0，
 > 两份审计 `NON_GET_API_REQUESTS=[]`；真机复验 `logs/order_sync57fix/`：连同步两次都是 200 `count=15`、
 > `/api/orders/stats` 仍是 `total=15 amount=1176.81`（幂等、无重复行，`GET /api/orders` 回 15 行），
 > `GET /api/items/2217970177348/stats` 的本地订单指标 `paid_orders` 合计 **10**（orders=15 / buyers=12；
-> 修正前 9 笔「交易成功」全是 0）。
+> 修正前那 9 笔「交易成功」所在商品的 `paid_orders` 全是 0，只有 1 笔「待发货」算数 ⇒ 修正前合计是 **1**，
+> 不是 0）。附注两条：`feeb3aa` 提交信息里「测试 +4 用例」是笔误 —— 4 个**新方法**在继承基类的
+> `OrderShipConfirmGateTest` 里会再跑一遍，实际是 +5 用例（协议层 2 + 服务层 1×2 + `item_stats` 1）；
+> `backend/app/xianyu/trade.py::paging_of` 的 docstring 当时没跟着改（仍写「sold.get 未取到完整尾部」），
+> 已在下一提交里更正为「落点不统一：sold.get 在 `data.module`、refund.list/rate.list 在信封顶层」。
 
 ## 四、已验证 / 未验证（诚实边界）
 
