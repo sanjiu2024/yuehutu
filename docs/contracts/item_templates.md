@@ -97,10 +97,9 @@
 
 ### 1.4 挂载
 
-`backend/app/main.py:35 ROUTE_MODULES` 需要加上 `'item_templates'`（`main.py:288-298` 用
-`importlib.import_module(f'.api.{name}')` 批量挂载）。本模块自带路由，未加进 `ROUTE_MODULES` 前
-HTTP 端点不会出现在应用里；`backend/tests/test_item_templates_api.py` 因此自己 `include_router` 到独立
-`FastAPI()`，不依赖挂载状态。
+✅ `backend/app/main.py:69 ROUTE_MODULES` 已含 `'item_templates'`（批量挂载见 `main.py` 里的
+`importlib.import_module(f'.api.{name}')` 循环；此前的「需要加上」是过时结论，2026-10-15 第五十九批复核时改正）。
+`backend/tests/test_item_templates_api.py` 仍自己 `include_router` 到独立 `FastAPI()` —— 那是为了不依赖挂载顺序，不是因为没有挂载。
 
 ## 2. 写能力（已实现）
 

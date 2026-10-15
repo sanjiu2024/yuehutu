@@ -40,7 +40,7 @@
 | GET | `/api/trade/{account_id}/refunds` | 退款列表。Query：`page`、`size` |
 | GET | `/api/trade/{account_id}/evaluations` | 评价列表（按订单分组）。Query：`page`、`size` |
 | GET | `/api/trade/{account_id}/complaints` | 投诉列表。Query：`page`、`size` |
-| GET | `/api/trade/{account_id}/addresses` | 退货地址列表。Query：`page`、`size` |
+| GET | `/api/trade/{account_id}/addresses` | 退货地址列表。Query：`page`、`size`（**不传 = 一次全量**，见下） |
 
 - 五个端点都要求登录（`Depends(current_user)`），响应走全局信封
   `{success: true, data: {...}}` / `{success: false, message, code, platform_errors?}`。
@@ -50,10 +50,18 @@
 - 分页参数在 API 层收成 `str` 再交给服务层校验，**不会**返回 FastAPI 的 422 裸 body；
   非法值一律 `400 invalid_fields`（`page=0` / `size=0` / `size=51` / `page=abc` / `size=x`），
   且**一次平台都不打**。
-- ⚠️ **挂载**：`backend/app/main.py:35 ROUTE_MODULES` 目前还没有 `'trade'`，
-  所以真实 app 里这五个路由**尚未生效**（Lead 加一行即可，本模块自带的测试自挂 router，
-  不受影响）。前端 `frontend/src/pages/{Orders,Refunds,Evaluations,Complaints,ReturnAddresses}.tsx`
-  已经调用这些路径。
+- **`addresses` 的服务端分页（第 59 批）**：平台接口
+  `mtop.alibaba.idle.seller.platform.merchant.delivery.address.list.query` 一次给全部退货地址
+  （请求 `data` 为 `None`，没有页码字段），所以切页在**服务端内存**里做，**不额外打平台**。
+  **不传 `page`/`size`（或传空串）= 向后兼容的一次全量**：`page=1`、`size`=实际条数、
+  `pages`=1（空列表 `size=0`、`pages=0`）。只给其中一个时缺的那个用默认值（`page=1`、`size=10`）。
+  响应在原有 `addresses[]` 之外**另给标准键** `items[]`（同值）、`total`、`page`、`size`、`pages`
+  ——`addresses` 是历史键（前端 `frontend/src/pages/ReturnAddresses.tsx` 在用），两个都给。
+  实现：`backend/app/services/trade.py::_paging` / `paginate`，`quick_reply` 复用同一对函数。
+- ✅ **挂载**：`backend/app/main.py:65 ROUTE_MODULES` 已含 `'trade'`（第五十八批起）。
+  **本文件此前写的「尚未挂载」是过时结论**（2026-10-15 第五十九批复核时改正）：打包版真机实测
+  `GET /api/trade/{account_id}/orders` 可用；前端
+  `frontend/src/pages/{Orders,Refunds,Evaluations,Complaints,ReturnAddresses}.tsx` 正在用这些路径。
 
 ### 1.2 每个响应都带
 
@@ -66,6 +74,10 @@
 
 **分页键在信封顶层**（`data` 的兄弟键，真机 refund.list / rate.list 实测）；拿不到就是 `null`，
 **不补 0**。
+
+第 59 批新增的**服务端分页键**（`addresses`）：`items[]`、`total`、`page`、`size`、`pages`，
+`pages = (total + size - 1) // size`（`total = 0` 时 `pages = 0`，不用 `math.ceil`）。
+`total` 永远是数字（数出来的条数），**不补 0** 的规矩针对的是平台字段，两者不冲突。
 
 ## 2. 字段来源路径（每个字段都能指回平台的键）
 
@@ -199,4 +211,4 @@
    重试两次均成功 ⇒ 与 Cookie 续期/累积状态相关，怀疑
    `backend/app/xianyu/client.py` 的续期落库路径（`:387 cookies_str` / `:410 persist_account_id`）。
    **未修**，需 Lead 安排复现（不在本任务写入范围）。
-6. **`main.py` 未挂载**：`ROUTE_MODULES` 缺 `'trade'`（见 1.1）。
+6. ~~**`main.py` 未挂载**~~：✅ 已挂（`ROUTE_MODULES` 里的 `'trade'`，`backend/app/main.py:65`，见 1.1）。

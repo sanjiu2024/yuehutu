@@ -39,13 +39,18 @@ POST /api/quick-reply/{account_id}/phrases/{content_id}/delete {group_id,confirm
 - 官方上限照抄：分组名 ≤10 字（输入框 `maxLength:10`）、短语内容 ≤200 字
   （`maxLength:200` 且 onChange 里再 `slice(0,200)`）。本地超限 → 400 `invalid_fields`，**零平台调用**。
 - `group_id` / `content_id` 收字符串或数字串（内部规范化成 int 后交给平台），空值报错。
-- 列表**不分页**（官方调用点 `b$({})` 就是不带参数，响应一次性给全部分组与短语）。
+- 列表**平台侧不分页**（官方调用点 `b$({})` 就是不带参数，响应一次性给全部分组与短语）；
+  **第 59 批起服务端切页**：`GET /api/quick-reply/{account_id}/groups?page=&size=`，在平台给的
+  全量 `groups` 上做内存切片（**不额外打平台**）。**不传 `page`/`size` = 一次全量**（`page=1`、
+  `size`=条数、`pages`=1；空列表 `size=0`/`pages=0`）；只给一个时缺的用默认（`page=1`、`size=10`）；
+  非法值 400 `invalid_fields` 且**零平台调用**。实现复用 `backend/app/services/trade.py::_paging`
+  与 `paginate`（`services/quick_reply.py` 从 `.trade` 导入，与既有的 `_client` 同路）。
 
 ## 1.3 成功判据（与「不造数据」的对照）
 
 | 平台情况 | 我们回什么 | 前端显示 |
 |---|---|---|
-| 正常返回 `groups` | `groups: [...]`、`count` | 分组 + 短语列表 |
+| 正常返回 `groups` | `groups: [...]`（= **本页**）、`items`、`count`（本页条数）、`total`、`page`、`size`、`pages` | 分组 + 短语列表 |
 | 没有 `groups` 键 | `groups: null` + warning `list_key_missing` | 「平台没给列表字段」≠「一条话术都没有」 |
 | `groups: []` | `groups: []`、`count: 0` | 「还没有分组」 |
 | 写入成功且回显 id | `saved: true`、`submitted`（实际发出的 payload） | 成功提示 |
@@ -53,7 +58,8 @@ POST /api/quick-reply/{account_id}/phrases/{content_id}/delete {group_id,confirm
 | 删除动作 | 另给 `deleted`（= `saved`） | 删除成功/未确认 |
 | 平台拒绝（无权限等） | 502 `protocol_error` + `platform_errors{api,code,message}`，**不碰 `login_state`** | 人话提示（「不是登录掉线」） |
 
-`total` 只在平台给了数值时用它，否则用**数出来的条数**并置 `total_from_platform: false`（不编数字）。
+`total` 只在平台给了数值时用它，否则用**数出来的条数**并置 `total_from_platform: false`（不编数字）；
+分页后 `count` 是**本页**条数，`total` 仍是全量口径，`total_from_platform` 语义不变。
 
 ## 1.4 三步顺序
 

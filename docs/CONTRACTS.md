@@ -200,6 +200,9 @@ operation_logs(id INTEGER PK, account_id TEXT, item_id TEXT, action TEXT, succes
 
 ## 3. REST API（前缀 `/api`；除 `/api/auth/*` 与 `/api/health` 外都要 `Authorization: Bearer <token>`）
 
+> **可选**头 `Idempotency-Key`：写请求带上它就能防重放（同键同请求只打平台一次、重复请求回放上次响应）。
+> 语义、落点与覆盖范围见 §9。不带这个头的请求行为与加机制之前完全一致。
+
 ```
 POST   /api/auth/login            {username,password} -> {token,user}
 POST   /api/auth/desktop          {+ 头 X-Desktop-Secret} -> {token,user}   -- 桌面外壳自动登录，免手输密码
@@ -1570,3 +1573,45 @@ master_chat                       -- 把我的话转给主管 AI
 - **实时刷新**：一律 `useAsync(loader, deps, immediate, topics)` 的第 4 参订阅 WS topic，
   **不许引入轮询**。
 - **不引第三方依赖**：打包要离线可用，图表/拖拽/图标都自己写。
+---
+
+## 9. 写操作幂等（`Idempotency-Key`，第五十九批）
+
+**一句话**：写请求带上 `Idempotency-Key` 头，**同一个键 + 同一个请求只打平台一次**；重复请求回放上次的响应，
+不再打平台、不再写审计。不带这个头的请求行为与加机制之前**逐字一致**。
+
+### 9.1 语义（每条都有单测：`backend/tests/test_idempotency.py`）
+
+- **头名** `Idempotency-Key`（HTTP 头本身大小写不敏感），值由调用方生成、≤200 字符，建议 UUID。
+- **指纹** = `sha256(json({account_id, action, item_id, payload}, sort_keys=True))`（`services/common.py::idempotency_fingerprint`）。
+  **同一个键配不同指纹 = 冲突**：返回 `code: 'conflict'`（HTTP 409），既不打平台也不覆盖原记录
+  （覆盖会让「第一次到底做没做」失去唯一证据）。账号、动作、item_id 与载荷都进指纹。
+- **回放**：响应体是上次那一份，额外带 `"idempotent_replay": true`；**不写第二条 `operation_logs`**
+  （审计行是「我们打过一次平台」的记录，回放没打）。
+- **失败也记**：平台可能已经生效、只是响应丢了；同键重发**不会**二次提交。要重试请**换一个新键**。
+- **闸门/参数校验在指纹之前**：没 `confirm`、参数不全的请求不占用键，补上确认后同一个键仍可正常提交。
+- **存储**：`idempotency_keys` 表（`backend/app/core/db.py` SCHEMA），TTL 7 天，清理是写路径顺手 `DELETE`（没有后台任务）。
+
+### 9.2 落点
+
+- 中间件 `backend/app/main.py::IdempotencyKeyMiddleware`（**纯 ASGI**，不是 `@app.middleware('http')`）：
+  在**当前任务**里把请求头写进 contextvar，FastAPI 把同步端点丢线程池时会复制 context，服务层照样读得到。
+- 服务层闸门 `backend/app/services/common.py::idempotent_call(account_id, action, item_id, payload, call)`：
+  带键时「查表 → 回放 / 抢锁 → 再查 → 执行 → 记账」，不带键时直接 `call()`。**新写族接闸门就用它**。
+- 首个接入点 `backend/app/services/trade_write.py::_submit`（交易写族唯一漏斗）。
+
+### 9.3 覆盖范围（本批）
+
+**已覆盖**（交易写族全部走 `_submit`）：发货 / 无需物流发货 / 改价 / 退款同意与拒绝 / 评价 / 投诉拒绝与举证 /
+改地址同意与拒绝 / 关单 / 延期确认 / 提醒确认 / 邮费赔付 / 订单留言。
+
+**未覆盖**（后续按需在各自漏斗调 `common.idempotent_call`）：商品写族（`services/items.py` 的 `_batch_write` /
+`_push_update` / `publish_item`）、店铺设置、推广计划、地址、安全设置；以及 `services/orders.py::update_shipment`
+（先写本地库、再尽力推平台）与 `::deliver`（纯本地改状态）—— 这两条不是平台写漏斗。
+
+### 9.4 已知边界
+
+- **同键并发只在本进程内串行**（`common.idempotency_lock` 的 per-key `threading.Lock`）：多 worker 部署时
+  两个进程仍可能同时打平台。要彻底挡住得靠 `idempotency_keys.key` 主键抢占（先 INSERT 抢位、再执行），**本批没做**。
+- 键是**调用方**的责任：同一个键不能复用到另一个请求（会 409），也不能指望它做限流（不同键就是不同的写）。
+- `Idempotency-Key` 目前**只对走 `_submit` 的交易写生效**；读接口、其它写族的重放语义与加机制之前相同。

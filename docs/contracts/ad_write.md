@@ -65,6 +65,15 @@
 
 返回 `{"success": true, "data": {"actions": [{action, api, params, confirm_required}], "unsupported": [{action, reason, confirm_required}]}}`。
 
+**这是静态目录，不分页（第 59 批判定）**。判定依据：`actions_catalog()`
+（`backend/app/services/ad_write.py:60-72`）的 `actions` 来自**模块级常量**
+`ACTIONS = tuple(protocol.WRITE_APIS)`，而 `WRITE_APIS` 是 `backend/app/xianyu/ad_write.py:39`
+写死的字典常量（10 个写接口）；`unsupported` 里也是写死的 `recharge` / `withdraw` 两条。
+整条路径**没有数据库查询、没有平台请求、没有任何运行期增长来源**——条目数在进程启动时就固定，
+所以「无限增长的集合」这个前提不成立，加 `page`/`size` 只是给固定长度的常量数组套壳。
+审计 `docs/audit/write_consistency.md` 问题 10 把它列进「集合型端点缺分页」，属**误判**，
+本批只补口径、不改接口。
+
 ### `POST /api/promotion/write/{account_id}/{action}`
 
 请求体：

@@ -120,3 +120,19 @@
   回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 或 `409` 需重新扫码）；解析按存在性读，拿不到就是 `null`。
 - 商品搜索的两个分页键（`pageNumber` + `currentPage`）是**同时发**的：平台如果对未知键报错，
   这条会失败——目前只有静态证据，没有真机回执。
+
+## 6. 拉黑状态查询不是集合端点（第 59 批判定）
+
+`GET /api/im/{account_id}/blacklist` **不加分页**，因为它根本不是列表接口：
+
+- 它查的是**单个会话的拉黑状态**——`im_actions.blacklist_status(account_id, session_id,
+  conversation_id)`（`backend/app/services/im_actions.py:196-232`），返回这个会话在平台侧的
+  拉黑标志，不是「黑名单条目集合」。
+- 协议层 `mtop.taobao.idlemessage.pc.blacklist.query` v1.0 **只收 `sessionId`**
+  （`backend/app/xianyu/im_actions.py:54-56` 的接口名与 `:274` 的请求形状），平台一次只回一个
+  会话的状态，没有页码、也没有总数可切。
+- 所以审计 `docs/audit/write_consistency.md:100` 把这条列进「集合型端点缺分页」是**误判**：
+  名字里带 `blacklist` 不等于返回列表。硬加 `page`/`size` 只能对**一个**布尔状态切片，
+  切出来的页要么全有要么全无，是假分页。
+- 对照：同族的会话搜索 / 商品搜索（`/api/im/{account_id}/sessions/search`、`/item-search`）
+  是真集合，它们的 `page`/`size` 早在第 58 批就实现了。

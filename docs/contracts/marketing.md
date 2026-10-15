@@ -108,8 +108,7 @@
   `verification_required`→409（登录态过期，附 `login_state: "need_relogin"`）、
   `protocol_error`→502、`xianyu_not_ready`→503。
 - **没有任何写方法**：POST/PUT/PATCH/DELETE 在这四条路径上一律 **405**。
-- ⚠ **路由尚未挂进 `backend/app/main.py` 的 `ROUTE_MODULES`**：由 Lead 追加
-  `'marketing'`。挂载之前这四条路径在真实 app 里**不存在**。
+- ✅ **挂载**：`backend/app/main.py:71 ROUTE_MODULES` 已含 `'marketing'`（此前的「尚未挂载」是过时结论，2026-10-15 第五十九批复核时改正）。
 
 ### 3.2 仓库侧分层
 

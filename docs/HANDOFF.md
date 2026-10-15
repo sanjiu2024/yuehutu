@@ -63,7 +63,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_gate55_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 65  PASS 65  FAIL 0  CASES 2789  SKIPPED 2
+-> TOTAL 66  PASS 66  FAIL 0  CASES 2812  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -83,14 +83,14 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 97 modules transformed.
-   frontend/dist/assets/index-IBkt4w_C.js (643.08 kB, gzip 202.15 kB)
-   frontend/dist/assets/index-BKG4hgAV.css (157.65 kB, gzip 24.69 kB)
+   frontend/dist/assets/index-scYCTET3.js (645.52 kB, gzip 204.84 kB)
+   frontend/dist/assets/index-BpLeM6Kv.css (158.94 kB, gzip 24.97 kB)
 ```
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon50&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=148 master=147 routes=149 targets=136 handlers=148
-   write_tools=72  route_checked=149
+-> specs=151 master=150 routes=152 targets=139 handlers=151
+   write_tools=75  route_checked=152
    RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
    （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
 ```
@@ -122,7 +122,7 @@ cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe 
 ```text
 cmd /c "powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\Administrator\.dsh-tmp\verify55.ps1"
 -> 1_gate     EXIT=0   GATE FAILURES: 0 / 79
-   2_assets   EXIT=0   ASSETS_MATCH=True  （index-BKG4hgAV.css / index-IBkt4w_C.js 远端与本地哈希一致）
+   2_assets   EXIT=0   ASSETS_MATCH=True  （index-BpLeM6Kv.css / index-scYCTET3.js 远端与本地哈希一致）
    3_smoke    EXIT=0   PACKAGED UI SMOKE  29/29 页通过
    4_contrast EXIT=0   [dark] BAD_PAGES 0/29   [light] BAD_PAGES 0/29   NON_GET_API_REQUESTS=[]
    5_a11y     EXIT=0   无可访问名字的按钮 0 / 没标签的输入框 0 / 无 alt 的图 0，
@@ -3672,10 +3672,77 @@ first.hand / backend 族 → `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（官方 seller.p
 （`test_services_items.py` +2、`test_xianyu_items.py` +2、`test_xianyu_cookies.py` +1）⇒ 基线 2776 → **2789**；
 `-SkipFrontend` 重打包 → **10,231,552 B / 2026-10-15 13:41:16**，五件套全过（闸门 0/79、ASSETS_MATCH=True、
 29/29 页、对比度 dark/light 各 0/29、a11y 三类 0）。
+### 第五十九批：写操作幂等键（Idempotency-Key）+ 集合端点分页 + 通知已读 AI 工具 + UI 审查中危条目（328~330）
+
+**起点是第 58 批两份审计的欠账**：`docs/audit/write_consistency.md` 问题 8（写操作无幂等键）、问题 10（4 条集合端点缺分页），
+`docs/audit/ui_review58.md` 24 条里剩下的 19 条。
+
+**A. 写操作幂等键**（`63b5441`；契约 `docs/CONTRACTS.md` §9 / `docs/contracts/trade_write.md` §0.1）
+
+- 落点链：`backend/app/main.py::IdempotencyKeyMiddleware`（**纯 ASGI**，不用 `@app.middleware('http')`，读 `idempotency-key`
+  头 → `common.set_idempotency_key` 存 contextvar）→ `backend/app/services/common.py::idempotent_call(account_id, action, item_id, payload, call)`
+  → `backend/app/services/trade_write.py::_submit`（打平台 + 写审计的主体抽成 `_submit_once`，回放时不会走到它）。
+- 存储：新表 `idempotency_keys(key PK, account_id, action, fingerprint, response, created_at)` + `idx_idempotency_created`
+  （`backend/app/core/db.py`）；指纹 = `sha256(json.dumps({account_id,action,item_id,payload}, sort_keys=True))`；
+  `IDEMPOTENCY_TTL_DAYS=7`，每次写入顺手 `DELETE` 过期行；命中回放上次响应并加 `idempotent_replay=True`；
+  同键不同指纹 → 409 `conflict`（回显 `idempotency_key`）；**失败响应也记**（否则重试会把失败当没发生）；
+  **闸门/参数校验排在记键之前**（缺 confirm 不占键）；同键并发用进程内 `_idempotency_locks` + 表内二次查串行化。
+- 覆盖：交易写族 21 个 POST（发货 / 虚拟发货 / 改价 / 退款同意与拒绝 / 评价 / 投诉拒绝与举证与撤销 / 地址增改删设默认 /
+  改地址同意与拒绝 / 关单 / 延期 / 提醒 / 邮费赔付 / 赔付拒绝 / 备注）。**未覆盖（有意）**：商品写族、店铺/推广/地址安全设置、
+  `services/orders.py::update_shipment` / `::deliver`。**边界**：同键并发只在本进程内串行（多 worker 挡不住）；键不复用、不做限流。
+- 回归：`backend/tests/test_idempotency.py`（14 条，走真 `create_app()` ⇒ 顺带验中间件真的挂在 app 上）。
+
+**B. 集合端点分页 + 通知已读 AI 工具**（`237e48e`）—— `GET /api/trade/{account_id}/addresses` 与
+`GET /api/quick-reply/{account_id}/groups` 补 `page`/`size`；助手收敛到 `services/trade.py::_paging`（:124）/
+`::paginate`（:140，返回 `{items,total,page,size,pages}`），**两个参数都不给仍是一次全量**（旧行为不变）；
+`addresses` 响应同时给历史键 `addresses[]` 与标准键 `items[]`；非法分页在打平台前翻 `invalid_fields`。
+**另两条判定为不需要分页**：`GET /api/promotion/write/actions` 是 `backend/app/xianyu/ad_write.py:39` 写死的静态目录
+（无 DB、无平台请求），`GET /api/im/{account_id}/blacklist` 是单会话拉黑状态（协议层只收 sessionId）⇒ 审计归类是误判，
+两条都写进各自契约。同批给通知已读补 AI/MCP 面 `notifications_mark_read`（`agents/tools.py:1208-1227`、
+`mcp_server/client.py:558`/`:1340`，五方对账白名单同步）。
+
+**C. UI 审查中危条目**（`3256c82`，23 files +623 −391）
+
+- 共享件：`frontend/src/components.tsx` 的 AsyncBox 空态收敛成三种固定形态（真空「暂无数据」/ 筛选没命中
+  「没有符合条件的记录」+「清空筛选」/ notReady 人话），首屏 `<Skeleton lines={4}/>`，刷新用 `useRef` 保留旧 children
+  + 顶部 `.async-progress` 细进度条（stale-while-revalidate，不再整块换转圈、翻页不闪白），新增 `emptyAction` 槽
+  （页面自带主操作优先于内置按钮）；新增导出 `Pager`（上一页/下一页 + 页码区间 + 每页条数 10/20/50 + 跳页），
+  10 处页面 pager 换成它（`CommodityData.tsx:453`、`CsData.tsx:229`、`DraftBox.tsx:532`、`Finance.tsx:375`/`:493`、
+  `ItemTemplates.tsx:538`、`Marketing.tsx:548`、`Qualification.tsx:371`、`SubAccounts.tsx:547`、`Orders.tsx` 的 tr-pager）。
+- 金额与文案：`frontend/src/format.ts` 新增 `parseYuanAmountString`（**元字符串、不 /100**，破了 `console.warn` 返回 null）
+  与 `fenToYuan`；`formatMoney`（千分位 + 2 位 + ¥，非数字 `-`）+ `moneyTitle` 用于 Promotion / Refunds。
+  `Orders.tsx` 撤销投诉确认框不再直出 mtop 接口名与 `data.success` / `data.failReason`（收进
+  `<details className="tech-details">技术详情</details>`）；金额列接 `parseYuanAmountString` 做契约校验 —— 破了只 warn，
+  **仍原样显示平台值**（本页 `money()` 刻意不做数值加工，把原值换成「-」会丢排查线索），可疑原值放进 `title`。
+- 其余：`Items.tsx`（含顺带修第 58 批真 bug：`:823` markdown `**` 直出 JSX 文本）、`ReturnAddresses.tsx` /
+  `CsRouting.tsx` 14 处 label 去英文列名（`area_id` 有意透传，依据 `ReturnAddresses.tsx:15-18` docstring）、
+  `Chats.tsx` Enter 发送 / Shift+Enter 换行 / IME `isComposing` 保护、`Accounts.tsx:270-285` 与 `Prompts.tsx:389-404` 空态接线。
+- **有意不做**：`Chats.tsx:1870-1880`（抽屉底部）与 `Promotion.tsx:380-381`（pr-bar 工具条内）两处 pager 不换共享组件
+  （要重排工具条，收益不抵风险）；审计第 12 条「12 个页面空数组露空表格」逐页复核后是 grep 启发式误判
+  （Agents 用 `AgEmpty`、Chats 用 `ChatsEmpty`、DataOverview 用 `dc-muted`、Fans 是指标卡、ShopProfile 是资料字段），
+  实际只有 Accounts / Prompts 需要接线。
+
+**收尾复核（Lead 自己跑）**：`backend/tests/run_all.py` → `TOTAL 66 PASS 66 FAIL 0 CASES 2812 SKIPPED 2`
+（日志 `.dsh-tmp/run_all_b59.log`）；`scripts/reconcile_tools.py` → `specs=151 master=150 routes=152 targets=139 handlers=151` /
+`write_tools=75` / `route_checked=152` / `RECON OK`；前端 `npx tsc --noEmit` + `npm run build` 通过
+（`index-BpLeM6Kv.css 158.94 kB` / `index-scYCTET3.js 645.52 kB`）。
+
+**真机（打包版 18400，2026-10-15 14:5x，账号 `2217970177348` 月狐兔_）—— 幂等键端到端**
+
+- 探针 `C:\Users\Administrator\.dsh-tmp\idem_probe59.py`，原始响应落 `logs/idem_probe59/`。用**不存在的订单号**打虚拟发货
+  （平台必拒、零状态改动）：① 带键但 `confirm=false` → 400 `confirmation_required`（**不占键**）；② 同键 + confirm →
+  502 `SYSTEM_ERROR::系统错误请稍候再试`，0.15s，`operation_logs` id=364；③ **同键同载荷再发一次 → 0.00s 返回逐字相同的响应
+  + `idempotent_replay: true`，没有第二条审计**；④ 同键换载荷 → 409 `conflict` 且回显 `idempotency_key`；
+  ⑤ 换个新键 → 0.14s 真打平台，`operation_logs` id=365。库里 `idempotency_keys` 恰好 2 行（两个键、同指纹），
+  `ship_dummy` 审计恰好 2 条。
+- 打包产物 `dist\闲鱼AI工作台\闲鱼AI工作台.exe` = **10,237,223 B / 2026-10-15 14:54**（带前端重打）；五件套全过：
+  闸门 **0/79**、`ASSETS_MATCH=True`（`index-BpLeM6Kv.css` + `index-scYCTET3.js` 与快照逐文件一致）、**29/29 页**、
+  对比度 **dark 0/29 / light 0/29**、a11y 三类 0，两个审计都 `NON_GET_API_REQUESTS=[]`；打包版 `/openapi.json` =
+  **209 路径 / 227 操作**（GET 103 / POST 109 / PUT 9 / DELETE 5 / PATCH 1，与第 58 批一致 —— 本批没加路由）。
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**65 个测试文件、2789 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**66 个测试文件、2812 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -4021,15 +4088,20 @@ first.hand / backend 族 → `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（官方 seller.p
    （502 `retry_after=39`，冷却后同请求 200）。
 7. 桌面 exe 在干净机器上冒烟（缺 WebView2 时要给出可读提示）；注意产物现在含
    playwright driver，`dist\闲鱼AI工作台` 实测 **194 MB**。
-8. **写操作没有幂等键**（`docs/audit/write_consistency.md` 问题 8）：全仓无 `idempotency_key` / `request_id` /
-   dedup，客户端重放就是**二次提交**，关单/退款/发货最敏感。建议在 `services/common` 加统一入口
-   （如 `X-Idempotency-Key` 落 `operation_logs` 去重），先覆盖不可逆写。
-9. **4 条集合端点缺分页**（问题 10）：`GET /api/promotion/write/actions`、`GET /api/trade/{account_id}/addresses`、
-   `GET /api/quick-reply/{account_id}/groups`、`GET /api/im/{account_id}/blacklist` 一次返回全量 ⇒
-   按 `page`/`size` 补，返回体与其它列表端点对齐（`{items,total,page,size,pages}`）。
+8. ~~**写操作没有幂等键**~~ **已闭环（第五十九批，提交 `63b5441`）**：可选请求头 `Idempotency-Key`，交易写族 21 个
+   POST 全覆盖（落点 `main.py::IdempotencyKeyMiddleware` → `services/common.py::idempotent_call` →
+   `services/trade_write.py::_submit`），真机端到端证据见上一节；契约 `docs/CONTRACTS.md` §9。
+   **仍未覆盖**：商品写族、店铺/推广/地址/安全设置、`services/orders.py::update_shipment` / `::deliver`
+   （在各自漏斗调 `idempotent_call` 即可）；**边界**：同键并发只在本进程内串行，多 worker 挡不住。
+9. ~~**4 条集合端点缺分页**~~ **已闭环（第五十九批，提交 `237e48e`）**：退货地址与快捷回复分组补 `page`/`size`
+   （助手 `services/trade.py::_paging` / `::paginate`，两个参数都不给仍是一次全量）；另两条经复核**不需要分页**
+   并写进各自契约 —— `GET /api/promotion/write/actions` 是 `xianyu/ad_write.py:39` 写死的静态目录
+   （无 DB、无平台请求）、`GET /api/im/{account_id}/blacklist` 是单会话拉黑状态（协议层只收 sessionId）。
 10. **覆盖率审计的 77 条可实现缺口**还没逐条落地（`docs/audit/coverage57.md`），43 条无权限/风控里只有 5 条
-    有逐条实测锚点。另外两笔欠账：`docs/audit/ui_review58.md` 24 条只修了 5 条（剩 19 条含 19 处英文 label）；
-    40 条写路由没有 AI/MCP 面（第 58 批接了 2 条，剩 37 条，理由逐条记在 `docs/audit/ai_surface58.md` §3）。
+    有逐条实测锚点。另外两笔欠账：`docs/audit/ui_review58.md` 24 条**第五十九批已修到 23 条**（第 16 条经复核
+    不成立；第 11 条只做到共享组件层，未逐页核 `useAsync` 是否保留 data；第 15 条剩 `Chats.tsx:1870-1880`、
+    `Promotion.tsx:380-381` 两处有意跳过）；40 条写路由没有 AI/MCP 面（第 58 批接了 `items_delist` / `items_relist`，
+    第五十九批又接 `notifications_mark_read`，理由逐条记在 `docs/audit/ai_surface58.md` §3）。
 11. **商品「上架」在本账号权限下不可用**（第 58 批真机三条路径全被拒，错误码见上节）：官方 seller.pc 商品写族里
     本来也只有 offline / batch.offline / batch.delete / delete / info.update / price.update / quantity.update。
     ⇒ 换有子账号/主账号权限的账号再试；在此之前**别把「下架 → 上架」当可逆写**。⚠️ 商品 `1085479546711`

@@ -25,6 +25,21 @@
    `platform_errors.explain`，**不会**把账号写成 `need_relogin`。只有平台真的回
    `SESSION_EXPIRED`（`common._is_session_expired` 按类名/文案认）才会标掉线。
 
+### 0.1 幂等（**可选**请求头 `Idempotency-Key`，第五十九批）
+
+写请求可以带一个 `Idempotency-Key` 头（值自拟、≤200 字符，建议 UUID）。**不带就是加机制之前的行为**，逐字一致。
+
+- 同一个键 + 同一个请求（指纹 = 账号 + action + item_id + body）**只打平台一次**；重复请求**回放**上次那份响应，
+  额外带 `"idempotent_replay": true`，**不再打平台、不再写第二条 `operation_logs`**。
+- 同一个键配**不同**请求 → `code: 'conflict'`（HTTP 409），既不打平台也不覆盖原记录。
+- **失败响应也会被记住**（平台可能已生效、只是响应丢了）⇒ 想重试请**换一个新键**。
+- 没 `confirm`、参数不全的请求在指纹之前就被闸门拦掉，**不占键**；补上确认后同一个键仍可正常提交。
+- 落点：`backend/app/main.py::IdempotencyKeyMiddleware` → `backend/app/services/common.py::idempotent_call` →
+  本族唯一漏斗 `backend/app/services/trade_write.py::_submit`（本文件 §1 表里的 **21 个 POST 全部覆盖**）。
+- 边界：同键并发只在本进程内串行（多 worker 部署挡不住，要靠主键抢占才能根治，本批没做）；
+  键是调用方的责任 —— 不能复用到别的请求，也不做限流。
+- 完整语义与其它写族的覆盖情况见 `docs/CONTRACTS.md` §9；用例 `backend/tests/test_idempotency.py`（14 条）。
+
 ## 1. HTTP（21 个 POST + 5 个只读 GET，全部要求登录）
 
 | 方法 | 路径 | body | 说明 |
