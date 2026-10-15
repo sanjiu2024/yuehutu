@@ -177,6 +177,49 @@ class OrdersServiceTest(unittest.TestCase):
         self.assertEqual(result['count'], 2)
         self.assertEqual(orders.list_orders(account_id='acc1')['total'], 2)
 
+    def test_sync_orders_accepts_normalized_protocol_rows(self):
+        """协议层 `list_orders` 回的是 `trade.normalize_order` 的**嵌套结构**。
+
+        老映射只认扁平字段：没有 `buyer_id`/`amount` 的行会写成空串与 0，
+        这条把真机形状锁住。
+        """
+
+        class NestedClient:
+            def list_orders(self, account_id):
+                return {'orders': [{
+                    'order_id': 'O9',
+                    'item_id': 'I9',
+                    'order_status': '交易成功',
+                    'buyer': {'user_id': 'b9'},
+                    'price': {'auction_price': '39.90', 'buy_num': 2, 'total_price': None},
+                }], 'total': 1, 'page': 1, 'pages': 1, 'size': 20}
+
+        install_client(NestedClient())
+        self.assertEqual(orders.sync_orders('acc1')['count'], 1)
+
+        order = orders.get_order('O9')
+        self.assertEqual(order['item_id'], 'I9')
+        self.assertEqual(order['buyer_id'], 'b9')
+        # total_price 缺 → 退到单价 × 件数；平台原文是字符串
+        self.assertEqual(order['amount'], 79.8)
+        self.assertEqual(order['status'], '交易成功')
+        self.assertIsInstance(order['raw'], dict)
+        # 「交易成功」是真机终态（trade_probe.json），要算进已发货那一档
+        self.assertEqual(orders.order_stats()['shipped'], 1)
+
+    def test_sync_orders_leaves_missing_amount_null(self):
+        """平台没给金额就落 NULL，不补 0（§5.4）—— 补 0 会把它算进本地成交额。"""
+
+        class NoAmountClient:
+            def list_orders(self, account_id):
+                return {'orders': [{'order_id': 'O8', 'item_id': 'I8', 'status': 'paid'}]}
+
+        install_client(NoAmountClient())
+        self.assertEqual(orders.sync_orders('acc1')['count'], 1)
+        self.assertIsNone(orders.get_order('O8')['amount'])
+        # SUM 出 NULL 不能让统计接口整条报错
+        self.assertEqual(orders.order_stats()['amount'], 0.0)
+
     def test_sync_orders_requires_account(self):
         result = orders.sync_orders('')
         self.assertFalse(result['success'])

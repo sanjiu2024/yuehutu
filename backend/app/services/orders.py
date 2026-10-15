@@ -14,8 +14,10 @@ from typing import Any, Dict, List, Optional, Sequence
 from ..core import db
 from . import common
 
-# 已发货/已完成这类终态（统计用）
-SHIPPED_STATES = ('shipped', 'delivered', '已发货', '已签收', '已完成')
+# 已发货/已完成这类终态（统计用）。`交易成功` 是**平台订单状态的中文原文**
+# （真机 logs/seller_discover/trade_probe.json 实测有「交易成功」「交易关闭」「未发货退款」）：
+# 少了它，同步进来的订单在统计里既不算待发货也不算已发货。
+SHIPPED_STATES = ('shipped', 'delivered', '已发货', '已签收', '已完成', '交易成功')
 PENDING_STATES = ('pending', 'paid', 'wait_ship', '待发货', '已付款')
 
 #: 未确认时返回的业务码（`common.FAIL_STATUS` 里没有它 ⇒ 默认 400）。
@@ -162,7 +164,7 @@ def order_stats(account_id: Optional[str] = None) -> Dict[str, Any]:
     shipment_row = db.query_one('SELECT COUNT(*) AS n FROM shipments')
     return {
         'total': int(row['n']) if row else 0,
-        'amount': round(float(row['amount']), 2) if row else 0.0,
+        'amount': round(float(row['amount'] or 0), 2) if row else 0.0,
         'by_status': by_status,
         'pending': pending,
         'shipped': shipped,
@@ -171,6 +173,48 @@ def order_stats(account_id: Optional[str] = None) -> Dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- 写
+
+
+def _to_float(value: Any) -> Optional[float]:
+    """平台金额是**字符串**（`"39.90"`）。转不出来就是「平台没给」，返回 None。"""
+    if value is None or value == '':
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _order_fields(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """把一行订单翻成 `orders` 表字段，两种形状都认。
+
+    - **协议层归一化结果**（真机路径，`xianyu/trade.py::normalize_order`）：
+      `order_id` / `item_id` / `order_status` / `buyer.user_id` / `price.total_price`；
+    - **扁平契约**（MCP / 假客户端直接喂的行）：`buyer_id` / `amount`|`total_fee` / `status`。
+
+    真机走的是前一种：`normalize_order` 的输出是嵌套的，没有顶层 `buyer_id`/`amount`/`status`，
+    老写法照扁平字段取，会把买家取成空串、金额取成 0。平台没给的字段留空 / None，**不拿 0 顶替**。
+    """
+    buyer = raw.get('buyer') if isinstance(raw.get('buyer'), dict) else {}
+    price = raw.get('price') if isinstance(raw.get('price'), dict) else {}
+    amount = None
+    for candidate in (raw.get('amount'), raw.get('total_fee'), price.get('total_price')):
+        amount = _to_float(candidate)
+        if amount is not None:
+            break
+    if amount is None:
+        # 归一化行里 `total_price` 可能缺，退到「单价 × 件数」。
+        unit_price = _to_float(price.get('auction_price'))
+        buy_num = _to_float(price.get('buy_num'))
+        if unit_price is not None and buy_num:
+            amount = round(unit_price * buy_num, 2)
+    return {
+        'order_id': common.extract_id(raw, 'order_id', 'id', 'bizOrderId'),
+        'item_id': str(raw.get('item_id') or raw.get('itemId') or ''),
+        'buyer_id': str(raw.get('buyer_id') or raw.get('buyerId') or buyer.get('user_id') or ''),
+        'amount': amount,
+        'status': str(raw.get('status') or raw.get('order_status') or 'unknown'),
+    }
 
 
 def sync_orders(account_id: str) -> Any:
@@ -192,14 +236,9 @@ def sync_orders(account_id: str) -> Any:
     for raw in raw_orders:
         if not isinstance(raw, dict):
             continue
-        order_id = common.extract_id(raw, 'order_id', 'id', 'bizOrderId')
-        if not order_id:
+        fields = _order_fields(raw)
+        if not fields['order_id']:
             continue
-        amount = raw.get('amount') or raw.get('total_fee') or raw.get('price') or 0
-        try:
-            amount_value = float(amount)
-        except (TypeError, ValueError):
-            amount_value = 0.0
         db.execute(
             'INSERT INTO orders(account_id, order_id, item_id, buyer_id, amount, status, raw, updated_at) '
             'VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP) '
@@ -207,8 +246,8 @@ def sync_orders(account_id: str) -> Any:
             'amount = excluded.amount, status = excluded.status, raw = excluded.raw, '
             'updated_at = CURRENT_TIMESTAMP',
             (
-                account_id, order_id, str(raw.get('item_id') or ''), str(raw.get('buyer_id') or raw.get('buyerId') or ''),
-                amount_value, str(raw.get('status') or 'unknown'),
+                account_id, fields['order_id'], fields['item_id'], fields['buyer_id'],
+                fields['amount'], fields['status'],
                 json.dumps(raw, ensure_ascii=False, default=str),
             ),
         )

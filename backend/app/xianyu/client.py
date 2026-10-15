@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tupl
 from loguru import logger
 
 from . import cookies as cookie_utils
-from . import fingerprint, im, mtop, net, risk, store
+from . import fingerprint, im, mtop, net, risk, store, trade
 
 # ---------------------------------------------------------------------------
 # 接口常量。版本号**必须逐个硬编码**：``*.pc.idleitem.*`` 族是 1.0，
@@ -63,6 +63,13 @@ ITEM_LIST_PAGE_SIZE = 20
 # 稍作停顿，避免连续打同一个接口被平台当成脚本刷（风控代价远大于多等这一下）。
 ITEM_LIST_MAX_PAGES = 25
 ITEM_LIST_PAGE_DELAY = 0.3
+
+# 订单列表（卖出的）：真机容器 `data.module.items`，与 `services/trade.orders` 同一个接口。
+# 页大小/上限与商品列表同一口径；`sold.get` 的 `totalCount`/`nextPage` 在信封顶层取不到
+# （见 `trade.paging_of`），所以翻页判据是「这一页满没满」，见 `XianyuClient.list_orders`。
+ORDER_LIST_PAGE_SIZE = 20
+ORDER_LIST_MAX_PAGES = 10
+ORDER_LIST_PAGE_DELAY = 0.3
 
 # 下架是 2.0 族；上架**没有独立接口**，靠 edit 改 itemStatus。
 DOWNSHELF_API = 'mtop.taobao.idle.item.downshelf'
@@ -515,6 +522,60 @@ class XianyuClient:
 
         return {'items': items, 'total': total or len(items), 'next_page': next_page,
                 'groups': groups, 'page': int(page_number or 1), 'size': page_size}
+
+    # -- 订单 -------------------------------------------------------------
+
+    async def list_orders(self, account_id: str = '', page: int = 1,
+                          size: int = ORDER_LIST_PAGE_SIZE,
+                          max_pages: int = ORDER_LIST_MAX_PAGES) -> Dict[str, Any]:
+        """拉卖家侧订单列表（`mtop.taobao.idle.trade.merchant.sold.get`，已归一化）。
+
+        归一化复用 `xianyu/trade.py::parse_orders`（真机容器 `data.module.items`）：
+        平台改字段名只改那一处，服务层拿到的永远是同一套 `order_id/item/buyer/price/times`。
+
+        **翻页判据是「这一页满没满 + 有没有新单」，不是 `nextPage`**：真机 `sold.get` 的
+        `totalCount`/`nextPage` 在信封顶层取不到，信它就会永远只同步第一页。
+
+        `account_id` 只是 `services/common.call_method` 的位置传参（一个 client 只服务一个
+        账号）：传了别的账号直接报错 —— 串号比报错严重得多。
+        """
+        owner = str(self.cookie_id or '')
+        if account_id and str(account_id) != owner:
+            raise ValueError(f'账号不匹配: {account_id} != {owner}')
+        page = max(1, int(page or 1))
+        size = max(1, min(int(size or ORDER_LIST_PAGE_SIZE), 100))
+        max_pages = max(1, int(max_pages or 1))
+        orders: List[Dict[str, Any]] = []
+        seen: set = set()
+        total = 0
+        fetched = 0
+
+        for index in range(max_pages):
+            api, data = trade.order_list_request(page + index, size)
+            # `mtop()` 已经把「平台明确拒绝」翻成异常（无权限/接口不存在都会抛），
+            # 所以这里拿到的一定是成功信封，不必再判一次 `envelope_error`。
+            result = await self.mtop(api, data, v=trade.ORDER_LIST_VERSION)
+            payload = trade.parse_orders(result)
+            page_orders = payload.get('orders') or []
+            paging = payload.get('paging') or {}
+            if paging.get('total_count'):
+                total = int(paging['total_count'])
+            fetched = index + 1
+            fresh = 0
+            for order in page_orders:
+                key = str(order.get('order_id') or '')
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                orders.append(order)
+                fresh += 1
+            if len(page_orders) < size or not fresh:
+                break
+            if index + 1 < max_pages:
+                await asyncio.sleep(ORDER_LIST_PAGE_DELAY)
+
+        return {'orders': orders, 'total': total or len(orders), 'page': page,
+                'pages': fetched, 'size': size}
 
     async def recommend_category(self, title: str, description: str = '',
                                  images: Optional[List[Dict[str, Any]]] = None):
