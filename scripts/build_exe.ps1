@@ -69,19 +69,38 @@ $bundledFrontend = Join-Path $outDir '闲鱼AI工作台\_internal\frontend\dist\
 if (-not (Test-Path $bundledFrontend)) { throw "产物里没有前端: $bundledFrontend" }
 
 # 校验打包内前端 == 快照（逐文件比对大小 + SHA256，只比大小会漏掉同尺寸的内容改动）
+# 哈希不能裸用 Get-FileHash：受限 PowerShell（ConstrainedLanguage / 模块路径被清空）下它
+# 是 CommandNotFound —— 构建其实成功，脚本却以退出码 1 收场（交接文档 §10 待办 4）。
+# 所以优先走 cmdlet，拿不到就退到 certutil（外部命令，两种语言模式下都能用）。
 $bundledDir = Join-Path $outDir '闲鱼AI工作台\_internal\frontend\dist'
+function Get-Sha256Hex([string]$Path) {
+    if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) {
+        return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash
+    }
+    $certutil = Join-Path $env:SystemRoot 'System32\certutil.exe'
+    if (-not (Test-Path $certutil)) { throw "既没有 Get-FileHash 也没有 certutil: $certutil" }
+    $raw = & $certutil -hashfile $Path SHA256
+    if ($LASTEXITCODE -ne 0) { throw "certutil 失败（exit $LASTEXITCODE）: $Path" }
+    foreach ($line in $raw) {
+        $hex = ($line -replace '\s', '')
+        if ($hex -match '^[0-9a-fA-F]{64}$') { return $hex.ToUpperInvariant() }
+    }
+    throw "certutil 没解析出 SHA256: $Path"
+}
 function Get-DistManifest([string]$root) {
     Get-ChildItem $root -Recurse -File | ForEach-Object {
         $rel = $_.FullName.Substring($root.Length)
-        $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash
-        "$rel|$($_.Length)|$hash"
+        "$rel|$($_.Length)|$(Get-Sha256Hex $_.FullName)"
     } | Sort-Object
 }
-$diff = Compare-Object (Get-DistManifest $stageDist) (Get-DistManifest $bundledDir)
+$snapshotManifest = Get-DistManifest $stageDist
+$diff = Compare-Object $snapshotManifest (Get-DistManifest $bundledDir)
 if ($diff) {
     Write-Host ($diff | Format-Table | Out-String)
     throw '打包内前端与快照不一致'
 }
+# 哈希行落进日志：既证明逐文件校验真的跑过，也留下可核对的清单指纹
+Write-Ok "前端逐文件校验通过：$($snapshotManifest.Count) 个文件 size+SHA256 全等；清单首行 $($snapshotManifest[0])"
 
 $exeBytes = (Get-Item $exe).Length
 $totalBytes = (Get-ChildItem (Join-Path $outDir '闲鱼AI工作台') -Recurse -File | Measure-Object -Property Length -Sum).Sum
@@ -93,4 +112,7 @@ Write-Host ''
 Write-Host '自检（无窗口模式）：' -ForegroundColor Yellow
 Write-Host "  & '$exe' --no-window --port 18080" -ForegroundColor Yellow
 Write-Host '  Invoke-WebRequest http://127.0.0.1:18080/api/health -UseBasicParsing' -ForegroundColor Yellow
+
+# 成功路径显式给 0：不让任何残留的 $LASTEXITCODE 决定这次构建的退出码
+exit 0
 
