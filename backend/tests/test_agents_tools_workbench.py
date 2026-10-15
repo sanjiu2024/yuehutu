@@ -582,7 +582,24 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
         'method': 'POST', 'path': '/api/items/{account_id}/{item_id}/relist'},
     'notifications_mark_read': {
         'module': 'notify', 'fn': 'mark_read', 'confirm': True,
-        'method': 'POST', 'path': '/api/notifications/{account_id}/read'},
+        'method': 'POST', 'path': '/api/notifications/{account_id}/read'},    'promotion_ad_message_read': {
+        'module': 'ad', 'fn': 'message_read', 'confirm': True,
+        'method': 'POST', 'path': '/api/promotion/ad/{account_id}/messages/read'},
+    'trade_order_cancel': {
+        'module': 'trade_write', 'fn': 'order_cancel', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/{order_id}/cancel'},
+    'trade_order_close_im': {
+        'module': 'trade_write', 'fn': 'close_by_seller_im', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/{order_id}/close-im'},
+    'trade_order_delay_single': {
+        'module': 'trade_write', 'fn': 'seller_delay_confirm', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/{order_id}/delay-single'},
+    'trade_order_adjust_price': {
+        'module': 'trade_write', 'fn': 'user_adjust_price', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/{order_id}/adjust-price-sku'},
+    'trade_smart_form_submit': {
+        'module': 'trade_write', 'fn': 'smart_form_callback', 'confirm': True,
+        'method': 'POST', 'path': '/api/trade/{account_id}/smart-form/submit'},
 }
 
 WRITE_TOOL_NAMES = list(WRITE_TOOLS)
@@ -605,6 +622,18 @@ _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
         'account_id': 'acc-x', 'session_id': 'cid-1', 'confirm': False},
     'notifications_mark_read': {
         'account_id': 'acc-x', 'message_id': 'msg-1', 'confirm': False},
+    'promotion_ad_message_read': {'account_id': 'acc-x', 'order_id': 'o-1', 'message_ids': [1], 'close_reason': '不想卖了',
+                       'days': '3', 'skus': {'k': '9.9'}, 'callback_code': 'cb-1', 'confirm': False},
+    'trade_order_cancel': {'account_id': 'acc-x', 'order_id': 'o-1', 'message_ids': [1], 'close_reason': '不想卖了',
+                       'days': '3', 'skus': {'k': '9.9'}, 'callback_code': 'cb-1', 'confirm': False},
+    'trade_order_close_im': {'account_id': 'acc-x', 'order_id': 'o-1', 'message_ids': [1], 'close_reason': '不想卖了',
+                       'days': '3', 'skus': {'k': '9.9'}, 'callback_code': 'cb-1', 'confirm': False},
+    'trade_order_delay_single': {'account_id': 'acc-x', 'order_id': 'o-1', 'message_ids': [1], 'close_reason': '不想卖了',
+                       'days': '3', 'skus': {'k': '9.9'}, 'callback_code': 'cb-1', 'confirm': False},
+    'trade_order_adjust_price': {'account_id': 'acc-x', 'order_id': 'o-1', 'message_ids': [1], 'close_reason': '不想卖了',
+                       'days': '3', 'skus': {'k': '9.9'}, 'callback_code': 'cb-1', 'confirm': False},
+    'trade_smart_form_submit': {'account_id': 'acc-x', 'order_id': 'o-1', 'message_ids': [1], 'close_reason': '不想卖了',
+                       'days': '3', 'skus': {'k': '9.9'}, 'callback_code': 'cb-1', 'confirm': False},
     'im_card_send': {
         'account_id': 'acc-x', 'session_id': 'cid-1', 'item_id': 'it-1',
         'confirm': False},

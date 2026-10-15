@@ -226,6 +226,94 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---------------- 商品发布数据源（只读：发布页要用的类目/品牌/型号/属性） ----------------
+    # 第六十批（task-15）：官方发布页的数据源，纯只读。响应 data.options 为空是**正常**
+    # 结果（该层没有可选项），不是失败；平台错误码原样带在 platform_code / platform_message。
+    {
+        'type': 'function',
+        'function': {
+            'name': 'item_publish_categories',
+            'description': '查闲鱼发布商品时可选的一级/多级类目树（只读，不会发布任何东西）。' +
+                           '卖家问「这个能发到哪个类目」或要选类目时，先调它拿叶子类目 id。' +
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'item_publish_brands',
+            'description': '查某个类目下可选的品牌列表（只读）。category_id 用 item_publish_categories 拿到的叶子类目。' +
+                           'account_id 与 category_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'category_id': {'type': 'string', 'description': '叶子类目 id（先调 item_publish_categories）'},
+                },
+                'required': ['account_id', 'category_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'item_publish_models',
+            'description': '查某个类目 + 品牌下可选的型号列表（只读）。有些类目没有型号，返回空是正常的。' +
+                           'account_id、category_id、brand_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'category_id': {'type': 'string', 'description': '叶子类目 id'},
+                    'brand_id': {'type': 'string', 'description': '品牌 id（先调 item_publish_brands）'},
+                },
+                'required': ['account_id', 'category_id', 'brand_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'item_publish_category_properties',
+            'description': '查某个类目发布时要填的属性（只读）：有哪些属性、哪些必填、可选值是什么。' +
+                           'account_id 与 category_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'category_id': {'type': 'string', 'description': '叶子类目 id'},
+                },
+                'required': ['account_id', 'category_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'item_publish_search_categories',
+            'description': '查发布页「搜索类目」用的类目候选（只读）。按关键词找类目时用；' +
+                           '拿到的 id 可以接着传给 item_publish_brands / item_publish_category_properties。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 草稿箱（草稿是还没发布的商品） ----------------
     # 前两条只读；后两条会真的从闲鱼草稿箱里删掉草稿，required 必含 confirm。
     {
@@ -3087,6 +3175,378 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---------------- 第六十批（task-14 / task-16）：投放 ad（11 读 + 1 写）、交易处理（3 读 + 5 写） ----------------
+    # 写的那几条会真的改平台状态（取消/关闭订单、延长收货、改价、提交表单），required 必含 confirm。
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_ad_apis',
+            'description': '列出投放（ad）模块提供的接口（只读 kind 清单 + 唯一的写动作）。' +
+                           '这是只读工具，不需要 confirm。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    # 这个接口没有任何参数（平台就是这么定义的）。
+                },
+                'required': [],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_ad_account_info',
+            'description': '查该账号的投放账户信息（投放模式/出价类型/场景）。卖家问「投放能不能开、怎么出价」时用。' +
+                           'account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_price': {'type': 'string', 'description': '订单金额（官方调用点会传）'},
+                    'promotion_mode': {'type': 'string', 'description': '投放模式（官方枚举，原样透传）'},
+                    'bid_type': {'type': 'string', 'description': '出价类型（官方枚举，原样透传）'},
+                    'scene': {'type': 'string', 'description': '场景，如 CREATION_REAL_TIME / CREATION_SUCCESS'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_ad_package_info',
+            'description': '查投放包信息（投放模式/预算等）。payload 是 JSON 对象字符串，键名按官方原样透传；不给就按空对象查。' +
+                           'account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'payload': {'type': 'string', 'description': 'JSON 对象字符串，如 {"promotionMode":"CUSTOMIZE"}'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_ad_item_search',
+            'description': '在投放里搜商品（挑要投的商品）。item_id 与 search_key 至少给一个。' +
+                           '平台没给的指标返回 null，不要当成 0。account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'item_id': {'type': 'string', 'description': '商品 ID（与 search_key 至少给一个）'},
+                    'search_key': {'type': 'string', 'description': '搜索词（与 item_id 至少给一个）'},
+                    'campaign_id': {'type': 'string', 'description': '计划 ID'},
+                    'need_tabs': {'type': 'string', 'description': '是否要 tabList（true/false）'},
+                    'sort_field': {'type': 'string', 'description': '排序字段'},
+                    'sort_type': {'type': 'string', 'description': '排序方向'},
+                    'page_num': {'type': 'string', 'description': '页码'},
+                    'page_size': {'type': 'string', 'description': '每页条数'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_ad_bid_estimates',
+            'description': '查自定义出价的建议价（bid estimates）。payload 是 JSON 对象字符串（如 {"entityType":..,"entityList":[..],"bidTarget":..}），键名原样透传。' +
+                           'account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'payload': {'type': 'string', 'description': 'JSON 对象字符串（entityType/entityList/bidTarget 等）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_ad_groups',
+            'description': '查投放单元（计划下面的投放组）列表。日期用 YYYYMMDD。' +
+                           'account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'start_date': {'type': 'string', 'description': '开始日期 YYYYMMDD'},
+                    'end_date': {'type': 'string', 'description': '结束日期 YYYYMMDD'},
+                    'page_num': {'type': 'string', 'description': '页码'},
+                    'page_size': {'type': 'string', 'description': '每页条数'},
+                    'campaign_id': {'type': 'string', 'description': '计划 ID'},
+                    'group_status': {'type': 'string', 'description': '投放单元状态（官方枚举，原样透传）'},
+                    'promotion_mode': {'type': 'string', 'description': '投放模式（官方枚举，原样透传）'},
+                    'title_like': {'type': 'string', 'description': '计划标题模糊搜索'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_ad_group_data',
+            'description': '查某个投放单元的数据（曝光/点击/花费）。ad_group_id 必填，先用 promotion_ad_groups 拿。' +
+                           'account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'ad_group_id': {'type': 'string', 'description': '投放单元 ID（先用 promotion_ad_groups 查）'},
+                    'start_date': {'type': 'string', 'description': '开始日期 YYYYMMDD'},
+                    'end_date': {'type': 'string', 'description': '结束日期 YYYYMMDD'},
+                    'all_period': {'type': 'string', 'description': '是否全周期（官方传 false）'},
+                },
+                'required': ['account_id', 'ad_group_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_ad_campaign_log',
+            'description': '查投放计划的操作日志（谁在什么时候改了什么）。account_id 必填；日期用 YYYYMMDD。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'start_date': {'type': 'string', 'description': '开始日期 YYYYMMDD'},
+                    'end_date': {'type': 'string', 'description': '结束日期 YYYYMMDD'},
+                    'campaign_id': {'type': 'string', 'description': '计划 ID（官方 Number(x)||0）'},
+                    'page_num': {'type': 'string', 'description': '页码'},
+                    'page_size': {'type': 'string', 'description': '每页条数'},
+                    'operator_type': {'type': 'string', 'description': '0=全部 / 1=用户 / 2=系统'},
+                    'operation_type': {'type': 'string', 'description': '0=全部 / 1=添加 / 2=更新'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_ad_messages',
+            'description': '查投放消息中心的消息列表（投放相关的平台通知）。' +
+                           'account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'page_num': {'type': 'string', 'description': '页码'},
+                    'page_size': {'type': 'string', 'description': '每页条数'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_ad_messages_unread',
+            'description': '查投放消息中心的未读数。account_id 必填，不传直接返回「缺少参数: account_id」。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_ad_message_detail',
+            'description': '查一条投放消息的详情。message_id 先用 promotion_ad_messages 查。' +
+                           'account_id 与 message_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'message_id': {'type': 'string', 'description': '消息 id（先用 promotion_ad_messages 查）'},
+                },
+                'required': ['account_id', 'message_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_ad_message_read',
+            'description': '把投放消息标记为已读（平台写，必须 confirm=true）。message_ids 是要标记的消息 id 列表。' +
+                           '带 Idempotency-Key 时同一键 + 同一载荷只打平台一次。' + _WRITE_HINT,
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'message_ids': {'type': 'array', 'description': '要标记已读的消息 id 列表（先用 promotion_ad_messages 查）', 'items': {'type': 'integer'}},
+                    'confirm': {'type': 'boolean', 'description': '确认执行（必须为 true，否则直接返回 confirm_required）'},
+                },
+                'required': ['account_id', 'message_ids', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_sku_selector',
+            'description': '查某个商品在订单里可选的 SKU（规格/数量组件，只读）。account_id 与 item_id 必填；平台没给组件时返回 warning 而不是编数据。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'item_id': {'type': 'string', 'description': '闲鱼商品 id'},
+                },
+                'required': ['account_id', 'item_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_backfill_report',
+            'description': '查某个订单的验货报告（只读）。account_id 与 order_id 必填；平台成功但没报告体时 report 是 null。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '闲鱼订单号'},
+                },
+                'required': ['account_id', 'order_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_smart_form_query',
+            'description': '查智能表单元数据（只读）。params 收「a=1&b=2」这种查询串，也收 {"a":1} 这种 JSON 串，整份透传给平台。' +
+                           'account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'params': {'type': 'string', 'description': '页面查询参数（a=1&b=2）或 JSON 对象串'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_order_cancel',
+            'description': '取消订单（IM 侧平台接口，**不可撤销**，必须 confirm=true）。close_reason 必填，取值先查 trade_close_reasons。' +
+                           '与 trade_close_order 是同载荷的另一个平台接口名（官方按开关二选一）。' + _WRITE_HINT,
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '闲鱼订单号'},
+                    'close_reason': {'type': 'string', 'description': '关闭原因（先用 trade_close_reasons 查合法取值）'},
+                    'confirm': {'type': 'boolean', 'description': '确认执行（必须为 true，否则直接返回 confirm_required）'},
+                },
+                'required': ['account_id', 'order_id', 'close_reason', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_order_close_im',
+            'description': '关闭订单（IM 侧平台接口，**不可撤销**，必须 confirm=true）。close_reason 必填，取值先查 trade_close_reasons。' + _WRITE_HINT,
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '闲鱼订单号'},
+                    'close_reason': {'type': 'string', 'description': '关闭原因（先用 trade_close_reasons 查合法取值）'},
+                    'confirm': {'type': 'boolean', 'description': '确认执行（必须为 true，否则直接返回 confirm_required）'},
+                },
+                'required': ['account_id', 'order_id', 'close_reason', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_order_delay_single',
+            'description': '延长**单个订单**的收货时间（平台写，必须 confirm=true）。days 取 3/5/7/10（平台按秒收）。' +
+                           '批量版是另一个接口（trade_delay_confirm），两条别混。' + _WRITE_HINT,
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '闲鱼订单号'},
+                    'days': {'type': 'string', 'description': '延长天数，取值 3/5/7/10'},
+                    'confirm': {'type': 'boolean', 'description': '确认执行（必须为 true，否则直接返回 confirm_required）'},
+                },
+                'required': ['account_id', 'order_id', 'days', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_order_adjust_price',
+            'description': '逐 SKU 改价（IM 侧平台接口，会通知买家，必须 confirm=true）。skus 是 {skuKey: 价格} 对象，键名按官方原样透传；整数按分、非整数按元。' + _WRITE_HINT,
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '闲鱼订单号'},
+                    'skus': {'type': 'object', 'description': '{skuKey: 价格}；非整数按元、整数按分'},
+                    'confirm': {'type': 'boolean', 'description': '确认执行（必须为 true，否则直接返回 confirm_required）'},
+                },
+                'required': ['account_id', 'order_id', 'skus', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'trade_smart_form_submit',
+            'description': '提交智能表单（平台写，必须 confirm=true）。callback_code 与 ext 按官方原样发；ext 给对象或官方那个 JSON 字符串（官方是双层字符串）。' +
+                           '成功判据是平台 data.result.success。' + _WRITE_HINT,
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'callback_code': {'type': 'string', 'description': '平台给的 callbackCode'},
+                    'ext': {'type': 'object', 'description': '表单载荷对象（或官方那个 JSON 字符串）'},
+                    'confirm': {'type': 'boolean', 'description': '确认执行（必须为 true，否则直接返回 confirm_required）'},
+                },
+                'required': ['account_id', 'callback_code', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 主管 AI（只给 MCP 侧） ----------------
     {
         'type': 'function',
@@ -3433,6 +3893,12 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'chats_set_mode': ['chats', 'set_mode'],
     'orders_deliver': ['orders', 'update_shipment'],
     'items_listing_precheck': ['items', 'publish_precheck_from_args'],
+    # 第六十批（task-15）：发布数据源 5 条只读（GET，无 confirm）
+    'item_publish_categories': ['items', 'publish_categories'],
+    'item_publish_brands': ['items', 'publish_brands'],
+    'item_publish_models': ['items', 'publish_models'],
+    'item_publish_category_properties': ['items', 'publish_category_properties'],
+    'item_publish_search_categories': ['items', 'publish_search_categories'],
     # ---- 草稿箱（2 读 + 2 写；写的那两条会真的删掉平台上的草稿）----
     'drafts_list': ['drafts', 'list_drafts'],
     'drafts_get': ['drafts', 'draft_detail'],
@@ -3493,7 +3959,28 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'disputes_send_text': ['disputes', 'send_text'],
     'disputes_send_image': ['disputes', 'send_image'],
     'disputes_urge': ['disputes', 'urge'],
-    'disputes_mark_read': ['disputes', 'mark_read'],}
+    'disputes_mark_read': ['disputes', 'mark_read'],
+    'promotion_ad_apis': ['ad', 'catalog'],
+    'promotion_ad_account_info': ['ad', 'account_info'],
+    'promotion_ad_package_info': ['ad', 'package_info'],
+    'promotion_ad_item_search': ['ad', 'item_search'],
+    'promotion_ad_bid_estimates': ['ad', 'customize_bid_estimates'],
+    'promotion_ad_groups': ['ad', 'group_list'],
+    'promotion_ad_group_data': ['ad', 'group_data'],
+    'promotion_ad_campaign_log': ['ad', 'campaign_log'],
+    'promotion_ad_messages': ['ad', 'message_list'],
+    'promotion_ad_messages_unread': ['ad', 'message_unread'],
+    'promotion_ad_message_detail': ['ad', 'message_detail'],
+    'promotion_ad_message_read': ['ad', 'message_read'],
+    'trade_sku_selector': ['trade_write', 'sku_selector'],
+    'trade_backfill_report': ['trade_write', 'backfill_report'],
+    'trade_smart_form_query': ['trade_write', 'smart_form_query'],
+    'trade_order_cancel': ['trade_write', 'order_cancel'],
+    'trade_order_close_im': ['trade_write', 'close_by_seller_im'],
+    'trade_order_delay_single': ['trade_write', 'seller_delay_confirm'],
+    'trade_order_adjust_price': ['trade_write', 'user_adjust_price'],
+    'trade_smart_form_submit': ['trade_write', 'smart_form_callback'],
+}
 
 # 有额外位置参数（不是直接透传 args 的）在这里补上固定值
 _SERVICE_FIXED_ARGS: Dict[str, Dict[str, Any]] = {
@@ -3610,6 +4097,11 @@ _HANDLERS = {
     'items_edit': lambda a: _dispatch_service('items_edit', a),
     'items_publish': lambda a: _dispatch_service('items_publish', a),
     'items_listing_precheck': lambda a: _dispatch_service('items_listing_precheck', a),
+    'item_publish_categories': lambda a: _dispatch_service('item_publish_categories', a),
+    'item_publish_brands': lambda a: _dispatch_service('item_publish_brands', a),
+    'item_publish_models': lambda a: _dispatch_service('item_publish_models', a),
+    'item_publish_category_properties': lambda a: _dispatch_service('item_publish_category_properties', a),
+    'item_publish_search_categories': lambda a: _dispatch_service('item_publish_search_categories', a),
     'items_batch_edit': lambda a: _dispatch_service('items_batch_edit', a),
     'items_sync': lambda a: _dispatch_service('items_sync', a),
     'chats_list': _chats_list,
@@ -3764,7 +4256,28 @@ _HANDLERS = {
     'disputes_send_text': lambda a: _dispatch_service('disputes_send_text', a),
     'disputes_send_image': lambda a: _dispatch_service('disputes_send_image', a),
     'disputes_urge': lambda a: _dispatch_service('disputes_urge', a),
-    'disputes_mark_read': lambda a: _dispatch_service('disputes_mark_read', a),}
+    'disputes_mark_read': lambda a: _dispatch_service('disputes_mark_read', a),
+    'promotion_ad_apis': lambda a: _dispatch_service('promotion_ad_apis', a),
+    'promotion_ad_account_info': lambda a: _dispatch_service('promotion_ad_account_info', a),
+    'promotion_ad_package_info': lambda a: _dispatch_service('promotion_ad_package_info', a),
+    'promotion_ad_item_search': lambda a: _dispatch_service('promotion_ad_item_search', a),
+    'promotion_ad_bid_estimates': lambda a: _dispatch_service('promotion_ad_bid_estimates', a),
+    'promotion_ad_groups': lambda a: _dispatch_service('promotion_ad_groups', a),
+    'promotion_ad_group_data': lambda a: _dispatch_service('promotion_ad_group_data', a),
+    'promotion_ad_campaign_log': lambda a: _dispatch_service('promotion_ad_campaign_log', a),
+    'promotion_ad_messages': lambda a: _dispatch_service('promotion_ad_messages', a),
+    'promotion_ad_messages_unread': lambda a: _dispatch_service('promotion_ad_messages_unread', a),
+    'promotion_ad_message_detail': lambda a: _dispatch_service('promotion_ad_message_detail', a),
+    'promotion_ad_message_read': lambda a: _dispatch_service('promotion_ad_message_read', a),
+    'trade_sku_selector': lambda a: _dispatch_service('trade_sku_selector', a),
+    'trade_backfill_report': lambda a: _dispatch_service('trade_backfill_report', a),
+    'trade_smart_form_query': lambda a: _dispatch_service('trade_smart_form_query', a),
+    'trade_order_cancel': lambda a: _dispatch_service('trade_order_cancel', a),
+    'trade_order_close_im': lambda a: _dispatch_service('trade_order_close_im', a),
+    'trade_order_delay_single': lambda a: _dispatch_service('trade_order_delay_single', a),
+    'trade_order_adjust_price': lambda a: _dispatch_service('trade_order_adjust_price', a),
+    'trade_smart_form_submit': lambda a: _dispatch_service('trade_smart_form_submit', a),
+}
 
 
 async def call_tool(name: str, args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

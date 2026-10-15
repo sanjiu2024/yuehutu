@@ -187,7 +187,16 @@ WRITE_PREFIX = ('trade_write_', 'trade_address_', 'promotion_write_', 'qualifica
                 'items_delist', 'items_relist',
                 # 第五十九批（task-12）：通知标记已读。同样只加**完整工具名** ——
                 # 'notify_' 宽前缀将来会把只读的 notifications_list 之类一起误判成写工具。
-                'notifications_mark_read')
+                'notifications_mark_read',
+                # 第六十批（task-14 / task-16）：投放消息已读 + 交易处理五条写。
+                # 同样只加**完整工具名** —— 宽前缀（如 'trade_'）会把只读的
+                # trade_sku_selector / trade_backfill_report / trade_smart_form_query 一起误判。
+                'promotion_ad_message_read',
+                'trade_order_cancel',
+                'trade_order_close_im',
+                'trade_order_delay_single',
+                'trade_order_adjust_price',
+                'trade_smart_form_submit')
 write_names = [n for n in specs if n.startswith(WRITE_PREFIX) and n != 'promotion_write_actions']
 print(f'write_tools={len(write_names)}')
 for s in T.TOOL_SPECS:

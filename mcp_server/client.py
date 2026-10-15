@@ -178,6 +178,125 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'method': 'POST', 'path': '/api/items/{account_id}/sync',
         'path_params': ['account_id'],
     },
+    # ---------------- 商品发布数据源（只读，第六十批 task-15）----------------
+    'item_publish_categories': {
+        'method': 'GET', 'path': '/api/items/{account_id}/publish/categories',
+        'path_params': ['account_id'],
+    },
+    'item_publish_brands': {
+        'method': 'GET', 'path': '/api/items/{account_id}/publish/brands',
+        'path_params': ['account_id'],
+        'query': ['category_id'],
+    },
+    'item_publish_models': {
+        'method': 'GET', 'path': '/api/items/{account_id}/publish/models',
+        'path_params': ['account_id'],
+        'query': ['category_id', 'brand_id'],
+    },
+    'item_publish_category_properties': {
+        'method': 'GET', 'path': '/api/items/{account_id}/publish/category-properties',
+        'path_params': ['account_id'],
+        'query': ['category_id'],
+    },
+    'item_publish_search_categories': {
+        'method': 'GET', 'path': '/api/items/{account_id}/publish/search-categories',
+        'path_params': ['account_id'],
+    },
+    # ---------------- 第六十批（task-14 / task-16）：投放 ad + 交易处理 ----------------
+    'promotion_ad_apis': {
+        'method': 'GET', 'path': '/api/promotion/ad/apis',
+    },
+    'promotion_ad_account_info': {
+        'method': 'GET', 'path': '/api/promotion/ad/{account_id}/account-info',
+        'path_params': ['account_id'],
+        'query': ['order_price', 'promotion_mode', 'bid_type', 'scene'],
+    },
+    'promotion_ad_package_info': {
+        'method': 'GET', 'path': '/api/promotion/ad/{account_id}/package-info',
+        'path_params': ['account_id'],
+        'query': ['payload'],
+    },
+    'promotion_ad_item_search': {
+        'method': 'GET', 'path': '/api/promotion/ad/{account_id}/item-search',
+        'path_params': ['account_id'],
+        'query': ['item_id', 'search_key', 'campaign_id', 'need_tabs', 'sort_field', 'sort_type', 'page_num', 'page_size'],
+    },
+    'promotion_ad_bid_estimates': {
+        'method': 'GET', 'path': '/api/promotion/ad/{account_id}/bid-estimates',
+        'path_params': ['account_id'],
+        'query': ['payload'],
+    },
+    'promotion_ad_groups': {
+        'method': 'GET', 'path': '/api/promotion/ad/{account_id}/groups',
+        'path_params': ['account_id'],
+        'query': ['start_date', 'end_date', 'page_num', 'page_size', 'campaign_id', 'group_status', 'promotion_mode', 'title_like'],
+    },
+    'promotion_ad_group_data': {
+        'method': 'GET', 'path': '/api/promotion/ad/{account_id}/groups/data',
+        'path_params': ['account_id'],
+        'query': ['ad_group_id', 'start_date', 'end_date', 'all_period'],
+    },
+    'promotion_ad_campaign_log': {
+        'method': 'GET', 'path': '/api/promotion/ad/{account_id}/campaign-log',
+        'path_params': ['account_id'],
+        'query': ['start_date', 'end_date', 'campaign_id', 'page_num', 'page_size', 'operator_type', 'operation_type'],
+    },
+    'promotion_ad_messages': {
+        'method': 'GET', 'path': '/api/promotion/ad/{account_id}/messages',
+        'path_params': ['account_id'],
+        'query': ['page_num', 'page_size'],
+    },
+    'promotion_ad_messages_unread': {
+        'method': 'GET', 'path': '/api/promotion/ad/{account_id}/messages/unread',
+        'path_params': ['account_id'],
+    },
+    'promotion_ad_message_detail': {
+        'method': 'GET', 'path': '/api/promotion/ad/{account_id}/messages/{message_id}',
+        'path_params': ['account_id', 'message_id'],
+    },
+    'promotion_ad_message_read': {
+        'method': 'POST', 'path': '/api/promotion/ad/{account_id}/messages/read',
+        'path_params': ['account_id'],
+        'body': ['message_ids', 'confirm'],
+    },
+    'trade_sku_selector': {
+        'method': 'GET', 'path': '/api/trade/{account_id}/items/{item_id}/sku-selector',
+        'path_params': ['account_id', 'item_id'],
+    },
+    'trade_backfill_report': {
+        'method': 'GET', 'path': '/api/trade/{account_id}/orders/{order_id}/backfill-report',
+        'path_params': ['account_id', 'order_id'],
+    },
+    'trade_smart_form_query': {
+        'method': 'GET', 'path': '/api/trade/{account_id}/smart-form/query',
+        'path_params': ['account_id'],
+        'query': ['params'],
+    },
+    'trade_order_cancel': {
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/{order_id}/cancel',
+        'path_params': ['account_id', 'order_id'],
+        'body': ['close_reason', 'confirm'],
+    },
+    'trade_order_close_im': {
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/{order_id}/close-im',
+        'path_params': ['account_id', 'order_id'],
+        'body': ['close_reason', 'confirm'],
+    },
+    'trade_order_delay_single': {
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/{order_id}/delay-single',
+        'path_params': ['account_id', 'order_id'],
+        'body': ['days', 'confirm'],
+    },
+    'trade_order_adjust_price': {
+        'method': 'POST', 'path': '/api/trade/{account_id}/orders/{order_id}/adjust-price-sku',
+        'path_params': ['account_id', 'order_id'],
+        'body': ['skus', 'confirm'],
+    },
+    'trade_smart_form_submit': {
+        'method': 'POST', 'path': '/api/trade/{account_id}/smart-form/submit',
+        'path_params': ['account_id'],
+        'body': ['callback_code', 'ext', 'confirm'],
+    },
     # ---------------- 草稿箱（2 读 + 2 写）----------------
     # 两条读**不能**带 confirm：带了就会被 confirm 闸门拦下，只读工具不该要点头。
     'drafts_list': {
@@ -1311,6 +1430,316 @@ CANONICAL_SPECS: Dict[str, Dict[str, Any]] = {
             'type': 'object',
             'properties': {'account_id': _ACCOUNT_ID},
             'required': ['account_id'],
+        },
+    },
+    # ---------------- 商品发布数据源（只读，第六十批 task-15）----------------
+    'item_publish_categories': {
+        'description': '查闲鱼发布商品时可选的类目树（只读）。先拿叶子类目 id，再查品牌/属性。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+            },
+            'required': ['account_id'],
+        },
+    },
+    'item_publish_brands': {
+        'description': '查某个类目下可选的品牌（只读）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'category_id': _prop('string', '叶子类目 id（先调 item_publish_categories）'),
+            },
+            'required': ['account_id', 'category_id'],
+        },
+    },
+    'item_publish_models': {
+        'description': '查某个类目 + 品牌下可选的型号（只读）。没有型号时返回空是正常的。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'category_id': _prop('string', '叶子类目 id'),
+                'brand_id': _prop('string', '品牌 id（先调 item_publish_brands）'),
+            },
+            'required': ['account_id', 'category_id', 'brand_id'],
+        },
+    },
+    'item_publish_category_properties': {
+        'description': '查某个类目发布时要填的属性（只读）：哪些必填、可选值是什么。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'category_id': _prop('string', '叶子类目 id'),
+            },
+            'required': ['account_id', 'category_id'],
+        },
+    },
+    'item_publish_search_categories': {
+        'description': '查发布页的类目搜索候选（只读）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+            },
+            'required': ['account_id'],
+        },
+    },
+    'promotion_ad_apis': {
+        'description': '列出投放（ad）模块提供的接口（只读 kind 清单 + 唯一的写动作）。这是只读工具，不需要 confirm。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+            },
+            'required': [],
+        },
+    },
+    'promotion_ad_account_info': {
+        'description': '查该账号的投放账户信息（投放模式/出价类型/场景）。卖家问「投放能不能开、怎么出价」时用。account_id 必填，不传直接返回「缺少参数: account_id」。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'order_price': _prop('string', '订单金额（官方调用点会传）'),
+                'promotion_mode': _prop('string', '投放模式（官方枚举，原样透传）'),
+                'bid_type': _prop('string', '出价类型（官方枚举，原样透传）'),
+                'scene': _prop('string', '场景，如 CREATION_REAL_TIME / CREATION_SUCCESS'),
+            },
+            'required': ['account_id'],
+        },
+    },
+    'promotion_ad_package_info': {
+        'description': '查投放包信息（投放模式/预算等）。payload 是 JSON 对象字符串，键名按官方原样透传；不给就按空对象查。account_id 必填。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'payload': _prop('string', 'JSON 对象字符串，如 {"promotionMode":"CUSTOMIZE"}'),
+            },
+            'required': ['account_id'],
+        },
+    },
+    'promotion_ad_item_search': {
+        'description': '在投放里搜商品（挑要投的商品）。item_id 与 search_key 至少给一个。平台没给的指标返回 null，不要当成 0。account_id 必填。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'item_id': _prop('string', '商品 ID（与 search_key 至少给一个）'),
+                'search_key': _prop('string', '搜索词（与 item_id 至少给一个）'),
+                'campaign_id': _prop('string', '计划 ID'),
+                'need_tabs': _prop('string', '是否要 tabList（true/false）'),
+                'sort_field': _prop('string', '排序字段'),
+                'sort_type': _prop('string', '排序方向'),
+                'page_num': _prop('string', '页码'),
+                'page_size': _prop('string', '每页条数'),
+            },
+            'required': ['account_id'],
+        },
+    },
+    'promotion_ad_bid_estimates': {
+        'description': '查自定义出价的建议价（bid estimates）。payload 是 JSON 对象字符串（如 {"entityType":..,"entityList":[..],"bidTarget":..}），键名原样透传。account_id 必填。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'payload': _prop('string', 'JSON 对象字符串（entityType/entityList/bidTarget 等）'),
+            },
+            'required': ['account_id'],
+        },
+    },
+    'promotion_ad_groups': {
+        'description': '查投放单元（计划下面的投放组）列表。日期用 YYYYMMDD。account_id 必填。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'start_date': _prop('string', '开始日期 YYYYMMDD'),
+                'end_date': _prop('string', '结束日期 YYYYMMDD'),
+                'page_num': _prop('string', '页码'),
+                'page_size': _prop('string', '每页条数'),
+                'campaign_id': _prop('string', '计划 ID'),
+                'group_status': _prop('string', '投放单元状态（官方枚举，原样透传）'),
+                'promotion_mode': _prop('string', '投放模式（官方枚举，原样透传）'),
+                'title_like': _prop('string', '计划标题模糊搜索'),
+            },
+            'required': ['account_id'],
+        },
+    },
+    'promotion_ad_group_data': {
+        'description': '查某个投放单元的数据（曝光/点击/花费）。ad_group_id 必填，先用 promotion_ad_groups 拿。account_id 必填。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'ad_group_id': _prop('string', '投放单元 ID（先用 promotion_ad_groups 查）'),
+                'start_date': _prop('string', '开始日期 YYYYMMDD'),
+                'end_date': _prop('string', '结束日期 YYYYMMDD'),
+                'all_period': _prop('string', '是否全周期（官方传 false）'),
+            },
+            'required': ['account_id', 'ad_group_id'],
+        },
+    },
+    'promotion_ad_campaign_log': {
+        'description': '查投放计划的操作日志（谁在什么时候改了什么）。account_id 必填；日期用 YYYYMMDD。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'start_date': _prop('string', '开始日期 YYYYMMDD'),
+                'end_date': _prop('string', '结束日期 YYYYMMDD'),
+                'campaign_id': _prop('string', '计划 ID（官方 Number(x)||0）'),
+                'page_num': _prop('string', '页码'),
+                'page_size': _prop('string', '每页条数'),
+                'operator_type': _prop('string', '0=全部 / 1=用户 / 2=系统'),
+                'operation_type': _prop('string', '0=全部 / 1=添加 / 2=更新'),
+            },
+            'required': ['account_id'],
+        },
+    },
+    'promotion_ad_messages': {
+        'description': '查投放消息中心的消息列表（投放相关的平台通知）。account_id 必填。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'page_num': _prop('string', '页码'),
+                'page_size': _prop('string', '每页条数'),
+            },
+            'required': ['account_id'],
+        },
+    },
+    'promotion_ad_messages_unread': {
+        'description': '查投放消息中心的未读数。account_id 必填，不传直接返回「缺少参数: account_id」。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+            },
+            'required': ['account_id'],
+        },
+    },
+    'promotion_ad_message_detail': {
+        'description': '查一条投放消息的详情。message_id 先用 promotion_ad_messages 查。account_id 与 message_id 必填。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'message_id': _prop('string', '消息 id（先用 promotion_ad_messages 查）'),
+            },
+            'required': ['account_id', 'message_id'],
+        },
+    },
+    'promotion_ad_message_read': {
+        'description': '把投放消息标记为已读（平台写，必须 confirm=true）。message_ids 是要标记的消息 id 列表。带 Idempotency-Key 时同一键 + 同一载荷只打平台一次。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'message_ids': _prop('array', '要标记已读的消息 id 列表（先用 promotion_ad_messages 查）', items={'type': 'integer'}),
+                'confirm': _prop('boolean', '确认执行（必须为 true，否则直接返回 confirm_required）'),
+            },
+            'required': ['account_id', 'message_ids', 'confirm'],
+        },
+    },
+    'trade_sku_selector': {
+        'description': '查某个商品在订单里可选的 SKU（规格/数量组件，只读）。account_id 与 item_id 必填；平台没给组件时返回 warning 而不是编数据。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'item_id': _prop('string', '闲鱼商品 id'),
+            },
+            'required': ['account_id', 'item_id'],
+        },
+    },
+    'trade_backfill_report': {
+        'description': '查某个订单的验货报告（只读）。account_id 与 order_id 必填；平台成功但没报告体时 report 是 null。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'order_id': _prop('string', '闲鱼订单号'),
+            },
+            'required': ['account_id', 'order_id'],
+        },
+    },
+    'trade_smart_form_query': {
+        'description': '查智能表单元数据（只读）。params 收「a=1&b=2」这种查询串，也收 {"a":1} 这种 JSON 串，整份透传给平台。account_id 必填。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'params': _prop('string', '页面查询参数（a=1&b=2）或 JSON 对象串'),
+            },
+            'required': ['account_id'],
+        },
+    },
+    'trade_order_cancel': {
+        'description': '取消订单（IM 侧平台接口，**不可撤销**，必须 confirm=true）。close_reason 必填，取值先查 trade_close_reasons。与 trade_close_order 是同载荷的另一个平台接口名（官方按开关二选一）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'order_id': _prop('string', '闲鱼订单号'),
+                'close_reason': _prop('string', '关闭原因（先用 trade_close_reasons 查合法取值）'),
+                'confirm': _prop('boolean', '确认执行（必须为 true，否则直接返回 confirm_required）'),
+            },
+            'required': ['account_id', 'order_id', 'close_reason', 'confirm'],
+        },
+    },
+    'trade_order_close_im': {
+        'description': '关闭订单（IM 侧平台接口，**不可撤销**，必须 confirm=true）。close_reason 必填，取值先查 trade_close_reasons。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'order_id': _prop('string', '闲鱼订单号'),
+                'close_reason': _prop('string', '关闭原因（先用 trade_close_reasons 查合法取值）'),
+                'confirm': _prop('boolean', '确认执行（必须为 true，否则直接返回 confirm_required）'),
+            },
+            'required': ['account_id', 'order_id', 'close_reason', 'confirm'],
+        },
+    },
+    'trade_order_delay_single': {
+        'description': '延长**单个订单**的收货时间（平台写，必须 confirm=true）。days 取 3/5/7/10（平台按秒收）。批量版是另一个接口（trade_delay_confirm），两条别混。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'order_id': _prop('string', '闲鱼订单号'),
+                'days': _prop('string', '延长天数，取值 3/5/7/10'),
+                'confirm': _prop('boolean', '确认执行（必须为 true，否则直接返回 confirm_required）'),
+            },
+            'required': ['account_id', 'order_id', 'days', 'confirm'],
+        },
+    },
+    'trade_order_adjust_price': {
+        'description': '逐 SKU 改价（IM 侧平台接口，会通知买家，必须 confirm=true）。skus 是 {skuKey: 价格} 对象，键名按官方原样透传；整数按分、非整数按元。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'order_id': _prop('string', '闲鱼订单号'),
+                'skus': _prop('object', '{skuKey: 价格}；非整数按元、整数按分'),
+                'confirm': _prop('boolean', '确认执行（必须为 true，否则直接返回 confirm_required）'),
+            },
+            'required': ['account_id', 'order_id', 'skus', 'confirm'],
+        },
+    },
+    'trade_smart_form_submit': {
+        'description': '提交智能表单（平台写，必须 confirm=true）。callback_code 与 ext 按官方原样发；ext 给对象或官方那个 JSON 字符串（官方是双层字符串）。成功判据是平台 data.result.success。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'callback_code': _prop('string', '平台给的 callbackCode'),
+                'ext': _prop('object', '表单载荷对象（或官方那个 JSON 字符串）'),
+                'confirm': _prop('boolean', '确认执行（必须为 true，否则直接返回 confirm_required）'),
+            },
+            'required': ['account_id', 'callback_code', 'confirm'],
         },
     },
     'items_delist': {

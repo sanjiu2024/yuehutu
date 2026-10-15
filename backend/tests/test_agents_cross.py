@@ -485,6 +485,9 @@ class MasterChatTest(unittest.TestCase):
             'accounts_list', 'accounts_set_enabled', 'accounts_relogin',
             'items_list', 'items_get', 'items_edit', 'items_publish', 'items_listing_precheck',
             'items_batch_edit', 'items_sync',
+            # ---- 第六十批（task-15）：发布页数据源（5 条只读）----
+            'item_publish_categories', 'item_publish_brands', 'item_publish_models',
+            'item_publish_category_properties', 'item_publish_search_categories',
             # ---- 草稿箱（前两条只读；后两条会真的删掉闲鱼上的草稿，required 必含 confirm）----
             'drafts_list', 'drafts_get', 'drafts_delete', 'drafts_batch_delete',
             'chats_list', 'chats_read', 'chats_send', 'chats_set_mode',
@@ -584,6 +587,27 @@ class MasterChatTest(unittest.TestCase):
             # ---- 第四十九批：订单备注（1 条写）----
             'trade_add_memo',
             'trade_adjust_price_render',
+            # ---- 第六十批（task-14 / task-16）：投放 ad（11 读 + 1 写）+ 交易处理（3 读 + 5 写）----
+            'promotion_ad_apis',
+            'promotion_ad_account_info',
+            'promotion_ad_package_info',
+            'promotion_ad_item_search',
+            'promotion_ad_bid_estimates',
+            'promotion_ad_groups',
+            'promotion_ad_group_data',
+            'promotion_ad_campaign_log',
+            'promotion_ad_messages',
+            'promotion_ad_messages_unread',
+            'promotion_ad_message_detail',
+            'promotion_ad_message_read',
+            'trade_sku_selector',
+            'trade_backfill_report',
+            'trade_smart_form_query',
+            'trade_order_cancel',
+            'trade_order_close_im',
+            'trade_order_delay_single',
+            'trade_order_adjust_price',
+            'trade_smart_form_submit',
             'master_chat',
         ]
         self.assertEqual(tools.TOOL_NAMES, expected)
@@ -630,6 +654,12 @@ class MasterChatTest(unittest.TestCase):
             'im_set_reception',
             'im_clear_unread',
             'trade_add_memo',
+            'promotion_ad_message_read',
+            'trade_order_cancel',
+            'trade_order_close_im',
+            'trade_order_delay_single',
+            'trade_order_adjust_price',
+            'trade_smart_form_submit',
         ]
         for name in write_tools:
             spec = tools.get_tool(name)
