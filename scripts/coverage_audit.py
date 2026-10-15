@@ -124,17 +124,25 @@ MODULE_HINTS = [
 COMPILED_HINTS = [(re.compile(p, re.X), m) for p, m in MODULE_HINTS]
 
 # 日志硬证据：已实测被平台拒绝的缺口（name -> (log, 子串)；行号运行时定位）
+#: 已实测被平台拒绝的缺口（name -> (log, 证据串)）。证据串一律写**完整 mtop 名**：
+#: 第 63 批 coverage63 核销时发现，写短名会命中小兄弟的行（
+#: 证据串 "idleitem.edit" 命中的其实是 ...idleitem.editdetail 那一行），
+#: 于是「不可实现」的锚点指错了地方。locate() 现在按整名匹配。
 DENIAL_EVIDENCE = {
     "mtop.idle.pc.backend.idleitem.editdetail": (
-        "logs/publish_family_probe.json", "editdetail"),
+        "logs/publish_family_probe.json",
+        "mtop.idle.pc.backend.idleitem.editdetail"),
     "mtop.idle.pc.backend.idleitem.preget": (
-        "logs/publish_family_probe.json", "preget"),
+        "logs/publish_family_probe.json",
+        "mtop.idle.pc.backend.idleitem.preget"),
     "mtop.idle.pc.backend.idleitem.edit": (
-        "logs/publish_family_probe.json", "idleitem.edit"),
+        "logs/publish_family_probe.json",
+        "mtop.idle.pc.backend.idleitem.edit"),
     "mtop.idle.pc.backend.idleitem.publish": (
-        "logs/publish_family_probe.json", "idleitem.publish"),
+        "logs/publish_family_probe.json",
+        "mtop.idle.pc.backend.idleitem.publish"),
     "mtop.alibaba.idle.seller.pc.common.item.search": (
-        "logs/read_sweep.json", "common.item.search"),
+        "logs/read_sweep.json", "mtop.alibaba.idle.seller.pc.common.item.search"),
 }
 DENIAL_DEFAULT = "logs/read_sweep.json:49"
 
@@ -181,14 +189,19 @@ def equiv_site(eq: str, backend) -> str:
 
 
 def locate(log_rel: str, needle: str) -> str:
-    """在只读日志里定位首个包含 needle 的行号，返回 path:line。"""
+    """在只读日志里定位首个包含 needle 的行号，返回 path:line。
+    **按整名匹配**（needle 之后不能再跟 [\w.]）：否则 "idleitem.edit" 会把
+    "...idleitem.editdetail" 那一行算成自己的证据（第 63 批发现）。日志在、整名
+    没命中 = 这条缺口没有实测拒绝证据，返回空串，不拿日志路径冒充。
+    """
     path = REPO / log_rel
     if not path.exists():
         return log_rel
+    pattern = re.compile(re.escape(needle) + r"(?![\w.])")
     for n, line in enumerate(_read(path).splitlines(), 1):
-        if needle in line:
+        if pattern.search(line):
             return "%s:%d" % (log_rel, n)
-    return log_rel
+    return ""
 
 
 def _read(path: Path) -> str:
