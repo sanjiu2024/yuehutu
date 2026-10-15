@@ -63,7 +63,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_gate55_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 73  PASS 73  FAIL 0  CASES 3116  SKIPPED 2
+-> TOTAL 75  PASS 75  FAIL 0  CASES 3258  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -4351,6 +4351,84 @@ package-info / bid-estimates 要用官方形状 `entity_type=1` + `entity_list=[
 - **推广与安全中心没有任何缓存**：每次打开页面都实打实打平台（`idle.ad.*` 与
   `idle.pc.security.*` 各 2~4 次），刷新频繁时会不会触发平台限流**没测过**；
   商品数据那套「后台 worker 慢慢拉 + 本地缓存」的降级策略**没有**用在这两页。
+
+### 第六十三批：投放 4 条只读 + 商品读 5 条 + 写族硬化 + 覆盖率核销（361~367）
+
+用户说「制作完成在和我说」⇒ 本批清第 62 批归因后剩下的欠账。四条工作流并行（共享任务板 task-22~26：投放只读 / 商品读 /
+写族硬化 / 覆盖率核销），Lead 负责 AI 面接线与集成验收。**本批没有任何新的真机写** —— 写族只做硬化，真机证据全部只读。
+
+#### A 投放 4 条只读（`c7cfecf`；真机 `logs/probe63/kurumi/`，打包版 `logs/probe63/pkg_*.json`）
+
+活动奖励页原先四张卡片全打不通，逐条补齐后只读可拉：
+
+| 接口 | 真机结果 |
+| --- | --- |
+| `mtop.alibaba.idle.ad.bp.coupon.info.query`（不给参数 ⇒ 协议层补官方初值 `{pageNum:1,pageSize:10,couponType:0,source:'BONUS'}`） | **200** `{pageNum:1,pageSize:10,result:[],total:0,totalPage:0}` |
+| 同接口发**空对象** `{}`（对照） | 502 `UNKNOWN_FAIL_CODE::系统开小差了，请稍候重试` ⇒ **空对象不是「用初值」** |
+| `mtop.alibaba.idle.ad.bp.coupon.statistic.query` | **200** `{activatedCouponAmountOfYuan:'0',expiringCouponAmountOfYuan:'0',specialCouponAmountOfYuan:'0'}`（金额是**字符串**） |
+| `mtop.alibaba.idle.ad.account.card.v2` | 502 `FAIL_SYS_UNAUTHORIZED_ENTRANCE::API访问入口未授权` |
+| `mtop.taobao.idle.ad.activity.detail.rendering`（不套 `requestJson`） | 502 `NO_APPLY_ACTIVITY_PERMISSION::活动报名时间已结束或者您不在本期活动名单内` |
+
+`mtop.taobao.idle.ad.bp.data.download` **只登记不接**：官方用它建异步导出任务，有副作用。
+
+#### B 商品读 5 条（`e4433d1`；真机 `logs/items_read63/raw63.json`、`raw63b.json`）
+
+新前缀 `/api/items-read`（与 `/api/items` 分段，不会被动态段路由抢先匹配），协议层在 `backend/app/xianyu/items_read.py`，
+服务层 `backend/app/services/items_read.py`，路由 `backend/app/api/items_read.py`（`main.py` ROUTE_MODULES 加 `'items_read'`）：
+`search` / `categories` / `operate-report` / `search-terms` / `preget`。
+
+| 路由 | 真机结果 |
+| --- | --- |
+| `GET /api/items-read/{acc}/search` | **200** `platform_code='success'`、`rows=20`、`total=44` |
+| `GET /api/items-read/{acc}/categories` | **200**（数组，元素 `{categoryId,categoryLevel,categoryName,childrenCategoryDOs}`） |
+| `GET /api/items-read/{acc}/search-terms` | **200** `{returnService:2,sendGoodsTime:3,serviceGuarantee:19}` |
+| `GET /api/items-read/{acc}/operate-report`（不带 params） | 502 `FAIL_SYS_BIZPARAM_MISSED::缺少业务参数itemId`；`params` 不是 JSON 对象字符串时本地 400 `invalid_fields` |
+| `GET /api/items-read/{acc}/preget`（`item_id` 为空） | 502 `FAIL_BIZ_USER_SHOW_SYSTEM_ERROR::亲，小闲鱼有点忙，请稍后重试哦` ⇒ **触发平台风控冷却 60s** |
+
+口径：这 5 条**平台业务码非 `success` 也回 200** + `platform_code` 原样带出（与 `services/notify.py` 的 502 口径**故意不同**：读接口要把平台答复如实透出）。
+未做：`operate-report` 带真 itemId 复打、`preget` 的成功响应 —— 都被冷却挡住，**不拿空 itemId 当健康检查**。
+
+#### C 写族硬化（`8714476`）
+
+- `backend/app/services/items.py::_push_update` / `update_item` 改成**平台确认后才写本地**：平台拒（`CALL_ERROR`）时本地 `items` 行不动，
+  失败进 `failed`（`code='protocol_error'`）。原实现「先写本地再打平台」会把「本地说改了、平台没改」的脏数据留在库里。
+- 幂等键（`Idempotency-Key`，第 59 批那套）铺满剩下的写族 8 处：`ad_write.py:92`、`security_write.py:98`、`trade_write.py:520`（退货地址提交）、
+  `shop.py:411/476/526`、`orders.py:290/358`（发货 / 发货确认）。
+- 回归：`test_items_api.py`（编辑失败不改本地）、`test_ad_write_api.py` / `test_security_write_api.py` / `test_shop_write_api.py` /
+  `test_address_write_api.py` / `test_services_orders.py` 各自的幂等用例。
+- 另补了第 61 批漏提交的三组只读回归用例（`test_datacenter_api.py` / `test_logistics_api.py` / `test_shop_api.py`，提交 `1a87c16`）。
+- 上架不可用（第 58/61 批结论）与商品 `1085479546711` 被下架的副作用都还在，本批没碰。
+
+#### D 覆盖率核销（`beb313a`，报告 `docs/audit/coverage63.md`）
+
+coverage57 §3 的 77 条缺口逐条核销成**可复跑口径**：**已实现 39 / 仅登记 2 / 未实现 34 / 不可实现 2 = 77**。
+口径：已实现＝协议层有 `大写常量 = '<mtop名>'` 且该常量在 `backend/app` 里有定义行以外的引用（注册表 / `client.mtop(...)` / 服务层）；
+仅登记＝常量只出现在 `WRITE_APIS`/`UNSUPPORTED` 里、无调用路径（`mtop.alibaba.idle.pc.service.open`、`mtop.taobao.idle.ad.bp.data.download`）；
+不可实现＝真机 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（`mtop.idle.pc.backend.idleitem.editdetail`、`...backend.idleitem.preget`）。
+原报告自相矛盾（§一表填 0/77/0、正文写 30/45/2、§三 77 行全是机器扫描原文），本批按脚本重算重写；行内证据含定义处 `文件:行` + 调用点 `文件:行`。
+另修 `scripts/coverage_audit.py`：拒绝证据改用**完整 mtop 名 + 词边界**匹配，避免 `idleitem.edit` 误命中 `...idleitem.editdetail`。
+真机顺带证伪一条口径：「空串 ≠ 缺失」（`unconsign_detail` 的 `content=''` 但 `imageList` 有图）。
+
+#### E AI 面接线（`8d6221b`，共 15 条新工具）
+
+4 条投放只读 + 5 条商品读 + 6 条存量欠账（`orders_sync` / `chats_sync` / `chats_mark_read` / `accounts_refresh_profile` / `chats_ai_draft` / `chats_classify`）。
+落点三处同改：`backend/app/agents/tools.py`（TOOL_SPECS / `_SERVICE_TARGETS` / `_SERVICE_FIXED_ARGS` / `_HANDLERS`）、
+`mcp_server/client.py`（TOOL_ROUTES / CANONICAL_SPECS）、`backend/tests/test_agents_cross.py`（**顺序敏感**的 `expected` 名单）。
+命名：只读工具用单数 `items_read_*` —— `scripts/reconcile_tools.py::WRITE_PREFIX` 是 `startswith` 匹配，复数前缀会被误判成写工具。
+`mcp_server/client.py` 行尾是**混合**的（TOOL_ROUTES 区 CRLF、CANONICAL_SPECS 区 LF）⇒ 插入脚本要「先试 CRLF 再试 LF」。
+
+#### F 验收基线（本批收尾实测）
+
+- 全量：`TOTAL 75  PASS 75  FAIL 0  CASES 3258  SKIPPED 2`（第 62 批是 73 / 3116）
+- `scripts/reconcile_tools.py`：`specs=210 master=209 routes=211 targets=189 handlers=210`、`write_tools=82`、`route_checked=211` → `RECON OK`
+- OpenAPI（源码与打包版一致）：**249 路径 / 267 操作**（第 62 批 240 / 258）
+- 打包版：产物 `dist/闲鱼AI工作台/闲鱼AI工作台.exe` **10,329,112 B / 2026-10-16 06:39:17**；五件套 `GATE FAILURES: 0 / 79`、
+  `ASSETS_MATCH=True`、`PACKAGED UI SMOKE 29/29`、对比度 dark 0/29 + light 0/29 + `NON_GET_API_REQUESTS=[]`、a11y 三类均 0
+- 打包版真机只读复打：`ad_coupons` / `ad_coupons_statistic` / `items_read_search`（`total=44`）/ `items_read_categories` /
+  `items_read_search_terms` / `orders_sync`（`count=15`）/ `chats_sync`（`scanned=5`、`messages_skipped=18`）/ `chats_classify` /
+  `accounts_refresh_profile` / `chats_mark_read`（只改本地）/ `chats_ai_draft` 均 200；`ad_account_card_v2` 502 `FAIL_SYS_UNAUTHORIZED_ENTRANCE`、
+  `ad_activity_detail` 502 `NO_APPLY_ACTIVITY_PERMISSION`、`items_read_operate_report` 502 `FAIL_SYS_BIZPARAM_MISSED`、`items_read_preget` 502 触发冷却
+- 日志：`.dsh-tmp/{build,gate,assets,smoke,contrast,a11y,read}63.log`、`logs/probe63/summary.txt`、`logs/probe63/summary_pkg.txt`
 
 ## 五、下一步（按优先级）
 

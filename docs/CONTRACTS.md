@@ -453,6 +453,21 @@ POST   /api/items/{account_id}/{item_id}/quick-edit   {price?, quantity?, confir
       -- 4 条「bundle 里声明了但调用点 0」的接口登记在 `NOT_IMPLEMENTED` 里**故意不实现**：
       --   `...pc.item.delete`（单个删除）、`...platform.item.operate.online`（上架）、
       --   `...pc.item.price.update`、`...pc.item.quantity.update` —— 官方商品管理页自己都不用它们。
+GET    /api/items-read/{account_id}/search?keyword=&page=&size=&item_status=&biz_type=&order_field=&order_type=&search_request=
+GET    /api/items-read/{account_id}/categories?params={json对象串}
+GET    /api/items-read/{account_id}/operate-report?params={json对象串}
+GET    /api/items-read/{account_id}/search-terms
+GET    /api/items-read/{account_id}/preget?item_id=&source_id=&publish_scene=
+      -- 第六十三批补的 5 条只读（商品读），契约 docs/contracts/items.md §7。前缀 `/api/items-read`
+      --   与 `/api/items` **不同段**，不会被 `GET /api/items/{account_id}/{item_id}` 抢先匹配。
+      --   `search`：分页与排序**由平台做**（page 1..100000、size 1..50，越界 422），认不出列表键时 `rows=[]`。
+      --   `categories` / `operate-report`：入参**透传**（JSON 对象字符串）—— 官方调用点 0、不猜字段名；
+      --   `operate-report` 实测至少要 `itemId`（缺了平台回 `FAIL_SYS_BIZPARAM_MISSED`）。
+      --   `search-terms` 无参；`preget` 的 `item_id` 为空是「新建发布」的正常入参，但真机上空 itemId
+      --   会触发平台**风控冷却 60s**（`FAIL_BIZ_USER_SHOW_SYSTEM_ERROR`），冷却期内后续请求全被挡。
+      --   语义：平台业务码非 `success` 仍回 **200** + `platform_code` 原样带出（与 `services/notify.py` 的 502 口径不同）。
+      --   真机（2026-10-16，`logs/items_read63/`）：search 200 `rows=20/total=44`、categories 200（数组）、
+      --   search-terms 200 `{returnService:2,sendGoodsTime:3,serviceGuarantee:19}`。
 
 GET    /api/chats/conversations?account_id=&mode=&limit=   （= GET /api/chats，两者等价）
 GET    /api/chats/{conversation_id}/messages?limit=&before_id=
@@ -680,6 +695,19 @@ GET    /api/promotion/ad/{account_id}/campaign-log?start_date=&end_date=&campaig
 GET    /api/promotion/ad/{account_id}/messages?page_num=&page_size=
 GET    /api/promotion/ad/{account_id}/messages/unread
 GET    /api/promotion/ad/{account_id}/messages/{message_id}
+GET    /api/promotion/ad/{account_id}/coupons?page_num=&page_size=&coupon_type=&source=&payload={json对象串}
+GET    /api/promotion/ad/{account_id}/coupons/statistic?payload={json对象串}
+GET    /api/promotion/ad/{account_id}/account-card-v2?payload={json对象串}
+GET    /api/promotion/ad/{account_id}/activity-detail
+      -- 第六十三批补的 4 条只读（活动奖励页）。`coupons` 不给参数 = 用官方首次加载的筛选初值
+      --   `{pageNum:1,pageSize:10,couponType:0,source:'BONUS'}`（协议层 `BODY_DEFAULTS`），不是失败；
+      --   `coupons/statistic` 与 `account-card-v2` 的载荷官方未取证，整包原样透传（不猜键）。
+      --   真机（2026-10-16，`logs/probe63/kurumi/`）：coupons 200（`total=0`）、statistic 200（金额字段是字符串 `'0'`）、
+      --   ⚠️ 空对象 `{}` **不是**「用初值」：真机回 502 `UNKNOWN_FAIL_CODE::系统开小差了，请稍候重试` ⇒ 必须让协议层补初值。
+      --   account-card-v2 502 `FAIL_SYS_UNAUTHORIZED_ENTRANCE::API访问入口未授权`、
+      --   activity-detail 502 `NO_APPLY_ACTIVITY_PERMISSION::活动报名时间已结束或者您不在本期活动名单内`。
+      --   `mtop.taobao.idle.ad.bp.data.download` **只登记不接**（官方用它建异步导出任务，有副作用）。
+      --   契约 docs/contracts/ad.md §9。
 POST   /api/promotion/ad/{account_id}/messages/read            {message_ids:[...],confirm}
        -- 前缀 /api/promotion/ad，契约 docs/contracts/ad.md。唯一写动作是「投放消息标记已读」：
        --   confirm 只认字面 true，且走 §9 的 Idempotency-Key。
