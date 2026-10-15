@@ -862,26 +862,100 @@ class DataCenterProtocolTest(unittest.TestCase):
         """单日（start == end）也必须带日期：只发 `recent1d` 平台只能回**今天**，
         而 `period` 却标成用户要的那天 —— 对外撒谎。"""
         self.assertEqual(datacenter_proto.date_data('20261010', '20261010'),
-                         {'dateType': 'month', 'ms': '20261010',
-                          'date': ['20261010', '20261010']})
+                         {'dateType': 'customDate', 'dateRange': '20261010|20261010'})
         self.assertEqual(datacenter_proto.date_data('20261010', '20261010', 'acc1'),
-                         {'dateType': 'month', 'ms': '20261010',
-                          'date': ['20261010', '20261010'], 'selectedSellerId': 'acc1'})
+                         {'dateType': 'customDate', 'dateRange': '20261010|20261010',
+                          'selectedSellerId': 'acc1'})
 
     def test_date_data_half_range_is_completed_from_the_other_end(self):
         self.assertEqual(datacenter_proto.date_data('20261010', ''),
-                         {'dateType': 'month', 'ms': '20261010',
-                          'date': ['20261010', '20261010']})
+                         {'dateType': 'customDate', 'dateRange': '20261010|20261010'})
         self.assertEqual(datacenter_proto.date_data(None, '20261010'),
-                         {'dateType': 'month', 'ms': '20261010',
-                          'date': ['20261010', '20261010']})
+                         {'dateType': 'customDate', 'dateRange': '20261010|20261010'})
 
-    def test_date_data_custom_range_uses_month(self):
+    def test_date_data_custom_range_uses_custom_date_and_pipe_range(self):
+        """官方形状：`customDate` + 竖线拼接的 `dateRange`（第 62 批真机 23/23 SUCCESS）。
+
+        原先发 `dateType='month'` + `ms` + `date: [...]` 数组 ⇒ 平台回业务体
+        `INPUT_PARAM_ILLEGAL`、指标全 null（`logs/fail62/datacompass_kurumi62.json`）。
+        """
         payload = datacenter_proto.date_data('20261004', '20261010', 'acc1')
-        self.assertEqual(payload['dateType'], 'month')
-        self.assertEqual(payload['ms'], '20261004')
-        self.assertEqual(payload['date'], ['20261004', '20261010'])
+        self.assertEqual(payload['dateType'], 'customDate')
+        self.assertEqual(payload['dateRange'], '20261004|20261010')
+        self.assertNotIn('date', payload)
+        self.assertNotIn('ms', payload)
         self.assertEqual(payload['selectedSellerId'], 'acc1')
+
+    def test_date_range_rejects_a_span_longer_than_31_days(self):
+        """平台硬限制：自定义区间含头尾不得超过 31 天（第 62 批真机：
+
+        `20260901|20261001`（31 天）→ success；`20260801|20260930`（61 天）→
+        `INPUT_PARAM_ILLEGAL`；官方前端 `disabledDate` 也是 `>=31` 天禁用）。
+        协议层宁可当场抛错，也不把必然被拒的入参发给平台。
+        """
+        self.assertEqual(datacenter_proto.date_range('20260901', '20261001'),
+                         ['20260901', '20261001'])
+        with self.assertRaises(ValueError) as ctx:
+            datacenter_proto.date_range('20260801', '20260930')
+        self.assertIn('31', str(ctx.exception))
+        with self.assertRaises(ValueError):
+            datacenter_proto.date_data('20260801', '20260930')
+
+    def test_date_range_rejects_reversed_and_non_yyyymmdd(self):
+        with self.assertRaises(ValueError):
+            datacenter_proto.date_range('20261010', '20261001')
+        with self.assertRaises(ValueError):
+            datacenter_proto.date_range('2026', '20260930')
+        # 带横线的写法平台不认（真机 INPUT_PARAM_ILLEGAL）⇒ 收敛成 8 位，而不是原样发出去
+        self.assertEqual(datacenter_proto.date_range('2026-09-01', '2026-09-30'),
+                         ['20260901', '20260930'])
+
+    #: 第 62 批真机形状（`logs/fail62/dc_proto_raw62.json` 的原样摘录）
+    BANNER_PAYLOAD = {'code': 'success', 'data': {'graphBannerBenchData': {'bannerDataList': [
+        {'name': 'onlCnt', 'data': 45, 'dataFormat': '45'},
+        {'name': 'chatUv', 'data': 26, 'dataFormat': '26'},
+        {'name': 'respRate3min', 'data': 0.7103, 'dataFormat': '71.03%'},
+        {'name': 'avgRespTm', 'data': 1874.25, 'dataFormat': '31分14秒'},
+        {'name': 'custSatRate', 'data': None, 'dataFormat': '-'},
+    ]}}}
+
+    def test_banner_metrics_are_read_by_name(self):
+        """指标名在**值**里（`{name: onlCnt, data: 45}`）而不是键里 —— 只按键名找永远命中不了。"""
+        metrics = datacenter_proto.extract_metrics(self.BANNER_PAYLOAD,
+                                                   datacenter_proto.OVERVIEW_METRICS)
+        self.assertEqual(metrics['online_items'], 45.0)
+        self.assertEqual(metrics['inquiry_visitors'], 26.0)
+        self.assertIsNone(metrics['exposure'])   # 平台没给的名字仍然是 None，不补 0
+
+    def test_banner_percentage_prefers_the_formatted_percent(self):
+        """平台给的是比率（0.7103）+ 人话百分比（71.03%），对外契约要百分比数值。"""
+        metrics = datacenter_proto.extract_metrics(self.BANNER_PAYLOAD,
+                                                   datacenter_proto.CS_METRICS)
+        self.assertEqual(metrics['reply_rate_3min'], 71.03)
+        self.assertEqual(metrics['avg_reply_seconds'], 1874.25)
+        self.assertIsNone(metrics['satisfaction'])   # 平台 `data: null` ⇒ None
+
+    def test_fans_banner_names_map_to_fans_metrics(self):
+        payload = {'data': {'graphBannerBenchData': {'bannerDataList': [
+            {'name': 'totalFansCnt', 'data': 5, 'dataFormat': '5'},
+            {'name': 'newFansCnt', 'data': 2, 'dataFormat': '2'}]}}}
+        metrics = datacenter_proto.extract_metrics(payload, datacenter_proto.FANS_METRICS)
+        self.assertEqual(metrics['fans_total'], 5.0)
+        self.assertEqual(metrics['fans_new'], 2.0)
+        self.assertIsNone(metrics['fans_lost'])
+
+    def test_ambiguous_platform_names_are_not_mapped(self):
+        """`manualSessCnt` / `consultItmCnt` / `stItmCnt` / `favCnt` 语义不唯一 ⇒ 不映射、宁可空着。
+
+        `manualSessCnt` 的官方中文标题是「人工会话量」（bundle 偏移 2390201），
+        与 `consultItmCnt` 谁是契约里的「询单量」说不准 —— 宁可空着也不贴错标签。"""
+        payload = {'data': {'graphBannerBenchData': {'bannerDataList': [
+            {'name': 'consultItmCnt', 'data': 18, 'dataFormat': '18'},
+            {'name': 'stItmCnt', 'data': 8, 'dataFormat': '8'},
+            {'name': 'favCnt', 'data': 9, 'dataFormat': '9'}]}}}
+        metrics = datacenter_proto.extract_metrics(payload, datacenter_proto.CS_METRICS)
+        for key in ('inquiry_count', 'unreplied_count', 'satisfaction'):
+            self.assertIsNone(metrics[key], key)
 
     def test_extract_metrics_walks_nested_payload(self):
         metrics = datacenter_proto.extract_metrics(OVERVIEW_PAYLOAD,
@@ -1301,11 +1375,13 @@ class CardTest(DataCenterApiTest):
         self.assertEqual((parsed['metrics'], parsed['banner'], parsed['series']), ([], [], []))
         self.assertIsNone(parsed['real_date_range'])
 
-    def test_trade_card_keeps_item_flow_transfer_data_apart(self):
+    def test_trade_card_expands_item_flow_transfer_data(self):
+        """第 62 批真机：交易卡的指标在 `data.itemFlowTransferData` 里（原先整块进 extra ⇒ 指标恒空），
+        展开成指标的同时仍在 `extra` 里留一份原样数据。"""
         payload = {'data': {'payAmt': 12, 'itemFlowTransferData': {'a': 1}}}
         parsed = datacenter_proto.parse_card(payload, 'trade',
                                              datacenter_proto.card_labels('trade'))
-        self.assertEqual([m['key'] for m in parsed['metrics']], ['payAmt'])
+        self.assertEqual([m['key'] for m in parsed['metrics']], ['a', 'payAmt'])
         self.assertEqual(parsed['extra'], {'itemFlowTransferData': {'a': 1}})
 
     def test_metric_entry_never_invents_a_value(self):
@@ -1350,6 +1426,18 @@ class CardTest(DataCenterApiTest):
         seed_account()
         body = self.fail_envelope(f'{BASE}/{ACC}/card/seller', '?start=2026')
         self.assertEqual(body.get('code'), 'invalid_fields')
+        self.assertEqual(self.proto.calls, [])
+
+    def test_range_longer_than_31_days_is_400_and_never_calls_the_platform(self):
+        """跨度 >31 天是**平台的硬限制**（真机 INPUT_PARAM_ILLEGAL），服务层提前回 400，
+
+        而不是把注定被拒的入参发给平台、再拿 502/业务错误码糊给前端。
+        """
+        seed_account()
+        body = self.fail_envelope(f'{BASE}/{ACC}/card/seller',
+                                  '?start=20260801&end=20260930')
+        self.assertEqual(body.get('code'), 'invalid_fields')
+        self.assertIn('31', body.get('message', ''))
         self.assertEqual(self.proto.calls, [])
 
     def test_unknown_kind_is_400_and_never_calls_the_platform(self):

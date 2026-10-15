@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date as _date
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 #: 数据起始日（唯一一个在真机上确认能通的接口）
@@ -46,9 +47,19 @@ FANS_INSIGHTS_API = 'mtop.alibaba.idle.seller.pc.datacompass.fans.insights.query
 #: 客服数据：概览（询单人数 / 响应率）
 CS_OVERVIEW_API = 'mtop.alibaba.idle.seller.pc.datacompass.cs.overview.summary'
 
-#: 官方页面只有两种 `dateType`；自定义区间用 `month` + `ms`/`date`
+#: 官方页面默认的 `dateType`（今天）
 DATE_TYPE_DAY = 'recent1d'
+#: 自定义区间唯一被平台接受的写法：`customDate` + `dateRange='YYYYMMDD|YYYYMMDD'`
+#: （第 62 批真机 2026-10-16 校准，见 docs/contracts/datacenter.md）
+DATE_TYPE_CUSTOM = 'customDate'
+#: 官方 bundle 里还有 `month` + `ms` 的分支（`item.list` 与客服明细那两处请求体逐字照抄），
+#: 但**官方页面上没有入口**（只在 quickSelect 的 switch 里），真机上也一律回
+#: `INPUT_PARAM_ILLEGAL`（`ms` 给首日、给横线日期、再叠 dateRange 都试过）
+#: ⇒ 我们的日期构造器不再发它；常量留着只是让那两处请求体与 bundle 保持逐字一致。
 DATE_TYPE_MONTH = 'month'
+#: 平台硬限制：自定义区间跨度不得超过 31 天（官方前端 `disabledDate` 同款：`>=31` 天禁用）。
+#: 真机证据：`20260901|20261001`（含头尾 31 天）→ success；`20260801|20260930` → INPUT_PARAM_ILLEGAL。
+MAX_RANGE_DAYS = 31
 
 #: 平台响应里的字段别名。**协议层命名未定**（真机拿不到有权限账号的响应），
 #: 所以按 `services/item_stats.py::METRIC_ALIASES` 的做法先认常见几种，认不出就是 None。
@@ -65,28 +76,58 @@ METRIC_ALIASES: Dict[str, Tuple[str, ...]] = {
                        'uniqueVisitors', '访问人数', '访客数'),
     'browse': ('browse', 'browseCount', 'browseNum', 'browsePv', '浏览次数'),
     'browse_visitors': ('browseVisitors', 'browseUv', 'browseUserCount', '浏览人数'),
-    'online_items': ('onlineItems', 'onlineItemCount', 'onSaleCount', 'onSaleNum',
+    # `onlCnt`：真机 `singleuser.item.summary` 的 banner 字段名（bundle 也按这个名字认）
+    'online_items': ('onlCnt', 'onlineItems', 'onlineItemCount', 'onSaleCount', 'onSaleNum',
                      'onlineNum', '在线商品数'),
     'inquiry_visitors': ('inquiryVisitors', 'inquiryUserCount', 'consultUv', 'askUv',
                          '询单人数', '咨询人数'),
     'inquiry_reply_rate_3min': ('replyRate3min', 'threeMinReplyRate', 'replyRate',
                                 'responseRate', '3分钟询单响应率', '三分钟响应率'),
-    'fans_total': ('fansTotal', 'totalFans', 'fanCount', 'fansCount', '粉丝总数', '粉丝数'),
-    'fans_new': ('fansNew', 'newFans', 'newFanCount', 'increaseFans', '新增粉丝', '新增粉丝数'),
+    # `totalFansCnt` / `newFansCnt`：真机 `fans.summary` 的 banner 字段名
+    # （官方中文标题在 bundle 偏移 2485959：总粉丝数 / 新增粉丝数）
+    'fans_total': ('totalFansCnt', 'fansTotal', 'totalFans', 'fanCount', 'fansCount',
+                   '粉丝总数', '粉丝数'),
+    'fans_new': ('newFansCnt', 'fansNew', 'newFans', 'newFanCount', 'increaseFans',
+                 '新增粉丝', '新增粉丝数'),
     'fans_lost': ('fansLost', 'lostFans', 'lostFanCount', 'decreaseFans', '流失粉丝', '取关人数'),
     'fans_active': ('fansActive', 'activeFans', 'activeFanCount', '活跃粉丝', '活跃粉丝数'),
     'fans_orders': ('fansOrders', 'fansOrderCount', 'fanOrderCount', 'fansOrderNum',
                     '粉丝订单数', '粉丝成交笔数'),
     'fans_buyers': ('fansBuyers', 'fansBuyerCount', 'fanBuyerCount', 'fansBuyerNum',
                     '粉丝买家数', '粉丝下单人数'),
-    'inquiry_count': ('inquiryCount', 'inquiryNum', 'consultCount', 'askCount', '询单量', '咨询量'),
-    'reply_rate_3min': ('replyRate3min', 'threeMinReplyRate', 'replyRate', 'responseRate',
-                        '3分钟响应率', '三分钟响应率', '响应率'),
-    'avg_reply_seconds': ('avgReplySeconds', 'avgReplyTime', 'averageReplyTime',
+    # `manualSessCnt`（官方客服概览的「人工会话量」，bundle 偏移 2390201）**故意不映射**：
+    # 与 `consultItmCnt` 谁是「询单量」说不准 ⇒ 宁可空着（见下方 REAL_METRIC_NAMES 的说明）。
+    'inquiry_count': ('inquiryCount', 'inquiryNum', 'consultCount', 'askCount',
+                      '询单量', '咨询量'),
+    'reply_rate_3min': ('respRate3min', 'replyRate3min', 'threeMinReplyRate', 'replyRate',
+                        'responseRate', '3分钟响应率', '三分钟响应率', '响应率'),
+    'avg_reply_seconds': ('avgRespTm', 'avgReplySeconds', 'avgReplyTime', 'averageReplyTime',
                           '平均响应时长', '平均响应秒数'),
     'unreplied_count': ('unrepliedCount', 'noReplyCount', 'unansweredCount', '未回复数', '未回复'),
-    'satisfaction': ('satisfaction', 'satisfactionRate', 'goodRate', '满意度', '好评率'),
+    'satisfaction': ('custSatRate', 'satisfaction', 'satisfactionRate', 'goodRate',
+                     '满意度', '好评率'),
 }
+
+#: 2026-10-16 第 62 批真机实测到的平台指标名（`logs/fail62/dc_proto_raw62.json`，
+#: 形状见 `banner_values`）。只收**名字与语义一一对应**的那些：
+#: `onlCnt`=在线商品数（45）、`ipvItmCnt`=商品访问次数（168）、`chatUv`=询单人数（26）、
+#: `totalFansCnt`=粉丝总数（5）、`newFansCnt`=新增粉丝（2）、`respRate3min`=3 分钟响应率（71.03%）、
+#: `avgRespTm`=平均响应时长（1874.25 秒）、`custSatRate`=客户满意度率。
+#: **语义不唯一的一律不映射**（`manualSessCnt` 与 `consultItmCnt` 谁是「询单量」、`stItmCnt`、
+#: `dftCnt`、`favCnt`、`cmtItmCnt` 都没把握）—— 认不出就是 None，宁可空着也不贴错标签。
+REAL_METRIC_NAMES: Dict[str, Tuple[str, ...]] = {
+    'visits': ('ipvItmCnt',),
+    'online_items': ('onlCnt',),
+    'inquiry_visitors': ('chatUv',),
+    'fans_total': ('totalFansCnt',),
+    'fans_new': ('newFansCnt',),
+    'reply_rate_3min': ('respRate3min',),
+    'avg_reply_seconds': ('avgRespTm',),
+    'satisfaction': ('custSatRate',),
+}
+for _key, _names in REAL_METRIC_NAMES.items():
+    METRIC_ALIASES[_key] = tuple(METRIC_ALIASES.get(_key, (_key,))) + tuple(_names)
+del _key, _names
 
 #: 对外契约的指标键（三个页面各一套）。**这三个元组就是前端能依赖的全部键**：
 #: 平台没给的键也一定出现，值为 None（前端显示「-」）。
@@ -122,12 +163,55 @@ CS_METRICS: Tuple[str, ...] = (
 _METRIC_HINTS = ('count', 'num', 'cnt', 'rate', 'uv', 'pv', 'total')
 
 
-def date_data(start: str = '', end: str = '', seller_id: str = '') -> Dict[str, Any]:
-    """构造数据组接口的入参。
+def normalize_date(value: str) -> str:
+    """把日期收敛成平台唯一认的 8 位 `YYYYMMDD`。
 
-    官方页面默认 `dateType='recent1d'`（今天），切到自定义区间时用 `'month'` 并把
-    区间塞进 `ms`/`date`（`date` 是数组，`ms` 取区间首日）。`selectedSellerId` 是
-    「看哪个卖家」——多店铺账号才需要，单账号时官方页面也会带上自己的 id。
+    真机上 `dateRange='2026-09-01|2026-09-30'`（带横线）一律 `INPUT_PARAM_ILLEGAL`
+    ⇒ 这里只留数字；长度不是 8 就抛 `ValueError`（服务层会先校验并回 400，
+    真机探针/工具直接调协议层时也不至于把脏参数发给平台）。
+    """
+    text = ''.join(ch for ch in str(value or '') if ch.isdigit())
+    if len(text) != 8:
+        raise ValueError('日期必须是 YYYYMMDD：%r' % (value,))
+    return text
+
+
+def _day_span(begin: str, finish: str) -> int:
+    """含头尾的天数（`20260901`→`20261001` = 31）。"""
+    first = _date(int(begin[0:4]), int(begin[4:6]), int(begin[6:8]))
+    last = _date(int(finish[0:4]), int(finish[4:6]), int(finish[6:8]))
+    return (last - first).days + 1
+
+
+def date_range(start: str, end: str) -> List[str]:
+    """`[开始, 结束]`（缺哪头用另一头顶上），并校验平台的两条硬约束。
+
+    * 8 位 `YYYYMMDD`；
+    * 跨度 `<= MAX_RANGE_DAYS`（真机：31 天过、60 天回 `INPUT_PARAM_ILLEGAL`）。
+    """
+    begin = normalize_date(start or end)
+    finish = normalize_date(end or start)
+    if begin > finish:
+        raise ValueError('开始日期不能晚于结束日期：%s > %s' % (begin, finish))
+    if _day_span(begin, finish) > MAX_RANGE_DAYS:
+        raise ValueError('自定义区间跨度不得超过 %d 天：%s|%s'
+                         % (MAX_RANGE_DAYS, begin, finish))
+    return [begin, finish]
+
+
+def date_data(start: str = '', end: str = '', seller_id: str = '') -> Dict[str, Any]:
+    """构造数据组接口的入参（**官方形状：`dateType` + `dateRange`**）。
+
+    2026-10-16 第 62 批真机实测（`logs/fail62/datacompass_kurumi62.json`：23 个变体全部
+    `SUCCESS::调用成功`）：这些 `pc.datacompass.*` 接口认的是 `{dateType, dateRange}` ——
+    自定义区间 = `dateType='customDate'` + `dateRange='20260901|20260930'`（**竖线拼接的
+    字符串**，不是数组、不是 `-`）；只有 `month` 才用 `ms`（区间首日）。本函数原先发的是
+    `dateType='month'` + `ms` + `date: [begin, finish]` 数组 ⇒ 平台回业务体
+    `INPUT_PARAM_ILLEGAL`，指标全是 null（第 62 批据此修）。
+
+    官方页面默认 `dateType='recent1d'`（今天）。`selectedSellerId` 是「看哪个卖家」——
+    多店铺账号才需要；真机上不带这个键也能过（同一份证据里的 `ov_custom_ok` 只发了
+    `dateType` + `dateRange` 两个键）。
 
     **只要用户明确指定了日期就必须带上日期**（含 `start == end` 的单日）：`recent1d`
     的请求体里一个日期都没有，平台只能回「今天」；那样服务层还把它标成用户要的那一天
@@ -137,11 +221,8 @@ def date_data(start: str = '', end: str = '', seller_id: str = '') -> Dict[str, 
     if seller_id:
         payload['selectedSellerId'] = str(seller_id)
     if start or end:
-        begin = start or end
-        finish = end or start
-        payload['dateType'] = DATE_TYPE_MONTH
-        payload['ms'] = begin
-        payload['date'] = [begin, finish]
+        payload['dateType'] = DATE_TYPE_CUSTOM
+        payload['dateRange'] = '|'.join(date_range(start, end))
     return payload
 
 
@@ -163,8 +244,15 @@ def _is_number(value: Any) -> bool:
 
 
 def find_number(payload: Any, aliases: Tuple[str, ...]) -> Optional[float]:
-    """按别名找第一个数值。找不到返回 None（**绝不返回 0**）。"""
+    """按别名找第一个数值。找不到返回 None（**绝不返回 0**）。
+
+    先查指标横幅（`banner_values`）：平台把指标名放在**值**里
+    （`{name:'onlCnt', data:45}`），只按键名找永远命中不了；再退回按键名找。
+    """
     wanted = {str(key).lower() for key in aliases}
+    for name, value in banner_values(payload).items():
+        if name.lower() in wanted:
+            return value
     for mapping in walk_dicts(payload):
         for key, value in mapping.items():
             if str(key).lower() in wanted and _is_number(value):
@@ -190,6 +278,43 @@ def find_list(payload: Any, aliases: Tuple[str, ...]) -> Optional[List[Any]]:
             if str(key).lower() in wanted and isinstance(value, list) and value:
                 return value
     return None
+
+
+def banner_values(payload: Any) -> Dict[str, float]:
+    """平台指标横幅 `graphBannerBenchData.bannerDataList` 的 `name → 数值` 表。
+
+    2026-10-16 第 62 批真机（`logs/fail62/dc_proto_raw62.json`）：数据总览 / 粉丝 / 客服
+    三个页面的顶部指标都是这个形状 —— `[{name:'onlCnt', data:45, dataFormat:'45'}, …]`。
+    指标名在**值**里而不是键里，所以只按别名找键的 `find_number` 永远命中不了（这是这三页
+    指标长期全 null 的直接原因之一）。
+
+    百分比口径：`data` 是比率（`respRate3min: 0.7103`）而 `dataFormat` 是人话百分比
+    （`'71.03%'`），对外契约要的是**百分比数值**（33.33 这种），所以带 `%` 的 `dataFormat`
+    优先。非数值（`data: null`，平台自己就没给）不入表 —— 认不出就是 None，不补 0。
+    """
+    values: Dict[str, float] = {}
+    for mapping in walk_dicts(payload):
+        items = mapping.get('bannerDataList')
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get('name') or '').strip()
+            if not name or name in values:
+                continue
+            formatted = item.get('dataFormat')
+            if isinstance(formatted, str) and formatted.strip().endswith('%'):
+                try:
+                    values[name] = float(formatted.strip()[:-1])
+                    continue
+                except ValueError:
+                    pass
+            for key in ('data', 'value'):
+                if _is_number(item.get(key)):
+                    values[name] = float(item[key])
+                    break
+    return values
 
 
 def extract_metrics(payload: Any, keys: Tuple[str, ...]) -> Dict[str, Optional[float]]:
@@ -599,9 +724,7 @@ def commodity_dates(start: str = '', end: str = '') -> Tuple[str, List[str]]:
     平台只能回「今天」，把它标成用户要的那一天就是对外撒谎。
     """
     if start or end:
-        begin = start or end
-        finish = end or start
-        return COMMODITY_DATE_CUSTOM, [begin, finish]
+        return COMMODITY_DATE_CUSTOM, date_range(start, end)
     return DATE_TYPE_DAY, []
 
 
@@ -858,7 +981,7 @@ REFUND_LABELS: Dict[str, str] = {
 def card_dates(start: str = '', end: str = '') -> Tuple[str, List[str]]:
     """四张卡片的时间入参：给了区间 → `('customDate', [start, end])`；否则今天。"""
     if start or end:
-        return COMMODITY_DATE_CUSTOM, [start or end, end or start]
+        return COMMODITY_DATE_CUSTOM, date_range(start, end)
     return DATE_TYPE_DAY, []
 
 
@@ -985,8 +1108,8 @@ def parse_card(payload: Any, kind: str, labels: Dict[str, str]) -> Dict[str, Any
 
     - `seller` / `repurchase`：`graphBannerBenchData.bannerDataList`（顶部指标）+
       `graphDataList`（折线）+ 可选 `promotionInfoList`（经营概况的推广位，原样透传）。
-    - `trade`：`data` 里除 `itemFlowTransferData` 外的键当指标，`itemFlowTransferData`
-      原样透传（官方把它交给另一个子组件渲染）。
+    - `trade`：指标在 `data.itemFlowTransferData` 里（真机第 62 批：`chatCnt` / `ipv` /
+      `chatPayUcvr` …），逐个展开成指标；`data` 里其余的标量键也照收。
     - `refund`：`data` 里的每个键都是一个指标对象。
     """
     body = _card_body(payload)
@@ -999,8 +1122,17 @@ def parse_card(payload: Any, kind: str, labels: Dict[str, str]) -> Dict[str, Any
         for key, value in body.items():
             metrics.append(_metric_entry(key, value, labels))
     else:
+        if kind == 'trade':
+            # 交易卡的指标**全在 `data.itemFlowTransferData` 里**（真机 2026-10-16：
+            # `{chatCnt:{cycle:'前30日',data:28,dataFormat:'28',…}, ipv:{data:697}, …}`）。
+            # 原先把它整个塞进 `extra`，于是这张卡的指标永远是空的。
+            flow = body.get('itemFlowTransferData')
+            if isinstance(flow, dict):
+                for key, value in flow.items():
+                    metrics.append(_metric_entry(key, value, labels))
+                extra['itemFlowTransferData'] = flow
         for key, value in body.items():
-            if key == 'graphBannerBenchData':
+            if key in ('graphBannerBenchData', 'itemFlowTransferData'):
                 continue
             if isinstance(value, (dict, list)):
                 # 不是「一个指标」的东西（`itemFlowTransferData`、`promotionInfoList` …）
@@ -1160,26 +1292,35 @@ def cs_list_request(kind: str, date_type: str = DATE_TYPE_DAY,
 def parse_cs_list(payload: Any, kind: str) -> Dict[str, Any]:
     """解析客服明细响应。**注意双层 `data`**。
 
-    `_mtop` 已经剥掉客户端信封，剩下平台体 `{extendInfo, data}`；业务码与列表都在
-    `payload['data']['data']` 里（官方前端写的是 `v.data.data.data.list`）。
+    `_mtop` 已经剥掉客户端信封，剩下平台体 `{code, data, extendInfo, msg}`。
+    **真机（第 62 批）里列表就在 `payload['data']['list']`**（`total` 也在同一层），
+    而官方前端写的是 `v.data.data.data.list` —— 两个都认（先 `data` 再 `data.data`），
+    否则真机上一张表都渲染不出来（`rows=null`）。
     列表键认不出 → `rows=None`（**不是 `[]`**：「平台没给列表」与「这段时间一条都没有」
     对用户是两件事）；`total` 只认数值，`0` 保留。
     """
     result: Dict[str, Any] = {'rows': None, 'total': None, 'found_key': None}
     body = payload.get('data') if isinstance(payload, dict) else None
     inner = body.get('data') if isinstance(body, dict) else None
-    if isinstance(inner, dict):
-        code = body.get('code')
-        if code in (None, '') or str(code).lower() == 'success':
+    containers = [item for item in (body, inner) if isinstance(item, dict)]
+    code = payload.get('code') if isinstance(payload, dict) else None
+    if code in (None, ''):
+        code = body.get('code') if isinstance(body, dict) else None
+    if code in (None, '') or str(code).lower() == 'success':
+        for container in containers:
             for key in ('list', 'rows', 'result'):
-                value = inner.get(key)
+                value = container.get(key)
                 if isinstance(value, list):
                     result['rows'] = value
                     result['found_key'] = key
                     break
-            total = inner.get('total')
+            if result['rows'] is not None:
+                break
+        for container in containers:
+            total = container.get('total')
             if _is_number(total):
                 result['total'] = int(total)
+                break
     result['columns'] = CS_LIST_COLUMNS[kind]
     result['real_date_range'] = _real_date_range(payload)
     return result

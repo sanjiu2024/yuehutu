@@ -386,3 +386,76 @@ cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe 
 3. 两条的响应字段名全部未取证，前端**不应**依赖任何具体键。
 
 错误码：session_id 为空 -> invalid_fields（本地拦，不打平台）。
+
+
+## 第 62 批：入参形状修正（真机 2026-10-16 只读验证）
+
+**一句话**：`pc.datacompass.*` 认的是 `{dateType, dateRange}` —— 自定义区间 =
+`dateType='customDate'` + `dateRange='YYYYMMDD|YYYYMMDD'`（**竖线拼接的字符串**）。
+我们原先发的是 `dateType='month'` + `ms` + `date: [begin, finish]` 数组，平台一律回业务体
+`INPUT_PARAM_ILLEGAL`，于是整族接口的指标全 null。
+
+### 62.1 官方 bundle 形状（唯一权威来源）
+
+bundle 副本：`logs/seller_discover/datacenter_main.js`（4,168,486 B，单行；用 python
+`str.find` 取窗口反查，bash `grep -o -E` 在这体积上会超时）。偏移是 python 字符索引。
+
+| 平台 api | 调用点偏移 | 官方 data 形状 |
+| --- | --- | --- |
+| singleuser.browse.summary | 4085637（`w` 定义 4085229） | `{dateRange: dateType==='customDate' ? date.join('\|') : undefined, dateType, selectedSellerId, ms: dateType==='month' ? date[0] : undefined}` |
+| singleuser.item.summary | 4080770 | 同上（同一套 useMemo） |
+| fans.summary / fans.insights.query | 2488751 / 2490068 | 同上，但**不带 `selectedSellerId`** |
+| cs.overview.summary | 调用点 2394797（直传 2256861） | 同上，**不带 `selectedSellerId`** |
+| flow.detail | 4077867 | 同上 + `selectedSellerId: n \|\| null` |
+| singleuser.seller.summary | 4062110（字面量对象） | `{dateRange: g==='customDate' ? l.join('\|') : '', dateType: g, ms: g==='month' ? l[0] : '', selectedSellerId: o ? i : undefined}`（**空串**，不是 undefined） |
+| singleuser.repurchase.summary | 4067283 | 同 browse 的 useMemo 形状 |
+| refund.summary | 4099921 | `{dateType, selectedSellerId}`，customDate 时加 `dateRange`、month 时加 `ms` |
+| get.begin.time | 2365915 | `data: {}` |
+
+日期选择器在 bundle 偏移 2367068（`jbe`）：自定义区间发 `('customDate',
+[start.format('YYYYMMDD'), end.format('YYYYMMDD')])`；快捷按钮只发 `recent1d` / `recent7d` /
+`recent30d`；`month` 分支只在 quickSelect 的 switch 里、**官方页面上没有入口**。
+同处的 `disabledDate` 是 `Math.abs(e.diff(n,'days')) >= 31` ⇒ 平台硬限制区间跨度 <= 31 天。
+
+### 62.2 真机逐接口结果（账号 2217970177348，customDate 20260901\|20260930，串行 >=2.2s）
+
+原始响应：`logs/fail62/datacompass_kurumi62_after.json`（本次）；
+入参形状 23 变体对照：`logs/fail62/datacompass_kurumi62.json`；
+探针脚本：`logs/fail62/probe_kurumi62_after.py`。
+
+| 接口 | 我们发出的入参 | 平台码 | 判读（解析出的指标） |
+| --- | --- | --- | --- |
+| overview（browse.summary + item.summary） | `{dateType:'customDate', dateRange:'20260901\|20260930'}` | overview/items `success`（begin_time `success`） | visits=168、online_items=45、inquiry_visitors=26 |
+| fans（fans.summary + fans.insights.query） | 同上（不带 selectedSellerId） | `success` | fans_total=5、fans_new=2；insights_breakdown 正常 |
+| customer_service（cs.overview.summary） | 同上 | `success` | inquiry_visitors=18、reply_rate_3min=71.03、avg_reply_seconds=1874.25 |
+| commodity（item.list + item.indicators） | `{selectedSellerId:'', tabType:'all', dateRange:'20260901\|20260930', ms:'', dateType:'customDate', categoryInfoStr:'[]', …, page:1, pageSize:20}` | commodity/columns `success` | rows=20、total=45 |
+| card trade（flow.detail） | `{dateType:'customDate', dateRange:'20260901\|20260930'}` | `success` | 18 个指标：chatCnt=28、ipv=697、ipvItmCnt=168、chatUv=26、payAmt=909、chatPayUcvr=0.2308 … |
+| card seller（singleuser.seller.summary） | 同上 | `success` | banner 36 项：payAmt=909.01、payOrdCnt=9、aov=101、showUv=10955、ipvUv=324 …；series 39 点 |
+| card repurchase（singleuser.repurchase.summary） | 同上 | `success` | banner 10 项：favCnt=9、newItmCnt=46、chatUv=26、cmtItmCnt=4、rptOrdCnt=3、rptByrCnt=2、rpr=0.23 |
+| card refund（refund.summary） | 同上 | `success` | 33 个指标，本账号全 0（真的没有退款，不是解析失败） |
+| cs_list detail（客服明细） | `{selectedSellerId:'', dateRange:'20260901\|20260930', ms:'', dateType:'customDate', orderBy:'', order:'', page:1, pageSize:10}` | `success` | rows=1、total=1（acctName=xy603139480502、consultUv=18 …） |
+
+**反例（同一批真机，全部 `INPUT_PARAM_ILLEGAL`）**：`{dateType:'month', ms:'20260901'}`（`ms`
+给 `2026-09-01` 或再叠 `dateRange` 也一样）、`dateRange='2026-09-01\|2026-09-30'`（带横线）、
+`dateRange='20260801\|20260930'`（61 天）。`dateRange='20260901\|20261001'`（含头尾 31 天）
+是 success ⇒ 31 天这条边界是平台的，不是我们猜的。
+
+### 62.3 代码落点
+
+- `backend/app/xianyu/datacenter.py`：`normalize_date` / `_day_span` / `date_range`（8 位 +
+  顺序 + `MAX_RANGE_DAYS = 31`，越界抛 `ValueError`）；`date_data` 改发 `customDate` +
+  `dateRange`，**不再发** `date` 数组与 `ms`；`commodity_dates` / `card_dates` 有区间时走
+  `date_range`；`DATE_TYPE_MONTH` 常量留着只为让 `item.list` / 客服明细的请求体与 bundle 逐字一致。
+- `banner_values`：平台把指标名放在**值**里（`{name:'onlCnt', data:45}`），`find_number` 先查
+  这张表再退回按键名找 —— 只按键名找永远命中不了，这是「指标全 null」的另一半原因。
+- `parse_card` 的 `trade` 分支：指标全在 `data.itemFlowTransferData` 里（`chatCnt` / `ipv` /
+  `chatPayUcvr` …），原先整个塞进 `extra`（前端把 `extra` 当原始 JSON 收进 `<details>`）⇒
+  交易卡指标永远为空；现在逐个展开成指标，`extra` 里仍留原始体。
+- `parse_cs_list`：真机列表在 `payload['data']['list']`（`total` 同层），官方前端读的是
+  `v.data.data.data.list`，两个都认。
+- `backend/app/services/datacenter.py`：`MAX_RANGE_DAYS = 31` + `_range_days` / `_too_long` /
+  `_optional_range`；`_date_pair` / `_card_dates` / `commodity` / `cs_list` 在打平台**之前**
+  拦下跨度 >31 天，回 400 `invalid_fields`（不让注定被拒的入参变成 502）。
+
+**口径不变**：平台没给的字段仍然是 `null`（前端显示「-」），不补 0、不编标题；
+`manualSessCnt` / `consultItmCnt` / `stItmCnt` 这类语义不唯一的名字**故意不映射**。

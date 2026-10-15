@@ -32,6 +32,11 @@ CACHE_TTL_SECONDS = 300
 #: 缓存条目上限（键含账号与区间，只靠 TTL 惰性淘汰的话长期运行会只增不减）。
 CACHE_MAX_ENTRIES = 64
 
+#: 平台硬限制：自定义区间跨度不得超过 31 天（与协议层 `datacenter.MAX_RANGE_DAYS` 同一口径）。
+#: 真机第 62 批：`20260901|20261001`（含头尾 31 天）→ success；`20260801|20260930` →
+#: `INPUT_PARAM_ILLEGAL`。服务层先拦下来回 400，别让协议层抛 `ValueError` 变成 502。
+MAX_RANGE_DAYS = 31
+
 #: 三个页面各自的协议函数名 = 对外 kind（`_page` 用同一个字符串找协议函数）
 KINDS = ('overview', 'fans', 'customer_service')
 
@@ -80,12 +85,41 @@ def _client(account_id: str):
     return (value, None) if value is not None else (None, problem or common.not_ready())
 
 
+def _range_days(a: str, b: str) -> int:
+    """含头尾的天数（`20260901`→`20261001` = 31）。"""
+    first = datetime.strptime(a, '%Y%m%d').date()
+    last = datetime.strptime(b, '%Y%m%d').date()
+    return (last - first).days + 1
+
+
+def _too_long(a: str, b: str):
+    """跨度超过 31 天 → `invalid_fields`（平台会回 `INPUT_PARAM_ILLEGAL`，不如先讲人话）。"""
+    if _range_days(a, b) > MAX_RANGE_DAYS:
+        return common.fail('自定义区间跨度不能超过 %d 天' % MAX_RANGE_DAYS, 'invalid_fields')
+    return None
+
+
+def _optional_range(start: str, end: str):
+    """`commodity` / `cs_list` 的日期是可选的（缺省＝平台「今天」）：给了就按同一套口径校验。"""
+    a = _text(start).strip()
+    b = _text(end).strip()
+    if not a and not b:
+        return None
+    a, b = a or b, b or a
+    if len(a) != 8 or len(b) != 8 or not a.isdigit() or not b.isdigit() or a > b:
+        return common.fail('日期必须是 YYYYMMDD，且开始日期不能晚于结束日期', 'invalid_fields')
+    return _too_long(a, b)
+
+
 def _date_pair(start: str, end: str):
     today = datetime.now().date()
     a = _text(start).strip() or (today - timedelta(days=6)).strftime('%Y%m%d')
     b = _text(end).strip() or today.strftime('%Y%m%d')
     if len(a) != 8 or len(b) != 8 or not a.isdigit() or not b.isdigit() or a > b:
         return None, common.fail('日期必须是 YYYYMMDD，且开始日期不能晚于结束日期', 'invalid_fields')
+    failure = _too_long(a, b)
+    if failure:
+        return None, failure
     return (a, b), None
 
 
@@ -399,6 +433,9 @@ def commodity(account_id: str, start: str = '', end: str = '', item_id: str = ''
     order_by = str(order_by or '').strip()
     if order and not order_by:
         return common.fail('指定排序方向时必须同时给出排序字段', 'invalid_fields')
+    failure = _optional_range(start, end)
+    if failure:
+        return failure
     module = common.protocol_module('datacenter')
     if module is None:
         return common.not_ready('协议层未提供数据组接口（backend.app.xianyu.datacenter）')
@@ -442,6 +479,9 @@ def _card_dates(start: str, end: str):
     b = b or a
     if len(a) != 8 or len(b) != 8 or not a.isdigit() or not b.isdigit() or a > b:
         return None, common.fail('日期必须是 YYYYMMDD，且开始日期不能晚于结束日期', 'invalid_fields')
+    failure = _too_long(a, b)
+    if failure:
+        return None, failure
     return [a, b], None
 
 
@@ -605,6 +645,9 @@ def cs_list(account_id: str, kind: str = 'detail', start: str = '', end: str = '
     order_by = str(order_by or '').strip()
     if order and not order_by:
         return common.fail('指定排序方向时必须同时给出排序字段', 'invalid_fields')
+    failure = _optional_range(start, end)
+    if failure:
+        return failure
     module = common.protocol_module('datacenter')
     if module is None:
         return common.not_ready('协议层未提供数据组接口（backend.app.xianyu.datacenter）')
