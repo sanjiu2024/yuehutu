@@ -620,3 +620,57 @@ def cs_list(account_id: str, kind: str = 'detail', start: str = '', end: str = '
         return common.call_failed(status, value) or common.fail(
             '客服明细接口调用失败', 'protocol_error')
     return _wrap_cs_list(account_id, kind, value, page_number, page_size)
+
+
+# --------------------------------------------------------------------------- READ-COVERAGE-61
+def _read_call(name: str, client: Any, *args: Any):
+    """第 61 批两个读接口的调用口：与 _call 同形，但**不做 metrics 契约校验**。
+
+    _call 是给「指标页」用的（缺契约键一律 502）；这两个接口的响应形状**还没取证**，
+    硬套契约校验会把「平台换了字段名」误判成协议层坏了。所以这里只负责：
+    协议层不在 -> 503；协议层抛异常 -> call_failed 翻信封（登录态过期 409 + 回写）。
+    """
+    module = common.protocol_module('datacenter')
+    if module is None:
+        return None, common.not_ready('协议层未提供数据组接口（backend.app.xianyu.datacenter）')
+    status, value = common.call_method(_BoundProtocol(module, client), (name,), client, *args)
+    if status == common.CALL_OK:
+        return value, None
+    failure = common.call_failed(status, value)
+    return None, failure or common.fail('数据组接口调用失败', 'protocol_error')
+
+
+def _read_page(account_id: str, name: str, *args: Any) -> Dict[str, Any]:
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+    payload, failure = _read_call(name, client, *args)
+    if failure:
+        return failure
+    return {
+        'account_id': account_id,
+        'kind': name,
+        'data': payload,
+        'fetched_at': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
+        'source': 'platform',
+    }
+
+
+def shop_stats(account_id: str, session_id: Any = '') -> Dict[str, Any]:
+    """会话维度的小铺统计（mtop.alibaba.idle.seller.pc.shop.stats.query，只读）。
+
+    官方入参就是 {sessionId}（bundle 调用点见协议层常量注释）。**响应形状未取证**，
+    所以 data 是平台返回的原样透出，一个字段都不猜、不补 0。
+    """
+    session = '' if session_id is None else str(session_id).strip()
+    if not session:
+        return common.fail('session_id 不能为空', 'invalid_fields')
+    return _read_page(account_id, 'shop_stats', session)
+
+
+def item_status_statistics(account_id: str) -> Dict[str, Any]:
+    """商品状态统计（mtop.taobao.idle.seller.platform.pc.item.status.statistics，只读）。
+
+    官方**不带入参**。响应形状未取证，data 原样透出。
+    """
+    return _read_page(account_id, 'item_status_statistics')

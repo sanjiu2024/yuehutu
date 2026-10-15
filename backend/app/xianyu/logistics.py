@@ -221,3 +221,58 @@ def parse_resend(raw: Any) -> Dict[str, Any]:
         'cp_code': None if code is None else _text(code),
         'platform_message': failure or envelope_message(raw),
     }
+
+
+# --------------------------------------------------------------------------- READ-COVERAGE-61
+#: 未发货凭证详情（只读）。bundle 调用点 ~/.dsh-tmp/trade_bundle/main.js:1:3138431：
+#:   hO({api:"mtop.taobao.idle.merchant.unconsign.detail", v:"1.0", data:{orderId:v}})
+#: （v 是该行订单的 orderId），响应读 resp.data.content（凭证文本）与 resp.data.imageList
+#: （凭证图片数组，官方 PreviewGroup 逐张预览）。
+#: **不确定项**：官方只在这两处取值，content / imageList 之外还有没有字段没有取证 ——
+#: 所以本层只认这两个键，其余原样放在 raw 里，不猜。
+UNCONSIGN_DETAIL_API = 'mtop.taobao.idle.merchant.unconsign.detail'
+
+#: 发货地详情（只读）。bundle 调用点 ~/.dsh-tmp/trade_bundle/main.js：
+#:   W6 = () => U6({api:"mtop.alibaba.idle.seller.platform.merchant.delivery.place.detail.query"})
+#: 官方**不带 data**，紧挨着写接口 merchant.delivery.place.info.set 与只读的
+#: merchant.delivery.address.list.query。**不确定项**：响应形状未取证（官方调用点不解析
+#: 返回值），本层原样返回。
+DELIVERY_PLACE_DETAIL_API = 'mtop.alibaba.idle.seller.platform.merchant.delivery.place.detail.query'
+
+#: 两条并进只读登记表。
+READ_APIS = READ_APIS + (UNCONSIGN_DETAIL_API, DELIVERY_PLACE_DETAIL_API)
+
+
+def unconsign_detail_request(order_id: Any) -> Tuple[str, Dict[str, Any]]:
+    """未发货凭证详情：{orderId}。订单号空则抛 ValueError（本地校验，不建客户端）。"""
+    trade_id = _text(order_id).strip()
+    if not trade_id:
+        raise ValueError('订单号不能为空')
+    return assert_read(UNCONSIGN_DETAIL_API), {'orderId': trade_id}
+
+
+def delivery_place_detail_request() -> Tuple[str, None]:
+    """发货地详情：官方**不带 data**。"""
+    return assert_read(DELIVERY_PLACE_DETAIL_API), None
+
+
+def parse_unconsign_detail(raw: Any) -> Dict[str, Any]:
+    """未发货凭证：content（文本）/ imageList（图片数组）。
+
+    平台没给某个键时是 None（**不是空串 / 空数组**）—— 空数组表示「平台明确说没有图」。
+    响应里除了这两个键之外的字段原样放在 raw，不猜语义。
+    """
+    data = _body(raw)
+    content = data.get('content')
+    images = data.get('imageList')
+    return {
+        'content': None if content is None else _text(content),
+        'image_list': images if isinstance(images, list) else None,
+        'raw': data or None,
+    }
+
+
+def parse_delivery_place_detail(raw: Any) -> Dict[str, Any]:
+    """发货地详情：形状未取证，**原样透出业务体**，一个字段都不猜。"""
+    data = _body(raw)
+    return {'detail': data or None}

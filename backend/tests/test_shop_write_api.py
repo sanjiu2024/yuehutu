@@ -716,6 +716,8 @@ class ShopWriteRouteTest(unittest.TestCase):
                 if 'GET' in (getattr(route, 'methods', set()) or set())}
         self.assertEqual(gets, {f'{BASE}/{{account_id}}/sub-accounts',
                                 f'{BASE}/{{account_id}}/cs-routing',
+                                # 第六十一批（READ-COVERAGE-61）：小铺服务开通状态，只读
+                                f'{BASE}/{{account_id}}/pc-service-status',
                                 f'{BASE}/{{account_id}}/profile'})
 
 

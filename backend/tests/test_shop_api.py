@@ -486,7 +486,9 @@ class ShopApiTest(unittest.TestCase):
         self.assertEqual(by_method['GET'], {f'{BASE}/{{account_id}}/sub-accounts',
                                             f'{BASE}/{{account_id}}/cs-routing',
                                             # 第三十二批：店铺资料（读）
-                                            f'{BASE}/{{account_id}}/profile'})
+                                            f'{BASE}/{{account_id}}/profile',
+                                            # 第六十一批：发布页服务开通状态（读）
+                                            f'{BASE}/{{account_id}}/pc-service-status'})
         self.assertEqual(by_method['POST'], {f'{BASE}/{{account_id}}/cs-routing/rule',
                                              f'{BASE}/{{account_id}}/cs-groups',
                                              f'{BASE}/{{account_id}}/cs-groups/delete',

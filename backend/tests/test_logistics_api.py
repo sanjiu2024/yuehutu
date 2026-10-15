@@ -36,6 +36,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from backend.app.api import logistics as lg_api  # noqa: E402
 from backend.app.core import db, security  # noqa: E402
+from backend.app.xianyu import division as div_proto  # noqa: E402
 from backend.app.xianyu import logistics as proto  # noqa: E402
 from backend.tests.testenv import use_temp_app_dir  # noqa: E402
 
@@ -89,6 +90,37 @@ NO_PERMISSION = {'success': False, 'message': 'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::
 CLIENT_ERROR = {'success': False, 'message': 'FAIL_SYS_ILLEGAL_ACCESS::非法请求',
                 'ret': ['FAIL_SYS_ILLEGAL_ACCESS::非法请求']}
 
+#: 区域码（第 61 批）：真机是**两层信封** —— 业务体在 `data.data` 里（2026-10-16 实测）。
+DIVISIONS_OK = {
+    'success': True,
+    'data': {
+        'data': {
+            'divisions': [{
+                'divisionId': 110000,
+                'divisionLeaf': False,
+                'divisionToken': 'CN^^^北京',
+                'extAttrs': {'abbName': '京', 'pinyin': 'bei jing'},
+                'level': 2,
+                'names': {'CN': '北京', 'EN': 'Beijing'},
+                'sensitive': False,
+            }],
+            'totalCount': 1, 'totalPage': 1, 'pageIndex': 1, 'pageSize': 100,
+            'parentToken': 'CN',
+        },
+        'message': 'SUCCESS', 'status': 0,
+    },
+    'message': 'SUCCESS::调用成功',
+    'ret': ['SUCCESS::调用成功'],
+}
+
+#: 平台**没给** `divisions` 键（不是「没有下级」）。
+DIVISIONS_MISSING_KEY = {
+    'success': True,
+    'data': {'data': {'totalCount': 0}, 'message': 'SUCCESS', 'status': 0},
+    'message': 'SUCCESS::调用成功',
+    'ret': ['SUCCESS::调用成功'],
+}
+
 WRITE_ROUTES: List[tuple] = [
     ('POST', f'{BASE}/{ACC}/orders/3317095524016013282/resend',
      {'mail_no': 'SF1234567890', 'cp_code': 'SF', 'confirm': True}),
@@ -108,8 +140,9 @@ class FakeLogisticsClient:
         self.errors = errors or {}
         self.calls: List[Dict[str, Any]] = []
 
-    async def mtop(self, api: str, data: Any = None, v: str = '1.0') -> Any:
-        self.calls.append({'api': api, 'data': data, 'v': v})
+    async def mtop(self, api: str, data: Any = None, v: str = '1.0',
+                   value_type: Optional[str] = None) -> Any:
+        self.calls.append({'api': api, 'data': data, 'v': v, 'value_type': value_type})
         error = self.errors.get(api)
         if error is not None:
             raise error
@@ -163,6 +196,7 @@ def full_client(**overrides: Any) -> FakeLogisticsClient:
         proto.COMPANIES_API: COMPANIES_OK,
         proto.GUESS_API: GUESS_OK,
         proto.RESEND_API: RESEND_OK,
+        div_proto.DIVISIONS_API: DIVISIONS_OK,
     }
     payloads.update(overrides)
     return FakeLogisticsClient(payloads)
@@ -181,8 +215,11 @@ class LogisticsProtocolTest(unittest.TestCase):
                          'mtop.taobao.idle.logistics.merchant.consign.resend')
         self.assertEqual(proto.DEFAULT_VERSION, '1.0')
 
-    def test_whitelist_has_one_write_and_two_reads(self):
-        self.assertEqual(proto.READ_APIS, (proto.COMPANIES_API, proto.GUESS_API))
+    def test_whitelist_has_one_write_and_four_reads(self):
+        # 第 61 批补了两条只读：未发货凭证详情 / 发货地详情（见 docs/contracts/logistics.md）。
+        self.assertEqual(proto.READ_APIS, (proto.COMPANIES_API, proto.GUESS_API,
+                                          proto.UNCONSIGN_DETAIL_API,
+                                          proto.DELIVERY_PLACE_DETAIL_API))
         self.assertEqual(proto.ACTIONS, ('resend',))
         for action, spec in proto.WRITE_APIS.items():
             self.assertIn(spec['api'], proto.ALL_APIS, action)
@@ -577,6 +614,7 @@ class LogisticsRouteTest(LogisticsPageTest):
         self.assertEqual(paths['/api/logistics/{account_id}/guess'], {'GET'})
         self.assertEqual(paths['/api/logistics/{account_id}/orders/{order_id}/resend'],
                          {'POST'})
+        self.assertEqual(paths['/api/logistics/{account_id}/divisions'], {'GET'})
 
     def test_module_is_mounted_on_the_real_app(self):
         remove_fake_protocol()
@@ -586,6 +624,58 @@ class LogisticsRouteTest(LogisticsPageTest):
         self.assertIn('/api/logistics/{account_id}/companies', paths)
         self.assertIn('/api/logistics/{account_id}/guess', paths)
         self.assertIn('/api/logistics/{account_id}/orders/{order_id}/resend', paths)
+
+
+class LogisticsDivisionTest(LogisticsPageTest):
+    """第 61 批：区域码路由（只读，`valueType='division'`，两层信封）。"""
+
+    def test_defaults_to_the_root_token_and_locks_the_call(self):
+        resp = self.get(f'{BASE}/{ACC}/divisions')
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertEqual(data['token'], 'CN')
+        self.assertEqual(data['parent_token'], 'CN')
+        self.assertEqual(data['count'], 1)
+        self.assertEqual(data['leaf_level'], 4)
+        self.assertEqual(data['divisions'][0]['value'], '110000/北京')
+        self.assertEqual(data['divisions'][0]['is_leaf'], False)
+        self.assertEqual(data['warnings'], [])
+        call = self.fake.call_of(div_proto.DIVISIONS_API)
+        self.assertEqual(call['data'], {'divisionToken': 'CN', 'pageIndex': 1,
+                                       'bizEntrance': 'idle_fish'})
+        self.assertEqual(call['v'], '1.0')
+        self.assertEqual(call['value_type'], 'division')
+
+    def test_passes_token_and_page_index_through(self):
+        resp = self.client.get(f'{BASE}/{ACC}/divisions',
+                               params={'token': 'CN^^^北京', 'page_index': '2'},
+                               headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        call = self.fake.call_of(div_proto.DIVISIONS_API)
+        self.assertEqual(call['data']['divisionToken'], 'CN^^^北京')
+        self.assertEqual(call['data']['pageIndex'], 2)
+
+    def test_bad_page_index_is_400_without_calling_the_platform(self):
+        resp = self.client.get(f'{BASE}/{ACC}/divisions', params={'page_index': 'abc'},
+                               headers=self.headers)
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertEqual(resp.json()['code'], 'invalid_fields')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_missing_key_is_empty_list_with_a_warning(self):
+        self.fake = full_client(**{div_proto.DIVISIONS_API: DIVISIONS_MISSING_KEY})
+        install_fake_protocol(self.fake)
+        data = self.get(f'{BASE}/{ACC}/divisions').json()['data']
+        self.assertEqual(data['count'], 0)
+        self.assertEqual(data['divisions'], [])
+        self.assertEqual(data['warnings'][0]['code'], 'list_key_missing')
+
+    def test_platform_refusal_is_502_and_keeps_login_state(self):
+        self.fake = full_client(**{div_proto.DIVISIONS_API: NO_PERMISSION})
+        install_fake_protocol(self.fake)
+        resp = self.get(f'{BASE}/{ACC}/divisions')
+        self.assertEqual(resp.status_code, 502, resp.text)
+        self.assertEqual(self.login_state(), 'active')
 
 
 if __name__ == '__main__':

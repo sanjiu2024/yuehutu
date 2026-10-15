@@ -47,3 +47,23 @@ def resend_consign(account_id: str, order_id: str, body: Dict[str, Any] = Body(d
     return _envelope(logistics.resend_consign(
         account_id, order_id, body.get('mail_no'), body.get('cp_code'),
         confirm=body.get('confirm')))
+
+
+# --------------------------------------------------------------------------- READ-COVERAGE-61
+@router.get('/{account_id}/orders/{order_id}/unconsign-detail')
+def unconsign_detail(account_id: str, order_id: str, user: Any = Depends(current_user)):
+    """未发货凭证详情（只读）。平台没给内容/图片时是 null + warning，不是空串/空数组。"""
+    return _envelope(logistics.unconsign_detail(account_id, order_id))
+
+
+@router.get('/{account_id}/delivery-place')
+def delivery_place_detail(account_id: str, user: Any = Depends(current_user)):
+    """发货地详情（只读）。**形状未真机取证**，detail 是平台业务体的原样透出。"""
+    return _envelope(logistics.delivery_place_detail(account_id))
+
+
+@router.get('/{account_id}/divisions')
+def list_divisions(account_id: str, token: str = Query(default=''), page_index: str = Query(default=''),
+                   user: Any = Depends(current_user)):
+    """区域码（只读，第 61 批）。`token` 留空 → 根 `'CN'`（31 个省）；`page_index` 必须是正整数。"""
+    return _envelope(logistics.divisions(account_id, token, page_index))

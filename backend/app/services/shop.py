@@ -519,3 +519,36 @@ def delete_cs_group(account_id: str, group_id: Any = '', confirm: Any = False) -
         'fetched_at': _stamp(),
         'source': 'platform',
     }
+
+
+# --------------------------------------------------------------------------- READ-COVERAGE-61
+def pc_service_status(account_id: str, service_code: Any) -> Dict[str, Any]:
+    """发布页服务开通状态（mtop.alibaba.idle.pc.service.status.query，只读）。
+
+    service_code 必填（官方就是拿它查）。平台响应形状未取证，所以 data 原样透出；
+    平台没给业务体时是 null + warning，**不补 false**（那会变成「这项服务没开通」的假事实）。
+    """
+    code = '' if service_code is None else str(service_code).strip()
+    if not code:
+        return common.fail('service_code 不能为空', 'invalid_fields')
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+    payload, failure = _call(client, 'pc_service_status', code)
+    if failure:
+        return failure
+    inner, failure = _unwrap(payload)
+    if failure:
+        return failure
+    warnings: List[str] = []
+    if not inner:
+        warnings.append('平台没有返回这项服务的状态字段（响应形状未取证），别把空当成「未开通」。')
+    return {
+        'account_id': account_id,
+        'service_code': code,
+        'api': shop_mod.PC_SERVICE_STATUS_API,
+        'data': inner or None,
+        'warnings': warnings,
+        'fetched_at': _stamp(),
+        'source': 'platform',
+    }

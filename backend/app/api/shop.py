@@ -119,3 +119,11 @@ def update_shop_avatar(account_id: str, body: Dict[str, Any] = Body(default={}),
     """改店铺头像（写，`confirm=true` 才发）。传的是图片 URL，不是二进制。"""
     return _envelope(shop_profile_service.update_avatar(
         account_id, avatar_url=body.get('avatar_url'), confirm=body.get('confirm')))
+
+
+# --------------------------------------------------------------------------- READ-COVERAGE-61
+@router.get('/{account_id}/pc-service-status')
+def pc_service_status(account_id: str, service_code: str = Query(default=''),
+                      user: Any = Depends(current_user)):
+    """发布页服务开通状态（只读）。service_code 必填；平台响应原样透出，不补 false。"""
+    return _envelope(shop.pc_service_status(account_id, service_code))

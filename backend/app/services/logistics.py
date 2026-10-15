@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
 
+from ..xianyu import division as division_proto
 from ..xianyu import logistics as proto
 from . import common
 # 账号/凭据检查只有一份，直接复用只读服务里的私有助手（同包内，避免两套判定漂移）
@@ -106,7 +107,8 @@ def _platform_failure(value: Any, api: str, fallback: str) -> Dict[str, Any]:
     )
 
 
-def _call(account_id: str, api: str, data: Optional[Dict[str, Any]]) -> Tuple[Any, Optional[Dict[str, Any]]]:
+def _call(account_id: str, api: str, data: Optional[Dict[str, Any]],
+          value_type: Optional[str] = None) -> Tuple[Any, Optional[Dict[str, Any]]]:
     """发一次 mtop 调用，返回 `(客户端返回值, 失败信封)`；成功时第二个是 `None`。
 
     账号/凭据检查只有一份：复用只读交易服务里的 `_client` ——
@@ -116,7 +118,9 @@ def _call(account_id: str, api: str, data: Optional[Dict[str, Any]]) -> Tuple[An
     client, failure = _client(account_id)
     if client is None:
         return None, failure
-    status, value = common.call_method(client, ('mtop',), api, data, v=proto.DEFAULT_VERSION)
+    # value_type 只有区域码那一族要带（平台按 valueType 解析业务体）；不传就不发这个键
+    extra = {'value_type': value_type} if value_type else {}
+    status, value = common.call_method(client, ('mtop',), api, data, v=proto.DEFAULT_VERSION, **extra)
     if status != common.CALL_OK:
         return None, _call_failure(status, value, api)
     return value, None
@@ -234,3 +238,119 @@ def resend_consign(account_id: str, order_id: Any, mail_no: Any, cp_code: Any = 
         'submitted': {'tradeId': data['tradeId'], 'mailNo': data['mailNo'], 'cpCode': data['cpCode']},
         'warnings': warnings,
     })
+
+
+# --------------------------------------------------------------------------- READ-COVERAGE-61
+def unconsign_detail(account_id: str, order_id: Any) -> Dict[str, Any]:
+    """未发货凭证详情（mtop.taobao.idle.merchant.unconsign.detail，只读）。
+
+    凭证文本 / 图片平台没给就是 null（前端显示「-」），**不补空串、不补空数组**。
+    """
+    try:
+        api, data = proto.unconsign_detail_request(order_id)
+    except ValueError as exc:
+        return common.fail(str(exc), 'invalid_fields')
+
+    value, failure = _call(account_id, api, data)
+    if failure is not None:
+        return failure
+    if proto.envelope_error(value):
+        return _platform_failure(value, api, '平台没有返回发货凭证')
+
+    parsed = proto.parse_unconsign_detail(value)
+    warnings: List[Dict[str, Any]] = []
+    if parsed['content'] is None and parsed['image_list'] is None:
+        warnings.append({
+            'code': 'no_evidence',
+            'message': '平台没有返回这张凭证的内容或图片（可能这一单本来就没有上传凭证），'
+                       '不代表「凭证是空的」—— 请点「刷新」再看一次。',
+        })
+    return _stamp({
+        'account_id': account_id,
+        'api': api,
+        'order_id': data['orderId'],
+        'content': parsed['content'],
+        'image_list': parsed['image_list'],
+        'raw': parsed['raw'],
+        'warnings': warnings,
+    })
+
+
+def delivery_place_detail(account_id: str) -> Dict[str, Any]:
+    """发货地详情（mtop.alibaba.idle.seller.platform.merchant.delivery.place.detail.query，只读）。
+
+    **形状未真机取证**，所以 detail 是平台业务体的原样透出；平台没给就是 null + warning。
+    """
+    api, data = proto.delivery_place_detail_request()
+    value, failure = _call(account_id, api, data)
+    if failure is not None:
+        return failure
+    if proto.envelope_error(value):
+        return _platform_failure(value, api, '平台没有返回发货地信息')
+
+    parsed = proto.parse_delivery_place_detail(value)
+    warnings: List[Dict[str, Any]] = []
+    if parsed['detail'] is None:
+        warnings.append({
+            'code': 'no_detail',
+            'message': '平台没有返回发货地详情字段（形状未取证），请点「刷新」重试。',
+        })
+    return _stamp({
+        'account_id': account_id,
+        'api': api,
+        'detail': parsed['detail'],
+        'warnings': warnings,
+    })
+
+
+# --------------------------------------------------------------------------- READ-COVERAGE-61
+#: 平台没给 `divisions` 键时的 warning（与「这个上级真的没有下级」区分开）。
+WARN_DIVISIONS_KEY_MISSING = {
+    'code': 'list_key_missing',
+    'message': '平台这一次没有返回区域码列表字段（divisions）。下面的空列表不等于「这个上级没有下级」，'
+               '别当成 0 条 —— 点「重试」再看一次。',
+}
+
+
+def divisions(account_id: str, token: Any = '', page_index: Any = '') -> Dict[str, Any]:
+    """区域码（`mtop.cainiao.geography.frontend.divisionsinfo.get`，只读，第 61 批）。
+
+    `token` 留空 → 根 `'CN'`（真机 31 个省）；`page_index` 留空 → 1。
+    参数不合格（页码不是正整数 / token 超长）→ 400 `invalid_fields`，**一个平台请求都不发**。
+
+    平台**没给** `divisions` 键时给空列表 + warning（与「这个上级确实没有下级」区分开）。
+    返回里带 `leaf_level`（官方口径 `level >= 4` 即叶子）—— 前端据此收级联；
+    **不要用 `is_leaf`（平台 `divisionLeaf`）当终止判据**，真机在区级上它是 `false`。
+    """
+    try:
+        api, data = division_proto.divisions_request(token, page_index)
+    except ValueError as exc:
+        return common.fail(str(exc), 'invalid_fields')
+
+    value, failure = _call(account_id, api, data, value_type=division_proto.VALUE_TYPE)
+    if failure is not None:
+        return failure
+    if proto.envelope_error(value):
+        return _platform_failure(value, api, '平台没有返回区域码')
+
+    parsed = division_proto.parse_divisions(value)
+    rows = parsed['divisions']
+    warnings: List[Dict[str, Any]] = []
+    if rows is None:
+        warnings.append(dict(WARN_DIVISIONS_KEY_MISSING))
+        rows = []
+    return _stamp({
+        'account_id': account_id,
+        'api': api,
+        'token': data['divisionToken'],
+        'parent_token': parsed['parent_token'],
+        'divisions': rows,
+        'count': len(rows),
+        'total_count': parsed['total_count'],
+        'total_page': parsed['total_page'],
+        'page_index': parsed['page_index'],
+        'page_size': parsed['page_size'],
+        'leaf_level': division_proto.LEAF_LEVEL,
+        'warnings': warnings,
+    })
+

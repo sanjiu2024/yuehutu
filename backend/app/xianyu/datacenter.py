@@ -1225,3 +1225,31 @@ async def cs_list(client: Any, kind: str = 'detail', start: str = '', end: str =
         'raw': payload,
         'errors': errors,
     }
+
+
+# --------------------------------------------------------------------------- READ-COVERAGE-61
+#: 会话维度的小铺统计（**只读**）。bundle 调用点
+#: ~/.dsh-tmp/seller_scan/js_008_vendors.js:1:1906144：
+#:   wN = eu => e3.G({api:"mtop.alibaba.idle.seller.pc.shop.stats.query", v:"1.0",
+#:                    data:{sessionId:eu}})
+#: 官方在 IM 会话里按 sessionId 拉这个会话所属小铺的统计。
+#: **不确定项**：响应形状未取证（bundle 只传参不解析），本层**原样返回**，不做任何字段识别。
+SHOP_STATS_API = 'mtop.alibaba.idle.seller.pc.shop.stats.query'
+
+#: 商品状态统计（**只读**）。bundle 调用点
+#: logs/seller_discover/item_templates_src/js_main.js:1:3075766：
+#:   T0 = ... gC({api:"mtop.taobao.idle.seller.platform.pc.item.status.statistics", v:"1.0",
+#:                showErrorToast:!0, needLoginPC:!0})
+#: 官方**不带 data**。**不确定项**：响应形状未取证，本层原样返回。
+ITEM_STATUS_STATISTICS_API = 'mtop.taobao.idle.seller.platform.pc.item.status.statistics'
+
+
+async def shop_stats(client: Any, session_id: Any) -> Any:
+    """会话维度的小铺统计（只读）。官方入参就是 {sessionId}（见常量注释）。"""
+    return await _mtop(client, SHOP_STATS_API,
+                       {'sessionId': '' if session_id is None else str(session_id)})
+
+
+async def item_status_statistics(client: Any) -> Any:
+    """商品状态统计（只读）。官方不带 data；这里发空对象，语义等价。"""
+    return await _mtop(client, ITEM_STATUS_STATISTICS_API, {})

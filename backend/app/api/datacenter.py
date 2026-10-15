@@ -125,3 +125,17 @@ def cs_list(
     """
     return _envelope(datacenter.cs_list(account_id, kind, start, end, page, size,
                                         order_by, order))
+
+
+# --------------------------------------------------------------------------- READ-COVERAGE-61
+@router.get('/{account_id}/shop-stats')
+def shop_stats(account_id: str, session_id: str = Query(default=''),
+               user: Any = Depends(current_user)):
+    """会话维度的小铺统计（只读）。session_id 必填（官方入参就是它）。形状未取证，原样透出。"""
+    return _envelope(datacenter.shop_stats(account_id, session_id))
+
+
+@router.get('/{account_id}/item-status-statistics')
+def item_status_statistics(account_id: str, user: Any = Depends(current_user)):
+    """商品状态统计（只读）。官方不带入参；响应形状未取证，原样透出。"""
+    return _envelope(datacenter.item_status_statistics(account_id))

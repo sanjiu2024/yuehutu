@@ -257,3 +257,31 @@ POST /api/sub-accounts/{account_id}/{sub_id}/password    {password,confirm}
 - **一次真机写请求都没发过**；只读侧 `sub.account.info.list` / `user.role.list` 对该账号是
   `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（没权限，不是 bug）。
 - 岗位列表 `roleId`/`roleName` 的真机形状未知 ⇒ `roles: null` + warning，不造空数组。
+
+
+## 第 61 批补充：发布页服务开通状态（只读）
+
+| method | path | 平台 api |
+| --- | --- | --- |
+| GET | /api/shop/{account_id}/pc-service-status?service_code= | mtop.alibaba.idle.pc.service.status.query |
+
+**真机证据**：**未真机验证**。bundle 调用点
+logs/seller_discover/item_templates_src/js_main.js:1:4141260：
+ybe = e => gC({api:"mtop.alibaba.idle.pc.service.status.query", data:{serviceCode:e}})。
+
+**注意**：官方这条包装**没写 v**（同族 pc.service.open 也没有），本模块其余接口都带
+v:"1.0"；未真机验证，所以先按本模块既有口径带版本号。若平台回
+FAIL_SYS_ILLEGAL_ARGUMENT，按真机证据再改。
+
+**响应形状未取证**：data 是平台业务体原样透出；平台没给业务体时是 null + warnings，
+**不补 false** —— 补 false 会变成「这项服务没开通」的假事实。
+
+**未确定项**：
+
+1. serviceCode 的取值集合（FAST_REFUND / INSPECTION / ...）没有真机确认，目前原样透传；
+2. 响应里表示「已开通」的字段名未取证，前端不应依赖具体键。
+
+**不接的写接口**：mtop.alibaba.idle.pc.service.open（同一 bundle 调用点 :1:4141359，
+bbe = e => gC({api:"mtop.alibaba.idle.pc.service.open", data:{...e}})）语义是**开通服务**，
+是变更不是查询；且入参 e 的形状只到调用点这一层（bbe(e) 的调用方未取证），
+接不出可靠的写闸门，所以本批不接，只登记进 WRITE_APIS 黑名单供「只读路径不碰写接口」断言。

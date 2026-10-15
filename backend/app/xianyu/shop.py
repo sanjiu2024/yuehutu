@@ -139,3 +139,30 @@ async def cs_groups(client: Any, page: int = 1, page_size: int = 20) -> Optional
 async def cs_agents(client: Any) -> Optional[Any]:
     """客服（子账号）列表。"""
     return await _data(client, CS_AGENT_LIST_API, {})
+
+
+# --------------------------------------------------------------------------- READ-COVERAGE-61
+#: 发布页某项服务（验货宝 / 极速退款 / 包邮 等）的开通状态（**只读**）。
+#: bundle 调用点 logs/seller_discover/item_templates_src/js_main.js:1:4141260：
+#:   ybe = e => gC({api:"mtop.alibaba.idle.pc.service.status.query", data:{serviceCode:e}})
+#: **不确定项**：官方包装**没写 v**（同族 pc.service.open 也没有），而本模块其余接口都带
+#: v:"1.0"；未真机验证，所以这里按本模块既有口径让 _data 统一带版本号。若平台要求别的
+#: 版本会回 FAIL_SYS_ILLEGAL_ARGUMENT，届时按真机证据改。响应形状也没取证（bundle 只传参
+#: 不解析），因此服务层**原样透出** data，不猜字段。
+PC_SERVICE_STATUS_API = 'mtop.alibaba.idle.pc.service.status.query'
+
+#: 发布页「开启某项服务」（**写**：会真的给商品/店铺开通一项服务）。bundle 调用点
+#: logs/seller_discover/item_templates_src/js_main.js:1:4141359：
+#:   bbe = e => gC({api:"mtop.alibaba.idle.pc.service.open", data:{...e}})
+#: **本批不接**：语义是变更不是查询，且入参 e 的形状只到调用点这一层（bbe(e) 的调用方
+#: 没有取证），接不出可靠的写闸门。登记在这里是为了让「只读路径不碰写接口」可被断言。
+PC_SERVICE_OPEN_API = 'mtop.alibaba.idle.pc.service.open'
+
+#: 把第 61 批的两条并进本模块的两张登记表（上面的表是历史取证记录，不改动）。
+READ_APIS = READ_APIS + (PC_SERVICE_STATUS_API,)
+WRITE_APIS = WRITE_APIS + (PC_SERVICE_OPEN_API,)
+
+
+async def pc_service_status(client: Any, service_code: Any) -> Any:
+    """发布页服务开通状态（只读）。官方入参就是 {serviceCode}（见常量注释的调用点原文）。"""
+    return await _data(client, PC_SERVICE_STATUS_API, {'serviceCode': service_code})

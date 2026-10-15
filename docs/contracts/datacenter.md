@@ -357,3 +357,32 @@ cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe 
    `usrRatio` / `usrRatioFormat` 究竟哪个出现、`profileVal` 的完整取值表仍待真机确认。
 4. 「字段名猜对了但平台回了**字符串数字**」时 `find_number` 判 `None` 且**不进**
    `unrecognized_keys`——用户看到的和无权限一模一样，自证机制不会提示。
+
+
+## 第 61 批补充：小铺统计 / 商品状态统计（只读）
+
+| method | path | 平台 api |
+| --- | --- | --- |
+| GET | /api/datacenter/{account_id}/shop-stats?session_id= | mtop.alibaba.idle.seller.pc.shop.stats.query |
+| GET | /api/datacenter/{account_id}/item-status-statistics | mtop.taobao.idle.seller.platform.pc.item.status.statistics |
+
+**真机证据**：**未真机验证**。两条都只有 bundle 调用点证据：
+
+- shop.stats.query：~/.dsh-tmp/seller_scan/js_008_vendors.js:1:1906144
+  （wN = eu => e3.G({api:"...", v:"1.0", data:{sessionId:eu}})，IM 会话维度）；
+- item.status.statistics：logs/seller_discover/item_templates_src/js_main.js:1:3075766
+  （T0 = ... gC({api:"...", v:"1.0", showErrorToast:!0, needLoginPC:!0})，**不带 data**）。
+
+**响应形状**：两条都**未取证**，所以服务层把平台业务体**原样透出**在 data 里，
+一个字段都不猜、不补 0（与本文档上面「指标缺失是 null 不是 0」同一口径）。
+这两个接口**不走** _call 的 metrics 契约校验（形状未取证时套契约校验会把平台换字段名
+误判成 502），只保留「协议层缺失 -> 503 / 调用异常 -> 翻信封」。
+
+**未确定项**：
+
+1. shop.stats.query 的 sessionId 语义（IM 会话 id？客服会话 id？）没有真机确认 —— 目前按
+   官方原文当字符串透传，不做格式校验；
+2. item.status.statistics 是否真的不需要任何入参（含日期）没有真机确认，目前发空对象；
+3. 两条的响应字段名全部未取证，前端**不应**依赖任何具体键。
+
+错误码：session_id 为空 -> invalid_fields（本地拦，不打平台）。
