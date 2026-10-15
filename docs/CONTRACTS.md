@@ -376,6 +376,12 @@ GET    /api/uploads/local/{name}               -> 本地留档原图（给前端
       -- `name` 白名单 `^[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$` 且 `resolve()` 后必须仍在目录内
       --   （防路径穿越）；缺失 404 `{success:false,code:'not_found'}`。
 POST   /api/items/{account_id}/{item_id}/delist | /relist
+      -- 上下架被**平台明确拒绝**时（协议层 CALL_ERROR）：本地状态**一个字节都不改**，也不进
+      --   `local_only`/`warnings`，而是进 `failed`（`code='protocol_error'`，message 带平台原文）。
+      --   理由：`local_only` 的语义是「本地真的改了但没推出去」，这里本地没改。
+      --   协议层未就绪（CALL_MISSING / 没有 client）仍是老口径：本地落库 + `local_only`。
+      --   （第六十一批修：此前本地 UPDATE 写在平台调用之前，平台失败时本地已经被改，
+      --     真机 `items.reshelf` 撞到过：HTTP 200 + `ok=0` 但本地已成 on_sale。）
 POST   /api/items/{account_id}/batch-edit      {item_ids:[...],patch:{price_delta|price_set|title_tpl|...}}
       -- patch 里的库存有三种写法，语义**不能混**：
       --   `stock`       绝对目标值（前端已经算好）；`stock_set` 设为固定值（等价，允许在库存未知时用）；
@@ -581,6 +587,8 @@ GET    /api/settings ; PUT /api/settings       {key:value,...}
 - `ok`/`synced`：本地改了、平台也推成功了。
 - `warnings`/`local_only`：**本地改了但没推出去**（`code=not_pushed`）—— UI 必须显示成「仅本地生效」，绝不能报成功。
 - `failed`/`skipped`：完全没改（含跨账号 `code=account_mismatch`、商品不存在）。
+- `failed` 里还有一类：**上下架被平台明确拒绝**（`code='protocol_error'`）—— 本地状态没动，
+  message 是「平台{上架|下架}失败，本地状态未改动（仍为 X）：<平台原文>」。（第六十一批）
 - `noop`（新）：本次请求**没有任何实际改动**（目前只有 `{"images": []}` 这一种，语义是「本次不改图」而不是清空商品图）：
   既不写库也不推平台，单条返回 `{item, synced: true, updated_fields: [], noop: true, warning: null}`；
   批量汇总里 `noop` 单独计数、**不计入 `ok`**，恒等式 `total == ok + local_only + noop + len(failed)`。
@@ -783,6 +791,7 @@ POST /api/shop/{account_id}/cs-routing/rule   {distribution_method,repeat_custom
 POST /api/shop/{account_id}/cs-groups         {operate_type:create|update,group_id?,group_name,mode,specified_type?,specified_type_name?,type_data?,customer_uids?,confirm}
 POST /api/shop/{account_id}/cs-groups/delete  {group_id,confirm}
 GET  /api/shop/{account_id}/profile
+GET  /api/shop/{account_id}/pc-service-status?service_code=   -- 第 61 批：发布页服务开通状态（只读；AI 工具 `shop_pc_service_status`）
 POST /api/shop/{account_id}/profile/nick      {nick,confirm}
 POST /api/shop/{account_id}/profile/desc      {desc,confirm}
 POST /api/shop/{account_id}/profile/avatar    {avatar_url,confirm}
@@ -814,6 +823,10 @@ POST /api/sub-accounts/{account_id}/{sub_id}/password  {password,confirm}
 
 【只读 · 数据】`docs/contracts/datacenter.md`
 GET /api/datacenter/{account_id}/overview?start=YYYYMMDD&end=YYYYMMDD
+GET /api/datacenter/{account_id}/shop-stats?session_id=       -- 第 61 批：会话维度店铺统计（只读；AI 工具 `datacenter_shop_stats`）
+GET /api/datacenter/{account_id}/item-status-statistics       -- 第 61 批：商品状态统计（只读；AI 工具 `datacenter_item_status_statistics`）
+        -- 这两条**不走** `services/datacenter.py::_call` 的 metrics 键校验（那是四张经营卡片的口径，
+        --   会把未取证形状误判成 502），另走 `_read_call`/`_read_page`；形状未真机取证，原样透出。
 GET /api/datacenter/{account_id}/commodity?start=&end=&item_id=&item_name=&page=&size=&order_by=&order=
        -- 「商品数据」页（第三十四批）：官方菜单树里我们最后一个没复刻的叶子页（/seller-data/commodity）。
        --   默认区间是**今天**（跟官方一致），与总览/粉丝/客服的「今天往前 7 天」故意不同。
@@ -1089,6 +1102,18 @@ POST /api/logistics/{account_id}/orders/{order_id}/resend      {mail_no,cp_code,
        -- 单开 `/api/logistics` 而不并进 `/api/trade`：那边是订单/退款/评价的读写，这边是物流基础设施。
        -- AI 侧 3 个工具：`logistics_companies` / `logistics_guess_mailno`（只读、无 `confirm`）
        --   + `logistics_resend_consign`（要 `confirm`）。
+【第 61 批 · 读接口补齐（READ-COVERAGE-61）+ 区域码】`docs/contracts/logistics.md` / `shop.md` / `datacenter.md`
+GET  /api/logistics/{account_id}/orders/{order_id}/unconsign-detail  -- 未发货凭证详情（只读）
+GET  /api/logistics/{account_id}/delivery-place                      -- 发货地详情（只读；形状未真机取证，原样透出）
+GET  /api/logistics/{account_id}/divisions?token=&page_index=        -- 区域码（省/市/区，只读；token 留空回根 CN 的 31 个省）
+        -- 区域码真机（2026-10-16）：`mtop.cainiao.geography.frontend.divisionsinfo.get`
+        --   `{divisionToken,pageIndex,bizEntrance:'idle_fish'}` + `value_type='division'`；
+        --   **真实数据在信封的 `data.data`**（比常规多嵌一层）：`{divisions,totalCount,totalPage,pageIndex,pageSize,parentToken}`；
+        --   `CN` → 31 省、`CN^^^北京` → 1 市、再下一级 → 17 区；元素键 `divisionId`（整数）/`divisionToken`/
+        --   `names.CN`/`level`/`divisionLeaf`。退货地址提交的 `areaId` 就是叶子节点的 `divisionId`。
+        --   平台**没给** `divisions` 键 → 空列表 + 中文 warning（与「这个上级确实没有下级」区分开）。
+        -- 上面两条物流只读（`unconsign-detail` / `delivery-place`）形状未真机取证，`detail` 原样透出，不猜字段。
+        -- AI 侧 3 个只读工具：`logistics_unconsign_detail` / `logistics_delivery_place` / `logistics_divisions`。
 
 【第 40 批 /api/im —— 会话级写操作（拉黑状态 / 拉黑 / 解除 / 发商品卡片）】
    GET  /api/im/{account_id}/blacklist?session_id=|conversation_id=
