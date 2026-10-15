@@ -2154,6 +2154,44 @@ class SmartFormTest(TradeWritePageTest):
         with self.assertRaises(ValueError):
             proto.smart_form_query_request('{不是 JSON}')
 
+    def test_query_request_is_flat_and_string_valued(self):
+        """官方载荷是 `URLSearchParams` 的结果 ⇒ **平铺**、值一律字符串，没有信封键。"""
+        _, data = proto.smart_form_query_request({'orderId': 123, 'kun': 'true'})
+        self.assertEqual(data, {'orderId': '123', 'kun': 'true'})
+        for envelope in ({'params': {'orderId': '1'}},
+                         {'inputJson': {'orderId': '1'}},
+                         {'formParam': {'orderId': '1'}},
+                         {'a': ['b']}, {'a': None}, {'a': True}):
+            with self.assertRaises(ValueError):
+                proto.smart_form_query_request(envelope)
+
+    def test_params_from_url_matches_the_official_urlsearchparams(self):
+        url = ('https://h5.m.goofish.com/wow/moyu/moyu-project/temp-pages/pages/form'
+               '?kun=true&opaque=false&instanceId=INS-1&sceneCode=SC-1')
+        self.assertEqual(proto.smart_form_params_from_url(url),
+                         {'kun': 'true', 'opaque': 'false',
+                          'instanceId': 'INS-1', 'sceneCode': 'SC-1'})
+        # 整条 URL 也能直接当 `params` 丢进来，拆法与官方 `cO(t.url)` 一致
+        self.assertEqual(proto.smart_form_query_request(url)[1],
+                         proto.smart_form_params_from_url(url))
+        for bad in ('', '   ', 'not a url', 'https://x/y'):
+            self.assertEqual(proto.smart_form_params_from_url(bad), {})
+
+    def test_params_from_buttons_only_takes_the_long_cycle_fill_form_action(self):
+        buttons = [
+            {'code': 'ADD_MEMO', 'url': 'https://x/y?orderId=1'},
+            {'code': proto.SMART_FORM_ACTION_CODE,
+             'url': 'https://x/form?instanceId=I1&sceneCode=S1'},
+        ]
+        self.assertEqual(proto.smart_form_params_from_buttons(buttons),
+                         {'instanceId': 'I1', 'sceneCode': 'S1'})
+        self.assertEqual(proto.smart_form_params_from_buttons(
+            [{'code': 'ADD_MEMO', 'url': 'https://x/y?orderId=1'}]), {})
+        self.assertEqual(proto.smart_form_params_from_buttons(
+            [{'code': proto.SMART_FORM_ACTION_CODE, 'url': ''}]), {})
+        for bad in (None, {}, 'x', [None, 'x']):
+            self.assertEqual(proto.smart_form_params_from_buttons(bad), {})
+
     def test_parse_query_decodes_the_schema_string_and_keeps_the_raw_one(self):
         parsed = proto.parse_smart_form_query(SMART_FORM_OK)
         self.assertTrue(parsed['found'])
@@ -2235,6 +2273,44 @@ class SmartFormTest(TradeWritePageTest):
 
     def test_query_read_path_rejects_post(self):
         self.assertEqual(self.post(self.query_path()).status_code, 405)
+
+    def order_path(self, order_id: str = '3316828477185002780') -> str:
+        return BASE + '/%s/smart-form/query?order_id=' % ACC + order_id
+
+    def with_order_buttons(self, buttons):
+        """把「订单帧里的按钮」这一跳换成假的（真机那跳是只读的 order.list，这里不联网）。"""
+        original = trade_write_svc._order_buttons
+        trade_write_svc._order_buttons = lambda account_id, order_id: (buttons, None)
+        return original
+
+    def test_query_can_derive_params_from_the_order_frame(self):
+        buttons = [{'code': proto.SMART_FORM_ACTION_CODE,
+                    'url': 'https://h5.m.goofish.com/x?instanceId=I1&sceneCode=S1'}]
+        original = self.with_order_buttons(buttons)
+        try:
+            resp = self.get(self.order_path())
+        finally:
+            trade_write_svc._order_buttons = original
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertEqual(data['params'], {'instanceId': 'I1', 'sceneCode': 'S1'})
+        self.assertEqual(data['order_id'], '3316828477185002780')
+        self.assertEqual(self.fake.call_of(proto.SMART_FORM_QUERY_API)['data'],
+                         {'instanceId': 'I1', 'sceneCode': 'S1'})
+
+    def test_query_says_unavailable_instead_of_inventing_params(self):
+        original = self.with_order_buttons(
+            [{'code': 'ADD_MEMO', 'url': 'https://x/y?orderId=3316828477185002780'}])
+        try:
+            resp = self.get(self.order_path())
+        finally:
+            trade_write_svc._order_buttons = original
+        self.assertEqual(resp.status_code, 400, resp.text)
+        body = resp.json()
+        self.assertEqual(body.get('code'), 'smart_form_params_unavailable')
+        self.assertIn(proto.SMART_FORM_ACTION_CODE, body.get('message', ''))
+        self.assertIn('ADD_MEMO', body.get('message', ''))
+        self.assertEqual(self.fake.calls, [], '拿不到参数时一个平台请求都不许发')
 
     # -- 路由：提交 ------------------------------------------------------
 

@@ -25,6 +25,7 @@ import json
 import re
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from urllib.parse import parse_qsl, urlsplit
 
 from .trade import body_of, decode_payload, envelope_error, envelope_message
 
@@ -179,8 +180,19 @@ BACKFILL_REPORT_VERSION = '1.0'
 #: —— 载荷是**页面 URL 的查询参数**（官方 `cO(t.url)` / `ap.DP(ef.url)`），
 #: 所以这里要求调用方原样给那份对象，**不替平台编键名**。
 #: 响应读 `data.result.formSchema.schemaData`（JSON **字符串**）与 `data.result.formData`。
+#:
+#: **形状是平铺的，没有信封键**（2026-10-16 真机只读复打，见 `docs/contracts/trade_write.md` §13.7）：
+#: 官方 `ap.DP` = `Object.fromEntries(new URLSearchParams(query).entries())`（`js_008_vendors.js`
+#: 偏移 106615），所以 **值一律是字符串**，键序即 URL 里的顺序；包成
+#: `{params:…}` / `{inputJson:…}` / `{formParam:…}` 都是我们编的，平台只回同一个兜底错误。
 SMART_FORM_QUERY_API = 'mtop.taobao.merchant.heracles.inno.smart.form.query'
 SMART_FORM_QUERY_VERSION = '1.0'
+
+#: 智能表单在订单帧里的动作码：官方抽屉 `longCycleFillFormInfo`
+#: （`trade_bundle/main.js` 偏移 2067143 / 2073128 / 3091308 三处）。
+#: 它的 `clickEvent.data.url` **就是表单页地址** —— 官方 `smart.form.query` 的载荷正是
+#: 这个 URL 的查询串，所以「参数从哪来」的答案在订单帧里，不在调用方手里。
+SMART_FORM_ACTION_CODE = 'longCycleFillFormInfo'
 
 #: 智能表单提交（**写**）。bundle 偏移 3081308 / 802676 两处逐字相同：
 #: `{callbackCode:s, extJson:JSON.stringify({event:v.event, ...其余字段, formData:a})}`
@@ -785,12 +797,66 @@ def smart_form_query_request(params: Any) -> Tuple[str, Dict[str, Any]]:
                 params = json.loads(text)
             except ValueError:
                 raise ValueError('智能表单参数不是合法 JSON')
+        elif '://' in text:
+            # 整条表单页 URL：等价官方 `cO(t.url)`，比让调用方自己拆更不容易拆错
+            params = smart_form_params_from_url(text)
         else:
-            from urllib.parse import parse_qsl
             params = dict(parse_qsl(text.lstrip('?'), keep_blank_values=True))
     if not isinstance(params, dict) or not params:
-        raise ValueError('智能表单参数不能为空（给页面 URL 的查询参数对象）')
-    return SMART_FORM_QUERY_API, dict(params)
+        raise ValueError('智能表单参数不能为空（给页面 URL 的查询参数对象，或给 order_id 由我们去订单帧里取）')
+    flat: Dict[str, str] = {}
+    for key, value in params.items():
+        if isinstance(value, (dict, list, tuple)):
+            raise ValueError(
+                '智能表单参数是**平铺**的键值对（官方直接发 URLSearchParams 的结果，'
+                '没有 params / inputJson 之类的信封键），%s 的值是容器' % _text(key))
+        if value is None or isinstance(value, bool):
+            raise ValueError(
+                '智能表单参数 %s 的值必须是字符串（官方 URLSearchParams 的取值一律是字符串）' % _text(key))
+        flat[_text(key)] = value if isinstance(value, str) else str(value)
+    if not flat:
+        raise ValueError('智能表单参数不能为空（给页面 URL 的查询参数对象，或给 order_id 由我们去订单帧里取）')
+    return SMART_FORM_QUERY_API, flat
+
+
+def smart_form_params_from_url(url: Any) -> Dict[str, str]:
+    """把表单页 URL 拆成 `smart.form.query` 的载荷 —— 等价官方 `cO(t.url)` / `ap.DP(ef.url)`。
+
+    官方实现是 `new URLSearchParams(查询串).entries()` ⇒ **值一律是字符串**、键序即 URL 序。
+    拿不到查询串（空串 / 没有 `?` / 解析失败）就回 `{} `，由上层判空后**照实报错**，不猜。
+    """
+    text = _text(url).strip()
+    if not text:
+        return {}
+    try:
+        query = urlsplit(text).query
+    except ValueError:
+        return {}
+    if not query and '?' in text:
+        # `fleamarket://xxx?a=1` 这类没有 netloc 的深链也能取到查询串
+        query = text.split('?', 1)[1]
+    if not query:
+        return {}
+    return dict(parse_qsl(query, keep_blank_values=True))
+
+
+def smart_form_params_from_buttons(buttons: Any) -> Dict[str, str]:
+    """从订单帧的按钮列表里取表单页参数（官方抽屉走的正是这条路）。
+
+    `buttons` 是 `trade.parse_orders` 归一化后的形状（`{code, url, action_type, …}`）。
+    没有 `SMART_FORM_ACTION_CODE` 按钮、或那个按钮没带 URL ⇒ `{}`（不拿订单号冒充表单参数）。
+    """
+    if not isinstance(buttons, (list, tuple)):
+        return {}
+    for button in buttons:
+        if not isinstance(button, dict):
+            continue
+        if _text(button.get('code')) != SMART_FORM_ACTION_CODE:
+            continue
+        params = smart_form_params_from_url(button.get('url'))
+        if params:
+            return params
+    return {}
 
 
 def smart_form_callback_request(callback_code: Any, ext: Any = None,

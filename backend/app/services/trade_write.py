@@ -25,6 +25,7 @@ from ..xianyu import compensate as cp_proto
 from ..xianyu import order_address as order_addr_proto
 from ..xianyu import trade_write as proto
 from . import common
+from . import trade as trade_svc
 # 账号/凭据检查只有一份，直接复用只读服务里的私有助手（同包内，避免两套判定漂移）
 from .trade import _client, _stamp, _text
 
@@ -1056,14 +1057,60 @@ def backfill_report(account_id: str, order_id: Any) -> Dict[str, Any]:
     return payload
 
 
-def smart_form_query(account_id: str, params: Any) -> Dict[str, Any]:
+#: 订单列表最多翻几页找表单按钮（表单参数只能从订单帧的按钮 URL 里拿，见 §13.7）
+SMART_FORM_ORDER_PAGES = 3
+SMART_FORM_ORDER_PAGE_SIZE = 50
+
+
+def _order_buttons(account_id: str, order_id: str) -> Tuple[Any, Optional[Dict[str, Any]]]:
+    """在订单列表里找这一单的按钮（只读）。找不到就是 `(None, None)`，不猜。
+
+    为什么翻列表而不是查详情：官方抽屉的 data 就是**订单帧里那个按钮**的
+    `clickEvent.data`（`trade_bundle/main.js` 偏移 2073128 / 2081296），
+    列表帧与详情帧的 `rightVO.btnList` 同源；我们只有列表这条只读路。
+    """
+    for page in range(1, SMART_FORM_ORDER_PAGES + 1):
+        result = trade_svc.orders(account_id, page, SMART_FORM_ORDER_PAGE_SIZE)
+        if common.is_failure(result):
+            return None, result
+        for order in result.get('orders') or []:
+            if isinstance(order, dict) and _text(order.get('order_id')) == order_id:
+                return order.get('buttons'), None
+        if not (result.get('paging') or {}).get('next_page'):
+            break
+    return None, None
+
+
+def smart_form_query(account_id: str, params: Any = None, *,
+                     order_id: Any = None) -> Dict[str, Any]:
     """智能表单元数据 —— **只读**，所以没有 `confirm`。
 
-    `params` 是页面 URL 的查询参数（官方原样发出去的那个对象），键名不替平台编。
+    `params` 是**表单页 URL 的查询参数**（官方原样发出去的那个对象），键名不替平台编；
+    也可以整条 URL 丢进来（协议层按官方 `cO(t.url)` 拆）。
+    不给 `params` 时可以给 `order_id`：我们照官方那条路走 —— 去订单帧里取
+    `longCycleFillFormInfo` 按钮的 URL 再拆出参数。
+    **拿不到就照实说拿不到**（`smart_form_params_unavailable`），不拿 `orderId` 冒充表单参数。
     """
-    failure = _missing(('表单参数', params))
-    if failure:
-        return failure
+    order = _text(order_id).strip()
+    if _missing(('表单参数', params)):
+        if not order:
+            return common.fail(
+                '表单参数不能为空（给页面 URL / 它的查询参数对象，或给 order_id 由我们去订单帧里取）',
+                'invalid_fields')
+        buttons, failure = _order_buttons(account_id, order)
+        if failure:
+            return failure
+        derived = proto.smart_form_params_from_buttons(buttons)
+        if not derived:
+            seen = sorted({_text(b.get('code')) for b in (buttons or [])
+                           if isinstance(b, dict) and _text(b.get('code'))})
+            return common.fail(
+                '这一单（%s）的订单帧里没有 %s 按钮%s，平台没给表单页 URL，'
+                '所以拿不到表单参数；参数只能由平台给，这里不拿订单号冒充。'
+                % (order, proto.SMART_FORM_ACTION_CODE,
+                   ('（帧里的按钮：%s）' % '/'.join(seen)) if seen else ''),
+                'smart_form_params_unavailable')
+        params = derived
     try:
         api, data = proto.smart_form_query_request(params)
     except ValueError as exc:
@@ -1073,6 +1120,7 @@ def smart_form_query(account_id: str, params: Any) -> Dict[str, Any]:
     if common.is_failure(payload):
         return payload
     payload['params'] = data
+    payload['order_id'] = order or None
     warnings: list = []
     if payload.get('schema') is None:
         warnings.append({

@@ -169,6 +169,12 @@ class ReadRoundTripTest(unittest.TestCase):
         api, data = proto.smart_form_query_request('formId=9&bizType=order')
         raw, call = self.call(api, data, proto.SMART_FORM_QUERY_VERSION, SMART_FORM_BODY)
         self.assertEqual(call['payload'], {'formId': '9', 'bizType': 'order'})
+        # 官方形状：平铺、值字符串（URLSearchParams），没有信封键
+        _, from_url = proto.smart_form_query_request(
+            'https://h5.m.goofish.com/form?instanceId=I1&sceneCode=S1')
+        self.assertEqual(from_url, {'instanceId': 'I1', 'sceneCode': 'S1'})
+        with self.assertRaises(ValueError):
+            proto.smart_form_query_request({'params': {'instanceId': 'I1'}})
         parsed = proto.parse_smart_form_query(raw)
         self.assertEqual(parsed['schema'], {'type': 'object'})
         self.assertEqual(parsed['schema_raw'], '{"type": "object"}')

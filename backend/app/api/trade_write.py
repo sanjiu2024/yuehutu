@@ -606,16 +606,21 @@ def order_backfill_report(
 def smart_form_query(
     account_id: str,
     params: str = Query(
-        default='', description='页面 URL 的查询参数（`a=1&b=2`）或 JSON 对象串'),
+        default='', description='表单页 URL 的查询参数（`a=1&b=2`）、JSON 对象串，或整条 URL'),
+    order_id: str = Query(
+        default='', description='订单号：不给 params 时去订单帧里取智能表单按钮的 URL 再拆参数'),
     user=Depends(current_user),
 ):
     """智能表单元数据（**只读**，没有 `confirm`）：`…heracles.inno.smart.form.query` v1.0。
 
     官方把页面 URL 的查询参数整个当载荷发出去，所以这里也**整份透传**：
-    `params` 收 `a=1&b=2` 这种查询串，也收 `{"a": 1}` 这种 JSON 串（键名不替平台编）。
+    `params` 收 `a=1&b=2` 这种查询串、`{"a": 1}` 这种 JSON 串，也收**整条 URL**
+    （协议层按官方 `cO(t.url)` 拆）。键名不替平台编：**平铺**，没有 `params`/`inputJson` 信封。
+    只给 `order_id` 时我们照官方那条路去订单帧里取 `longCycleFillFormInfo` 按钮的 URL；
+    拿不到就回 `smart_form_params_unavailable`，**不拿订单号冒充表单参数**。
     只读 ⇒ 故意做成 GET，免得被当成写路由（服务层也不会发任何写请求）。
     """
-    return _envelope(trade_write.smart_form_query(account_id, params))
+    return _envelope(trade_write.smart_form_query(account_id, params, order_id=order_id))
 
 
 @router.post('/{account_id}/smart-form/submit')

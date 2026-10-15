@@ -670,3 +670,86 @@ XIANYU_APP_DIR=$TEMP/xywb_tw_cov PYTHONPATH=. PYTHONIOENCODING=utf-8 \
    一律当「不可用」+ warning 透出原文 code，不猜含义。
 7. **智能表单 `params` 的字段名**全部透传，不做白名单 —— 官方就是拿页面 URL 的 query 直接发。
 - AI 侧只读工具 `trade_adjust_price_render`。
+
+### 13.7 智能表单：参数形状已定，但**这一账号取不到真实参数**（2026-10-16）
+
+**结论一句话**：官方载荷形状已经查清并落地（**平铺、值一律字符串、无信封键**），
+但真机只读复打**三种形状全部同一个 502 兜底错误**；原因是该账号 15 笔订单里**没有任何一笔**
+带智能表单按钮 ⇒ 平台从未下发过表单页 URL ⇒ **本地拿不到真实参数**，复打只能证明「形状不是主因」。
+
+#### 13.7.1 官方形状（从 bundle 反查，非推测）
+
+| 项 | 事实 | 出处 |
+|---|---|---|
+| 载荷 | **页面 URL 的查询参数，平铺**，键序即 URL 序 | `js_008_vendors.js` 偏移 798973：`G({api:"mtop.taobao.merchant.heracles.inno.smart.form.query",v:"1.0",data:e5})`，`e5=DP(ef.url)` |
+| 拆参函数 | `DP = Object.fromEntries(new URLSearchParams(query).entries())` ⇒ **值一律是字符串** | 同文件偏移 106615（webpack 模块 79122 的 `DP`） |
+| **无信封键** | 没有 `params` / `inputJson` / `formParam` 之类的包装，**顶层就是 URL 的键** | 同上（`DP` 的返回值直接当 `data`） |
+| 传输 | `type:"POST"`、`appKey:"34839810"`、`accountSite:"xianyu"`、`dataType:"json"`、`needLogin:false`、`sessionOption:"AutoLoginOnly"` | 同文件偏移 102064（模块 84229 的 `G` 默认项） |
+| 响应 | `data.result.formSchema.schemaData` 是 **JSON 字符串**（要再 `JSON.parse`）+ `data.result.formData` | 消费点 `JSON.parse(eu.data.result.formSchema.schemaData)` |
+| 参数从哪来 | 订单帧里 `longCycleFillFormInfo` 按钮的 `clickEvent.data.url` 的查询串 | `trade_bundle/main.js` 偏移 2067143（动作表）/ 2073128 / 2081296（订单帧解析）/ 3091308（抽屉渲染）；渲染处读 `e.data.url` |
+
+⇒ **必填键不是 `orderId`**：真实键名（`instanceId` / `sceneCode` / `outerType` / `outerId` …）
+由平台按那一单生成的 URL 决定，**本地凭空构造不出来**，所以后端**不猜键名**：
+要么调用方整份给（`params` / 整条 URL），要么给 `order_id` 让我们去订单帧里取。
+
+#### 13.7.2 真机只读复打逐条结果
+
+探针：`logs/fail62/kurumi/replay.py`，串行、每条间隔 ≥2.5s，打打包版 18400（透传）。
+目标单 `3316828477185002780`（账号 2217970177348 月狐兔_）。
+
+| # | 形状（`params=` 的原文） | HTTP | 平台码 / 文案 | 判读 |
+|---|---|---|---|---|
+| A | `{"params":{"orderId":"3316828477185002780"}}` | **502** | `protocol_error` + `UNKNOWN_FAIL_CODE::系统开小差了，请稍候重试` | 信封假设**不成立**（原实现就是这个） |
+| B | `{"kun":"true","opaque":"false","orderId":"3316828477185002780"}` | **502** | 同上，逐字相同 | 平铺也没用 ⇒ **形状不是主因** |
+| C | `{"orderId":3316828477185002780}` | **502** | 同上，逐字相同 | 值类型（数字）也没用 |
+
+原始响应：`logs/fail62/kurumi/replay_A_envelope.json`、`replay_B_urlquery_flat.json`、`replay_C_numeric.json`。
+
+**第二轮：拿新代码在真机上跑（只读，2026-10-16 03:42）** —— 上面 A/B/C 打的是打包版 18400
+（**改动前的旧代码**，只做透传）。改完之后又用**新代码**在进程内直连真机跑了两条，
+目的是验证新增的 `order_id` 那条路真的能从平台拿到订单帧（而不是只在单测里通过）：
+
+| # | 调用 | 结果 | 判读 |
+|---|---|---|---|
+| D | `smart_form_query(ACC, None, order_id='3316828477185002780')` | `success:false` / `code:smart_form_params_unavailable`，消息列出**真实按钮码** `ADD_MEMO/ADD_USER_IMPRESSION/CONTACT_SELLER/DELETE_ORDER` | **新路通了**：`order.list` 真机返回成功并解析出该单的按钮，只是这单确实没有表单按钮 ⇒ 本地如实拒绝，**一个 `smart.form.query` 请求都没发** |
+| E | `smart_form_query(ACC, '<整条表单页 URL>')` | **502** / `protocol_error` + 同一个 `UNKNOWN_FAIL_CODE` | 整条 URL 拆参与官方 `cO(t.url)` 一致，但平台照旧兜底报错 |
+
+原始响应：`logs/fail62/kurumi/live_D_order_id_path.json`、`live_E_whole_url.json`。
+（跑法：`XIANYU_APP_DIR=<app 数据目录的父目录> PYTHONPATH=. /c/Python310/python.exe`；
+注意 `APP_DIR` 是 `data/` 的**父目录**，`DB_PATH = APP_DIR/data/app.db`。）
+
+#### 13.7.3 为什么打不通：这一账号根本没有表单入口
+
+`GET /api/trade/2217970177348/orders?page=1..3&size=50`（只读，证据 `logs/fail62/kurumi/orders_p1.json`）：
+共 **15 笔**订单（第 1 页就 `paging.next_page=false`），**没有一笔**的 `buttons` 里有
+`longCycleFillFormInfo`。目标单只有 `DELETE_ORDER` / `ADD_USER_IMPRESSION` /
+`CONTACT_SELLER` / `ADD_MEMO` 四个按钮。
+
+⇒ 平台没给过表单页 URL ⇒ **本账号无法取得真实参数**，A/B/C 三打只是「换个形状再撞同一堵墙」。
+
+#### 13.7.4 未解 + 已排除的假设
+
+**未解**：`smart.form.query` 用**真实参数**（`instanceId` / `sceneCode` 那套）是否能 200 ——
+**没有样本，无法验证**。要验证只能等一个真的带智能表单按钮的订单/账号（运营活动类订单才有），
+在那之前**不能宣称接口可用**。
+
+**已排除**：
+1. ~~参数要包在 `params` 信封里~~ —— A 打与 B 打同错；且官方 `DP` 的返回值直接当 `data`。
+2. ~~值要用数字类型~~ —— C 打同错；且 `URLSearchParams` 取值只能是字符串。
+3. ~~缺 `bizCode` / `scene` 之类的必填键~~ —— 平台回的是**兜底错误**（`UNKNOWN_FAIL_CODE`），
+   不是「参数校验失败」；若是缺必填键，MTOP 通常回 `FAIL_SYS_ILLEGAL_ARGUMENT` 一类。**注意这是推断，不是实证。**
+
+**没做的事（刻意）**：没有打 `smart.form/submit` / `smart.form.callback`（写操作，会产生平台工单），
+所以 callback 的真实形状只有 bundle 反查结论（`{callbackCode, extJson:{event, …, formData}}`），**未经真机验证**。
+
+#### 13.7.5 本次因此改了什么（行为变化）
+
+- 协议层 `smart_form_query_request`：**拒绝信封**（值是 dict/list 直接报错）、
+  **拒绝非字符串值**（`None`/`bool` 报错，其余 `str()` 归一），新增
+  `smart_form_params_from_url`（等价官方 `cO(t.url)`）与
+  `smart_form_params_from_buttons`（只认 `SMART_FORM_ACTION_CODE = 'longCycleFillFormInfo'`）。
+- 服务层 `smart_form_query(account_id, params=None, *, order_id=None)`：只给 `order_id` 时
+  翻最多 3 页 `order.list` 找该单的按钮，取按钮 URL 的查询串当参数；**取不到就回
+  `smart_form_params_unavailable`**（400，消息里列出帧内实际按钮 code），
+  **绝不拿 `orderId` 冒充表单参数** —— 这正是原实现在做的事。
+- 路由 `GET /{account_id}/smart-form/query` 新增 `order_id` 查询参数；只读属性不变（仍是 GET，服务层不发写请求）。
