@@ -1391,6 +1391,33 @@ POST /api/items/{account_id}/publish/precheck
   把 `orders_deliver` 改回纯本地端点 → 测试 1 报错；把一条白名单删掉 → 测试 2 报错；
   两者都 `detected=True`。
 
+第五十五批（三个「全局 AI 开关」真的生效：**修真缺陷**）
+【背景真缺陷】`config.DEFAULT_SETTINGS` 里的 `ai.enabled` / `chat.auto_reply_scope` /
+  `chat.human_takeover_seconds` 在此之前**生产代码一次都没读过**
+  （`grep -rn "human_takeover" backend/app` 只命中它自己的定义）—— 它们只活在 `settings` 表与
+  `GET /api/settings` 的返回里：把 AI 关掉、把范围改成 `off`、设了「人工回复后 N 秒不插话」，
+  AI 照样开口。三个键现在真的生效，拒发原因都有结构化 code。
+【判据收口】`backend/app/services/chats.py::_auto_reply_gate(conversation)`：
+  顺序 **全局总开关 → 范围 → 人工接管窗口 → 账号级开关**；**生成侧**（`handle_incoming`）与
+  **投递侧**（`deliver_ai_reply`）共用同一份判据（绕开任一侧都漏不掉开关）。
+  结构化拒发 code：`ai_disabled` / `auto_reply_scope_off` / `auto_reply_scope_items_only` /
+  `human_takeover`，与既有的 `mode_not_auto` / `system_message` / `account_auto_reply_off` 同形。
+【三个开关的口径】
+  1. `ai.enabled`：只有 `true`（大小写/空白无关）算开，其余（含 `false` / `0` / 空）都当关；默认 `true`。
+  2. `chat.auto_reply_scope`：`all`（默认）| `items_only`（只回挂着 `item_id` 的会话）| `off`（一律不回）；
+     **认不出的值按 `all` 处理且不报错** —— 设置项是自由文本，写错一个字母不该让 AI 整个停摆。
+  3. `chat.human_takeover_seconds`：`<=0` 表示不限制（默认 `0`，保持旧行为）；判据是
+     **最近一条人工外发消息（`direction='out'` 且 `sender='human'`）有多新**，时间差交给 SQLite
+     `julianday` 算（`messages.created_at` 是 `CURRENT_TIMESTAMP`（UTC），用 Python 本地时间相减
+     会整整差一个时区）。它与「人工回复后会话切 `manual`」（`send_manual` 既有行为）不重复：
+     走本机界面回的会切 manual，但**卖家在手机/网页版自己回的消息**是平台侧同步进来的、不切模式，
+     那时只有这个窗口拦得住 AI 插话。
+【界面】`frontend/src/pages/Agents.tsx` 新增「AI 自动回复开关」卡（总开关 / 范围下拉 / 秒数输入 + 保存），
+  写 `PUT /api/settings`；三个开关只影响 AI 自动回复，人工在会话页发的消息不受影响。
+【测试】`backend/tests/test_services_chats.py::ReplySettingsGateTest`（12 条）：默认全开、关总开关、
+  投递侧同样被拦、范围 `off`、范围 `items_only`（有/无商品两条）、认不出的范围按 `all`、
+  接管窗口生效 / 过期 / `0`=不限制 / 只认人工消息 / 投递侧同样生效。
+
 【写接口的三条硬口径（所有 *_write 一律遵守）】
 1. 每个写函数第一个参数是 `confirm`，未确认直接失败（`confirmation_required` /
    `confirm_required`），**一次平台请求都不发**；

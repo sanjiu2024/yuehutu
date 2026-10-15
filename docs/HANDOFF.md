@@ -62,8 +62,8 @@
 ## 二、验收基线（真实命令与输出）
 
 ```text
-cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_guard54_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 62  PASS 62  FAIL 0  CASES 2711  SKIPPED 2
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_gate55_full&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 62  PASS 62  FAIL 0  CASES 2723  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -83,8 +83,8 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 97 modules transformed.
-   frontend/dist/assets/index-D50hq6iO.js (641.01 kB, gzip 201.47 kB)
-   frontend/dist/assets/index-B1Z6zu0w.css (156.99 kB, gzip 24.60 kB)
+   frontend/dist/assets/index-IBkt4w_C.js (643.08 kB, gzip 202.15 kB)
+   frontend/dist/assets/index-BKG4hgAV.css (157.65 kB, gzip 24.69 kB)
 ```
 
 ```text
@@ -3430,10 +3430,50 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `scripts/contrast_audit.py --threshold 4.0` → `[dark] 0/29`、`[light] 0/29`、`NON_GET=[]`；
 > `scripts/a11y_audit.py` → 无可访问名字的按钮 0 类、没有标签的输入框 0 类、焦点不可见页面 `[]`、`NON_GET=[]`。
 
+### 第五十五批：三个「全局 AI 开关」真的生效（真缺陷）（299~300）
+
+- 起因：goal round 39 的自查从**真机库状态**起手（`C:\Users\Administrator\.dsh-tmp\state55.py`
+  只读快照）：账号 `2217970177348` 的 `enabled=1` / `auto_reply=1`、49 个会话**全部** `mode='auto'`、
+  `settings` 里 `ai.enabled='true'` / `chat.auto_reply_scope='all'` /
+  `chat.human_takeover_seconds='0'` —— 看着一切正常。顺手核对这三个键有没有人读时发现：
+  **一个都没人读**（`grep -rn "human_takeover" backend/app` 只命中 `config.py` 里的定义，
+  `auto_reply_scope` / `ai.enabled` 同样只在 `config.DEFAULT_SETTINGS` 与测试断言里出现）。
+  也就是说 `GET /api/settings` 把三个「开关」摆出来，`PUT /api/settings` 也收得下，
+  但 AI 的行为完全不受它们影响：用户把 AI 关掉，AI 照样回买家。
+- 修法：`backend/app/services/chats.py` 新增 `_global_reply_gate()`（总开关 + 范围 `off`）、
+  `_scope_gate(conversation)`（`items_only` 只看挂着商品的会话）、
+  `_human_takeover_gate(conversation)`（人工刚回过就不插话）、
+  `_setting_int(key, default)`，并用 `_auto_reply_gate(conversation)` 把四个判据收成一条链
+  （全局 → 范围 → 接管窗口 → 账号级）。**生成侧**（`handle_incoming`）与**投递侧**
+  （`deliver_ai_reply`）都换成这一份判据 —— 第 53 批刚学到「只拦一侧会被绕开」。
+- 三个口径都按 `config.py` 的注释落实：`ai.enabled` 只有 `true` 算开；
+  `chat.auto_reply_scope` 认不出的值按 `all`（写错一个字母不该让 AI 停摆）；
+  `chat.human_takeover_seconds <= 0` = 不限制（默认 0，保持旧行为），窗口内的时间差
+  **交给 SQLite `julianday` 算**（`messages.created_at` 是 UTC，Python 本地时间相减会差 8 小时）。
+- 界面：`frontend/src/pages/Agents.tsx` 加「AI 自动回复开关」卡（总开关 `Switch` + 范围下拉 +
+  秒数输入 + 保存，写 `PUT /api/settings`），`frontend/src/pages/agents.css` 加
+  `.ag-settings` / `.ag-setting-row` / `.ag-setting-actions` / `.ag-setting-hint`。
+  以前这三个键**在界面上没有任何入口**，等于用户永远碰不到。
+- 测试：`backend/tests/test_services_chats.py::ReplySettingsGateTest`（12 条，73 → 85）：
+  默认全开、`ai.enabled=false` 拦住生成、投递侧同样被拦、范围 `off`、范围 `items_only`
+  在「没挂商品」的会话上拦住 / 在「挂了商品」的会话上放行、认不出的范围按 `all`、
+  接管窗口生效 / 过期 / `0`=不限制 / **只认人工消息**（AI 自己刚回过不该把自己关掉）/
+  投递侧同样生效。
+- 验证：全量 **`TOTAL 62 PASS 62 FAIL 0 CASES 2723 SKIPPED 2`**（2711 → 2723）；
+  前端 `TSC_EXIT=0` + `BUILD_EXIT=0`（97 modules，`index-IBkt4w_C.js` 643.08 kB /
+  `index-BKG4hgAV.css` 157.65 kB）。
+
+> **第五十五批证据链**：真机库只读快照 `state55.py`（账号/会话/settings 三项）；
+> `grep -rn "human_takeover\|auto_reply_scope\|ai\.enabled" backend/app` → 只命中 `config.py`
+> 的定义与 `test_skeleton.py` 的断言（**没有任何读取点**）；
+> `backend/tests/test_services_chats.py` → `Ran 85 tests ... OK`（73 → 85）；
+> 全量 `TOTAL 62 PASS 62 FAIL 0 CASES 2723 SKIPPED 2`；
+> 前端 `TSC_EXIT=0`、`BUILD_EXIT=0`（`index-IBkt4w_C.js` / `index-BKG4hgAV.css`）。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**62 个测试文件、2711 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**62 个测试文件、2723 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
