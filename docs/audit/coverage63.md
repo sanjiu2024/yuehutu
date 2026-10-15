@@ -167,7 +167,7 @@ for name in names:
 口径：`XIANYU_APP_DIR=$TEMP/xywb_live63`（用 `sqlite3` 的 `Connection.backup()` 做**一致性拷贝**，
 生产库一个字节都没动）；`sys.path.insert(0, 'backend')` 后 `from app.services import common`；
 `common.get_client('2217970177348')` 返回**二元组** `(XianyuClient, None)`（第一个是客户端、第二个是错误）。
-原始响应全文落盘：`logs/live63_probe.json`（128 行，UTF-8）。
+原始响应全文落盘：`logs/live63_probe.json`（127 行，UTF-8；末行无换行）。
 
 | # | 调用 | 真机结果 | 说明 |
 | --- | --- | --- | --- |

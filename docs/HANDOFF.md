@@ -4379,7 +4379,7 @@ package-info / bid-estimates 要用官方形状 `entity_type=1` + `entity_list=[
 
 | 路由 | 真机结果 |
 | --- | --- |
-| `GET /api/items-read/{acc}/search` | **200** `platform_code='success'`、`rows=20`、`total=44` |
+| `GET /api/items-read/{acc}/search` | **200** `platform_code='success'`、`total=44`（in-process 默认 `size=20` ⇒ 20 条；打包版发 `pageSize=10` ⇒ 10 条） |
 | `GET /api/items-read/{acc}/categories` | **200**（数组，元素 `{categoryId,categoryLevel,categoryName,childrenCategoryDOs}`） |
 | `GET /api/items-read/{acc}/search-terms` | **200** `{returnService:2,sendGoodsTime:3,serviceGuarantee:19}` |
 | `GET /api/items-read/{acc}/operate-report`（不带 params） | 502 `FAIL_SYS_BIZPARAM_MISSED::缺少业务参数itemId`；`params` 不是 JSON 对象字符串时本地 400 `invalid_fields` |
