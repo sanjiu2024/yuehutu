@@ -543,6 +543,10 @@ class XianyuClient:
         `total_count` 时退回「这一页满没满」**。页没满但总数说还有，会继续翻 ——
         静默少同步比多打一次只读接口严重。
 
+        返回里的 `total` 是**平台报的总数**，`orders` 才是实际拿到的行；两者不一致时
+        `dropped` 给出被丢弃的空/重复 `order_id` 行数（同时打一条 warning）——
+        「接口说 15、库里 12」这种落差要看得见，不能静默。
+
         `account_id` 只是 `services/common.call_method` 的位置传参（一个 client 只服务一个
         账号）：传了别的账号直接报错 —— 串号比报错严重得多。
         """
@@ -556,6 +560,7 @@ class XianyuClient:
         seen: set = set()
         total = 0
         fetched = 0
+        dropped = 0
 
         for index in range(max_pages):
             api, data = trade.order_list_request(page + index, size)
@@ -572,6 +577,7 @@ class XianyuClient:
             for order in page_orders:
                 key = str(order.get('order_id') or '')
                 if not key or key in seen:
+                    dropped += 1
                     continue
                 seen.add(key)
                 orders.append(order)
@@ -587,8 +593,13 @@ class XianyuClient:
             if index + 1 < max_pages:
                 await asyncio.sleep(ORDER_LIST_PAGE_DELAY)
 
+        if dropped:
+            logger.warning(
+                f'[{self.cookie_id}] list_orders 丢弃 {dropped} 行（空或重复 order_id）：'
+                f'平台总数={total or len(orders)} 实际拿到={len(orders)}'
+            )
         return {'orders': orders, 'total': total or len(orders), 'page': page,
-                'pages': fetched, 'size': size}
+                'pages': fetched, 'size': size, 'dropped': dropped}
 
     async def recommend_category(self, title: str, description: str = '',
                                  images: Optional[List[Dict[str, Any]]] = None):

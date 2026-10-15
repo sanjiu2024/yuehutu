@@ -19,6 +19,11 @@ from . import common
 # 少了它，同步进来的订单在统计里既不算待发货也不算已发货。
 SHIPPED_STATES = ('shipped', 'delivered', '已发货', '已签收', '已完成', '交易成功')
 PENDING_STATES = ('pending', 'paid', 'wait_ship', '待发货', '已付款')
+#: 关闭/退款这类**没成交**的终态（平台中文原文；真机 `logs/seller_discover/trade_probe.json`
+#: 有「交易关闭」「未发货退款」）。`order_stats` 的 `amount` 是历史口径（含关闭单），
+#: 排除关闭单看 `amount_paid` / `paid_orders` —— 别去改 `amount`（已有消费方按老口径用）。
+CLOSED_STATES = ('closed', 'cancelled', 'canceled',
+                 '交易关闭', '已关闭', '未发货退款', '退款成功', '已退款')
 
 #: 未确认时返回的业务码（`common.FAIL_STATUS` 里没有它 ⇒ 默认 400）。
 CONFIRM_CODE = 'confirmation_required'
@@ -150,6 +155,12 @@ def get_logistics(order_id: Any) -> Any:
 
 
 def order_stats(account_id: Optional[str] = None) -> Dict[str, Any]:
+    """订单统计。
+
+    `amount` 是**全部订单**的金额合计（含「交易关闭」这类没成交的单，历史口径：真机
+    15 单合计 1176.81，其中 5 笔关闭单占 523.70）；实收看 `amount_paid` + `paid_orders`
+    （排除 `CLOSED_STATES`），关闭/退款单数看 `closed`。
+    """
     params: Sequence[Any] = (account_id,) if account_id else ()
     clause = ' WHERE account_id = ?' if account_id else ''
     by_status = {
@@ -159,12 +170,24 @@ def order_stats(account_id: Optional[str] = None) -> Dict[str, Any]:
     row = db.query_one(
         f'SELECT COUNT(*) AS n, COALESCE(SUM(amount), 0) AS amount FROM orders{clause}', params,
     )
+    closed = tuple(CLOSED_STATES)
+    marks = ','.join('?' for _ in closed)
+    paid_params: Sequence[Any] = ((account_id,) if account_id else ()) + closed
+    paid_row = db.query_one(
+        'SELECT COUNT(*) AS n, COALESCE(SUM(amount), 0) AS amount FROM orders'
+        f'{" WHERE account_id = ? AND" if account_id else " WHERE"} status NOT IN ({marks})',
+        paid_params,
+    )
     pending = sum(n for state, n in by_status.items() if state in PENDING_STATES)
     shipped = sum(n for state, n in by_status.items() if state in SHIPPED_STATES)
+    closed_count = sum(n for state, n in by_status.items() if state in CLOSED_STATES)
     shipment_row = db.query_one('SELECT COUNT(*) AS n FROM shipments')
     return {
         'total': int(row['n']) if row else 0,
         'amount': round(float(row['amount'] or 0), 2) if row else 0.0,
+        'amount_paid': round(float(paid_row['amount'] or 0), 2) if paid_row else 0.0,
+        'paid_orders': int(paid_row['n']) if paid_row else 0,
+        'closed': closed_count,
         'by_status': by_status,
         'pending': pending,
         'shipped': shipped,

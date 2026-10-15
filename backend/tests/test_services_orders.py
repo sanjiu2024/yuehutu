@@ -161,6 +161,22 @@ class OrdersServiceTest(unittest.TestCase):
         orders.update_shipment('O1', '中通', 'ZT1', confirm=True)
         self.assertEqual(orders.order_stats()['shipments'], 1)
 
+    def test_order_stats_separates_closed_orders(self):
+        """`amount` 是历史口径（含关闭单）；实收看 `amount_paid` / `paid_orders`。
+
+        真机第 57 批 15 单合计 1176.81，其中 5 笔「交易关闭」占 523.70，排除后 653.11。
+        """
+        self.seed('O1', status='交易成功', amount=453.11)
+        self.seed('O2', status='待发货', amount=200.00)
+        self.seed('O3', status='交易关闭', amount=523.70)
+        stats = orders.order_stats()
+        self.assertEqual(stats['total'], 3)
+        self.assertEqual(stats['amount'], 1176.81)
+        self.assertEqual(stats['amount_paid'], 653.11)
+        self.assertEqual(stats['paid_orders'], 2)
+        self.assertEqual(stats['closed'], 1)
+        self.assertEqual(stats['shipped'], 1)
+
     # ------------------------------------------------------------------ 同步
 
     def test_sync_orders_with_fake_protocol(self):

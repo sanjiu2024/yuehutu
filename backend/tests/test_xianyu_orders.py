@@ -164,6 +164,21 @@ class ListOrdersTest(unittest.TestCase):
         self.assertEqual(result['total'], ORDER_LIST_PAGE_SIZE)
         self.assertEqual(len(stub.calls), 1)
 
+    def test_dropped_rows_are_reported(self):
+        """空/重复 `order_id` 行会被丢弃，但**必须报出来**（不能静默）。
+
+        第 57 批留下的待办（`docs/交接文档.md` §10 第 10 条）：返回的 `total` 是平台
+        报的总数，可能大于实际拿到的行数。
+        """
+        items = [order_item('D1'), order_item('D1'), order_item('')]
+        client, stub = make_client({trade.ORDER_LIST_API: page_payload(items, total=1)})
+        result = run(client.list_orders(self.ACCOUNT))
+
+        self.assertEqual([o['order_id'] for o in result['orders']], ['D1'])
+        self.assertEqual(result['total'], 1)
+        self.assertEqual(result['dropped'], 2)
+        self.assertEqual(len(stub.calls), 1)
+
     def test_truncated_page_keeps_paging(self):
         """平台把 `rowsPerPage` 截短（回的行数 < 请求的 `size`）时**不能**当最后一页停。
 
