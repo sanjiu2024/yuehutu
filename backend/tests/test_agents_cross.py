@@ -608,6 +608,27 @@ class MasterChatTest(unittest.TestCase):
             'trade_order_delay_single',
             'trade_order_adjust_price',
             'trade_smart_form_submit',
+            # 第六十一批：工作台管理（订单 / 风控 / 日志 / 设置 / AI 编排）
+            'orders_get',
+            'orders_logistics',
+            'risk_events',
+            'items_operation_logs',
+            'settings_get',
+            'agents_prompts_list',
+            'agents_prompt_create',
+            'agents_prompt_update',
+            'agents_prompt_delete',
+            'agents_roles_get',
+            'agents_roles_update',
+            'chats_messages',
+            'items_batch_publish',
+            # 第六十一批（READ-COVERAGE-61 + 区域码）：物流 / 小铺 / 数据域 6 条只读
+            'logistics_unconsign_detail',
+            'logistics_delivery_place',
+            'logistics_divisions',
+            'shop_pc_service_status',
+            'datacenter_shop_stats',
+            'datacenter_item_status_statistics',
             'master_chat',
         ]
         self.assertEqual(tools.TOOL_NAMES, expected)
@@ -660,6 +681,7 @@ class MasterChatTest(unittest.TestCase):
             'trade_order_delay_single',
             'trade_order_adjust_price',
             'trade_smart_form_submit',
+            'items_batch_publish',
         ]
         for name in write_tools:
             spec = tools.get_tool(name)

@@ -370,6 +370,31 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'method': 'GET', 'path': '/api/logistics/{account_id}/guess',
         'path_params': ['account_id'], 'query': ['mail_no'],
     },
+    # ---------------- 第六十一批（READ-COVERAGE-61 + 区域码）：物流 / 小铺 / 数据域只读 ----------------
+    'logistics_unconsign_detail': {
+        'method': 'GET', 'path': '/api/logistics/{account_id}/orders/{order_id}/unconsign-detail',
+        'path_params': ['account_id', 'order_id'],
+    },
+    'logistics_delivery_place': {
+        'method': 'GET', 'path': '/api/logistics/{account_id}/delivery-place',
+        'path_params': ['account_id'],
+    },
+    'logistics_divisions': {
+        'method': 'GET', 'path': '/api/logistics/{account_id}/divisions',
+        'path_params': ['account_id'], 'query': ['token', 'page_index'],
+    },
+    'shop_pc_service_status': {
+        'method': 'GET', 'path': '/api/shop/{account_id}/pc-service-status',
+        'path_params': ['account_id'], 'query': ['service_code'],
+    },
+    'datacenter_shop_stats': {
+        'method': 'GET', 'path': '/api/datacenter/{account_id}/shop-stats',
+        'path_params': ['account_id'], 'query': ['session_id'],
+    },
+    'datacenter_item_status_statistics': {
+        'method': 'GET', 'path': '/api/datacenter/{account_id}/item-status-statistics',
+        'path_params': ['account_id'],
+    },
     'logistics_resend_consign': {
         'method': 'POST', 'path': '/api/logistics/{account_id}/orders/{order_id}/resend',
         'path_params': ['account_id', 'order_id'], 'body': ['mail_no', 'cp_code', 'confirm'],
@@ -547,6 +572,56 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
     'agents_messages': {
         'method': 'GET', 'path': '/api/agents/messages',
         'query': ['conversation_id'],
+    },
+    # ---------------- 第六十一批：工作台管理（订单 / 风控 / 日志 / 设置 / AI 编排）----------------
+    'orders_get': {
+        'method': 'GET', 'path': '/api/orders/{order_id}',
+        'path_params': ['order_id'],
+    },
+    'orders_logistics': {
+        'method': 'GET', 'path': '/api/orders/{order_id}/logistics',
+        'path_params': ['order_id'],
+    },
+    'risk_events': {
+        'method': 'GET', 'path': '/api/risk/events',
+        'query': ['limit', 'account_id'],
+    },
+    'items_operation_logs': {
+        'method': 'GET', 'path': '/api/items/{account_id}/operation-logs',
+        'path_params': ['account_id'], 'query': ['limit'],
+    },
+    'settings_get': {'method': 'GET', 'path': '/api/settings'},
+    'agents_prompts_list': {
+        'method': 'GET', 'path': '/api/agents/prompts',
+        'query': ['scope', 'owner_id', 'role'],
+    },
+    'agents_prompt_create': {
+        'method': 'POST', 'path': '/api/agents/prompts',
+        'body': ['content', 'scope', 'owner_id', 'name', 'role', 'priority', 'enabled'],
+    },
+    'agents_prompt_update': {
+        'method': 'PUT', 'path': '/api/agents/prompts/{prompt_id}',
+        'path_params': ['prompt_id'],
+        'body': ['content', 'scope', 'owner_id', 'name', 'role', 'priority', 'enabled'],
+    },
+    'agents_prompt_delete': {
+        'method': 'DELETE', 'path': '/api/agents/prompts/{prompt_id}',
+        'path_params': ['prompt_id'],
+    },
+    'agents_roles_get': {'method': 'GET', 'path': '/api/agents/roles'},
+    'agents_roles_update': {
+        'method': 'PUT', 'path': '/api/agents/roles/{role}',
+        'path_params': ['role'],
+        'body': ['provider_id', 'model', 'temperature', 'system_prompt', 'enabled'],
+    },
+    'chats_messages': {
+        'method': 'GET', 'path': '/api/agents/chat/messages',
+        'query': ['thread', 'limit', 'before_id'],
+    },
+    'items_batch_publish': {
+        # 逐条真的上架 ⇒ 平台写，服务层 items.publish_item 带确认闸门（行内 confirm 可覆盖整体）。
+        'method': 'POST', 'path': '/api/items/{account_id}/batch-publish',
+        'path_params': ['account_id'], 'body': ['items', 'confirm'],
     },
     # ---------------- 交易（只读）----------------
     'trade_orders': {
@@ -1896,6 +1971,204 @@ CANONICAL_SPECS: Dict[str, Dict[str, Any]] = {
         'input_schema': {
             'type': 'object',
             'properties': {'conversation_id': _CONV_ID},
+        },
+    },
+    'logistics_unconsign_detail': {
+        'description': '看一笔未发货订单的凭证详情（只读，发货前要填什么）。平台没给就是 null。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'order_id': _prop('string', '订单号，用 orders_list 查'),
+            },
+            'required': ['account_id', 'order_id'],
+        },
+    },
+    'logistics_delivery_place': {
+        'description': '看发货地详情（只读）。平台响应形状未取证，原样透出。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {'account_id': _ACCOUNT_ID},
+            'required': ['account_id'],
+        },
+    },
+    'logistics_divisions': {
+        'description': '查区域码（省 / 市 / 区，只读）。不传 token 回 31 个省；下一级用上一级的 division_token。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'token': _prop('string', '上一级选项的 division_token；留空 = 根（CN）'),
+                'page_index': _prop('string', '页码，正整数，默认 1'),
+            },
+            'required': ['account_id'],
+        },
+    },
+    'shop_pc_service_status': {
+        'description': '查发布页某个服务的开通状态（只读）。service_code 必填。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'service_code': _prop('string', '服务编码（官方入参名 serviceCode）'),
+            },
+            'required': ['account_id', 'service_code'],
+        },
+    },
+    'datacenter_shop_stats': {
+        'description': '查会话维度的小铺统计（只读）。session_id 必填；形状未取证，原样透出。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'session_id': _prop('string', '会话 id（官方入参就是它）'),
+            },
+            'required': ['account_id', 'session_id'],
+        },
+    },
+    'datacenter_item_status_statistics': {
+        'description': '查商品状态统计（只读）。官方不带入参；形状未取证，原样透出。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {'account_id': _ACCOUNT_ID},
+            'required': ['account_id'],
+        },
+    },
+    'orders_get': {
+        'description': '看一条订单的完整详情（按 order_id 查本地库）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {'order_id': _prop('string', '订单号，用 orders_list 查')},
+            'required': ['order_id'],
+        },
+    },
+    'orders_logistics': {
+        'description': '看一条订单的物流记录（快递公司 / 运单号 / 轨迹）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {'order_id': _prop('string', '订单号，用 orders_list 查')},
+            'required': ['order_id'],
+        },
+    },
+    'risk_events': {
+        'description': '看风控事件流水（哪个账号、什么时候、什么类型）。只读本地库。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'limit': _prop('integer', '最多返回多少条（1-1000，默认 100）'),
+                'account_id': _ACCOUNT_ID,
+            },
+        },
+    },
+    'items_operation_logs': {
+        'description': '看某个账号的操作日志（我们对它做过什么、成功还是失败）。只读本地库。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'limit': _prop('integer', '最多返回多少条（1-1000，默认 100）'),
+            },
+            'required': ['account_id'],
+        },
+    },
+    'settings_get': {
+        'description': '读工作台设置表（键值对，与网页「设置」页同一份）。只读本地库。',
+        'input_schema': {'type': 'object', 'properties': {}},
+    },
+    'agents_prompts_list': {
+        'description': '列提示词库（AI 编排用的提示词），可按 scope / owner_id / role 过滤。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'scope': _prop('string', '作用域（global / account / item）'),
+                'owner_id': _prop('string', '作用域对应的对象 id（账号 id 或商品 id）'),
+                'role': _prop('string', '只列某个 AI 角色的提示词'),
+            },
+        },
+    },
+    'agents_prompt_create': {
+        'description': '新增一条提示词（只改本地 AI 配置，不发平台请求）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'content': _prop('string', '提示词正文'),
+                'scope': _prop('string', '作用域，默认 global'),
+                'owner_id': _prop('string', '作用域对应的对象 id'),
+                'name': _prop('string', '提示词名字'),
+                'role': _prop('string', '绑定的 AI 角色'),
+                'priority': _prop('integer', '优先级（越大越先拼进提示词）'),
+                'enabled': _prop('boolean', '是否启用，默认 true'),
+            },
+            'required': ['content'],
+        },
+    },
+    'agents_prompt_update': {
+        'description': '改一条提示词（只改本地 AI 配置；scope / owner_id 一起改了会挪到新作用域）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'prompt_id': _prop('integer', '提示词 id，用 agents_prompts_list 查'),
+                'content': _prop('string', '提示词正文'),
+                'scope': _prop('string', '作用域（不给就沿用原来的）'),
+                'owner_id': _prop('string', '作用域对应的对象 id（不给就沿用原来的）'),
+                'name': _prop('string', '提示词名字'),
+                'role': _prop('string', '绑定的 AI 角色'),
+                'priority': _prop('integer', '优先级'),
+                'enabled': _prop('boolean', '是否启用'),
+            },
+            'required': ['prompt_id'],
+        },
+    },
+    'agents_prompt_delete': {
+        'description': '删一条提示词（只删本地 AI 配置）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {'prompt_id': _prop('integer', '提示词 id')},
+            'required': ['prompt_id'],
+        },
+    },
+    'agents_roles_get': {
+        'description': '列所有 AI 角色（分工）：绑的模型、温度、系统提示词、是否启用。',
+        'input_schema': {'type': 'object', 'properties': {}},
+    },
+    'agents_roles_update': {
+        'description': '改一个 AI 角色（分工 / 模型 / 温度 / 系统提示词 / 启停）。只改本地 AI 配置。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'role': _prop('string', '角色名，用 agents_roles_get 查'),
+                'provider_id': _prop('integer', '用哪个 AI 供应商（providers_list 里的 id）'),
+                'model': _prop('string', '模型名'),
+                'temperature': _prop('number', '温度（0-2）'),
+                'system_prompt': _prop('string', '这个角色的系统提示词'),
+                'enabled': _prop('boolean', '是否启用这个角色'),
+            },
+            'required': ['role'],
+        },
+    },
+    'chats_messages': {
+        'description': '读主管 AI 自己的对话历史（thread 默认 master，按 id 倒序分页）。只读本地库。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'thread': _prop('string', '对话线程名，默认 master'),
+                'limit': _prop('integer', '最多返回多少条（1-500，默认 50）'),
+                'before_id': _prop('integer', '只取 id 小于它的更早消息（翻页用）'),
+            },
+        },
+    },
+    'items_batch_publish': {
+        'description': '批量发布商品到闲鱼（逐条真的上架）。这是写操作，会真的改动闲鱼平台上的数据，'
+                       '必须显式传 confirm=true；不确定就不要调。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'items': _prop('array', '要发布的商品列表，每项就是 items_publish 的 payload',
+                               items={'type': 'object'}),
+                'confirm': _prop('boolean', '确认执行（必须为 true）'),
+            },
+            'required': ['account_id', 'items', 'confirm'],
         },
     },
 }

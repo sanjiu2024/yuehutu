@@ -778,6 +778,9 @@ _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
     'im_clear_unread': {'account_id': 'acc-x', 'kind': 'session', 'confirm': False},
     'trade_add_memo': {
         'account_id': 'acc-x', 'order_id': 'o1', 'memo': '已电话确认', 'confirm': False},
+    # ---- 第六十一批：批量发布是平台写（逐条真的上架），confirm=False 必须被服务层挡下 ----
+    'items_batch_publish': {
+        'account_id': 'acc-x', 'items': [{'item_id': 'it-1'}], 'confirm': False},
 }
 
 
@@ -1055,6 +1058,87 @@ class WriteToolDispatchTest(unittest.TestCase):
         self.assertTrue(all(item['confirm_required'] is True for item in actions))
         unsupported = {item['action'] for item in result['result']['unsupported']}
         self.assertEqual(unsupported, {'recharge', 'withdraw'})
+
+
+class BatchPublishToolTest(unittest.TestCase):
+    """第六十一批：items_batch_publish 是**自定义 handler 的平台写**，不进 WRITE_TOOLS。
+
+    WRITE_TOOLS 的语义是「工具名 ↔ _SERVICE_TARGETS ↔ services 函数」三方对账；批量发布是
+    循环调 `items.publish_item`，没有一对一的 services 函数，所以单独守它自己的口径。
+    """
+
+    def _fn(self) -> Dict[str, Any]:
+        spec = tools.get_tool('items_batch_publish')
+        self.assertIsNotNone(spec, 'TOOL_SPECS 里没有 items_batch_publish')
+        return spec['function']
+
+    def test_spec_is_a_gated_write_tool(self) -> None:
+        fn = self._fn()
+        params = fn['parameters']
+        self.assertIn('confirm', params['required'])
+        self.assertEqual(params['properties']['confirm']['type'], 'boolean')
+        self.assertIs(params['additionalProperties'], False)
+        for phrase in ('这是写操作', 'confirm=true', '不确定就不要调'):
+            self.assertIn(phrase, fn['description'])
+
+    def test_route_covers_every_spec_property_and_is_post(self) -> None:
+        from mcp_server import client as mc
+
+        route = mc.TOOL_ROUTES['items_batch_publish']
+        self.assertEqual(route['method'], 'POST')
+        self.assertEqual(route['path'], '/api/items/{account_id}/batch-publish')
+        fn = self._fn()
+        listed = (set(route.get('path_params', [])) | set(route.get('query', []))
+                  | set(route.get('body', [])))
+        self.assertEqual(set(fn['parameters']['properties']) - listed, set())
+
+    def test_rows_are_published_and_failures_carry_their_id(self) -> None:
+        seen = []
+
+        def spy(account_id, payload, *, confirm=None):
+            seen.append((account_id, payload.get('item_id'), confirm))
+            if payload.get('item_id') == 'bad':
+                return {'success': False, 'code': 'platform_error', 'message': '平台拒绝了'}
+            return {'item_id': payload.get('item_id')}
+
+        with mock.patch('backend.app.services.items.publish_item', spy):
+            result = asyncio.run(tools.call_tool('items_batch_publish', {
+                'account_id': 'acc-x',
+                'items': [{'item_id': 'it-1'}, {'item_id': 'bad'}],
+                'confirm': True,
+            }))
+        self.assertIs(result.get('ok'), True, result)
+        self.assertEqual(result['total'], 2)
+        self.assertEqual(result['published'], 1)
+        self.assertEqual([f['id'] for f in result['failed']], ['bad'])
+        self.assertEqual(seen, [('acc-x', 'it-1', True), ('acc-x', 'bad', True)])
+
+    def test_row_confirm_overrides_body_confirm_and_is_not_sent_as_payload(self) -> None:
+        seen = []
+
+        def spy(account_id, payload, *, confirm=None):
+            seen.append((dict(payload), confirm))
+            return {'item_id': payload.get('item_id')}
+
+        with mock.patch('backend.app.services.items.publish_item', spy):
+            result = asyncio.run(tools.call_tool('items_batch_publish', {
+                'account_id': 'acc-x',
+                'items': [{'item_id': 'it-1', 'confirm': False}],
+                'confirm': True,
+            }))
+        self.assertIs(result.get('ok'), True, result)
+        # 行内的 confirm 逐条覆盖整体 confirm，且必须 pop 掉（不能当发布载荷发给协议层）
+        self.assertEqual(seen, [({'item_id': 'it-1'}, False)])
+
+    def test_all_failed_keeps_the_gate_code(self) -> None:
+        def spy(account_id, payload, *, confirm=None):
+            return {'success': False, 'code': 'confirmation_required', 'message': '需要确认'}
+
+        with mock.patch('backend.app.services.items.publish_item', spy):
+            result = asyncio.run(tools.call_tool('items_batch_publish', {
+                'account_id': 'acc-x', 'items': [{'item_id': 'it-1'}], 'confirm': False}))
+        self.assertIs(result.get('ok'), False)
+        self.assertIn('confirm', str(result.get('code')))
 
 
 if __name__ == '__main__':

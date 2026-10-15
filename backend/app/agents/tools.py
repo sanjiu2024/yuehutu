@@ -3547,6 +3547,328 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---------------- 第六十一批：工作台管理（订单 / 风控 / 日志 / 设置 / AI 编排） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'orders_get',
+            'description': '看一条订单的完整详情（本地库里的订单行，按 order_id 查）。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'order_id': {'type': 'string', 'description': '订单号（先用 orders_list 查）'},
+                },
+                'required': ['order_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'orders_logistics',
+            'description': '看一条订单的物流记录（本地库里的快递公司 / 运单号 / 轨迹）。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'order_id': {'type': 'string', 'description': '订单号（先用 orders_list 查）'},
+                },
+                'required': ['order_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'risk_events',
+            'description': '看本机风控事件流水（哪个账号在什么时候触发了风控、什么类型）。只读本地库。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'limit': {'type': 'integer', 'description': '最多返回多少条（1-1000，默认 100）'},
+                    'account_id': {'type': 'string', 'description': '可选：只看某个闲鱼账号（unb）'},
+                },
+                'required': [],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'items_operation_logs',
+            'description': '看某个账号的操作日志（我们对它做过什么、成功还是失败）。只读本地库。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb），用 accounts_list 查'},
+                    'limit': {'type': 'integer', 'description': '最多返回多少条（1-1000，默认 100）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'settings_get',
+            'description': '读工作台设置表（键值对，与「设置」页看到的是同一份）。只读本地库。',
+            'parameters': {
+                'type': 'object',
+                'properties': {},
+                'required': [],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'agents_prompts_list',
+            'description': '列提示词库（AI 编排用的提示词），可按 scope / owner_id / role 过滤。只读本地库。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'scope': {'type': 'string', 'description': '可选：作用域（取值看返回里的 scopes，常见 global / account / item）'},
+                    'owner_id': {'type': 'string', 'description': '可选：作用域对应的对象 id（账号 id 或商品 id）'},
+                    'role': {'type': 'string', 'description': '可选：只列某个 AI 角色的提示词'},
+                },
+                'required': [],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'agents_prompt_create',
+            'description': '新增一条提示词（只改本地 AI 配置，不发平台请求）。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'content': {'type': 'string', 'description': '提示词正文'},
+                    'scope': {'type': 'string', 'description': '作用域，默认 global'},
+                    'owner_id': {'type': 'string', 'description': '作用域对应的对象 id（账号 id 或商品 id）'},
+                    'name': {'type': 'string', 'description': '提示词名字'},
+                    'role': {'type': 'string', 'description': '绑定的 AI 角色'},
+                    'priority': {'type': 'integer', 'description': '优先级（数字越大越先拼进提示词）'},
+                    'enabled': {'type': 'boolean', 'description': '是否启用，默认 true'},
+                },
+                'required': ['content'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'agents_prompt_update',
+            'description': '改一条提示词（只改本地 AI 配置，不发平台请求）。scope / owner_id 一起改了会挪到新作用域。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'prompt_id': {'type': 'integer', 'description': '提示词 id（先用 agents_prompts_list 查）'},
+                    'content': {'type': 'string', 'description': '提示词正文'},
+                    'scope': {'type': 'string', 'description': '作用域（不给就沿用原来的）'},
+                    'owner_id': {'type': 'string', 'description': '作用域对应的对象 id（不给就沿用原来的）'},
+                    'name': {'type': 'string', 'description': '提示词名字'},
+                    'role': {'type': 'string', 'description': '绑定的 AI 角色'},
+                    'priority': {'type': 'integer', 'description': '优先级'},
+                    'enabled': {'type': 'boolean', 'description': '是否启用'},
+                },
+                'required': ['prompt_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'agents_prompt_delete',
+            'description': '删一条提示词（只删本地 AI 配置，不发平台请求）。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'prompt_id': {'type': 'integer', 'description': '提示词 id（先用 agents_prompts_list 查）'},
+                },
+                'required': ['prompt_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'agents_roles_get',
+            'description': '列所有 AI 角色（分工）：每个角色绑的模型、温度、系统提示词、是否启用。只读本地库。',
+            'parameters': {
+                'type': 'object',
+                'properties': {},
+                'required': [],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'agents_roles_update',
+            'description': '改一个 AI 角色（分工 / 模型 / 温度 / 系统提示词 / 启停）。只改本地 AI 配置，不发平台请求。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'role': {'type': 'string', 'description': '角色名（先用 agents_roles_get 查）'},
+                    'provider_id': {'type': 'integer', 'description': '用哪个 AI 供应商（providers_list 里的 id）'},
+                    'model': {'type': 'string', 'description': '模型名'},
+                    'temperature': {'type': 'number', 'description': '温度（0-2 的数字）'},
+                    'system_prompt': {'type': 'string', 'description': '这个角色的系统提示词'},
+                    'enabled': {'type': 'boolean', 'description': '是否启用这个角色'},
+                },
+                'required': ['role'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'chats_messages',
+            'description': '读主管 AI 自己的对话历史（thread 默认 master，按 id 倒序分页）。只读本地库。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'thread': {'type': 'string', 'description': '对话线程名，默认 master'},
+                    'limit': {'type': 'integer', 'description': '最多返回多少条（1-500，默认 50）'},
+                    'before_id': {'type': 'integer', 'description': '只取 id 小于它的更早消息（翻页用）'},
+                },
+                'required': [],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'items_batch_publish',
+            'description': '批量发布商品到闲鱼（逐条真的上架，等价于循环调 items_publish）。'
+                           + _WRITE_HINT + 'account_id 与 items 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'items': {'type': 'array', 'description': '要发布的商品列表，每项就是 items_publish 的 payload（title/price/description/images 等）',
+                              'items': {'type': 'object'}},
+                    'confirm': {'type': 'boolean', 'description': '确认执行（必须为 true，否则直接返回 confirm_required）'},
+                },
+                'required': ['account_id', 'items', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    # ---- 第六十一批（READ-COVERAGE-61 + 区域码）：物流 / 小铺 / 数据域补 6 条只读 ----
+    {
+        'type': 'function',
+        'function': {
+            'name': 'logistics_unconsign_detail',
+            'description': ('未发货凭证详情（只读）。发货前要看这笔单该填什么凭证就用它；'
+                            '平台没给内容或图片时是 null，不要当成空字符串。'),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'order_id': {'type': 'string', 'description': '订单号（平台的 tradeId）'},
+                },
+                'required': ['account_id', 'order_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'logistics_delivery_place',
+            'description': ('发货地详情（只读）。平台响应形状未真机取证，detail 原样透出，'
+                            '不要照猜的字段名去用。'),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'logistics_divisions',
+            'description': ('区域码（省 / 市 / 区，只读）。不传 token 回根节点（31 个省）；'
+                            '要下一级就把上一级选项里的 division_token 原样传回来。'
+                            '填退货地址的 area_id 用叶子节点的 division_id（整数）。'),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'token': {'type': 'string', 'description': '上一级选项的 division_token；留空 = 根（CN）'},
+                    'page_index': {'type': 'string', 'description': '页码，正整数，默认 1'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'shop_pc_service_status',
+            'description': ('发布页服务开通状态（只读）。service_code 必填；'
+                            '平台响应原样透出，没给就是没给，不补 false。'),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'service_code': {'type': 'string', 'description': '服务编码（官方入参名 serviceCode）'},
+                },
+                'required': ['account_id', 'service_code'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'datacenter_shop_stats',
+            'description': ('会话维度的小铺统计（只读）。session_id 必填；'
+                            '形状未取证，原样透出，不要照猜的字段名去用。'),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'session_id': {'type': 'string', 'description': '会话 id（官方入参就是它）'},
+                },
+                'required': ['account_id', 'session_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'datacenter_item_status_statistics',
+            'description': ('商品状态统计（只读）。官方不带入参；形状未取证，原样透出。'),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 主管 AI（只给 MCP 侧） ----------------
     {
         'type': 'function',
@@ -3777,6 +4099,168 @@ def _services():
 # **没有把函数重导出到包顶层**，所以直接 `getattr(backend.app.services, 'xxx')`
 # 拿不到东西 —— 早先的写类工具就因此永远回「业务模块还没实现 xxx()」。
 # 这里显式写清每个工具打到哪个函数，也是「工具名 ↔ 真实实现」的对账依据。
+# --------------------------------------------------------------------------
+# 第六十一批：工作台管理（订单 / 风控 / 日志 / 设置 / AI 编排）
+# 设置表、提示词、角色、主管对话历史都在本地库 / backend.app.agents 里，没有对应的
+# services 子模块，所以走自定义 handler（与 _providers_upsert 同一套路）。
+# --------------------------------------------------------------------------
+def _settings_get(args: Dict[str, Any]) -> Dict[str, Any]:
+    rows = db.query('SELECT key, value FROM settings ORDER BY key')
+    return {'ok': True, 'settings': {str(r['key']): r['value'] for r in rows}}
+
+
+def _publish_prompts_changed(action: str, prompt_id: Any, scope: Any = None) -> None:
+    """发一条 prompts.changed（前端「AI 编排」页收到就静默重拉）。推送失败不影响写入。"""
+    try:
+        events.publish('prompts.changed', {'action': action, 'prompt_id': prompt_id, 'scope': scope})
+    except Exception:  # pragma: no cover - 推送失败绝不能影响写入
+        pass
+
+
+def _agents_prompts_list(args: Dict[str, Any]) -> Dict[str, Any]:
+    from . import prompts as prompts_mod
+    from . import roles as roles_mod
+
+    scope = args.get('scope')
+    if scope and scope not in prompts_mod.SCOPES:
+        return {'ok': False, 'error': f'scope 只能是 {" / ".join(prompts_mod.SCOPES)}'}
+    items = prompts_mod.list_prompts(
+        scope=scope, owner_id=args.get('owner_id'), role=args.get('role')
+    )
+    return {'ok': True, 'prompts': items, 'scopes': list(prompts_mod.SCOPES),
+            'roles': list(roles_mod.ROLES)}
+
+
+def _agents_prompt_create(args: Dict[str, Any]) -> Dict[str, Any]:
+    from . import prompts as prompts_mod
+
+    try:
+        data = prompts_mod.upsert_prompt(
+            str(args.get('scope') or 'global'),
+            owner_id=args.get('owner_id'),
+            content=str(args.get('content') or ''),
+            priority=int(args.get('priority') or 0),
+            role=str(args.get('role') or ''),
+            name=str(args.get('name') or ''),
+            enabled=bool(args.get('enabled', True)),
+        )
+    except ValueError as exc:  # PromptValidationError 也是 ValueError
+        return {'ok': False, 'error': str(exc)}
+    _publish_prompts_changed('create', data.get('id'), data.get('scope'))
+    return {'ok': True, 'prompt': data}
+
+
+def _agents_prompt_update(args: Dict[str, Any]) -> Dict[str, Any]:
+    from . import prompts as prompts_mod
+
+    prompt_id = int(args['prompt_id'])
+    current = prompts_mod.get_prompt(prompt_id)
+    if current is None:
+        return {'ok': False, 'error': f'提示词 #{prompt_id} 不存在'}
+    scope = str(args.get('scope') or current['scope'])
+    owner_id = args.get('owner_id')
+    if owner_id is None:
+        owner_id = current['item_id'] or current['account_id']
+    try:
+        data = prompts_mod.upsert_prompt(
+            scope,
+            owner_id=owner_id,
+            content=str(args.get('content', current['content']) or ''),
+            priority=int(args.get('priority', current['priority']) or 0),
+            role=str(args.get('role', current['role']) or ''),
+            name=str(args.get('name', current['name']) or ''),
+            enabled=bool(args.get('enabled', current['enabled'])),
+        )
+    except ValueError as exc:
+        return {'ok': False, 'error': str(exc)}
+    if int(data['id']) != prompt_id:
+        prompts_mod.delete_prompt(prompt_id)  # 改了 scope/owner 换了行，清掉旧的
+    _publish_prompts_changed('update', data.get('id'), data.get('scope'))
+    return {'ok': True, 'prompt': data}
+
+
+def _agents_prompt_delete(args: Dict[str, Any]) -> Dict[str, Any]:
+    from . import prompts as prompts_mod
+
+    prompt_id = int(args['prompt_id'])
+    if prompts_mod.get_prompt(prompt_id) is None:
+        return {'ok': False, 'error': f'提示词 #{prompt_id} 不存在'}
+    prompts_mod.delete_prompt(prompt_id)
+    _publish_prompts_changed('delete', prompt_id)
+    return {'ok': True, 'deleted': prompt_id}
+
+
+def _agents_roles_get(args: Dict[str, Any]) -> Dict[str, Any]:
+    from . import roles as roles_mod
+
+    return {'ok': True, 'roles': roles_mod.list_roles()}
+
+
+def _agents_roles_update(args: Dict[str, Any]) -> Dict[str, Any]:
+    from . import roles as roles_mod
+
+    role = str(args['role'])
+    if not roles_mod.is_role(role):
+        return {'ok': False, 'error': f'未知角色: {role}'}
+    fields = {k: args[k] for k in ('provider_id', 'model', 'temperature', 'system_prompt', 'enabled')
+              if k in args}
+    if 'temperature' in fields:
+        try:
+            fields['temperature'] = float(fields['temperature'])
+        except (TypeError, ValueError):
+            return {'ok': False, 'error': 'temperature 必须是数字'}
+    # update_role 自己会在 provider_id 真的变了时发 providers.changed，这里不要重复发。
+    return {'ok': True, 'role': roles_mod.update_role(role, **fields)}
+
+
+def _chats_messages(args: Dict[str, Any]) -> Dict[str, Any]:
+    from . import history
+
+    data = history.list_messages(
+        thread=str(args.get('thread') or history.DEFAULT_THREAD),
+        limit=args.get('limit'),
+        before_id=args.get('before_id'),
+    )
+    return {'ok': True, **data}
+
+
+def _items_batch_publish(args: Dict[str, Any]) -> Dict[str, Any]:
+    """逐条真的上架。口径与 POST /api/items/{account_id}/batch-publish 完全一致。"""
+    from ..services import common as common_mod
+    from ..services import items as items_service
+
+    account_id = str(args['account_id'])
+    rows = args.get('items') or []
+    body_confirm = args.get('confirm')
+    published = 0
+    failed: List[Dict[str, Any]] = []
+    first_failure: Optional[Dict[str, Any]] = None
+    for row in rows:
+        if not isinstance(row, dict):
+            failed.append({'id': '', 'message': 'item 必须是对象'})
+            continue
+        item = dict(row)
+        row_confirm = item.pop('confirm', None)  # 行里的 confirm 不能当发布载荷发出去
+        confirm = row_confirm if row_confirm is not None else body_confirm
+        result = items_service.publish_item(account_id, item, confirm=confirm)
+        if not common_mod.is_failure(result):
+            published += 1
+            continue
+        failed.append({
+            'id': str(item.get('item_id') or item.get('id') or ''),
+            'code': result.get('code') if isinstance(result, dict) else None,
+            'message': result.get('message', '') if isinstance(result, dict) else str(result),
+        })
+        if first_failure is None and isinstance(result, dict):
+            first_failure = result
+    if published == 0 and first_failure is not None:
+        # 一条都没成：把第一条的失败信封原样透出（confirm 闸门的 code 不能被吞成泛泛的失败）
+        payload = dict(first_failure)
+        payload.update({'ok': False, 'total': len(rows), 'published': 0, 'failed': failed})
+        return payload
+    return {'ok': True, 'total': len(rows), 'published': published, 'failed': failed}
+
+
 _SERVICE_TARGETS: Dict[str, List[str]] = {
     # ---- 交易 ----
     'trade_orders': ['trade', 'orders'],
@@ -3925,6 +4409,13 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     # ---- 物流（2 读 + 1 写）----
     'logistics_companies': ['logistics', 'companies'],
     'logistics_guess_mailno': ['logistics', 'guess_mailno'],
+    # ---- 第六十一批（READ-COVERAGE-61 + 区域码）
+    'logistics_unconsign_detail': ['logistics', 'unconsign_detail'],
+    'logistics_delivery_place': ['logistics', 'delivery_place_detail'],
+    'logistics_divisions': ['logistics', 'divisions'],
+    'shop_pc_service_status': ['shop', 'pc_service_status'],
+    'datacenter_shop_stats': ['datacenter', 'shop_stats'],
+    'datacenter_item_status_statistics': ['datacenter', 'item_status_statistics'],
     'logistics_resend_consign': ['logistics', 'resend_consign'],
     'im_blacklist_status': ['im_actions', 'blacklist_status'],
     'im_blacklist_add': ['im_actions', 'blacklist_add'],
@@ -3980,6 +4471,10 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'trade_order_delay_single': ['trade_write', 'seller_delay_confirm'],
     'trade_order_adjust_price': ['trade_write', 'user_adjust_price'],
     'trade_smart_form_submit': ['trade_write', 'smart_form_callback'],
+    'orders_get': ['orders', 'get_order'],
+    'orders_logistics': ['orders', 'get_logistics'],
+    'risk_events': ['risk_service', 'events'],
+    'items_operation_logs': ['items', 'list_operation_logs'],
 }
 
 # 有额外位置参数（不是直接透传 args 的）在这里补上固定值
@@ -4277,6 +4772,25 @@ _HANDLERS = {
     'trade_order_delay_single': lambda a: _dispatch_service('trade_order_delay_single', a),
     'trade_order_adjust_price': lambda a: _dispatch_service('trade_order_adjust_price', a),
     'trade_smart_form_submit': lambda a: _dispatch_service('trade_smart_form_submit', a),
+    'orders_get': lambda a: _dispatch_service('orders_get', a),
+    'orders_logistics': lambda a: _dispatch_service('orders_logistics', a),
+    'risk_events': lambda a: _dispatch_service('risk_events', a),
+    'items_operation_logs': lambda a: _dispatch_service('items_operation_logs', a),
+    'settings_get': _settings_get,
+    'agents_prompts_list': _agents_prompts_list,
+    'agents_prompt_create': _agents_prompt_create,
+    'agents_prompt_update': _agents_prompt_update,
+    'agents_prompt_delete': _agents_prompt_delete,
+    'agents_roles_get': _agents_roles_get,
+    'agents_roles_update': _agents_roles_update,
+    'chats_messages': _chats_messages,
+    'items_batch_publish': _items_batch_publish,
+    'logistics_unconsign_detail': lambda a: _dispatch_service('logistics_unconsign_detail', a),
+    'logistics_delivery_place': lambda a: _dispatch_service('logistics_delivery_place', a),
+    'logistics_divisions': lambda a: _dispatch_service('logistics_divisions', a),
+    'shop_pc_service_status': lambda a: _dispatch_service('shop_pc_service_status', a),
+    'datacenter_shop_stats': lambda a: _dispatch_service('datacenter_shop_stats', a),
+    'datacenter_item_status_statistics': lambda a: _dispatch_service('datacenter_item_status_statistics', a),
 }
 
 

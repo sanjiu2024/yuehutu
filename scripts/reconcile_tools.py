@@ -196,7 +196,10 @@ WRITE_PREFIX = ('trade_write_', 'trade_address_', 'promotion_write_', 'qualifica
                 'trade_order_close_im',
                 'trade_order_delay_single',
                 'trade_order_adjust_price',
-                'trade_smart_form_submit')
+                'trade_smart_form_submit',
+                # 第六十一批：批量发布是**平台写**（服务层 items.publish_item 带确认闸门），
+                # 必须登记完整工具名；同批其余 12 条是本地读 / 本地写，不能命中任何前缀。
+                'items_batch_publish')
 write_names = [n for n in specs if n.startswith(WRITE_PREFIX) and n != 'promotion_write_actions']
 print(f'write_tools={len(write_names)}')
 for s in T.TOOL_SPECS:
