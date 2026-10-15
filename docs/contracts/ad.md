@@ -2,7 +2,8 @@
 
 > 覆盖范围：官方「推广（投放）」页面里 **`client.py` + `services/promotion.py` + `services/ad_write.py`
 > 没盖到的那几块** —— 投放账户信息 / 投放包 / 商品搜索 V2 / 自定义出价估算 / 投放单元（人群包）
-> 列表与数据 / 计划操作日志 / 推广消息中心（列表 / 详情 / 未读 / 标记已读）。
+> 列表与数据 / 计划操作日志 / 推广消息中心（列表 / 详情 / 未读 / 标记已读）；
+> 第 63 批追加 **优惠券列表 / 优惠券汇总 / 账户卡片 V2 / 活动详情渲染** 4 条只读（见 §9）。
 > 协议层 `backend/app/xianyu/ad.py`、服务层 `backend/app/services/ad.py`、路由层
 > `backend/app/api/ad.py`（`backend/app/main.py` 的 `ROUTE_MODULES` 含 `'ad'`）。
 >
@@ -25,6 +26,11 @@
 >   **全部打通（4/4）** —— 根因是「官方调用点恒定带的业务键没给全」，逐条证据见 §8。修复落在
 >   `backend/app/xianyu/ad.py`（`BODY_DEFAULTS` / `BODY_REQUIRED` / `MissingRequiredParams`）与
 >   `backend/app/services/ad.py`（残包翻 400 `invalid_fields`、`entity_type`/`entity_list` 便利入口、`_payload_only`）。
+> * **真机只读复打（第 63 批，2026-10-16，in-process 只读探针，同一账号）**：4 条新接口逐条打到 ——
+>   `coupon.info.query`（官方初值）与 `coupon.statistic.query` **✅ 200**；
+>   `account.card.v2` **❌ `FAIL_SYS_UNAUTHORIZED_ENTRANCE::API访问入口未授权`**；
+>   `activity.detail.rendering` **❌ `NO_APPLY_ACTIVITY_PERMISSION::活动报名时间已结束或者您不在本期活动名单内`**（后两条是平台原话，路由本身语义正确，见 §9.3 / §9.4）。
+>   原始响应：`logs/probe63/kurumi/ad_*.json` + `ad_probe63_all.json` + `ad_service63.json`（`logs/` 不入仓）。
 
 ## 0. 一句话结论
 
@@ -41,6 +47,11 @@
 | 推广消息详情 | `mtop.taobao.idle.ad.message.detail` | 未打（该账号 total=0，无 id） | 接了 |
 | 推广消息未读数 | `mtop.taobao.idle.ad.message.unread.info` | ✅ 200（unreadCount） | 接了（**唯一不套 requestJson** 的一条） |
 | 标记推广消息已读（写） | `mtop.taobao.idle.ad.message.read` | 未打（本批统一不做写试打） | 接了（confirm 闸门 + 幂等键） |
+| 优惠券列表 | `mtop.alibaba.idle.ad.bp.coupon.info.query` | ✅ 200（`{pageNum:1,pageSize:10,result:[],total:0,totalPage:0}`；裸 `{}` 则 502 `UNKNOWN_FAIL_CODE`） | 接了（第 63 批，见 §9.1） |
+| 优惠券汇总 | `mtop.alibaba.idle.ad.bp.coupon.statistic.query` | ✅ 200（三个金额字段均为字符串 `"0"`） | 接了（第 63 批，见 §9.2） |
+| 账户卡片 V2（活动奖励页） | `mtop.alibaba.idle.ad.account.card.v2` | ❌ 502 `FAIL_SYS_UNAUTHORIZED_ENTRANCE::API访问入口未授权` | 接了（路由在；平台未授权，载荷未验证，见 §9.3） |
+| 活动详情渲染 | `mtop.taobao.idle.ad.activity.detail.rendering` | ❌ 502 `NO_APPLY_ACTIVITY_PERMISSION::活动报名时间已结束或者您不在本期活动名单内` | 接了（路由在；该账号不在活动名单，见 §9.4） |
+| 报表下载（创建异步导出任务） | `mtop.taobao.idle.ad.bp.data.download` | 未打（**偏写，只登记不接**） | **不接**（服务端建任务 / 落库，见 §6、§9.5） |
 | 商品推荐位 | `mtop.taobao.idle.ad.item.recommend` | 未打（本批不接） | **不接**（无入参、bundle @3300908 `data:{}`；属选品页装饰性推荐位，见 §6） |
 
 **与已有能力的查重（等价就不重复实现）**：`ad_home` / `ad_account_card`（`bp.account.card.query`）/
@@ -70,12 +81,20 @@
 | `message_unread` | `...ad.message.unread.info` | `message_unread()` | `GET .../messages/unread` | @703173 / `mtop.taobao.idle.ad.message.unread.info` |
 | `message_read`（写） | `...ad.message.read` | `message_read()` | `POST .../messages/read` | @3678499 `ZQe(e)` / `mtop.taobao.idle.ad.message.read` |
 
-另有 `GET /api/promotion/ad/apis`：接口目录（只读 kind 清单 + 写动作），给工具面/AI 自描述用。
+| `coupon_info` | `...idle.ad.bp.coupon.info.query` | `coupon_info()` | `GET .../coupons` | @3246590 `sWe(e)` / `mtop.alibaba.idle.ad.bp.coupon.info.query` |
+| `coupon_statistic` | `...idle.ad.bp.coupon.statistic.query` | `coupon_statistic()` | `GET .../coupons/statistic` | @3246428 `aWe()` / `mtop.alibaba.idle.ad.bp.coupon.statistic.query` |
+| `account_card_v2` | `...idle.ad.account.card.v2` | `account_card_v2()` | `GET .../account-card-v2` | @3268292 `UWe(e)` / `mtop.alibaba.idle.ad.account.card.v2` |
+| `activity_detail` | `...idle.ad.activity.detail.rendering` | `activity_detail()` | `GET .../activity-detail` | @3268518 `YWe()` / `mtop.taobao.idle.ad.activity.detail.rendering` |
 
-**线上调用形状**：除 `message.unread.info` 外都是
+另有 `GET /api/promotion/ad/apis`：接口目录（只读 kind 清单 + 写动作），给工具面/AI 自描述用。
+第 63 批后只读 kind 共 **14 条**（顺序 = `services/ad.py:READ_KINDS` = `xianyu/ad.py:READ_APIS`，测试 `test_read_kinds_match_protocol` 盯着）；
+同一目录里还透出 `unsupported: [{api, reason}]`，登记 `mtop.taobao.idle.ad.bp.data.download`（@3115691，偏写，**不进 `READ_APIS`**，见 §9.5）。
+
+**线上调用形状**：除 `message.unread.info` 与第 63 批的 `activity.detail.rendering` 外都是
 `{api, v:'1.0', data:{requestJson: JSON.stringify(<业务对象>)}}`（bundle 里的 `yp({...})` 包装），
 对应 `client.mtop(api, {'requestJson': request}, v='1.0', spm_cnt='a21ybx.im.0.0')`。
-`message.unread.info` 的官方 `data` 是 **空对象**、不套 `requestJson`（`backend/app/xianyu/ad.py:185-188`）。
+`message.unread.info`（`backend/app/xianyu/ad.py:185-188`）与 `activity.detail.rendering`（官方 @3268518 `data:{}`）
+的官方 `data` 是 **空对象**、不套 `requestJson`；这两条的 `READ_APIS[kind]['request_json']` 都是 `False`。
 bundle 里 `group.list` / `campaign.log.query` 的包装**没有写 `v`**，但本仓库 `mtop.call_params`
 （`backend/app/xianyu/mtop.py:98`）把 `v` 当固定键、`client.mtop` 也没有「不带 v」的表达方式，
 平台默认同样是 1.0，所以统一发 `v=1.0`（不另造参数）。
@@ -213,6 +232,7 @@ bundle 里 `group.list` / `campaign.log.query` 的包装**没有写 `v`**，但�
 * 充值与提现：**没有写接口**。bundle 里只有 `.recharge.query` / `.withdraw.query` 两条只读，
   已在 `client.py` 覆盖（`services/ad_write.py` 的 `UNSUPPORTED` 也明确不做）。
 * 计划/活动的写操作（增删改停启、报名领奖、流水操作）：**已由 `services/ad_write.py` 覆盖**，本批不重复。
+* `mtop.taobao.idle.ad.bp.data.download`（@3115691 `XFe(e)`）：**只登记、不接**。官方「下载报表」按钮调它**创建服务端异步导出任务**（响应读 `data.downloadUrl` / `data.taskId` / `data.status`，没有 `downloadUrl` 时拿 `taskId` 每 60s 轮询；`targetType=CAMPAIGN|MEMBER|ITEM`）—— 有副作用/落库，不是读现成文件。登记在协议层常量 `BP_DATA_DOWNLOAD_API`（不进 `READ_APIS`）与服务层 `UNSUPPORTED`，`GET /apis` 的 `catalog().unsupported` 透出，逐条口径见 §9.5。
 * 本批**没有**把新路由接进 AI 工具面（`backend/app/agents/tools.py`）与 MCP（`mcp_server/client.py`）：
   那两个文件是冻结文件（Lead 独占）。路由清单见 §1，交给 Lead 接线。
 
@@ -223,10 +243,10 @@ XIANYU_APP_DIR=$TEMP/xywb_adcov PYTHONPATH=. PYTHONIOENCODING=utf-8 /c/Python310
 XIANYU_APP_DIR=$TEMP/xywb_adcov PYTHONPATH=. PYTHONIOENCODING=utf-8 /c/Python310/python.exe backend/tests/test_xianyu_ad.py
 ```
 
-* `test_ad_api.py`（50 个用例）：HTTP 信封 / 参数形状 / 错误语义（400/404/409/502/503）/
+* `test_ad_api.py`（**63** 个用例，第 63 批后；新增 4 条新接口的 HTTP / 服务层 / 端到端用例，见 §9.6）：HTTP 信封 / 参数形状 / 错误语义（400/404/409/502/503）/
   只读探测（对**真 app** 验非 GET 405）/ 写闸门（`confirm` 严格档、协议层二次闸门）/
   幂等键回放 / 操作留痕 / 端到端（真协议层 + 假 mtop）/ 真 app 幂等。
-* `test_xianyu_ad.py`（13 个用例）：协议层 `api` 名、`requestJson` 内容、`v/spm_cnt`、
+* `test_xianyu_ad.py`（**15** 个用例，第 63 批后）：协议层 `api` 名、`requestJson` 内容、`v/spm_cnt`、
   未读数不套 `requestJson`、写闸门拒绝时**一个字节都不发**；官方默认值补齐（`BODY_DEFAULTS`）、
   调用方值覆盖默认值、缺必填键在协议层就被 `MissingRequiredParams` 拦下（**一个字节都不发**）、
   服务层 `read()` 不把便利键 `entity_type`/`entity_list` 透传成 payload。
@@ -308,3 +328,83 @@ export PYTHONPATH=. PYTHONIOENCODING=utf-8
 /c/Python310/python.exe backend/tests/test_xianyu_ad.py                 # 协议层形状 + 官方默认值 + 残包拦截
 /c/Python310/python.exe backend/tests/test_ad_api.py                    # 服务/接口层（不在本次写盘范围）
 ```
+
+## 9. 第 63 批：投放域 4 条只读接口（+1 条只登记不接）
+
+- 新增落点：协议层 `backend/app/xianyu/ad.py`（`READ_APIS` 10 → **14** 条、`BODY_DEFAULTS` 补 `coupon_info`、`activity_detail` 的 `request_json=False`）、
+  服务层 `backend/app/services/ad.py`（`READ_KINDS` 同步 14 条 + 4 个显式函数 + `read()` 分发分支 + `UNSUPPORTED`）、
+  路由层 `backend/app/api/ad.py`（4 条 GET，见 §1）。
+- 真机口径：账号 `2217970177348`（月狐兔_，`login_state=active`），**in-process 只读探针**（脚本 `%TEMP%\probe63_kurumi.py` 打协议层、`%TEMP%\probe63_svc.py` 打服务层），
+  数据目录用 `sqlite3` 的 `Connection.backup()` **一致性拷贝**到 `%TEMP%\xywb_live63`（不碰生产库），串行、每条间隔 ≥2.5s、**无任何写操作**。
+- 原始响应落盘：`logs/probe63/kurumi/ad_<label>.json`（协议层逐条）+ `ad_probe63_all.json` + `ad_service63.json`（`logs/` 不入仓）。
+
+### 9.1 `coupon-info`（优惠券列表）
+
+- 官方（@3246590 `sWe(e)`）：`yp({api:'mtop.alibaba.idle.ad.bp.coupon.info.query', v:'1.0', data:{requestJson:JSON.stringify(e)}, showErrorToast:!1, needLoginPC:!0})`；
+  调用点 @3265220 的初值 `{pageNum:1,pageSize:10,couponType:0,source:'BONUS'}`，响应读 `data.total` / `data.result`。
+- 本地：`GET .../coupons?page_num=&page_size=&coupon_type=&source=` + 可选 JSON body / `?payload=`（整包兜底，坏 JSON → 400 `invalid_fields`，body 优先）；
+  `page_num`/`page_size` 走 `_page`、`coupon_type` 走 `_int`，非法 → 400 `invalid_fields`。
+- **官方初值进了 `BODY_DEFAULTS`**：空 options → `{"pageNum":1,"pageSize":10,"couponType":0,"source":"BONUS"}`（**不是空对象**）。
+- 真机 A/B（同账号、同接口，只差这一层）：
+  - 官方初值 → **200**，`data = {"pageNum":1,"pageSize":10,"result":[],"total":0,"totalPage":0}`（0.33s；该账号券列表为空）；
+  - 裸 `{}`（绕开默认值，`requestJson='{}'`）→ **502 `UNKNOWN_FAIL_CODE::系统开小差了，请稍候重试`**（0.06s）。
+  - ⇒ **平台不接受空 requestJson**，默认值必须由协议层补；「空 options 是 200」是**本仓库路由**的语义（补齐官方初值后再打平台），不是平台对空对象的语义。
+- 服务层真机：`coupon_info(ACC)` 与 `coupon_info(ACC, page_num='2', page_size='5', coupon_type='3')` 都 200，`data.pageNum/pageSize` 回显请求值（2 / 5）。
+- 枚举（只登记、协议层不校验，`backend/app/xianyu/ad.py`）：`COUPON_TYPES{0 全部,2 礼金,3 红包,4 新人券,5 代理商礼金}`（@3243192）、
+  `COUPON_SOURCES{BONUS 生效中,COUPON 未生效,HISTORY 已失效}`（@3243498）、
+  `COUPON_STATUS{1 未生效,2 生效中,3 已用完,4 已作废,5 未生效已过期,6 生效中已过期,7 冻结}`（@3244737）。
+
+### 9.2 `coupon-statistic`（优惠券汇总）
+
+- 官方（@3246428 `aWe()`）：`data:{requestJson:JSON.stringify({})}` —— **恒发 `{}`、无入参**。
+- 本地：`GET .../coupons/statistic`，无查询串、无 body（服务层 `coupon_statistic(account_id)` 不接 body，协议层 `coupon_statistic(client, body=None)` 只是签名兼容）。
+- 真机：**200**，`data = {"activatedCouponAmountOfYuan":"0","expiringCouponAmountOfYuan":"0","specialCouponAmountOfYuan":"0"}`（0.07s）—— 三个金额字段都是**字符串** `"0"`。
+- 路由顺序：`/coupons/statistic` 必须注册在 `/coupons` 之前（两条路径都显式写死，测试 `test_coupons_statistic_path_not_swallowed_by_coupons` 盯着）。
+
+### 9.3 `account-card-v2`（账户卡片 V2，活动奖励页）
+
+- 官方（@3268292 `UWe(e)`）：`yp({api:'mtop.alibaba.idle.ad.account.card.v2', v:'1.0', needLogin:!0, data:{requestJson:JSON.stringify(e)}})`；
+  导出名 `requestAccountCard`，是路由 `home/service`（活动奖励页）的 loader export（@505082 / @3756651）。
+- **载荷 `e` 在别的 chunk 里，本 bundle 取不到**：所以本地**不设** `BODY_DEFAULTS`，`GET .../account-card-v2` 的 body / `?payload=` 原样转发，**空对象照发**（空 body → `requestJson='{}'`）。
+- 与既有 `client.py:137 AD_ACCOUNT_CARD_API='mtop.taobao.idle.ad.bp.account.card.query'`（`client.py:1079 ad_account_card`，载荷 `{scene:'PC_HOME'}`，`services/promotion.py:78/149` 用）**不是同一个接口**：
+  一个是 `alibaba.idle`、一个是 `taobao.idle`；本批没有合并、也没有复用。
+- 真机：空对象 → **502 `FAIL_SYS_UNAUTHORIZED_ENTRANCE::API访问入口未授权`**（0.06s，平台原话；mtop 层 HTTP 仍是 200，本仓库翻 502 `protocol_error`）。
+  ⇒ 本账号打到这个接口时**平台拒绝访问入口**（是账号维度还是应用/入口维度未确认）；路由本身参数校验通过、请求确实发出去了。**载荷形状与成功响应都仍未验证**。
+- 不确定项：官方包装的 `needLogin:!0` 与 `coupon.info` 的 `needLoginPC:!0` 是否等价未验证；`e` 的键名（`scene` 之类）未取到，留给能取到那个 chunk 的批次。
+
+### 9.4 `activity-detail`（活动详情渲染）
+
+- 官方（@3268518 `YWe()`）：`yp({api:'mtop.taobao.idle.ad.activity.detail.rendering', v:'1.0', needLogin:!0, data:{}})` —— **无入参、不套 `requestJson`**（与 `message.unread.info` 同形）；调用点 @3281232 / @3723161。
+- 本地：`GET .../activity-detail`，无查询串、无 body；协议层发 `data={}`，`READ_APIS['activity_detail']['request_json'] = False`。
+- 真机：**502 `NO_APPLY_ACTIVITY_PERMISSION::活动报名时间已结束或者您不在本期活动名单内`**（0.06s，平台原话）。
+  ⇒ 这是**平台侧业务拒绝**（该账号不在本期活动名单 / 报名时间已结束），不是参数错：接口本身不需要参数，换有资格的账号就会走通。
+- 不确定项：成功响应的字段名（活动详情结构）本账号拿不到，未验证。
+
+### 9.5 `mtop.taobao.idle.ad.bp.data.download` —— 偏写，只登记不接
+
+- bundle @3115691 `XFe(e)`：`yp({api:'mtop.taobao.idle.ad.bp.data.download', data:{requestJson:JSON.stringify(e)}, showErrorToast:!1})`（**包装没写 `v`**）；
+  三个调用点 @3118414 / @3174876 / @3236322 全在「下载报表」按钮里，载荷 `{targetType:'CAMPAIGN'|'MEMBER'|'ITEM', startDate:'YYYYMMDD', endDate:'YYYYMMDD', includeEndDate:true, groupByDay:bool, taskId?}`。
+- 判据：响应读 `data.downloadUrl` / `data.taskId` / `data.status`，`status=FAILED` 报错；没有 `downloadUrl` 时官方拿 `taskId` **每 60s 轮询** —— 它**创建的是服务端异步导出任务**（有副作用 / 落库），不是读一个现成文件。
+- 因此**只登记、不接**：协议层常量 `BP_DATA_DOWNLOAD_API`（`backend/app/xianyu/ad.py`，**不进 `READ_APIS`**，测试 `test_read_apis_table_covers_every_constant` 断言它不在表里）
+  + 服务层 `UNSUPPORTED`（`backend/app/services/ad.py`），并在 `GET /apis` 的 `catalog().unsupported = [{api, reason}]` 里透出。
+- 真机**未打**（偏写接口不做试打，与本项目「写接口不试打」口径一致）。
+
+### 9.6 第 63 批测试
+
+```bash
+XIANYU_APP_DIR=$TEMP/xywb_kurumi63 PYTHONPATH=. PYTHONIOENCODING=utf-8 /c/Python310/python.exe backend/tests/test_xianyu_ad.py
+XIANYU_APP_DIR=$TEMP/xywb_kurumi63 PYTHONPATH=. PYTHONIOENCODING=utf-8 /c/Python310/python.exe backend/tests/test_ad_api.py
+```
+
+- `test_xianyu_ad.py`：**15 条 OK**（新增 `test_activity_detail_sends_empty_data_without_request_json`、`test_coupon_info_fills_official_filter_state`；
+  `test_read_apis_table_covers_every_constant` 期望列表加 4 条、`no_request_json={'message_unread','activity_detail'}`、并断言 `BP_DATA_DOWNLOAD_API` 不在 `READ_APIS` 里）。
+- `test_ad_api.py`：**63 条 OK**（新增 9 条 HTTP/服务层用例 + 4 条端到端；`test_routes_are_read_only` 路径清单加 `coupons` / `coupons/statistic` / `account-card-v2` / `activity-detail`，`test_apis_catalog` 断言 `unsupported`）。
+  其中 `test_coupon_info_empty_options_is_200` 锁住「空 options 是 200 不是失败」（服务层参数为空、由 `BODY_DEFAULTS` 补官方初值）。
+- 回归（同批全 OK）：`test_contract_routes`(3) / `test_write_routes_have_gates`(4) / `test_confirm_gate_single_point`(9) / `test_protocol_wiring`(16) / `test_agents_tools_workbench`(32) / `test_mcp_routes_match_openapi`(7)。
+
+### 9.7 仍未验证 / 存疑（第 63 批）
+
+- `account_card_v2` 的**载荷形状**与成功响应（平台未授权，见 §9.3）；`activity_detail` 的成功响应字段（账号不在活动名单，见 §9.4）。
+- `coupon_info` 只验证了空列表账号（`total=0`）：`result` 里单条券的字段名、`couponType` 各枚举、`source` 各枚举都未在真机见到。
+- `coupon_statistic` 三个金额字段全是 `"0"`，**非零金额的格式（元/分、小数位）未验证**。
+- 只用**一个账号**验证；`logs/probe63/` 未入库；打包版**未重打包**（禁改禁跑口径），这 4 条在打包版上不存在。

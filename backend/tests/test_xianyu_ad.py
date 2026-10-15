@@ -5,7 +5,8 @@
 1. **api 名与 data 形状**照官方 bundle 的调用点（偏移写在 `backend/app/xianyu/ad.py` 每条 docstring 里）；
 2. 官方调用点**恒定带**的键由协议层补默认值 / 拦住残包 —— 真机 2026-10-16 实测：
    少 `tab` 或 `entityType`/`entityList` 时平台回 `E_AD_BP_COMMON_PARAM_NULL::必填参数为空`（502）；
-3. `message.unread.info` 是**唯一**不套 `requestJson` 的一条（官方 data 为空）；
+3. 不套 `requestJson` 的是 `message.unread.info` 与 `activity.detail.rendering`
+   （官方这两条 `data` 是空对象）；
 4. 写接口 `message.read` 没有 `confirm=True` 时**一个字节都不发**。
 """
 from __future__ import annotations
@@ -68,12 +69,16 @@ class AdProtocolTest(unittest.TestCase):
                                                       'campaignId': 0, 'pageNum': 1})
             await ad_proto.message_list(self.client, {'pageNum': 1, 'pageSize': 10})
             await ad_proto.message_detail(self.client, {'messageId': 5})
+            await ad_proto.coupon_info(self.client, {'pageNum': 2, 'couponType': 3})
+            await ad_proto.coupon_statistic(self.client)
+            await ad_proto.account_card_v2(self.client, {'scene': 'PC_HOME'})
 
         asyncio.run(run())
         self.assertEqual([api for api, _ in self.stub.calls], [
             ad_proto.ACCOUNT_INFO_API, ad_proto.PACKAGE_INFO_API, ad_proto.ITEM_SEARCH_API,
             ad_proto.CUSTOMIZE_BID_ESTIMATES_API, ad_proto.GROUP_LIST_API, ad_proto.GROUP_DATA_API,
             ad_proto.CAMPAIGN_LOG_API, ad_proto.MESSAGE_LIST_API, ad_proto.MESSAGE_DETAIL_API,
+            ad_proto.BP_COUPON_INFO_API, ad_proto.BP_COUPON_STATISTIC_API, ad_proto.ACCOUNT_CARD_V2_API,
         ])
         for api, payload in self.stub.calls:
             self.assertEqual(set(payload), {'requestJson'}, api)
@@ -94,6 +99,12 @@ class AdProtocolTest(unittest.TestCase):
         self.assertEqual(json.loads(self.stub.calls[3][1]['requestJson']),
                          {'entityType': 1, 'entityList': [{'entityId': '1'}],
                           'pcFirstRequest': True})
+        # 券列表：官方初值 FWe 补齐，调用方给的 pageNum/couponType 覆盖初值
+        self.assertEqual(json.loads(self.stub.calls[9][1]['requestJson']),
+                         {'pageNum': 2, 'pageSize': 10, 'couponType': 3, 'source': 'BONUS'})
+        # 券统计：官方 requestJson 恒为 '{}'（无参），不补任何默认值
+        self.assertEqual(json.loads(self.stub.calls[10][1]['requestJson']), {})
+        self.assertEqual(json.loads(self.stub.calls[11][1]['requestJson']), {'scene': 'PC_HOME'})
 
     def test_unread_info_sends_empty_data_without_request_json(self):
         """官方 @703173 的 data 是空对象、不套 requestJson；套了平台会当成另一个请求。"""
@@ -105,6 +116,26 @@ class AdProtocolTest(unittest.TestCase):
         payload = asyncio.run(run())
         self.assertEqual(payload, {'unreadCount': 3})
         self.assertEqual(self.stub.calls, [(ad_proto.MESSAGE_UNREAD_API, {})])
+
+    def test_activity_detail_sends_empty_data_without_request_json(self):
+        """官方 @3268518 的 data 是空对象、不套 requestJson，且**无参**（与未读数同形）。"""
+        self.stub.data = {'result': {'title': '活动'}}
+
+        async def run():
+            return await ad_proto.activity_detail(self.client)
+
+        payload = asyncio.run(run())
+        self.assertEqual(payload, {'result': {'title': '活动'}})
+        self.assertEqual(self.stub.calls, [(ad_proto.ACTIVITY_DETAIL_RENDERING_API, {})])
+
+    def test_coupon_info_fills_official_filter_state(self):
+        """不给参数 = 官方首次加载的筛选初值（@3265220 `FWe`），不是失败、也不是空对象。"""
+        async def run():
+            await ad_proto.coupon_info(self.client, None)
+
+        asyncio.run(run())
+        self.assertEqual(json.loads(self.stub.calls[0][1]['requestJson']),
+                         {'pageNum': 1, 'pageSize': 10, 'couponType': 0, 'source': 'BONUS'})
 
     def test_reads_return_platform_data_dict(self):
         self.stub.data = {'total': 7, 'result': {'itemList': []}}
@@ -226,6 +257,7 @@ class AdProtocolTest(unittest.TestCase):
             'account_info', 'package_info', 'item_search', 'customize_bid_estimates',
             'group_list', 'group_data', 'campaign_log',
             'message_list', 'message_detail', 'message_unread',
+            'coupon_info', 'coupon_statistic', 'account_card_v2', 'activity_detail',
         ]))
         constants = {name: value for name, value in vars(ad_proto).items()
                      if name.endswith('_API') and isinstance(value, str)}
@@ -234,10 +266,18 @@ class AdProtocolTest(unittest.TestCase):
         self.assertNotIn(ad_proto.MESSAGE_READ_API,
                          [spec['api'] for spec in ad_proto.READ_APIS.values()],
                          '写接口不许出现在只读目录里')
-        self.assertIs(ad_proto.READ_APIS['message_unread']['request_json'], False)
+        # 不套 requestJson 的两条：官方 data 是空对象
+        no_request_json = {'message_unread', 'activity_detail'}
+        for kind in no_request_json:
+            self.assertIs(ad_proto.READ_APIS[kind]['request_json'], False, kind)
         for kind, spec in ad_proto.READ_APIS.items():
-            if kind != 'message_unread':
+            if kind not in no_request_json:
                 self.assertIs(spec['request_json'], True, kind)
+        # 偏写、只登记不接的那条：常量在、但**不许**进只读目录（进了就等于接了）
+        self.assertTrue(ad_proto.BP_DATA_DOWNLOAD_API.startswith('mtop.'))
+        self.assertNotIn(ad_proto.BP_DATA_DOWNLOAD_API,
+                         [spec['api'] for spec in ad_proto.READ_APIS.values()],
+                         'data.download 是异步导出任务（有副作用），只登记不接')
         for kind in list(ad_proto.BODY_DEFAULTS) + list(ad_proto.BODY_REQUIRED):
             self.assertIn(kind, ad_proto.READ_APIS, kind)
 

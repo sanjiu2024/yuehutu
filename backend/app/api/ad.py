@@ -1,4 +1,4 @@
-"""推广（投放）页面缺的那几块：投放包 / 人群包 / 计划日志 / 消息中心（十条 GET + 一条 POST）。
+"""推广（投放）页面缺的那几块：投放包 / 人群包 / 计划日志 / 消息中心 / 活动奖励（十四条 GET + 一条 POST）。
 
 路由命名与 `backend/app/api/promotion.py` / `ad_write.py` 同族：只读全部用 **GET**
 （查询串参数，FastAPI 先做类型与范围校验），只有 `message.read` 是写、必须 POST 且带
@@ -168,6 +168,62 @@ def campaign_log(
 ):
     return _envelope(ad.campaign_log(account_id, start_date, end_date, campaign_id, page_num,
                                      page_size, operator_type, operation_type))
+
+
+@router.get('/{account_id}/coupons/statistic')
+def coupons_statistic(account_id: str, user=Depends(current_user)):
+    """券统计。官方 `requestJson` 恒为 `{}`、无参，所以这里不接受任何查询参数。
+
+    注册在 `/coupons` **之前**：先写死路径再写通配路径，免得以后加 `/coupons/{id}` 时
+    把 `statistic` 当成券 ID（与 `/messages/unread` 同一条规矩）。
+    """
+    return _envelope(ad.coupon_statistic(account_id))
+
+
+@router.get('/{account_id}/coupons')
+def coupons(
+    account_id: str,
+    page_num: str = Query('', description='页码（官方初值 1）'),
+    page_size: str = Query('', description='每页条数（官方初值 10）'),
+    coupon_type: str = Query('', description='券类型：0=全部 / 2=礼金 / 3=红包 / 4=新人券 / 5=代理商礼金'),
+    source: str = Query('', description='来源分组：BONUS=生效中 / COUPON=未生效 / HISTORY=已失效'),
+    body: Dict[str, Any] = Body(default={}, description='整包筛选对象，原样透传（与查询参数合并，body 优先）'),
+    payload: str = Query('', description='JSON 对象字符串（发不出 GET body 的客户端用这个）'),
+    user=Depends(current_user),
+):
+    """活动奖励页的券列表。不给参数 = 用官方首次加载的筛选初值（不是失败）。
+
+    官方发的是筛选状态对象 `{pageNum,pageSize,couponType,source}`；不给时协议层
+    `BODY_DEFAULTS` 补 `{pageNum:1,pageSize:10,couponType:0,source:'BONUS'}`。
+    """
+    data = _query_body(body, payload)
+    if data is None:
+        return _envelope(common.fail('payload 必须是 JSON 对象字符串', 'invalid_fields'))
+    return _envelope(ad.coupon_info(account_id, page_num, page_size, coupon_type, source, data))
+
+
+@router.get('/{account_id}/account-card-v2')
+def account_card_v2(
+    account_id: str,
+    body: Dict[str, Any] = Body(default={}, description='账户卡查询对象，原样透传给平台'),
+    payload: str = Query('', description='JSON 对象字符串（发不出 GET body 的客户端用这个）'),
+    user=Depends(current_user),
+):
+    """投放账户卡片 V2（**不是** `promotion.py` 用的 `bp.account.card.query`）。
+
+    官方载荷在别的 chunk 里、本 bundle 取不到，所以不设默认值、不猜键：空对象也照发
+    （平台接受空对象，见 `docs/contracts/ad.md` 的真机原话）。
+    """
+    data = _query_body(body, payload)
+    if data is None:
+        return _envelope(common.fail('payload 必须是 JSON 对象字符串', 'invalid_fields'))
+    return _envelope(ad.account_card_v2(account_id, data))
+
+
+@router.get('/{account_id}/activity-detail')
+def activity_detail(account_id: str, user=Depends(current_user)):
+    """活动奖励详情渲染。官方 `data` 为空、不套 requestJson，所以不接受任何查询参数。"""
+    return _envelope(ad.activity_detail(account_id))
 
 
 @router.get('/{account_id}/messages')

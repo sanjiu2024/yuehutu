@@ -128,6 +128,18 @@ class FakeAdProtocol:
     async def message_unread(self, client: Any) -> Any:
         return self._answer('message_unread', client)
 
+    async def coupon_info(self, client: Any, body: Any = None) -> Any:
+        return self._answer('coupon_info', client, body)
+
+    async def coupon_statistic(self, client: Any, body: Any = None) -> Any:
+        return self._answer('coupon_statistic', client, body)
+
+    async def account_card_v2(self, client: Any, body: Any = None) -> Any:
+        return self._answer('account_card_v2', client, body)
+
+    async def activity_detail(self, client: Any) -> Any:
+        return self._answer('activity_detail', client)
+
     async def message_read(self, client: Any, body: Any = None, confirm: Any = False) -> Any:
         return self._answer('message_read', client, body, confirm)
 
@@ -169,7 +181,8 @@ def install_fake_protocol(protocol: FakeAdProtocol) -> FakeXianyuClient:
     module = types.ModuleType('backend.app.xianyu.ad')
     for name in ('account_info', 'package_info', 'item_search', 'customize_bid_estimates',
                  'group_list', 'group_data', 'campaign_log', 'message_list', 'message_detail',
-                 'message_unread', 'message_read'):
+                 'message_unread', 'coupon_info', 'coupon_statistic', 'account_card_v2',
+                 'activity_detail', 'message_read'):
         setattr(module, name, getattr(protocol, name))
     module.READ_APIS = protocol.READ_APIS  # type: ignore[attr-defined]
     module.MESSAGE_READ_API = protocol.MESSAGE_READ_API  # type: ignore[attr-defined]
@@ -277,6 +290,8 @@ class AdApiTest(unittest.TestCase):
                          f'{BASE}/{ACC}/groups', f'{BASE}/{ACC}/groups/data',
                          f'{BASE}/{ACC}/campaign-log', f'{BASE}/{ACC}/messages',
                          f'{BASE}/{ACC}/messages/unread', f'{BASE}/{ACC}/messages/12',
+                         f'{BASE}/{ACC}/coupons', f'{BASE}/{ACC}/coupons/statistic',
+                         f'{BASE}/{ACC}/account-card-v2', f'{BASE}/{ACC}/activity-detail',
                          f'{BASE}/apis'):
                 for method in ('post', 'put', 'patch', 'delete'):
                     resp = getattr(real, method)(path, headers=self.headers)
@@ -301,6 +316,10 @@ class AdApiTest(unittest.TestCase):
         self.assertEqual(data['writes'], [{'action': 'message_read',
                                            'api': ad_proto.MESSAGE_READ_API,
                                            'method': 'POST', 'confirm_required': True}])
+        # 偏写、只登记不接的那条：在目录里以「不支持」透出，且**没有**任何 kind 指向它
+        self.assertEqual([row['api'] for row in data['unsupported']],
+                         [ad_proto.BP_DATA_DOWNLOAD_API])
+        self.assertIn('异步导出任务', data['unsupported'][0]['reason'])
 
     def test_read_kinds_match_protocol(self):
         """服务层抄了一份 kind 白名单（协议层可能整个导入不进来），两份不许漂移。"""
@@ -432,6 +451,63 @@ class AdApiTest(unittest.TestCase):
         self.assertEqual(data['api'], ad_proto.MESSAGE_UNREAD_API)
         self.assertEqual(self.proto.args_of('message_unread'), (self.fake_client,))
 
+    def test_coupon_info_body(self):
+        """券列表：官方筛选状态 `{pageNum,pageSize,couponType,source}`，缺的用官方初值补。"""
+        data = self.ok_data(f'{BASE}/{ACC}/coupons', '?page_num=2&coupon_type=3&source=HISTORY')
+        self.assertEqual(data['kind'], 'coupon_info')
+        self.assertEqual(data['api'], ad_proto.BP_COUPON_INFO_API)
+        self.assertEqual(self.proto.args_of('coupon_info')[1],
+                         {'pageNum': 2, 'couponType': 3, 'source': 'HISTORY'})
+
+    def test_coupon_info_empty_options_is_200(self):
+        """**空 options 是 200 不是失败**：不给参数 = 官方首次加载的筛选初值。"""
+        data = self.ok_data(f'{BASE}/{ACC}/coupons')
+        self.assertEqual(data['kind'], 'coupon_info')
+        self.assertEqual(self.proto.args_of('coupon_info')[1], {})
+
+    def test_coupon_info_bad_page_is_400(self):
+        body = self.fail_envelope(f'{BASE}/{ACC}/coupons', '?page_num=0')
+        self.assertEqual(body['code'], 'invalid_fields')
+        self.assertEqual(self.proto.calls, [])
+
+    def test_coupon_statistic_takes_no_args(self):
+        """官方这条 `requestJson` 恒为 `{}`：服务层一个参数都不许给协议层。"""
+        data = self.ok_data(f'{BASE}/{ACC}/coupons/statistic')
+        self.assertEqual(data['kind'], 'coupon_statistic')
+        self.assertEqual(data['api'], ad_proto.BP_COUPON_STATISTIC_API)
+        # 假协议层照真签名收 `body=None`：这里断言的是「服务层没给 body」，
+        # 给了空对象会是 `{}`、给了参数会带上参数。
+        self.assertEqual(self.proto.args_of('coupon_statistic'), (self.fake_client, None))
+
+    def test_account_card_v2_empty_body_is_200(self):
+        """官方载荷在别的 chunk 里、取不到：空对象也照发，**不是** 400。"""
+        data = self.ok_data(f'{BASE}/{ACC}/account-card-v2')
+        self.assertEqual(data['kind'], 'account_card_v2')
+        self.assertEqual(data['api'], ad_proto.ACCOUNT_CARD_V2_API)
+        self.assertEqual(self.proto.args_of('account_card_v2')[1], {})
+
+    def test_account_card_v2_payload_query_fallback(self):
+        """发不出 GET body 的客户端用 `?payload=<json>`；坏 JSON 是 400，不静默当空对象。"""
+        self.ok_data(f'{BASE}/{ACC}/account-card-v2', '?payload=%7B%22scene%22%3A%22PC_HOME%22%7D')
+        self.assertEqual(self.proto.args_of('account_card_v2')[1], {'scene': 'PC_HOME'})
+        self.proto.calls.clear()
+        body = self.fail_envelope(f'{BASE}/{ACC}/account-card-v2', '?payload=not-json')
+        self.assertEqual(body['code'], 'invalid_fields')
+        self.assertEqual(self.proto.calls, [])
+
+    def test_activity_detail_takes_no_args(self):
+        """官方这条 `data` 为空、不套 requestJson（与未读数同形）。"""
+        data = self.ok_data(f'{BASE}/{ACC}/activity-detail')
+        self.assertEqual(data['kind'], 'activity_detail')
+        self.assertEqual(data['api'], ad_proto.ACTIVITY_DETAIL_RENDERING_API)
+        self.assertEqual(self.proto.args_of('activity_detail'), (self.fake_client,))
+
+    def test_coupons_statistic_path_not_swallowed_by_coupons(self):
+        """先注册 `/coupons/statistic` 再注册 `/coupons`：别把 statistic 当成券 ID。"""
+        data = self.ok_data(f'{BASE}/{ACC}/coupons/statistic')
+        self.assertEqual(data['kind'], 'coupon_statistic')
+        self.assertEqual(self.proto.names(), ['coupon_statistic'])
+
     # -- 只读：错误语义 --------------------------------------------------
 
     def test_bad_date_is_400(self):
@@ -503,6 +579,18 @@ class AdApiTest(unittest.TestCase):
         result = ad_service.read(ACC, 'group_data', {'ad_group_id': '42'})
         self.assertTrue(result.get('kind') == 'group_data', result)
         self.assertEqual(self.proto.args_of('group_data')[1]['adGroupId'], 42)
+
+    def test_read_generic_dispatch_new_kinds(self):
+        """AI / MCP 侧走 `read()`：新加的 4 条 kind 也要能分发（不是只有路由能打）。"""
+        seed_account()
+        self.assertTrue(ad_service.read(ACC, 'coupon_info', {'page_num': '3'}).get('kind'))
+        self.assertEqual(self.proto.args_of('coupon_info')[1], {'pageNum': 3})
+        self.assertTrue(ad_service.read(ACC, 'coupon_statistic', {}).get('kind'))
+        self.assertEqual(self.proto.args_of('coupon_statistic'), (self.fake_client, None))
+        self.assertTrue(ad_service.read(ACC, 'account_card_v2', {'scene': 'PC_HOME'}).get('kind'))
+        self.assertEqual(self.proto.args_of('account_card_v2')[1], {'scene': 'PC_HOME'})
+        self.assertTrue(ad_service.read(ACC, 'activity_detail', {}).get('kind'))
+        self.assertEqual(self.proto.args_of('activity_detail'), (self.fake_client,))
 
     def test_read_generic_unknown_kind(self):
         seed_account()
@@ -660,6 +748,43 @@ class AdEndToEndTest(unittest.TestCase):
         self.assertEqual(resp.json()['data']['data'], {'unreadCount': 5})
         call = self.fake_client.calls[0]
         self.assertEqual(call['api'], ad_proto.MESSAGE_UNREAD_API)
+        self.assertEqual(call['data'], {})
+
+    def test_coupon_info_end_to_end_fills_official_defaults(self):
+        """不给参数也要真的发出去：requestJson 由协议层补成官方初值。"""
+        resp = self.client.get(f'{BASE}/{ACC}/coupons', headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        call = self.fake_client.calls[0]
+        self.assertEqual(call['api'], ad_proto.BP_COUPON_INFO_API)
+        self.assertEqual(json.loads(call['data']['requestJson']),
+                         {'pageNum': 1, 'pageSize': 10, 'couponType': 0, 'source': 'BONUS'})
+        self.assertEqual(call['v'], '1.0')
+        self.assertEqual(call['kw'].get('spm_cnt'), AD_SPM)
+
+    def test_coupon_statistic_end_to_end_sends_empty_request_json(self):
+        self.fake_client.answers[ad_proto.BP_COUPON_STATISTIC_API] = {'total': 1, 'result': []}
+        resp = self.client.get(f'{BASE}/{ACC}/coupons/statistic', headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json()['data']['data'], {'total': 1, 'result': []})
+        call = self.fake_client.calls[0]
+        self.assertEqual(call['api'], ad_proto.BP_COUPON_STATISTIC_API)
+        self.assertEqual(json.loads(call['data']['requestJson']), {})
+
+    def test_account_card_v2_end_to_end_sends_empty_object(self):
+        self.fake_client.answers[ad_proto.ACCOUNT_CARD_V2_API] = {'cardVO': {}}
+        resp = self.client.get(f'{BASE}/{ACC}/account-card-v2', headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        call = self.fake_client.calls[0]
+        self.assertEqual(call['api'], ad_proto.ACCOUNT_CARD_V2_API)
+        self.assertEqual(json.loads(call['data']['requestJson']), {})
+
+    def test_activity_detail_end_to_end_sends_empty_data(self):
+        self.fake_client.answers[ad_proto.ACTIVITY_DETAIL_RENDERING_API] = {'result': {'title': '活动'}}
+        resp = self.client.get(f'{BASE}/{ACC}/activity-detail', headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json()['data']['data'], {'result': {'title': '活动'}})
+        call = self.fake_client.calls[0]
+        self.assertEqual(call['api'], ad_proto.ACTIVITY_DETAIL_RENDERING_API)
         self.assertEqual(call['data'], {})
 
     def test_message_read_end_to_end(self):

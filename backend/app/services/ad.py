@@ -38,10 +38,23 @@ READ_KINDS: tuple = (
     'account_info', 'package_info', 'item_search', 'customize_bid_estimates',
     'group_list', 'group_data', 'campaign_log',
     'message_list', 'message_detail', 'message_unread',
+    'coupon_info', 'coupon_statistic', 'account_card_v2', 'activity_detail',
 )
 
 #: 写接口目录：action -> 协议层函数名。**只有一条**，且必须 `confirm=True`。
 WRITE_ACTIONS: Dict[str, str] = {'message_read': 'message_read'}
+
+#: **登记但不接**的官方接口：mtop 名 -> 理由。只在 `GET /apis` 的目录里透出，
+#: 不进 `READ_KINDS` / `READ_APIS`，所以没有任何路由能打到它（与
+#: `services/ad_write.py:26` 的 `UNSUPPORTED` 同一套写法）。
+UNSUPPORTED: Dict[str, str] = {
+    'mtop.taobao.idle.ad.bp.data.download':
+        '官方「下载报表」按钮调它**创建异步导出任务**（响应 data.taskId / data.status，'
+        '没有 downloadUrl 时官方拿 taskId 每 60s 轮询；targetType=CAMPAIGN|MEMBER|ITEM）'
+        '—— 服务端有副作用（建任务 / 落库），不是读一个现成文件，'
+        '所以本仓库只登记接口名与载荷形状、不接（bundle @3115691，'
+        '调用点 @3118414 / @3174876 / @3236322）',
+}
 
 
 def _text(value: Any) -> str:
@@ -249,7 +262,12 @@ def catalog() -> Dict[str, Any]:
     writes = [{'action': name, 'api': getattr(module, 'MESSAGE_READ_API', '') if module else '',
                'method': 'POST', 'confirm_required': True}
               for name in WRITE_ACTIONS]
-    return {'reads': reads, 'writes': writes, 'protocol_ready': module is not None}
+    return {
+        'reads': reads,
+        'writes': writes,
+        'unsupported': [{'api': api, 'reason': reason} for api, reason in UNSUPPORTED.items()],
+        'protocol_ready': module is not None,
+    }
 
 
 # -- 只读：每条一个显式函数（服务层 API 稳定，调用方不必记 kind 字符串） ------------
@@ -437,6 +455,55 @@ def message_unread(account_id: str) -> Dict[str, Any]:
     return _read(account_id, 'message_unread')
 
 
+def coupon_info(account_id: str, page_num: Any = '', page_size: Any = '',
+                coupon_type: Any = '', source: str = '', payload: Any = None) -> Dict[str, Any]:
+    """活动奖励页的券列表（红包 / 礼金）。
+
+    官方发的是**页面筛选状态**对象 `{pageNum,pageSize,couponType,source}`
+    （bundle @3265220 的 `sWe(h)`），初值由协议层 `BODY_DEFAULTS` 补
+    （`{pageNum:1,pageSize:10,couponType:0,source:'BONUS'}`，见 `backend/app/xianyu/ad.py`）；
+    `coupon_type` 0=全部/2=礼金/3=红包/4=新人券/5=代理商礼金，
+    `source` BONUS=生效中/COUPON=未生效/HISTORY=已失效。
+    其余键（官方以后加的筛选条件）走 `payload` 原样透传。
+    """
+    body = dict(payload) if isinstance(payload, dict) else {}
+    try:
+        if _text(page_num).strip():
+            body['pageNum'] = _page(page_num)
+        if _text(page_size).strip():
+            body['pageSize'] = _page(page_size, name='page_size')
+        if _text(coupon_type).strip():
+            body['couponType'] = _int(coupon_type, name='coupon_type')
+        if _text(source).strip():
+            body['source'] = _text(source).strip()
+    except ValueError as exc:
+        return common.fail(str(exc), 'invalid_fields')
+    return _read(account_id, 'coupon_info', body)
+
+
+def coupon_statistic(account_id: str) -> Dict[str, Any]:
+    """活动奖励页的券统计。官方 `requestJson` 恒为 `{}`、**无参**（bundle @3246428），
+    所以这里也不给参数 —— 不给参数不等于失败，协议层会发空对象。"""
+    return _read(account_id, 'coupon_statistic')
+
+
+def account_card_v2(account_id: str, payload: Any = None) -> Dict[str, Any]:
+    """投放账户卡片 V2（活动奖励页的账户卡）。
+
+    官方包装是 `requestJson: JSON.stringify(e)`，但**载荷 `e` 在别的 chunk 里**（bundle
+    @3268292 只有包装、取不到键），所以这里不设默认值、不猜键，整包对象原样透传
+    （`payload` 省略 = 发空对象，平台接受空对象，见 docs/contracts/ad.md 真机原话）。
+    """
+    body = dict(payload) if isinstance(payload, dict) else {}
+    return _read(account_id, 'account_card_v2', body)
+
+
+def activity_detail(account_id: str) -> Dict[str, Any]:
+    """活动奖励详情渲染。官方 `data` 为空、不套 requestJson（bundle @3268518），**无参**
+    —— 与 `message_unread` 同形。"""
+    return _read(account_id, 'activity_detail')
+
+
 def read(account_id: str, kind: str, params: Any = None) -> Dict[str, Any]:
     """通用只读入口：按 `kind` 分发（AI / MCP 侧一个口子进来）。
 
@@ -477,6 +544,18 @@ def read(account_id: str, kind: str, params: Any = None) -> Dict[str, Any]:
         return message_detail(account_id, _text(data.get('message_id')))
     if name == 'message_unread':
         return message_unread(account_id)
+    if name == 'coupon_info':
+        # 便利键必须从整包 payload 里剔掉：留着会让平台收到 `page_num` 这种蛇形键
+        # （真机复打时 `entity_type` / `entity_list` 就这么漏过一次）。
+        taken = ('page_num', 'page_size', 'coupon_type', 'source')
+        extra = {k: v for k, v in _payload_only(data).items() if k not in taken}
+        return coupon_info(account_id, **{k: data.get(k, '') for k in taken}, payload=extra)
+    if name == 'coupon_statistic':
+        return coupon_statistic(account_id)
+    if name == 'account_card_v2':
+        return account_card_v2(account_id, _payload_only(data))
+    if name == 'activity_detail':
+        return activity_detail(account_id)
     return common.fail(f'不支持的推广只读接口 {name}', 'not_found')
 
 
