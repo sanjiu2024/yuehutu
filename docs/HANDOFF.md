@@ -3749,7 +3749,7 @@ first.hand / backend 族 → `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（官方 seller.p
   `backend/app/services/ad.py`、`backend/app/api/ad.py`（前缀 `/api/promotion/ad`，12 条：11 GET + 1 POST），`backend/app/main.py::ROUTE_MODULES` 加 `'ad'`。
 - 通用入口 `services/ad.py::read(account_id, kind, params)` 覆盖 10 个只读 kind；`execute` 只认 `message_read`。
 - 唯一写动作是「投放消息标记已读」：`confirm` 只认字面 `true`，且走第五十九批的 `Idempotency-Key`。
-- **11 条只读接口全是 bundle 反查、无真机证据**（bundle `https://g.alicdn.com/idle-pc/fish-ad-pc/0.0.12/js/main.js`，本地副本
+- **11 条只读接口原为 bundle 反查；2026-10-16 真机打了 9 条（6 条 200 / 3 条被平台拒 / 2 条未打），逐条结果见本段末尾「真机」**（bundle `https://g.alicdn.com/idle-pc/fish-ad-pc/0.0.12/js/main.js`，本地副本
   `C:\Users\Administrator\.dsh-tmp\adapp\ad-main.js` 3,760,912 B），偏移与搜索串写在每条 docstring 与契约里。
 - 未接：`mtop.taobao.idle.ad.item.recommend`（无入参的装饰性推荐位）；充/提现只有只读 `.query`；计划/活动写族由既有 `services/ad_write.py` 覆盖，本批没有重复实现。
 
@@ -3758,18 +3758,18 @@ first.hand / backend 族 → `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（官方 seller.p
   `/api/items/{account_id}/publish/categories`、`/publish/brands?category_id=`、`/publish/models?category_id=&brand_id=`、
   `/publish/category-properties?category_id=`、`/publish/search-categories`。
 - 响应统一 `data={account_id,kind,options,count,platform_code,api?,platform_message?,fetched_at,source:'platform'}`；`options` 为空是 200（这一层就是没有可选项），不是失败。
-- **5 条全无真机证据**（形状由 bundle 反查 `logs/seller_discover/item_templates_src/js_main.js` 与 `~/.dsh-tmp/trade_bundle/main.js` 得出）；
-  `docs/contracts/items.md` §6 列了 4 项不确定：`item.pc.category.property.query` 的业务体键名、`item.pc.search.categories` 是否与 `item.publish.categories` 同形、
+- **5 条原为 bundle 反查；2026-10-16 真机打了 5 条（4 条 200：categories 99 / brands 68 / models 0 / category-properties 0；1 条被平台拒：search-categories）**（形状由 bundle 反查 `logs/seller_discover/item_templates_src/js_main.js` 与 `~/.dsh-tmp/trade_bundle/main.js` 得出）；
+  `docs/contracts/items.md` §6 列了 5 项不确定：`item.pc.category.property.query` 的业务体键名、`item.pc.search.categories` 是否与 `item.publish.categories` 同形、
   brands/models 的元素字段名、`valueType:'string'` 是否必要 —— **真机拿到非空响应后可能要改解析键名**。
 - 有意不接：`seller.platform.idle.category.query` / `item.pc.category.list` / `common.item.search` / `item.operate.report.get`（理由逐条写在 `docs/contracts/items.md` §4）。
 
 **C. 交易处理写能力（task-16，`docs/contracts/trade_write.md` §13）**
 - 8 条新路由（前缀 `/api/trade`）：3 读 —— `GET /{account_id}/items/{item_id}/sku-selector`、`GET /{account_id}/orders/{order_id}/backfill-report`、
   `GET /{account_id}/smart-form/query?params=`；5 写 —— `POST /{account_id}/orders/{order_id}/cancel|close-im|delay-single|adjust-price-sku`、`POST /{account_id}/smart-form/submit`。
-- 5 条写全部 `confirm` 闸门 + `Idempotency-Key`；`backend/app/xianyu/trade.py::WRITE_APIS`（:107-140）同步补 5 条写接口名，
+- 5 条写全部 `confirm` 闸门 + `Idempotency-Key`；`backend/app/xianyu/trade.py::WRITE_APIS`（元组在 :107-148，本批 5 个新名字在 :143-147）同步补 5 条写接口名，
   否则 `backend/tests/test_trade_write_api.py::WriteContractTest::test_write_apis_are_blacklisted_in_the_read_only_layer` 必红。
 - `cancel` / `close-im` 是 IM 侧两个**独立接口名**（不是 `merchant.close.by.seller` 的别名），与工作台那条同载荷、按官方开关二选一；`days` 同 3/5/7/10；`skus` 键名原样透传给平台。
-- **8 条全无真机证据**：3 条只读可以打真机，5 条写会产生真实副作用（真取消 / 真关闭 / 真延长收货 / 真改价并通知买家 / 真提交表单），本批不做真机试打。
+- **8 条原为 bundle 反查；2026-10-16 真机打了 3 条只读（全被平台拒，错误码见下方真机段），5 条写未打**：3 条只读可以打真机，5 条写会产生真实副作用（真取消 / 真关闭 / 真延长收货 / 真改价并通知买家 / 真提交表单），本批不做真机试打。
 
 **D. AI/MCP 面接线（Lead，25 条工具）**
 - 商品发布 5 条只读工具用**单数**前缀 `item_publish_*`：复数 `items_publish` 已在 `scripts/reconcile_tools.py::WRITE_PREFIX` 里，而那是 `startswith` 匹配 ⇒ 复数命名会被误判成写工具。
@@ -3802,11 +3802,11 @@ first.hand / backend 族 → `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（官方 seller.p
   `/{acc}/groups`（`result[0]` 真数据，键 `adData/adGroupId/campaignId/campaignTitle/cat4Id/entityId/entityType/groupStatus/imgUrl/price/saleCnt/title`）、
   `/{acc}/groups/data?ad_group_id=160084560`、`/{acc}/messages`（`{nextPage,pageNum,pageSize,result,total,totalPage}`）、`/{acc}/messages/unread`（`{unreadCount}`）、
   `GET /api/items/{acc}/publish/categories`（**99 个一级类目**，元素 `{category_id,category_name,level,leaf,children}`）、`/publish/brands?category_id=126854001`（**68 个品牌**，元素 **`{value,label}`**）、
-  `/publish/models`（0 条，200）、`/publish/category-properties`（0 条，200）。⇒ 契约里那两项不确定**已解**：brands/models 元素是 `value`/`label`；`options` 为空确实是 200。
+  `/publish/models`（0 条，200）、`/publish/category-properties`（0 条，200）。⇒ 契约里**只解了一项**：brands 元素是字符串 `value`/`label`（models 那次 0 条，形状仍未见到）；`options` 为空确实是 200（`platform_code=success`）。
 - **7 条被平台或本地校验拒**（每条都证明请求真的到了平台、错误语义如实透出）：`ad_package_info` / `ad_campaign_log` → `E_AD_BP_COMMON_SYSTEM_EXCEPTION::闲鱼太累了，请稍后再试～`；
   `ad_item_search` → `E_AD_BP_COMMON_PARAM_NULL::必填参数为空`（给 `item_id` 或 `search_key` 都不够，**还缺别的必填项，未解**）；`items_publish_search_categories` → `FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问`；
   `trade_smart_form_query` → 无参 400 `invalid_fields`、给 `{"orderId":…}` → `UNKNOWN_FAIL_CODE::系统开小差了`（**参数形状未解**）；`trade_sku_selector` → `FAIL_BIZ_ITEM_NOT_MULTI_SKU_ERROR::不是多SKU商品`（协议绑定正确）；`trade_backfill_report` → `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`。
-- **6 条交易写路由一条都没打**（真取消 / 真关闭 / 真延长收货 / 真改价并通知买家 / 真提交表单 / 投放消息已读），要打先问用户。
+- **5 条交易写路由一条都没打**（真取消 / 真关闭 / 真延长收货 / 真改价并通知买家 / 真提交表单），要打先问用户；**投放消息已读**（ad 唯一写）也没打，但它不改交易状态，属 §9.3 第①档「零副作用」类。
 - 顺带修一处人话错配：`E_AD_BP_COMMON_SYSTEM_EXCEPTION` 的提示原文写死「平台的**资质**服务自己报错了」，但 2026-10-16 真机显示投放域（`ad.package.info` / `ad.campaign.log.query`）回的是**同一个码**
   ⇒ 已改成 code-generic 的「平台侧自己报错了…」，注释里记下两个来源（2026-10-12 资质 + 2026-10-16 投放）。
 - 一次假警报已排除：探针首跑报 `account_info() takes from 1 to 2 positional arguments but 3 were given`，是当时 teammate 正在改文件的瞬态；事后用 stub 复验 `backend/app/services/ad.py::_call`（:154-170）绑定正确

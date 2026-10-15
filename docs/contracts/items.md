@@ -151,6 +151,6 @@
 
 1. `category.property.query` 的业务体键名（只见到 `data.data.fineness` 这条线索，没有消费侧渲染代码可对照）。
 2. `search.categories` 的响应是否与 `publish.categories` 同形（同名 `selectIdleCategories`，但那是商品列表筛选页的用法）。
-3. ~~`brands` / `models` 的元素字段名~~ —— **已解（2026-10-16 真机）**：`brands` 元素是 **`{value,label}`**（68 条，如 `{value:642468970,label:NIORFNIO}`），不是 `valueId`/`valueName`；`models` 那次 0 条，形状仍未见到。
+3. ~~`brands` / `models` 的元素字段名~~ —— **已解（2026-10-16 真机）**：`brands` 元素是 **`{value,label}`**（68 条，如 `{value:'642468970',label:'NIORFNIO'}`，都是字符串），不是 `valueId`/`valueName`；`models` 那次 0 条，形状仍未见到。
 4. `publish.categories` 的 `valueType:'string'` 是否真的必要（官方这么发，我们照抄；若真机报参数错，去掉它）。
 5. 型号 `count == 0` 与「这个类目本来就没型号」的区分：真机（2026-10-16）`models` 与 `category-properties` 都回 **200 + 空数组 + `platform_code=success`**，**两者仍不可分辨**，只能靠 `platform_code`。

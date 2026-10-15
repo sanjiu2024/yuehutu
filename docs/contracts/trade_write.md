@@ -18,7 +18,7 @@
 1. **没确认不写**：每个写函数/每个 HTTP 端点都带 `confirm`（默认 `false`）。
    未确认时服务层直接返回 `confirmation_required`（HTTP 400），**一个平台请求都不发**。
    交易写族认**宽松档** `confirm`（`common.confirm_truthy`：布尔 true / 字符串 true / 数字 1 都认），因为 AI 与 MCP 客户端可能传字符串；
-   投放消息已读那条走**严格档** `strict=True`（只认字面 `true`）。两档都要求显式确认，缺省一律 400。
+   投放消息已读那条走**严格档** `strict=True`（只认字面 `true`）。两档都是第 59 批 `715d52e` 定下的既有设计，严格档另有 `services/ad_write.py:78`、`services/qualification.py:279,299`；两档都要求显式确认，缺省一律 400。
    协议层的请求构造器还会再拦一次（`WriteNotConfirmed`），两道闸门。
 2. **平台没返回的就是 `null`，不许补 0**：发货计数平台只回 `successNum` 时，
    `total_num` / `fail_num` 必须是 `None`（有用例锁死）。

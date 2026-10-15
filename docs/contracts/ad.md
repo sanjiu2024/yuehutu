@@ -19,7 +19,7 @@
 >   **6 条 200**（`apis` 静态目录 / `account-info` / `groups` / `groups/data` / `messages` / `messages/unread`），
 >   **3 条被平台拒**（`package-info`、`campaign.log.query` → `E_AD_BP_COMMON_SYSTEM_EXCEPTION`；`item.searchV2` → `E_AD_BP_COMMON_PARAM_NULL`，**还缺别的必填项，未解**），
 >   **2 条未打**（`bid.estimates` 缺合法 `entityType/entityList`；`message.detail` 该账号 `message.list` 的 `total=0`）。
->   唯一写接口（消息已读）**未打**（真实副作用，先问用户）。原始响应见 `logs/probe60/`（`logs/` 不入仓）。
+>   唯一写接口（消息已读）**未打**（本批统一不做写试打；它不改交易状态，属「零副作用」档，可先打）。原始响应见 `logs/probe60/`（`logs/` 不入仓）。
 >   因此：平台没返回的字段一律 `None`，**不用 0 顶替**；响应 `data` 原样透出，不做「认字段」的猜测。
 
 ## 0. 一句话结论
@@ -36,7 +36,7 @@
 | 推广消息列表 | `mtop.taobao.idle.ad.message.list` | ✅ 200（该账号 total=0） | 接了 |
 | 推广消息详情 | `mtop.taobao.idle.ad.message.detail` | 未打（该账号 total=0，无 id） | 接了 |
 | 推广消息未读数 | `mtop.taobao.idle.ad.message.unread.info` | ✅ 200（unreadCount） | 接了（**唯一不套 requestJson** 的一条） |
-| 标记推广消息已读（写） | `mtop.taobao.idle.ad.message.read` | 未打（写，先问用户） | 接了（confirm 闸门 + 幂等键） |
+| 标记推广消息已读（写） | `mtop.taobao.idle.ad.message.read` | 未打（本批统一不做写试打） | 接了（confirm 闸门 + 幂等键） |
 | 商品推荐位 | `mtop.taobao.idle.ad.item.recommend` | 未打（本批不接） | **不接**（无入参、bundle @3300908 `data:{}`；属选品页装饰性推荐位，见 §6） |
 
 **与已有能力的查重（等价就不重复实现）**：`ad_home` / `ad_account_card`（`bp.account.card.query`）/
