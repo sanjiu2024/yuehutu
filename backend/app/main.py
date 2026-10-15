@@ -73,6 +73,11 @@ ROUTE_MODULES: List[str] = [
     # 只读侧是 `/{account_id}/{overview|campaigns|reports|account}` 四个**字面量**第二段，
     # 而写侧第二段是字面量 `write`，两边不会互相抢占。
     'ad_write',
+    # 推广（投放）页面缺的那几块（只读 10 + 写 1）：`/api/promotion/ad/{account_id}/...`。
+    # **独立第三段** `ad`，故意不并进 `promotion`（只读侧第二段是四个字面量
+    # overview/campaigns/reports/account）也不并进 `ad_write`（第二段是 `write`）：
+    # 三条前缀两两不抢占。只读全是 GET，写只有 `POST /{account_id}/messages/read`。
+    'ad',
     # 推广资质（只读 5 + 写 2）：`/api/qualification/{account_id}/...`。
     'qualification',
     # 交易写（发货 / 改价 / 退款 / 评价 / 投诉）：与只读 `trade` 共用 `/api/trade` 前缀，
