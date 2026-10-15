@@ -531,6 +531,12 @@ POST   /api/providers/{id}/default ; PUT /api/providers/{id}/default
 GET    /api/orders?account_id=&status= ; POST /api/orders/sync
 GET    /api/orders/{order_id} ; PUT /api/orders/{order_id}/shipment ; POST /api/orders/{order_id}/deliver
 GET    /api/orders/{order_id}/logistics ; GET /api/orders/stats
+      -- ⚠️ `POST /api/orders/sync` 目前是**空壳**（2026-10-15 真机实测）：恒 503
+      --   `xianyu_not_ready`「协议层尚未实现 list_orders」——
+      --   `backend/app/services/orders.py:176` 依次找 `list_orders`/`fetch_orders`/`get_orders`，
+      --   而 `backend/app/xianyu/trade.py` 一个都没有（它只有 `order_list_request()` 造请求体
+      --   与 `normalize_order()` 解析）。**要真订单数据走 `GET /api/trade/{account_id}/orders`**
+      --   （第 38 批，已通）；`orders/sync` 这条路要在 `trade.py` 补 `list_orders()` 才通。
 
 GET    /api/risk/status ; GET /api/risk/events ; GET|PUT /api/risk/settings
 POST   /api/risk/clear ; POST /api/risk/{account_id}/clear

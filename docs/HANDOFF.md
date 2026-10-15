@@ -104,8 +104,8 @@ cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe scripts\contrast_audit.py --port 18393 --threshold 4.0"
 -> NON_GET_API_REQUESTS=[]
-   [dark] BAD_PAGES 0/27: []
-   [light] BAD_PAGES 0/27: []
+   [dark] BAD_PAGES 0/29: []
+   [light] BAD_PAGES 0/29: []
    报告：logs/contrast_audit/report.json
 ```
 
@@ -117,6 +117,17 @@ cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe 
    焦点不可见的页面：[]
    报告：logs/a11y_audit/report.json
    （两个审计脚本都不给 --port 时打的是打包版 18400）
+```
+
+```text
+cmd /c "powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\Administrator\.dsh-tmp\verify55.ps1"
+-> 1_gate     EXIT=0   GATE FAILURES: 0 / 79
+   2_assets   EXIT=0   ASSETS_MATCH=True  （index-BKG4hgAV.css / index-IBkt4w_C.js 远端与本地哈希一致）
+   3_smoke    EXIT=0   PACKAGED UI SMOKE  29/29 页通过
+   4_contrast EXIT=0   [dark] BAD_PAGES 0/29   [light] BAD_PAGES 0/29   NON_GET_API_REQUESTS=[]
+   5_a11y     EXIT=0   无可访问名字的按钮 0 / 没标签的输入框 0 / 无 alt 的图 0，
+                       焦点环可见 3px rgb(154,169,196)，NON_GET_API_REQUESTS=[]
+   （五件套打的全是 18400 上那份**打包版 exe** + 真实 %APPDATA% 数据目录，不是源码进程）
 ```
 
 ```text
@@ -3470,6 +3481,46 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > 全量 `TOTAL 62 PASS 62 FAIL 0 CASES 2723 SKIPPED 2`；
 > 前端 `TSC_EXIT=0`、`BUILD_EXIT=0`（`index-IBkt4w_C.js` / `index-BKG4hgAV.css`）。
 
+### 第五十六批：真机只读复验 —— 会话同步闭环 + 发现订单同步是空壳（301）
+
+- 起因：交接文档要回答「哪条链在真机上真的跑通过」。账号 `2217970177348` 已是
+  `login_state='active'`（2026-10-11 23:03 重新扫码），于是拿**打包版**在 18400 上打了几条真机
+  只读链（`C:\Users\Administrator\.dsh-tmp\real_read_probe.py` / `real_read_probe2.py` /
+  `chats_sync_now.py`，一律先用 `POST /api/auth/desktop` + `X-Desktop-Secret` 换 token；
+  **只把平台数据拉回本地，不写平台任何东西**）。
+- ✅ `POST /api/items/sync` → 200：真机拉回 **45 个在售商品 / 40 条库存**（真机硬证据）。
+- ✅ `POST /api/chats/sync` → 200
+  `{"scanned":39,"conversations_new":0,"messages":0,"messages_skipped":407,"skipped":0,"nicknames_fixed":0}`：
+  39 个平台会话被扫过、**407 条已入库消息被去重跳过**（当时本地库 `conversations` 51 行 /
+  `messages` 799 行）。这一条把**第八批唯一没在真机闭环的实证**补上了：§五 原文要求
+  `conversations_new > 0`，实际是 0——因为那 39 个会话**早就同步过了**；`messages_skipped=407`
+  才是「真的从平台拉到了东西」的反证（一条都没拉到的话这个计数只可能是 0）。
+- ✅ 风控冷却**真的在拦**：第一次打 `POST /api/chats/sync` 拿到 502 + `retry_after=39`，
+  冷却过后同一条请求 200 —— 第 46 批那套「平台风控 → 冷却阶梯 → 到点自动放行」在真机上生效。
+- ❌ **新缺陷：`POST /api/orders/sync` 是空壳**，永远返回 503 `xianyu_not_ready`。真机实测
+  `{"success":false,"message":"协议层尚未实现 list_orders","code":"xianyu_not_ready"}`。
+  根因：`backend/app/services/orders.py:176 sync_orders()` 依次找
+  `('list_orders','fetch_orders','get_orders')` 三个方法名，而 `backend/app/xianyu/trade.py`
+  **一个都没有**（那里只有造请求体的 `order_list_request()` 与解析用的 `normalize_order()`，
+  真正发请求的入口是第 38 批那条 `GET /api/trade/{account_id}/orders`）。
+  也就是说：**网页版能看的订单列表走得通，而「把订单同步进本地表」这条链是死的**——
+  订单页的本地数据永远是空的。修法：给 `trade.py` 补一个 `list_orders()` 协程
+  （复用现成的 `order_list_request()` / `normalize_order()`），`sync_orders` 把结果 upsert 进本地表
+  并 publish `orders.synced`（topic 在 `services/common.py` 已定义）。
+- 附带修一处**文档与代码不一致**：`backend/app/services/chats.py` 里 `sync_im_conversations`
+  的 docstring 列了返回值的 `'conversations'` 键，实际 `summary` 里没有（只有
+  `account_id/scanned/conversations_new/messages/messages_skipped/skipped/nicknames_fixed`）—— 已删掉该键。
+
+> **第五十六批证据链**：`POST /api/items/sync` → 200（45 商品 / 40 库存）；
+> `POST /api/chats/sync` → 200 `scanned=39 conversations_new=0 messages=0 messages_skipped=407`；
+> 真机库只读 `select count(*)` → `conversations=51` / `messages=799` / `mode='auto'=51`；
+> 冷却拦截 502 `retry_after=39` → 冷却后同请求 200；
+> `POST /api/orders/sync` → 503 `协议层尚未实现 list_orders`；
+> `grep -n "^def \|^async def " backend/app/xianyu/trade.py` → **没有** `list_orders|fetch_orders|get_orders`；
+> 第 55 批打包版五件套（`C:\Users\Administrator\.dsh-tmp\verify55.ps1`）：
+> `GATE FAILURES: 0 / 79`、`ASSETS_MATCH=True`、`PACKAGED UI SMOKE 29/29`、
+> `[dark] 0/29` / `[light] 0/29`、a11y 三类各 0 且 `NON_GET_API_REQUESTS=[]`。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
@@ -3477,6 +3528,14 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
+- **真机只读链在 2026-10-15 又跑了一遍**（打包版 18400 + 真账号 `2217970177348`，
+  `login_state='active'`）：`POST /api/items/sync` → 200（**45 个在售商品 / 40 条库存**）、
+  `POST /api/chats/sync` → 200（`scanned=39`、`messages_skipped=407`）、风控冷却真的在拦
+  （首次 502 `retry_after=39`，冷却后 200）。**第八批那条「会话同步」的实证就此补齐**（详见第五十六批）。
+  **注意口径**：§三里若干批次写的「一次真机写请求都没发过」「本机两个账号都 `need_relogin`」
+  是**当时的实情**（2026-10-11 重新扫码之前），别当成今天的结论；但**写接口至今仍然没有真机证据**
+  （红线：不许改真实平台数据）。另外 `POST /api/orders/sync` 是**空壳**（永远 503），
+  见第五十六批 —— 这是当前最该补的一个代码缺口。
 - **UI 细节有两个可重跑的审计脚本**（`scripts/contrast_audit.py`、`scripts/a11y_audit.py`）：
   29 页 × 深/浅两套主题的文字对比度全部 ≥4.0:1；无可访问名字的按钮 0、没有标签的
   输入框 0、无 alt 的图片 0、焦点环全部可见；两者整轮都是 `NON_GET_API_REQUESTS=[]`。
@@ -3781,19 +3840,29 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 
 1. **登录态已经是好的**：真机账号 `2217970177348`（月狐兔_）在 `2026-10-11 23:03:37`
    重新扫码成功，`login_state='active'`、cookie 在库、`refresh_profile` 拿到 `nickname='月狐兔_'`。
+   2026-10-15 再验一轮：`POST /api/items/sync` → 200（45 商品 / 40 库存）、
+   `POST /api/chats/sync` → 200（`scanned=39`、`messages_skipped=407`）。
    原先那条「Cookie 在 2026-10-07 被判过期、要先重新扫码」**已经过时**（另注：账号
    `3998190171`（卒奥aa）已被用户删除）。仍然需要登录态的功能现在可以直接验。
-2. 用户在「AI 配置」页填一个真实 API Key 并设为默认 → 主管 AI 与商品 AI 才能真回话。
-3. 真机实测「写」的一半：在已登录的真账号上发布一件商品 / 改一次价 / 上架下架各一次
-   （读的一半——拉商品、IM 入站挂载——已在真机验证）。发布失败时注意看新加的人话解释
+2. **修 `POST /api/orders/sync` 那个空壳（第五十六批发现，建议最先做）**：它永远返回 503
+   `协议层尚未实现 list_orders` —— `backend/app/services/orders.py:176` 找的
+   `list_orders`/`fetch_orders`/`get_orders` 在 `backend/app/xianyu/trade.py` 里一个都没有。
+   补法：在 `trade.py` 加 `list_orders()` 协程（复用现成的 `order_list_request()` 造请求体、
+   `normalize_order()` 解析），`sync_orders` 把结果 upsert 进本地订单表并 publish
+   `orders.synced`（topic 已在 `services/common.py` 定义）。**不修的话订单页永远读不到本地订单。**
+3. 用户在「AI 配置」页填一个真实 API Key 并设为默认 → 主管 AI 与商品 AI 才能真回话。
+4. 真机实测「写」的一半：在已登录的真账号上发布一件商品 / 改一次价 / 上架下架各一次
+   （读的一半——拉商品、IM 入站挂载、会话同步——都已在真机验证）。发布失败时注意看新加的人话解释
    （`platform_errors.py`）。**优先先点第二十二批那三个（商品页的批量下架 / 批量删除 /
    行内改价改库存）**：它们是唯一「旧做法会改坏真实数据」的三个口子，而且一次请求就能
    验完（不像发布要填一整个表单）。**别拿退货地址当第一批试写**：这个账号对
    `…delivery.address.*` 没有权限（真机回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`），
    试了也只会得到「无权限」，验不出 payload 对不对。
-4. 重启 DSH 宿主让 MCP 插件 `xianyu` 生效，再用主管 AI 直接操作工作台。
-5. 风控冷却过后，真机点一次「同步历史会话」（会话页工具栏）：应看到
-   `success=true` 且 `conversations_new > 0`，会话页出现真实买家会话 —— 这是第八批
-   唯一还没在真机上闭环的实证。
-6. 桌面 exe 在干净机器上冒烟（缺 WebView2 时要给出可读提示）；注意产物现在含
-   playwright driver，约 110 MB。
+5. 重启 DSH 宿主让 MCP 插件 `xianyu` 生效，再用主管 AI 直接操作工作台。
+6. ~~风控冷却过后，真机点一次「同步历史会话」：应看到 `conversations_new > 0`~~ **已闭环**
+   （第五十六批）：`POST /api/chats/sync` → 200 `scanned=39`、`messages_skipped=407`
+   （`conversations_new=0` 是因为这 39 个会话早就同步过了——判据应看 `scanned` 与
+   `messages_skipped`，不该看 `conversations_new`），且中途真被风控拦过一次
+   （502 `retry_after=39`，冷却后同请求 200）。
+7. 桌面 exe 在干净机器上冒烟（缺 WebView2 时要给出可读提示）；注意产物现在含
+   playwright driver，`dist\闲鱼AI工作台` 实测 **194 MB**。
