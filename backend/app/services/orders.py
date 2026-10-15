@@ -193,7 +193,8 @@ def _order_fields(raw: Dict[str, Any]) -> Dict[str, Any]:
     - **扁平契约**（MCP / 假客户端直接喂的行）：`buyer_id` / `amount`|`total_fee` / `status`。
 
     真机走的是前一种：`normalize_order` 的输出是嵌套的，没有顶层 `buyer_id`/`amount`/`status`，
-    老写法照扁平字段取，会把买家取成空串、金额取成 0。平台没给的字段留空 / None，**不拿 0 顶替**。
+    老写法照扁平字段取，会把买家取成空串、金额取成 0。平台没给的字段留空 / None，**不拿 0 顶替**；
+    金额只认显式金额字段（`amount` / `total_fee` / `price.total_price`），**不拿单价 × 件数推算**。
     """
     buyer = raw.get('buyer') if isinstance(raw.get('buyer'), dict) else {}
     price = raw.get('price') if isinstance(raw.get('price'), dict) else {}
@@ -202,12 +203,10 @@ def _order_fields(raw: Dict[str, Any]) -> Dict[str, Any]:
         amount = _to_float(candidate)
         if amount is not None:
             break
-    if amount is None:
-        # 归一化行里 `total_price` 可能缺，退到「单价 × 件数」。
-        unit_price = _to_float(price.get('auction_price'))
-        buy_num = _to_float(price.get('buy_num'))
-        if unit_price is not None and buy_num:
-            amount = round(unit_price * buy_num, 2)
+    # 金额缺就保持 None，**不拿「单价 × 件数」顶替**：真机上两者不是一个口径 ——
+    # `logs/seller_discover/trade_probe.json` 里 orderId 3316918549013103465 是
+    # `auctionPrice=199.00` / `buyNum=1` 而 `totalPrice=8.00`（优惠后实付），
+    # 退路会把实付 8.00 记成 199.00，还会进 `order_stats` 的 `SUM(amount)`。
     return {
         'order_id': common.extract_id(raw, 'order_id', 'id', 'bizOrderId'),
         'item_id': str(raw.get('item_id') or raw.get('itemId') or ''),

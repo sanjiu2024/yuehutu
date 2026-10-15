@@ -240,6 +240,21 @@ class ItemStatsApiTest(unittest.TestCase):
         self.assertEqual(item['buyers'], 2, '买家数按 buyer_id 去重')
         self.assertEqual(item['paid_orders'], 2, 'pending 不算已支付')
 
+    def test_chinese_completed_status_counts_as_paid(self):
+        """真机 `orderStatus` 是中文原文：「交易成功」是已支付终态，必须算进 `paid_orders`。
+
+        第 57 批真机 15 单里 9 笔是「交易成功」，缺这一档它们会全部被算成未支付。
+        """
+        seed_account()
+        seed_item(ITEM_A)
+        seed_order('c1', item_id=ITEM_A, buyer_id='b1', status='交易成功')
+        seed_order('c2', item_id=ITEM_A, buyer_id='b2', status='交易关闭')
+        install_fake_protocol(FakeClient(ACC))
+
+        item = self.item_of(self.data_of(), ITEM_A)
+        self.assertEqual(item['orders'], 2)
+        self.assertEqual(item['paid_orders'], 1, '交易成功算已支付；交易关闭不算')
+
     def test_missing_platform_data_is_null_not_zero(self):
         """没有平台接口时，平台指标必须是 `null` —— 绝不补 0。"""
         seed_account()

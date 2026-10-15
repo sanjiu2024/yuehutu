@@ -191,7 +191,7 @@ class OrdersServiceTest(unittest.TestCase):
                     'item_id': 'I9',
                     'order_status': '交易成功',
                     'buyer': {'user_id': 'b9'},
-                    'price': {'auction_price': '39.90', 'buy_num': 2, 'total_price': None},
+                    'price': {'auction_price': '39.90', 'buy_num': 2, 'total_price': '79.80'},
                 }], 'total': 1, 'page': 1, 'pages': 1, 'size': 20}
 
         install_client(NestedClient())
@@ -200,12 +200,35 @@ class OrdersServiceTest(unittest.TestCase):
         order = orders.get_order('O9')
         self.assertEqual(order['item_id'], 'I9')
         self.assertEqual(order['buyer_id'], 'b9')
-        # total_price 缺 → 退到单价 × 件数；平台原文是字符串
+        # 金额取 price.total_price（实付）；平台原文是字符串
         self.assertEqual(order['amount'], 79.8)
         self.assertEqual(order['status'], '交易成功')
         self.assertIsInstance(order['raw'], dict)
         # 「交易成功」是真机终态（trade_probe.json），要算进已发货那一档
         self.assertEqual(orders.order_stats()['shipped'], 1)
+
+    def test_missing_total_price_is_not_estimated(self):
+        """`total_price` 缺就落 NULL：**不能**拿「单价 × 件数」顶替。
+
+        真机反例（`logs/seller_discover/trade_probe.json`，orderId 3316918549013103465）：
+        `auctionPrice=199.00` / `buyNum=1` 而 `totalPrice=8.00`（优惠后实付）——
+        推算会把实付 8.00 记成 199.00，还进 `order_stats` 的 `SUM(amount)`。
+        """
+
+        class NoTotalPriceClient:
+            def list_orders(self, account_id):
+                return {'orders': [{
+                    'order_id': 'O7',
+                    'item_id': 'I7',
+                    'order_status': '交易成功',
+                    'buyer': {'user_id': 'b7'},
+                    'price': {'auction_price': '199.00', 'buy_num': 1, 'total_price': None},
+                }]}
+
+        install_client(NoTotalPriceClient())
+        self.assertEqual(orders.sync_orders('acc1')['count'], 1)
+        self.assertIsNone(orders.get_order('O7')['amount'])
+        self.assertEqual(orders.order_stats()['amount'], 0.0)
 
     def test_sync_orders_leaves_missing_amount_null(self):
         """平台没给金额就落 NULL，不补 0（§5.4）—— 补 0 会把它算进本地成交额。"""

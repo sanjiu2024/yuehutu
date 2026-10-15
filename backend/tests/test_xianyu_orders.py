@@ -133,7 +133,7 @@ class ListOrdersTest(unittest.TestCase):
         self.assertEqual(first['times']['pay_time'], '2026-10-01 10:01:00')
 
     def test_multi_page_until_short_page(self):
-        """满页就继续翻：`sold.get` 的 `nextPage` 不可信，判据是「满没满」。"""
+        """平台没给 `totalCount` 时退回「满没满」判据：满页继续翻，短页停。"""
         full = [order_item(f'A{i}') for i in range(ORDER_LIST_PAGE_SIZE)]
         tail = [order_item('B0'), order_item('B1')]
 
@@ -148,6 +148,38 @@ class ListOrdersTest(unittest.TestCase):
         self.assertEqual(result['pages'], 2)
         self.assertEqual(len(result['orders']), ORDER_LIST_PAGE_SIZE + 2)
         self.assertEqual([c['payload']['pageNumber'] for c in stub.calls], [1, 2])
+
+    def test_total_count_stops_paging(self):
+        """`totalCount` 报的总数拿够了就停 —— 不再多打一次接口。
+
+        真机 `sold.get` 的这一层在 `data.module` 里，实测 `total_count=15`
+        （`logs/order_sync57/platform_orders.json`）；`paging_of` 会合并 `body_of`。
+        """
+        items = [order_item(f'A{i}') for i in range(ORDER_LIST_PAGE_SIZE)]
+        client, stub = make_client({trade.ORDER_LIST_API:
+                                   page_payload(items, total=ORDER_LIST_PAGE_SIZE)})
+        result = run(client.list_orders(self.ACCOUNT))
+
+        self.assertEqual(result['pages'], 1)
+        self.assertEqual(result['total'], ORDER_LIST_PAGE_SIZE)
+        self.assertEqual(len(stub.calls), 1)
+
+    def test_truncated_page_keeps_paging(self):
+        """平台把 `rowsPerPage` 截短（回的行数 < 请求的 `size`）时**不能**当最后一页停。
+
+        没有 `totalCount` 兜底就会静默少同步：`services/orders.py` 只 upsert 拿到的行。
+        """
+        def responder(payload: Dict[str, Any]) -> Dict[str, Any]:
+            start = (int(payload.get('pageNumber') or 1) - 1) * 5
+            return page_payload([order_item(f'C{start + i}') for i in range(5)], total=15)
+
+        client, stub = make_client({trade.ORDER_LIST_API: responder})
+        result = run(client.list_orders(self.ACCOUNT))
+
+        self.assertEqual(result['pages'], 3)
+        self.assertEqual(result['total'], 15)
+        self.assertEqual(len(result['orders']), 15)
+        self.assertEqual([c['payload']['pageNumber'] for c in stub.calls], [1, 2, 3])
 
     def test_repeated_page_stops(self):
         """平台重复回同一页（真机上商品列表出现过）⇒ 不能再翻下去。"""

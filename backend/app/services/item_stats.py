@@ -61,9 +61,12 @@ LOCAL_CHAT_METRICS = ('conversations', 'messages', 'last_message_at')
 
 #: 算「已支付」的订单状态。平台侧的订单状态文案是中文，本地 upsert 时原样落库，
 #: 所以这里中英并列；`pending`/`unknown`/`closed`/`cancelled` 一律不算支付。
+#: `交易成功` 是真机 `orderStatus` 的成交终态原文（`logs/seller_discover/trade_probe.json`）——
+#: 少了它，已成交的单会全被算成「未支付」（第 57 批真机 15 单里有 9 笔是它）。
+#: 与 `services/orders.py::SHIPPED_STATES` 同源，两处要一起改。
 PAID_STATES = (
     'paid', 'wait_ship', 'shipped', 'delivered',
-    '已付款', '待发货', '已发货', '已签收', '已完成',
+    '已付款', '待发货', '已发货', '已签收', '已完成', '交易成功',
 )
 
 #: 平台响应里的字段别名（协议层命名未定，先按常见几种认；认不出就不填）。

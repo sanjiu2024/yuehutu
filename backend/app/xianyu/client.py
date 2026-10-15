@@ -65,8 +65,10 @@ ITEM_LIST_MAX_PAGES = 25
 ITEM_LIST_PAGE_DELAY = 0.3
 
 # 订单列表（卖出的）：真机容器 `data.module.items`，与 `services/trade.orders` 同一个接口。
-# 页大小/上限与商品列表同一口径；`sold.get` 的 `totalCount`/`nextPage` 在信封顶层取不到
-# （见 `trade.paging_of`），所以翻页判据是「这一页满没满」，见 `XianyuClient.list_orders`。
+# 页大小/上限与商品列表同一口径。`sold.get` 的分页字段**是取得到的**（在 `data.module` 里，
+# `trade.paging_of` 会合并 `body_of`；实测 `total_count=15`，见
+# `logs/order_sync57/platform_orders.json`）—— 翻页判据见 `XianyuClient.list_orders`：
+# 拿 `total_count` 当上限，不用 `nextPage`（末页取值无真机证据）。
 ORDER_LIST_PAGE_SIZE = 20
 ORDER_LIST_MAX_PAGES = 10
 ORDER_LIST_PAGE_DELAY = 0.3
@@ -533,8 +535,13 @@ class XianyuClient:
         归一化复用 `xianyu/trade.py::parse_orders`（真机容器 `data.module.items`）：
         平台改字段名只改那一处，服务层拿到的永远是同一套 `order_id/item/buyer/price/times`。
 
-        **翻页判据是「这一页满没满 + 有没有新单」，不是 `nextPage`**：真机 `sold.get` 的
-        `totalCount`/`nextPage` 在信封顶层取不到，信它就会永远只同步第一页。
+        **翻页用平台给的 `total_count`，不用 `nextPage`**：`sold.get` 的分页字段取得到
+        （在 `data.module` 里，`trade.paging_of` 会合并 `body_of`；实测 `total_count=15`，
+        见 `logs/order_sync57/platform_orders.json`），但真机只取过**第一页**，`nextPage`
+        在末页是什么值没有证据（商品列表那边 `nextPage` 又是另一套行为，见 `_has_next_page`）
+        ⇒ 不拿它当判据。规则：**拿够 `total_count` 就停；平台重复回同一页就停；没有
+        `total_count` 时退回「这一页满没满」**。页没满但总数说还有，会继续翻 ——
+        静默少同步比多打一次只读接口严重。
 
         `account_id` 只是 `services/common.call_method` 的位置传参（一个 client 只服务一个
         账号）：传了别的账号直接报错 —— 串号比报错严重得多。
@@ -569,7 +576,13 @@ class XianyuClient:
                 seen.add(key)
                 orders.append(order)
                 fresh += 1
-            if len(page_orders) < size or not fresh:
+            if total and len(orders) >= total:
+                # 平台报了总数且已经拿够（真机实测 total_count 可取得）。
+                break
+            if not fresh:
+                break
+            if not total and len(page_orders) < size:
+                # 没有总数可依时，「这一页没满」只能当最后一页。
                 break
             if index + 1 < max_pages:
                 await asyncio.sleep(ORDER_LIST_PAGE_DELAY)
