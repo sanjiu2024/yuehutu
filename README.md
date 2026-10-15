@@ -32,7 +32,7 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe desktop\main.py"
 ## 测试
 
 ```powershell
-# 全量基线（72 个测试文件 / 3087 个用例，逐个子进程跑）
+# 全量基线（72 个测试文件 / 3089 个用例，逐个子进程跑）
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
 
 # 单个文件

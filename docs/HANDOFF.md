@@ -63,7 +63,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_gate55_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 72  PASS 72  FAIL 0  CASES 3087  SKIPPED 2
+-> TOTAL 72  PASS 72  FAIL 0  CASES 3089  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -3908,7 +3908,7 @@ first.hand / backend 族 → `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（官方 seller.p
 **契约同步（Lead）**：`docs/CONTRACTS.md` §3 的上下架行与 `ok`/`local_only`/`failed` 语义段都补了这条口径；`docs/contracts/items.md` 只讲发布数据源 5 条只读，grep 无 `reshelf`/`local_only`，无需改。
 #### 验收（第 61 批）
 
-- 全量 `backend/tests/run_all.py` → **`TOTAL 72  PASS 72  FAIL 0  CASES 3087  SKIPPED 2`**（第五十九批是 66 / 2812：本批 +6 个测试文件 / +275 用例）。日志 `C:/Users/Administrator/.dsh-tmp/run_all_b61.log`。
+- 全量 `backend/tests/run_all.py` → **`TOTAL 72  PASS 72  FAIL 0  CASES 3089  SKIPPED 2`**（第五十九批是 66 / 2812：本批 +6 个测试文件 / +275 用例；第 61 批小审查回写又 +2 条批发布失败项用例 ⇒ 3089）。日志 `C:/Users/Administrator/.dsh-tmp/run_all_b61.log`。
 - `scripts/reconcile_tools.py` → **RECON OK**：`specs=195 master=194 routes=196 targets=174 handlers=195` / `write_tools=82` / `route_checked=196` / `ALIASES=22`。
 - 打包版 `/openapi.json` → **240 条路径 / 258 个操作**（GET 128 / POST 115 / PUT 9 / DELETE 5 / PATCH 1）。
 - 打包产物 `dist/闲鱼AI工作台/闲鱼AI工作台.exe` = **10,295,924 B / 2026-10-16 03:04:11**（`-SkipFrontend` 重打 —— 小审查回写修了 `backend/app/api/items.py` 等服务端文件；上一版带前端的是 **10,295,397 B / 02:22:40**）。
@@ -3919,7 +3919,7 @@ first.hand / backend 族 → `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（官方 seller.p
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**72 个测试文件、3087 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**72 个测试文件、3089 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
