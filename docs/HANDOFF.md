@@ -83,7 +83,7 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 97 modules transformed.
-   frontend/dist/assets/index-BhT_UXe6.js (719,837 B，gzip 204,331 B；vite 报的「648.74 kB」是**字符数**口径 —— 这个 chunk 有 33,609 个中文字符，UTF-8 下每字 3 字节，别当字节数用)
+   frontend/dist/assets/index-BhT_UXe6.js (719,837 B；gzip 206,017 B —— node zlib level 6 复算，构建日志那行记的是「206.02 kB」。**vite 报的「648.74 kB」是字符数口径**：该文件按 UTF-8 读出来正好 648,740 个字符，719,837 − 648,740 = 71,097 是 35,629 个非 ASCII 字符多占的字节，别把它当字节数用)
    frontend/dist/assets/index-BpLeM6Kv.css (158.94 kB, gzip 24.97 kB)
 ```
 
@@ -3911,8 +3911,8 @@ first.hand / backend 族 → `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（官方 seller.p
 - 全量 `backend/tests/run_all.py` → **`TOTAL 72  PASS 72  FAIL 0  CASES 3087  SKIPPED 2`**（第五十九批是 66 / 2812：本批 +6 个测试文件 / +275 用例）。日志 `C:/Users/Administrator/.dsh-tmp/run_all_b61.log`。
 - `scripts/reconcile_tools.py` → **RECON OK**：`specs=195 master=194 routes=196 targets=174 handlers=195` / `write_tools=82` / `route_checked=196` / `ALIASES=22`。
 - 打包版 `/openapi.json` → **240 条路径 / 258 个操作**（GET 128 / POST 115 / PUT 9 / DELETE 5 / PATCH 1）。
-- 打包产物 `dist/闲鱼AI工作台/闲鱼AI工作台.exe` = **10,295,397 B / 2026-10-16 02:22:40**（带前端重打包，前端本批改了 `ReturnAddresses.tsx` / `format.ts` / `App.tsx` 等 8 个文件）。
-- 五件套（打包版 18400）全过：闸门 **0/79**；`ASSETS_MATCH=True`（`index-BpLeM6Kv.css` + `index-BhT_UXe6.js`）；**29/29 页**；对比度 **dark 0/29 / light 0/29**；a11y 三类 0；两份审计 `NON_GET_API_REQUESTS=[]`。
+- 打包产物 `dist/闲鱼AI工作台/闲鱼AI工作台.exe` = **10,295,924 B / 2026-10-16 03:04:11**（`-SkipFrontend` 重打 —— 小审查回写修了 `backend/app/api/items.py` 等服务端文件；上一版带前端的是 **10,295,397 B / 02:22:40**）。
+- 五件套（打包版 18400，**对 03:04 产物重跑**）全过：闸门 **0/79**；`ASSETS_MATCH=True`（`index-BpLeM6Kv.css` + `index-BhT_UXe6.js`）；**29/29 页**；对比度 **dark 0/29 / light 0/29**；a11y 三类 0；两份审计 `NON_GET_API_REQUESTS=[]`。日志落盘 `.dsh-tmp/gate61c.log` / `assets61c.log` / `smoke61c.log` / `contrast61c.log` / `a11y61c.log`（大审查指出本批原先只有上下文里的结果、盘上无日志，这次补齐）。
 - 真机只读复验（打包版 18400，账号 2217970177348，`logs/probe61/`）：**区域码三级全通** —— `token=CN` → **31 个省**、`CN^^^北京` → 1 个市、`CN^^^北京^^^北京市` → **17 个区**；`unconsign-detail` **200**（该单平台没给内容 ⇒ 200 + `no_evidence` warning，如实不谎报）；`delivery-place` 502 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`、`item-status-statistics` 502 同码、`pc-service-status` 502 `FAIL_BIZ_COMMON_SYSTEM_ERROR::系统错误请稍候再试`、`shop-stats` 不给 `session_id` → 400 本地校验 / 给 `probe61` → 200 且平台业务体 `{code:SESSION_INVALID,msg:会话信息获取失败}` 原样透出。**全程只读，零写操作。**
 - 第 61 批真机写验证见 A 段（`logs/write61/`）；本地无未提交残留（`git status --porcelain` 空）。
 

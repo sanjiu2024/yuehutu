@@ -109,8 +109,8 @@ BUILD_EXIT=0
 产物：`dist/index.html` 0.40 kB、`dist/assets/index-BpLeM6Kv.css` 158.94 kB（gzip 24.97）、`dist/assets/index-Bwt5EUxM.js` 646.35 kB（gzip 205.13）。未新增任何 chunk。
 
 > **第 61 批收尾追加（2026-10-16）**：本文件写作时只跑了 `vite build`；之后区域码三级级联又改了前端，
-> **收尾已带前端重打包**：最终 `dist/闲鱼AI工作台/闲鱼AI工作台.exe` = **10,295,397 B / 02:22:40**，
-> 打包内 `index-BhT_UXe6.js`（719,837 B，gzip 204,331 B）+ `index-BpLeM6Kv.css`（158,948 B），
+> **收尾已带前端重打包**：`dist/闲鱼AI工作台/闲鱼AI工作台.exe` = **10,295,397 B / 02:22:40**（此后服务端修复又 `-SkipFrontend` 重打成 **10,295,924 B / 03:04:11**，前端资源不变），
+> 打包内 `index-BhT_UXe6.js`（719,837 B，gzip 206,017 B）+ `index-BpLeM6Kv.css`（158,948 B），
 > 五件套全过（`ASSETS_MATCH=True` / 29/29 页 / 对比度 dark 0/29、light 0/29 / a11y 三类 0）。
 > 上面那次运行的 `index-Bwt5EUxM.js` 已被 `index-BhT_UXe6.js` 取代，不再是最新产物。
 
