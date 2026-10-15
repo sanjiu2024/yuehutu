@@ -331,6 +331,16 @@ POST   /api/items/{account_id}/sync            -> 从闲鱼拉取在售商品入
        -- 返回体含 `off_shelf_missing`（第 58 批，提交 `4b2efb0`）：平台列表里**没有**的商品会被标成
        -- `off_shelf`。判据是协议层 `list_items` 的 `complete` —— **只在翻到头时为真**，被 `max_pages`
        -- 截断时不动（「没出现」可能只是没翻到）。旧行为只 upsert 从不清理，已下架商品会永远停在旧值。
+GET    /api/items/{account_id}/publish/categories             -> 发布页类目树（只读）
+GET    /api/items/{account_id}/publish/brands?category_id=
+GET    /api/items/{account_id}/publish/models?category_id=&brand_id=
+GET    /api/items/{account_id}/publish/category-properties?category_id=
+GET    /api/items/{account_id}/publish/search-categories
+       -- 第六十批（task-15）：官方**发布页**的数据源，五条全只读、无 confirm；响应
+       --   data={account_id,kind,options,count,platform_code,api?,platform_message?,fetched_at,source:platform}，
+       --   options 为空是 200（这一层就是没有可选项），不是失败。契约与不确定项：docs/contracts/items.md。
+       --   这五条**没有真机证据**（形状由 bundle 反查 js_main.js / trade_bundle/main.js 得出），
+       --   拿到真机非空响应后可能要改解析键名。
 POST   /api/items/{account_id}/publish         {title,price,description,images,category_id,...}
 POST   /api/items/{account_id}/{item_id}/edit  {price?,original_price?,title?,description?,stock?,images?,ai_enabled?}
       -- `images` 是 URL 数组（主图首位），协议层翻成平台 `imageInfoDOList` 提交（见 §2 items 注释）
@@ -648,6 +658,24 @@ GET    /api/finance/{account_id}/purchaser
       --   `invoice.request.list.query` 要**对象** —— 三种写法都是真机抓包得来的，写错只回含糊错误码。
       --   抓包与真值证据见 `docs/HANDOFF.md` 第十七批。
 
+# 第六十批（task-14）：投放（ad）页面缺的几块 —— 11 条只读 + 1 条写（消息已读）
+GET    /api/promotion/ad/apis
+GET    /api/promotion/ad/{account_id}/account-info?order_price=&promotion_mode=&bid_type=&scene=
+GET    /api/promotion/ad/{account_id}/package-info?payload={json对象串}
+GET    /api/promotion/ad/{account_id}/item-search?item_id=&search_key=&campaign_id=&need_tabs=&sort_field=&sort_type=&page_num=&page_size=
+GET    /api/promotion/ad/{account_id}/bid-estimates?payload={json对象串}
+GET    /api/promotion/ad/{account_id}/groups?start_date=&end_date=&page_num=&page_size=&campaign_id=&group_status=&promotion_mode=&title_like=
+GET    /api/promotion/ad/{account_id}/groups/data?ad_group_id=&start_date=&end_date=&all_period=
+GET    /api/promotion/ad/{account_id}/campaign-log?start_date=&end_date=&campaign_id=&page_num=&page_size=&operator_type=&operation_type=
+GET    /api/promotion/ad/{account_id}/messages?page_num=&page_size=
+GET    /api/promotion/ad/{account_id}/messages/unread
+GET    /api/promotion/ad/{account_id}/messages/{message_id}
+POST   /api/promotion/ad/{account_id}/messages/read            {message_ids:[...],confirm}
+       -- 前缀 /api/promotion/ad，契约 docs/contracts/ad.md。唯一写动作是「投放消息标记已读」：
+       --   confirm 只认字面 true，且走 §9 的 Idempotency-Key。
+       --   11 条只读**全是 bundle 反查、无真机证据**（bundle fish-ad-pc/0.0.12/js/main.js，
+       --   偏移与搜索串写在 docs/contracts/ad.md 与 backend/app/xianyu/ad.py 每条 docstring）。
+       --   计划/活动的写族仍由 services/ad_write.py 覆盖，本批没有重复实现。
 GET    /api/promotion/{account_id}/overview?start=YYYYMMDD&end=YYYYMMDD
 GET    /api/promotion/{account_id}/campaigns?start=&end=&page=1&size=20
 GET    /api/promotion/{account_id}/reports?  （计划报表 + 商品报表，参数同上）
@@ -898,6 +926,19 @@ POST /api/trade/{account_id}/complaints/{complain_id}/revoke {confirm}
        -- `pay_type` ∈ `alipay` / `deposit`；`amount` 只用于确认框与回执展示，**不进请求体**。
        -- 批量回执读 `data.module.{totalNum,successNum,failOrderInfos[{orderId,errorMsg}]}`，
           认不出给 `null`（**不补 0**）；`confirm` 只认 `True`/`'true'`/`1`，HTTP 层原样透传。
+【第六十批（task-16）· 交易处理：3 读 + 5 写】docs/contracts/trade_write.md §13
+GET  /api/trade/{account_id}/items/{item_id}/sku-selector        -- 只读，无 confirm
+GET  /api/trade/{account_id}/orders/{order_id}/backfill-report   -- 只读，无 confirm
+GET  /api/trade/{account_id}/smart-form/query?params=            -- 只读，无 confirm
+POST /api/trade/{account_id}/orders/{order_id}/cancel            {close_reason,confirm}
+POST /api/trade/{account_id}/orders/{order_id}/close-im          {close_reason,confirm}
+POST /api/trade/{account_id}/orders/{order_id}/delay-single      {days,confirm}
+POST /api/trade/{account_id}/orders/{order_id}/adjust-price-sku  {skus,confirm}
+POST /api/trade/{account_id}/smart-form/submit                   {callback_code,ext?,confirm}
+       -- cancel / close-im 是 IM 侧两个**独立接口名**（不是 merchant.close.by.seller 的别名），
+       --   与工作台那条同载荷、按官方开关二选一；days 同 3/5/7/10；skus 键名原样透传给平台。
+       -- 8 条**全部没有真机证据**：3 条只读可以真机打，5 条写会产生真实副作用
+       --   （真取消 / 真关闭 / 真延长收货 / 真改价并通知买家 / 真提交表单），不做真机试打。
 
 【写 · 退货地址】`docs/contracts/trade_write.md` §8
 POST /api/trade/{account_id}/addresses                        {contact_name,mobile_phone,province_name,city_name,district_name,detail_address,area_id?,default_addr?,confirm}

@@ -63,7 +63,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_gate55_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 66  PASS 66  FAIL 0  CASES 2812  SKIPPED 2
+-> TOTAL 70  PASS 70  FAIL 0  CASES 3009  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -89,8 +89,8 @@ cmd /c "cd frontend && npm run build"
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon50&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=151 master=150 routes=152 targets=139 handlers=151
-   write_tools=75  route_checked=152
+-> specs=176 master=175 routes=177 targets=164 handlers=176
+   write_tools=81  route_checked=177
    RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
    （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
 ```
@@ -3739,10 +3739,83 @@ first.hand / backend 族 → `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（官方 seller.p
   闸门 **0/79**、`ASSETS_MATCH=True`（`index-BpLeM6Kv.css` + `index-scYCTET3.js` 与快照逐文件一致）、**29/29 页**、
   对比度 **dark 0/29 / light 0/29**、a11y 三类 0，两个审计都 `NON_GET_API_REQUESTS=[]`；打包版 `/openapi.json` =
   **209 路径 / 227 操作**（GET 103 / POST 109 / PUT 9 / DELETE 5 / PATCH 1，与第 58 批一致 —— 本批没加路由）。
+### 第六十批：投放（ad）/ 发布 / 交易写三域补 25 条接口 + AI 面接线 + 平台错误提示收敛（332~335）
+
+本批啃 `docs/audit/coverage57.md` §3 里最大的一块剩余缺口（**77 条「可实现」缺口**，集中在推广/商品/物流/交易写/小铺），
+按域拆成三条互不重叠的工作流（团队模式，各自 `write_scopes` 不重叠），Lead 负责 AI/MCP 接线与收口。
+
+**A. 投放域（task-14，新建 `docs/contracts/ad.md`）**
+- 新增 `backend/app/xianyu/ad.py`（协议层：**模块级 async 函数 + client 作入参**，与 `xianyu/datacenter.py` 同范式，**没有碰冻结的 `client.py`**）、
+  `backend/app/services/ad.py`、`backend/app/api/ad.py`（前缀 `/api/promotion/ad`，12 条：11 GET + 1 POST），`backend/app/main.py::ROUTE_MODULES` 加 `'ad'`。
+- 通用入口 `services/ad.py::read(account_id, kind, params)` 覆盖 10 个只读 kind；`execute` 只认 `message_read`。
+- 唯一写动作是「投放消息标记已读」：`confirm` 只认字面 `true`，且走第五十九批的 `Idempotency-Key`。
+- **11 条只读接口全是 bundle 反查、无真机证据**（bundle `https://g.alicdn.com/idle-pc/fish-ad-pc/0.0.12/js/main.js`，本地副本
+  `C:\Users\Administrator\.dsh-tmp\adapp\ad-main.js` 3,760,912 B），偏移与搜索串写在每条 docstring 与契约里。
+- 未接：`mtop.taobao.idle.ad.item.recommend`（无入参的装饰性推荐位）；充/提现只有只读 `.query`；计划/活动写族由既有 `services/ad_write.py` 覆盖，本批没有重复实现。
+
+**B. 商品发布/类目域（task-15，新建 `docs/contracts/items.md`）**
+- 新增 `backend/app/xianyu/item_publish.py`（协议层）+ `services/items.py`（+230 行）+ `api/items.py`（+54 行）：5 条 GET 全只读、无 confirm ——
+  `/api/items/{account_id}/publish/categories`、`/publish/brands?category_id=`、`/publish/models?category_id=&brand_id=`、
+  `/publish/category-properties?category_id=`、`/publish/search-categories`。
+- 响应统一 `data={account_id,kind,options,count,platform_code,api?,platform_message?,fetched_at,source:'platform'}`；`options` 为空是 200（这一层就是没有可选项），不是失败。
+- **5 条全无真机证据**（形状由 bundle 反查 `logs/seller_discover/item_templates_src/js_main.js` 与 `~/.dsh-tmp/trade_bundle/main.js` 得出）；
+  `docs/contracts/items.md` §6 列了 4 项不确定：`item.pc.category.property.query` 的业务体键名、`item.pc.search.categories` 是否与 `item.publish.categories` 同形、
+  brands/models 的元素字段名、`valueType:'string'` 是否必要 —— **真机拿到非空响应后可能要改解析键名**。
+- 有意不接：`seller.platform.idle.category.query` / `item.pc.category.list` / `common.item.search` / `item.operate.report.get`（理由逐条写在 `docs/contracts/items.md` §4）。
+
+**C. 交易处理写能力（task-16，`docs/contracts/trade_write.md` §13）**
+- 8 条新路由（前缀 `/api/trade`）：3 读 —— `GET /{account_id}/items/{item_id}/sku-selector`、`GET /{account_id}/orders/{order_id}/backfill-report`、
+  `GET /{account_id}/smart-form/query?params=`；5 写 —— `POST /{account_id}/orders/{order_id}/cancel|close-im|delay-single|adjust-price-sku`、`POST /{account_id}/smart-form/submit`。
+- 5 条写全部 `confirm` 闸门 + `Idempotency-Key`；`backend/app/xianyu/trade.py::WRITE_APIS`（:107-140）同步补 5 条写接口名，
+  否则 `backend/tests/test_trade_write_api.py::WriteContractTest::test_write_apis_are_blacklisted_in_the_read_only_layer` 必红。
+- `cancel` / `close-im` 是 IM 侧两个**独立接口名**（不是 `merchant.close.by.seller` 的别名），与工作台那条同载荷、按官方开关二选一；`days` 同 3/5/7/10；`skus` 键名原样透传给平台。
+- **8 条全无真机证据**：3 条只读可以打真机，5 条写会产生真实副作用（真取消 / 真关闭 / 真延长收货 / 真改价并通知买家 / 真提交表单），本批不做真机试打。
+
+**D. AI/MCP 面接线（Lead，25 条工具）**
+- 商品发布 5 条只读工具用**单数**前缀 `item_publish_*`：复数 `items_publish` 已在 `scripts/reconcile_tools.py::WRITE_PREFIX` 里，而那是 `startswith` 匹配 ⇒ 复数命名会被误判成写工具。
+- 6 个新写工具的 description 末尾必须带 `_WRITE_HINT`（即 `这是写操作`），否则 `backend/tests/test_agents_tools_workbench.py:819` 必红；
+  `scripts/reconcile_tools.py::WRITE_PREFIX` 只加 6 个**完整工具名**（不加宽前缀 `trade_`，否则只读的 `trade_sku_selector` / `trade_backfill_report` / `trade_smart_form_query` 会被误判成写工具）。
+- `backend/tests/test_agents_cross.py::test_tool_names_match_contract` 的 `expected` 是**顺序敏感的完整名单**，25 个名字都要按 `TOOL_SPECS` 的插入顺序补进去。
+- 接线后 `scripts/reconcile_tools.py` → `specs=176 master=175 routes=177 targets=164 handlers=176`、`write_tools=81`、`route_checked=177`。
+- ⚠️ 口径纠偏：`reconcile_tools.py` **不检查「每条 openapi 路由都要有工具」**（实测：只接商品发布 5 条时它也绿）——
+  AI/MCP 覆盖是项目目标，靠人工接线，不是 reconcile 强制的；`mcp_server/client.py::_dispatch_route`（:1071-1104）**route 里没有 `body` 键就不带 body**，需要 body 的 POST 必须显式写 `'body'`。
+
+**E. 平台错误提示收敛（§10 第 13 条）**
+- `backend/app/services/platform_errors.py` 新增 `PERMISSION_ERROR_CODES = ('FAIL_BIZ_IDLE_USER_UNAUTHORIZED', 'NO_PERMISSION')`（按**词边界**匹配）与 `is_permission(text)` / `permission_hint(text)`；
+  `backend/app/services/datacenter.py:196` 与 `backend/app/services/marketing.py:202` 的 `_warnings` 改走这两个函数。
+- 判据来自真机：`grep -rh '无权限' logs` 112 行里 14 行没有 `UNAUTHORIZED`，裸人话只出现「无权限访问」一种；全仓 `FAIL_*UNAUTHORIZED*` 只有 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`。
+  故意**不收**裸 `'UNAUTHORIZED'` 子串（会命中同前缀新码）、**不收**裸「无权限」（`FAIL_SYS_NO_PERMISSION::无权限操作` 是另一个码）。
+- 边界（**没有收敛，也不要收敛**）：协议层 `backend/app/xianyu/datacenter.py:424` 与 `backend/app/xianyu/marketing.py:373` 的 `_is_permission_error` 仍自带一份判据 ——
+  它决定「全失败但都无权限 → 200 还是 502」的信封；协议层不 import services（见 `backend/app/xianyu/__init__.py:4` 的分层说明），反向依赖会破坏分层。
+- 前端静态文案（`frontend/src/pages/CommodityData.tsx:381`、`CsData.tsx:195`、`Fans.tsx:175,212`、`datacenterShared.ts:15`）仍写「这个账号没有「数据」权限」——
+  那是页面静态提示、不是按平台码翻译，本批不动。
+
+**验收（对最终 HEAD）**
+- 全量 `backend/tests/run_all.py` → `TOTAL 70  PASS 70  FAIL 0  CASES 3009  SKIPPED 2`（第五十九批是 66 / 2812：本批 +4 个测试文件 / +197 用例）。
+- `scripts/reconcile_tools.py` → RECON OK：`specs=176 master=175 routes=177 targets=164 handlers=176` / `write_tools=81` / `route_checked=177` / `ALIASES=22`。
+- `create_app().openapi()` = **234 路径 / 252 操作**（POST 115 / GET 122 / PUT 9 / PATCH 1 / DELETE 5；第五十九批 209/227）。
+
+**真机（打包版 18400，账号 `2217970177348` 月狐兔_，2026-10-16 01:08~01:15）**
+- 第一次（00:23）打真机时平台回 `FAIL_SYS_SESSION_EXPIRED::Session过期`，服务层把账号标了 `need_relogin`；**01:08 复验 `login_state=active`**（那次过期是瞬态，cookie 仍在库）⇒ 本批真机复验**做成了**，证据落 `logs/probe60/`（打包版 HTTP 探针）与 `logs/probe60/round2/`。
+- **19 条新只读路由打了 17 条**（未打 2 条：`ad_bid_estimates` 要 `entityType/entityList` 合法枚举；`ad_message_detail` 要 message id，而该账号 `ad.message.list` 的 `total=0`）。**10 条 200 带真实数据**：
+  `GET /api/promotion/ad/apis`（目录）、`/{acc}/account-info`（`{cashBalance:3358,totalBalance:3358,usableBalance:3358}`）、
+  `/{acc}/groups`（`result[0]` 真数据，键 `adData/adGroupId/campaignId/campaignTitle/cat4Id/entityId/entityType/groupStatus/imgUrl/price/saleCnt/title`）、
+  `/{acc}/groups/data?ad_group_id=160084560`、`/{acc}/messages`（`{nextPage,pageNum,pageSize,result,total,totalPage}`）、`/{acc}/messages/unread`（`{unreadCount}`）、
+  `GET /api/items/{acc}/publish/categories`（**99 个一级类目**，元素 `{category_id,category_name,level,leaf,children}`）、`/publish/brands?category_id=126854001`（**68 个品牌**，元素 **`{value,label}`**）、
+  `/publish/models`（0 条，200）、`/publish/category-properties`（0 条，200）。⇒ 契约里那两项不确定**已解**：brands/models 元素是 `value`/`label`；`options` 为空确实是 200。
+- **7 条被平台或本地校验拒**（每条都证明请求真的到了平台、错误语义如实透出）：`ad_package_info` / `ad_campaign_log` → `E_AD_BP_COMMON_SYSTEM_EXCEPTION::闲鱼太累了，请稍后再试～`；
+  `ad_item_search` → `E_AD_BP_COMMON_PARAM_NULL::必填参数为空`（给 `item_id` 或 `search_key` 都不够，**还缺别的必填项，未解**）；`items_publish_search_categories` → `FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问`；
+  `trade_smart_form_query` → 无参 400 `invalid_fields`、给 `{"orderId":…}` → `UNKNOWN_FAIL_CODE::系统开小差了`（**参数形状未解**）；`trade_sku_selector` → `FAIL_BIZ_ITEM_NOT_MULTI_SKU_ERROR::不是多SKU商品`（协议绑定正确）；`trade_backfill_report` → `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`。
+- **6 条交易写路由一条都没打**（真取消 / 真关闭 / 真延长收货 / 真改价并通知买家 / 真提交表单 / 投放消息已读），要打先问用户。
+- 顺带修一处人话错配：`E_AD_BP_COMMON_SYSTEM_EXCEPTION` 的提示原文写死「平台的**资质**服务自己报错了」，但 2026-10-16 真机显示投放域（`ad.package.info` / `ad.campaign.log.query`）回的是**同一个码**
+  ⇒ 已改成 code-generic 的「平台侧自己报错了…」，注释里记下两个来源（2026-10-12 资质 + 2026-10-16 投放）。
+- 一次假警报已排除：探针首跑报 `account_info() takes from 1 to 2 positional arguments but 3 were given`，是当时 teammate 正在改文件的瞬态；事后用 stub 复验 `backend/app/services/ad.py::_call`（:154-170）绑定正确
+  （`_BoundProtocol.__getattr__` 返回未绑定模块函数 + `common.call_method` 执行 `fn(*args)` ⇒ 实际调用 `module_fn(client, *args)`），与 `backend/app/services/datacenter.py:92` 同一套写法，**不要按「重复传 client」去改**。
+
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**66 个测试文件、2812 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**70 个测试文件、3009 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -4062,7 +4135,7 @@ first.hand / backend 族 → `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（官方 seller.p
    2026-10-15 再验一轮：`POST /api/items/sync` → 200（45 商品 / 40 库存）、
    `POST /api/chats/sync` → 200（`scanned=39`、`messages_skipped=407`）。
    原先那条「Cookie 在 2026-10-07 被判过期、要先重新扫码」**已经过时**（另注：账号
-   `3998190171`（卒奥aa）已被用户删除）。仍然需要登录态的功能现在可以直接验。
+   `3998190171`（卒奥aa）已被用户删除）。仍然需要登录态的功能现在可以直接验。⚠️ 2026-10-16 00:23 曾回一次 `FAIL_SYS_SESSION_EXPIRED::Session过期` 并被标 `need_relogin`，但 **01:08 复验 `login_state=active`**（瞬态，cookie 仍在库）⇒ 第六十批真机复验照常做完（证据见上一节）。
 2. ~~修 `POST /api/orders/sync` 那个空壳（第五十六批发现）~~ **已闭环：第五十七批，提交 `9dc0e05`** ——
    真机 `POST /api/orders/sync` → 200 `count=15`；`list_orders()` 加在
    `backend/app/xianyu/client.py::XianyuClient`（**不是** `xianyu/trade.py`：`common.call_method` 找的是
@@ -4101,7 +4174,7 @@ first.hand / backend 族 → `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（官方 seller.p
     有逐条实测锚点。另外两笔欠账：`docs/audit/ui_review58.md` 24 条**第五十九批已修到 23 条**（第 16 条经复核
     不成立；第 11 条只做到共享组件层，未逐页核 `useAsync` 是否保留 data；第 15 条剩 `Chats.tsx:1870-1880`、
     `Promotion.tsx:380-381` 两处有意跳过）；40 条写路由没有 AI/MCP 面（第 58 批接了 `items_delist` / `items_relist`，
-    第五十九批又接 `notifications_mark_read`，理由逐条记在 `docs/audit/ai_surface58.md` §3）。
+    第五十九批又接 `notifications_mark_read`，理由逐条记在 `docs/audit/ai_surface58.md` §3）。**第六十批**又按域补了 25 条新路由（投放 12 / 商品发布 5 / 交易写 8），其中 6 条是写，全部同时配好了 AI/MCP 工具；40 条写路由清单本身没有逐条核销。
 11. **商品「上架」在本账号权限下不可用**（第 58 批真机三条路径全被拒，错误码见上节）：官方 seller.pc 商品写族里
     本来也只有 offline / batch.offline / batch.delete / delete / info.update / price.update / quantity.update。
     ⇒ 换有子账号/主账号权限的账号再试；在此之前**别把「下架 → 上架」当可逆写**。⚠️ 商品 `1085479546711`
