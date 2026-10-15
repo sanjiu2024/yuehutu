@@ -7,12 +7,16 @@
   operation_logs。返回
   `{"total": n, "ok": n, "synced": n, "local_only": n, "noop": n, "warnings": [...], "failed": [...], "skipped": [...]}`：
   - `ok` / `synced` **只统计完全成功**（本地已落库 **且** 已推送到协议层）；
-  - `warnings` / `local_only` 是「本地改了但没推到平台」（协议层未就绪、调用失败，或字段
-    平台根本不支持），**不算 ok**。单条路径同样口径：`synced = 没有 warning **且** 没有
-    `local_only` 字段 —— 只推了一半却说「已同步」就是假绿；
+  - `warnings` / `local_only` 是「本地改了但没推到平台」（协议层未就绪，或字段平台根本
+    不支持；**编辑**被平台拒绝也走这里 —— 编辑是本地优先，改动仍落库），**不算 ok**。
+    单条路径同样口径：`synced = 没有 warning **且** 没有 `local_only` 字段 —— 只推了一半
+    却说「已同步」就是假绿；
   - `noop` 是「本次没有实际改动」（例如只传了 `images: []` 表示不改图），既没改本地也没推
     平台，**不算 ok 也不算 local_only**；
-  - `failed` / `skipped` 是「完全没改」（不存在、字段非法、跨账号）。
+  - `failed` / `skipped` 是「完全没改」（不存在、字段非法、跨账号，以及**上下架被平台明确
+    拒绝**）。上下架的 `status` 是与平台相反的终态，平台拒绝时**不改本地**（第 61 批真缺陷：
+    上架被平台拒却把本地写成 `on_sale`，本地 `on_sale` / 平台 `off_shelf`），只如实报
+    `code='protocol_error'`，**不进 `local_only`**（那个键的语义是「只改了本地」）。
   协议层没就绪时 `ok` 必须是 0 —— 否则用户看到「已批量修改 N 个」而实际一条都没推出去。
 - 需要协议层才能成立的操作（同步、发布）在协议层缺失时返回
   `{"success": false, "code": "xianyu_not_ready"}`。
@@ -747,11 +751,12 @@ def _batch_summary(
     """批量结果的统一形状。
 
     - `ok` / `synced` = 完全成功（本地已改 **且** 已推送到协议层）；
-    - `warnings` / `local_only` = 本地改了但没推出去（协议层未就绪、调用失败，或字段
-      平台根本不支持）；
+    - `warnings` / `local_only` = 本地改了但没推出去（协议层未就绪，或字段平台根本不支持；
+      编辑被平台拒绝也走这里 —— 编辑本地优先）；
     - `noop` = 本次没有实际改动（例如只传 `images: []` 表示不改图），**不算 ok、也不算
       local_only**；
-    - `failed` = 完全没改的逐条明细，`skipped` = 同一批的 id 索引（一眼看出一条都没动）。
+    - `failed` = 完全没改的逐条明细（不存在、字段非法、跨账号，以及上下架被平台明确拒绝时
+      本地一个字节都没动），`skipped` = 同一批的 id 索引（一眼看出一条都没动）。
 
     恒等式：`total == ok + local_only + noop + len(failed)`。
     """
@@ -854,7 +859,13 @@ def batch_update(
 def _set_status(
     item_ids: Sequence[Any], status: str, action: str, account_id: Optional[str] = None
 ) -> Dict[str, Any]:
-    """上下架：口径与 `batch_update` 一致 —— `ok` 只算「本地改了 **且** 推到平台了」。"""
+    """上下架：口径与 `batch_update` 一致 —— `ok` 只算「本地改了 **且** 推到平台了」。
+
+    平台**明确拒绝**（`CALL_ERROR`）时**不改本地状态**（第 61 批修）：`status` 是与平台相反
+    的终态，写进本地就是假绿（真机 relist 被拒仍写 `on_sale`，平台还是 `off_shelf`）。
+    这种条目进 `failed`（`code='protocol_error'`），**不进 `local_only`**。协议层尚未就绪
+    （`client is None` / `CALL_MISSING`）仍按本地优先落库 + `local_only`。
+    """
     ids = [str(x) for x in (item_ids or []) if str(x).strip()]
     if not ids:
         return _batch_summary(0, 0, [], [{'id': '', 'message': 'item_ids 不能为空', 'code': 'bad_request'}],
@@ -875,10 +886,6 @@ def _set_status(
             common.log_operation(str(account_id or ''), action, item_id, False, message)
             continue
         item = _row_to_item(row)
-        db.execute(
-            'UPDATE items SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            (status, item['id']),
-        )
         warning = None
         client, _err = common.get_client(item['account_id'])
         if client is not None:
@@ -888,12 +895,30 @@ def _set_status(
             call_status, value = common.call_method(
                 client, (action_method,), item['item_id'],
             )
+            if call_status == common.CALL_ERROR:
+                # 第 61 批真缺陷：平台**明确拒绝**（真机 reshelf 回
+                # 「FAIL_BIZ_JSON_ERROR::发布失败，请稍后重试吧!」）时，以前照样把本地
+                # 写成目标状态 —— 于是本地 on_sale、平台 off_shelf：本地状态是假的，
+                # 用户看到「已上架」不会重试，同步一次又被打回 off_shelf，来回抖。
+                # 状态是**与平台相反的终态**，平台没成功就一个字节都不改，如实进
+                # `failed`。不塞 `local_only`：那个键的语义是「只改了本地」，这里没改。
+                label = '上架' if action == 'reshelf' else '下架'
+                message = (f'平台{label}失败，本地状态未改动（仍为 {item.get("status")}）：'
+                           f'{value}{_platform_error_hint(value)}')
+                failed.append({'id': item['item_id'], 'message': message,
+                               'code': 'protocol_error'})
+                common.log_operation(item['account_id'], action, item['item_id'], False, message)
+                continue
             if call_status == common.CALL_MISSING:
                 warning = '协议层尚未实现该操作，仅本地生效'
-            elif call_status == common.CALL_ERROR:
-                warning = f'协议层调用失败，仅本地生效: {value}'
         else:
             warning = '协议层尚未就绪，仅本地生效'
+        # 只有两种情形才动本地状态：平台已确认成功，或协议层还没就绪（本地先落库、
+        # 如实报 `local_only` —— 卖家在 UI 上的操作不该白做）。
+        db.execute(
+            'UPDATE items SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            (status, item['id']),
+        )
         common.log_operation(item['account_id'], action, item['item_id'], True, {'status': status, 'warning': warning})
         if warning:
             warnings.append({'id': item['item_id'], 'code': 'not_pushed', 'message': warning})

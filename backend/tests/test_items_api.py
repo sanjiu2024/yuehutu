@@ -689,6 +689,140 @@ class ItemWriteConfirmGateApiTest(ItemsApiTest):
                 self.assertEqual(resp.json()['code'], 'confirmation_required')
 
 
+# --------------------------------------------------------------------------- 上下架平台失败（第 61 批）
+
+class PlatformRejectClient(FakeClient):
+    """平台**真的拒绝**上下架的假协议层（第 61 批真机：HTTP 200 但平台侧上架失败）。
+
+    真机证据（账号 2217970177348 / 商品 1085479546711，`logs/write61/07_item_reshelf.json`）：
+    协议层抛 `MTOP 调用失败 [mtop.idle.pc.idleitem.edit]: FAIL_BIZ_JSON_ERROR::发布失败，
+    请稍后重试吧!`，服务层却把本地 `status` 写成了 `on_sale`（平台仍是 `off_shelf`）。
+    """
+
+    #: 真机原文（照抄）：测试要钉住「平台原文如实透传」，别改写成别的码
+    REAL_MESSAGE = ('MTOP 调用失败 [mtop.idle.pc.idleitem.edit]: '
+                    'FAIL_BIZ_JSON_ERROR::发布失败，请稍后重试吧!')
+
+    def __init__(self, account_id: str, reject_ids: Optional[List[str]] = None):
+        super().__init__(account_id)
+        #: `None` = 全部拒绝；否则只拒这些 item_id（用来测「一条失败不影响其它条」）
+        self.reject_ids = reject_ids
+
+    def _maybe_reject(self, item_id: str) -> None:
+        if self.reject_ids is None or item_id in self.reject_ids:
+            raise RuntimeError(self.REAL_MESSAGE)
+
+    async def downshelf(self, item_id: str) -> Dict[str, Any]:
+        self.calls.append(('downshelf', item_id))
+        self._maybe_reject(item_id)
+        return {'success': True}
+
+    async def reshelf(self, item_id: str) -> Dict[str, Any]:
+        self.calls.append(('reshelf', item_id))
+        self._maybe_reject(item_id)
+        return {'success': True}
+
+
+class ItemShelfPlatformFailureApiTest(ItemsApiTest):
+    """平台明确拒绝上下架时：本地状态**一个字节都不改**，失败如实进 `failed`。
+
+    第 61 批真缺陷：`_set_status` 先写本地状态、再推平台，平台报错只记 warning
+    ⇒ 本地 `on_sale` / 平台 `off_shelf`（本地状态是假的）。前端 `showBatchNotice` 把
+    `failed[]` 显示成错误 toast、`warnings[]` 只说「仅本地生效」，所以平台失败必须进
+    `failed`（`code='protocol_error'`），**不能**塞进 `local_only`（那个键的语义是「只改了本地」）。
+    """
+
+    def status_of(self, item_id: str, account: str = ACC) -> str:
+        row = db.query_one('SELECT status FROM items WHERE account_id = ? AND item_id = ?',
+                           (account, item_id))
+        return str(row['status'])
+
+    def test_relist_platform_reject_keeps_local_status(self):
+        """真机复现：relist 被平台拒 → 本地仍是 off_shelf，失败进 failed。"""
+        seed('A1', account=ACC, status='off_shelf')
+        install_fake_protocol(PlatformRejectClient(ACC))
+
+        resp = self.client.post(f'/api/items/{ACC}/A1/relist',
+                                json={'confirm': True}, headers=self.headers)
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertEqual(data['ok'], 0, resp.text)
+        self.assertEqual(data['synced'], 0, resp.text)
+        self.assertEqual(data['local_only'], 0, resp.text)
+        self.assertEqual(data['warnings'], [], resp.text)
+        self.assertEqual(len(data['failed']), 1, resp.text)
+        self.assertEqual(data['failed'][0]['id'], 'A1')
+        self.assertEqual(data['failed'][0]['code'], 'protocol_error')
+        self.assertIn('FAIL_BIZ_JSON_ERROR', data['failed'][0]['message'], resp.text)
+        self.assertIn('本地状态未改动', data['failed'][0]['message'], resp.text)
+        # 核心断言：本地状态保持原值（平台仍是 off_shelf）
+        self.assertEqual(self.status_of('A1'), 'off_shelf')
+
+    def test_delist_platform_reject_keeps_local_status(self):
+        """同款对称：下架被平台拒也不能把本地写成 off_shelf。"""
+        seed('A1', account=ACC, status='on_sale')
+        install_fake_protocol(PlatformRejectClient(ACC))
+
+        resp = self.client.post(f'/api/items/{ACC}/A1/delist',
+                                json={'confirm': True}, headers=self.headers)
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertEqual(data['local_only'], 0, resp.text)
+        self.assertEqual([f['id'] for f in data['failed']], ['A1'], resp.text)
+        self.assertEqual(data['failed'][0]['code'], 'protocol_error')
+        self.assertEqual(self.status_of('A1'), 'on_sale')
+
+    def test_reject_does_not_emit_items_updated(self):
+        """一条都没改成 → 不发 `items.updated`（否则前端静默重拉也看不到任何变化）。"""
+        seed('A1', account=ACC, status='off_shelf')
+        install_fake_protocol(PlatformRejectClient(ACC))
+        self.client.post(f'/api/items/{ACC}/A1/relist',
+                         json={'confirm': True}, headers=self.headers)
+        self.assertEqual(updates(), [])
+
+    def test_batch_relist_one_rejected_does_not_block_other(self):
+        """一条被平台拒不影响同批其它条，且恒等式 `total == ok + local_only + noop + failed` 成立。"""
+        seed('A1', account=ACC, status='off_shelf')
+        seed('A2', account=ACC, status='off_shelf')
+        install_fake_protocol(PlatformRejectClient(ACC, reject_ids=['A1']))
+
+        resp = self.client.post('/api/items/reshelf',
+                                json={'ids': ['A1', 'A2'], 'confirm': True}, headers=self.headers)
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertEqual(data['total'], 2)
+        self.assertEqual(data['ok'], 1, resp.text)
+        self.assertEqual(data['local_only'], 0, resp.text)
+        self.assertEqual([f['id'] for f in data['failed']], ['A1'], resp.text)
+        self.assertEqual(data['failed'][0]['code'], 'protocol_error')
+        self.assertEqual(data['total'],
+                         data['ok'] + data['local_only'] + data['noop'] + len(data['failed']))
+        self.assertEqual(self.status_of('A1'), 'off_shelf')  # 被拒的那条不动
+        self.assertEqual(self.status_of('A2'), 'on_sale')    # 成功的那条照改
+
+    def test_protocol_not_ready_still_writes_local_and_reports_local_only(self):
+        """反向锁：协议层**没就绪**（不是平台拒绝）时仍本地优先落库 + `local_only`。
+
+        这条与上面几条是**两回事**：没就绪时平台一次请求都没发出，本地落库是「卖家操作
+        不白做」的既定口径；平台明确拒绝才是「本地绝不能写成与平台相反的终态」。
+        """
+        seed('A1', account=ACC, status='off_shelf')
+        # 不装假协议层：账号不在 accounts 表里 ⇒ `common.get_client` 拿不到客户端
+
+        resp = self.client.post(f'/api/items/{ACC}/A1/relist',
+                                json={'confirm': True}, headers=self.headers)
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertEqual(data['ok'], 0, resp.text)
+        self.assertEqual(data['local_only'], 1, resp.text)
+        self.assertEqual(data['failed'], [], resp.text)
+        self.assertEqual(data['warnings'][0]['code'], 'not_pushed')
+        self.assertEqual(self.status_of('A1'), 'on_sale')
+
 # --------------------------------------------------------------------------- 发布数据源（第 60 批）
 
 #: 发布数据源路由用到的 5 个协议函数名（`services/items.py` 里的 `*_CALL` 常量）
