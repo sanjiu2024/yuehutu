@@ -63,7 +63,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_gate55_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 63  PASS 63  FAIL 0  CASES 2737  SKIPPED 2
+-> TOTAL 65  PASS 65  FAIL 0  CASES 2789  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -3595,10 +3595,87 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 > `backend/app/xianyu/trade.py::paging_of` 的 docstring 当时没跟着改（仍写「sold.get 未取到完整尾部」），
 > 已在下一提交里更正为「落点不统一：sold.get 在 `data.module`、refund.list/rate.list 在信封顶层」。
 
+### 第五十八批：三份独立审计收口 + 通知已读写端到端 + AI 工具面补两条 + UI 高危前 5 条（312~324）
+
+**起点是三个独立审计**（`subagent`、干净上下文、只审不动手，产物都入仓在 `docs/audit/`）：
+
+1. `docs/audit/coverage57.md`（覆盖率，脚本 `scripts/coverage_audit.py` 可再生成）：重算口径
+   **362 = 187 + 175**（脚本内置 assert，不成立 exit 2）。旧 `logs/cov52.txt` 的 `225 + 176 = 401 != 362`
+   根因是**分子用 backend 全集、分母用 bundle 集合**。缺口四分法：可实现 **77**（每条带归属模块 +
+   `文件:行:列` 证据）、无权限或风控 **43**、纯站内/IM 内部 **26**、误收非 mtop 名 **29**。
+2. `docs/audit/write_consistency.md`（写接口）：抽检 18 条。**P1 四条与 §6 表相反** —— 财务充值/提现
+   零写能力（`api/finance.py:41/57/73/86` 全 GET）、营销活动配置零写路由（`api/marketing.py:44/54/66/78` 全 GET）、
+   通知已读无写路由（`api/notify.py:27` 仅 GET）、风控熔断参数无 AI/MCP 工具（`api/risk.py:49/55/65` 纯本地）。
+   另有：`confirm_required` 实际落 **400**（`services/common.py` 的 `FAIL_STATUS` 没登记该码）、同一份确认判据
+   复制 13+ 份、写操作**无幂等键**、4 条集合端点缺分页、40 条写路由无 AI/MCP 面。
+3. `docs/audit/ui_review58.md`（界面）：24 条，每条「文件:行 → 现象 → 为什么不符习惯 → 建议改法 → 严重度」。
+
+**落地（7 个提交）**：
+
+- `a467685` fix(orders)：`order_stats` 拆出 `amount_paid`（排除关闭/退款单）/ `paid_orders` / `closed`，
+  `amount` 语义不变；`list_orders` 返回体加 `dropped` 计数并在丢弃时 `logger.warning`（§10 第 9、10 条闭环）。
+- `de12090` build(scripts)：`build_exe.ps1` 加 `Get-Sha256Hex`（`Get-FileHash` 失败退 `certutil`）+ 末尾 `exit 0`；
+  三个打包版探针入仓并统一 `--port`。**真根因还有一条**：dsh 的 edit/write 会抹掉 `.ps1` 的 UTF-8 BOM，
+  PS 5.1 按 ANSI 读中文注释即 `ParserError` ⇒ 动过仓库 `.ps1` 必须复核前 3 字节 = `efbbbf`。
+- `345021d` docs(audit)：收录 `scripts/coverage_audit.py` + 两份审计。
+- `715d52e` refactor(services)：19 个 services 模块的确认判据收敛到 `services/common.py` 单点
+  （`confirm_truthy` / `confirm_accepted(strict=)` / `confirm_failure` / `confirm_required`），回归锁
+  `backend/tests/test_confirm_gate_single_point.py`（AST 扫描：services 里不许再出现自己的 `def _truthy`）。
+  **有意收紧**：字符串 `1`（带引号）不再算确认（原先只有 `shop_profile.py` / `sub_accounts.py` 接受）。
+- `f026c2c` feat(notify)：`POST /api/notifications/{account_id}/read`。闸门在服务层第一行（缺 confirm 零平台请求）；
+  平台业务体没回执 ⇒ `saved=false` + warning 且**不写审计**；明说 `success:false` ⇒ 502 + 平台原话、不改登录态。
+  **真机回执**：`{"success": true, "data": {"success": true}, "message": "SUCCESS::调用成功"}` ⇒ `saved=true` +
+  `operation_logs` id=345（证据 `logs/notify_read58/`）。副作用是真的：真把通知 `4338118620042.PNM` 标成已读。
+- `97517b2` feat(agents)：补 `items_delist` / `items_relist`（落点 `POST /api/items/{account_id}/{item_id}/delist|relist`
+  → `services/items.py:911 downshelf` / `:920 reshelf`，required 含 `confirm`）。报告 `docs/audit/ai_surface58.md`
+  同时更正审计三处：审计说「无 ad 写工具」不成立（`tools.py:2045/2059` 覆盖 `xianyu/ad_write.py:73-122` 的 10 个写动作）、
+  「`api/ad_write.py` 没挂进 `main.py`」已过期（`main.py:75 ROUTE_MODULES` 含它）、「42 条无 AI 面」实测是 40 条。
+- `88a6a85` fix(ui)：按 `docs/audit/ui_review58.md` 修前 5 条 —— Modal 加 Tab 焦点陷阱 + `initialFocusRef`、
+  ConfirmDialog 默认焦点落「取消」、错误 Toast 不再自动消失（`role="alert"` + 关闭按钮）、ErrorBoundary 改人话
+  + 可展开详情 + 复制、批量选择条改「将操作 N 个商品」并提示有多少不在当前筛选结果里；两处退款金额 label
+  标明只用于对账（`api/trade_write.py:403-418` 证实该字段不进平台请求）。UI 审查第 16 条（Orders 筛选未标注）
+  经复核**不成立**：`frontend/src/pages/Orders.tsx:390` 已常驻提示。
+
+**收尾复核（Lead 自己跑）**：`backend/tests/run_all.py` → `TOTAL 65 PASS 65 FAIL 0 CASES 2789 SKIPPED 2`；
+`scripts/reconcile_tools.py` → `specs=150 master=149 routes=151 targets=138 handlers=150` / `write_tools=74` /
+`route_checked=151` / `ALIASES=22` / `RECON OK`；打包版 `/openapi.json` 实测 **209 条路径 / 227 个操作**
+（GET 103 / POST 109 / PUT 9 / DELETE 5 / PATCH 1）。**这一批前端有改动，重打包没带 `-SkipFrontend`**。
+
+**真机（第 58 批新增）**：通知标记已读成功（见上）；同批试的阶梯第①档第一条「客服接待状态」被平台拒 ——
+`POST /api/im/{account_id}/reception` → 502 `FAIL_BIZ_NOT_SUB_ACCOUNT::闲鱼走神了，您稍后再试～`，
+读 `GET .../reception` 也拿不到状态（`data.status=null` + warning `reception_status_missing`），
+本账号疑似缺子账号/客服权限；错误语义（不谎报成功 + 原样透出平台原话）被真机验证。证据 `logs/write_probe58/`。
+
+**财务「充值/提现」的结论**（不是待办）：官方充值走收银台外链（H5/支付宝），14 个 bundle 里没有财务微应用，
+`ad-main.js` 里只有 `mtop.taobao.idle.ad.bp.account.recharge.query` / `withdraw.query` 两个**查询**接口 ⇒
+本项目没有 mtop 写通道可复刻，保持只读。
+
+**真机写（第 58 批打包版 18400，13:4x 实测）**：商品**下架成功** —— `POST /api/items/{acc}/1085479546711/delist` →
+200 `{total:1,ok:1,synced:1,status:'off_shelf'}`（本地 `on_sale` → `off_shelf`）；**上架回滚失败** ——
+`POST .../relist` → 200 但 `{ok:0,synced:0,local_only:1,warnings:[{code:'not_pushed',message:'协议层调用失败，仅本地生效:
+FAIL_BIZ_JSON_ERROR::发布失败，请稍后重试吧!'}]}`，独立读平台 `itemDO.itemStatus=-2 / itemStatusStr=已下架` ⇒
+**本账号权限下三条上架路径全被拒**：老族 `mtop.idle.pc.idleitem.edit`（inputJson 信封）与 `mtop.idle.pc.idleitem.publish`
+→ `FAIL_BIZ_IDLEITEM_UNKNOWN_THROWABLE`；`mtop.alibaba.idle.seller.platform.item.operate.online {itemId}` 与
+first.hand / backend 族 → `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（官方 seller.pc 商品写族本来也没有「上架」，见
+`backend/app/xianyu/item_write.py:77-79`）。⚠️ 真机副作用：商品 `1085479546711` 已被探针下架，本项目 API 无法恢复，
+只能在**官方 App 手动上架**。证据 `logs/pkg_probe58/`（`20_before`/`21_delist`/`21_after`/`22_before`/`23_relist`/
+`23_after`/`50_relist_try_A`/`60_relist_attempts`/`70_online_attempts`/`80_publish_attempt`）。
+
+**同批修掉的两个真缺陷（提交 `4b2efb0`，HEAD=325）**：① `sync_items` 现在会把「平台列表里没有」的商品标成
+`off_shelf` —— 判据是 `list_items` 新增的 `complete`（**只在翻到头时动**，截断时不动），返回体与日志加
+`off_shelf_missing`；旧 `sync` 只 upsert 从不清理，而平台对已下架商品**不列入列表**，本地那行永远停在旧值。
+打包版真机复验：`POST /api/items/{acc}/sync` → 200 / 32.7s / `count=44` / `off_shelf_missing=1` / `stock_refreshed=40`，
+本地 45 行收敛成 **44 on_sale + 1 off_shelf**，与平台列表一致。② `backend/app/xianyu/risk.py:35-52`
+`RISK_CONTROL_MARKERS` 删掉裸标记 `'请稍后重试'`，改为 `'小闲鱼有点忙'` + `'FAIL_BIZ_USER_SHOW_SYSTEM_ERROR'`
+—— 旧标记把业务失败 `FAIL_BIZ_IDLEITEM_UNKNOWN_THROWABLE::发布失败，请稍后重试吧!` 误判成风控，白熔断 60s
+（`COOLDOWN_STEPS` 首档）+ `risk_state` 落一条假命中 + 同进程后续调用全被拦。测试 +5 个方法
+（`test_services_items.py` +2、`test_xianyu_items.py` +2、`test_xianyu_cookies.py` +1）⇒ 基线 2776 → **2789**；
+`-SkipFrontend` 重打包 → **10,231,552 B / 2026-10-15 13:41:16**，五件套全过（闸门 0/79、ASSETS_MATCH=True、
+29/29 页、对比度 dark/light 各 0/29、a11y 三类 0）。
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**63 个测试文件、2737 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**65 个测试文件、2789 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -3924,11 +4001,12 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
    `backend/app/xianyu/client.py::XianyuClient`（**不是** `xianyu/trade.py`：`common.call_method` 找的是
    client 实例方法，`trade.py` 只有纯函数）。小审查（`subagent`、干净上下文）又抓出四处并已修进
    `feeb3aa`：`item_stats.PAID_STATES` 补「交易成功」、删掉金额推算退路、翻页改用 `total_count`、
-   文档行号与表格（详见上一节「第五十七批收尾修正」）。**接下来这一件小事**：`/api/orders/stats` 的 `amount` 目前
-   把「交易关闭」的订单也算进总额（真机 15 单 1176.81 里有 5 笔关闭单）—— 先定口径（排除关闭/退款单，
-   还是拆 `amount` / `amount_paid`），再改 `backend/app/services/orders.py::order_stats`。
+   文档行号与表格（详见上一节「第五十七批收尾修正」）。✅ **`amount` 口径已闭环**（第五十八批提交 `a467685`）：
+   `order_stats` 新增 `amount_paid`（排除关闭/退款单）/ `paid_orders` / `closed`，**`amount` 语义保持不变**
+   （仍是全部订单，避免动既有消费者）。
 3. 用户在「AI 配置」页填一个真实 API Key 并设为默认 → 主管 AI 与商品 AI 才能真回话。
-4. 真机实测「写」的一半：在已登录的真账号上发布一件商品 / 改一次价 / 上架下架各一次
+4. **真机写**：第 58 批已开出第一条 —— 通知标记已读拿到平台 `SUCCESS` 回执并落审计（`logs/notify_read58/`）；
+   客服接待状态被平台 `FAIL_BIZ_NOT_SUB_ACCOUNT` 拒（`logs/write_probe58/`）。仍然待做：发布一件商品 / 改一次价 / 上架下架各一次
    （读的一半——拉商品、IM 入站挂载、会话同步——都已在真机验证）。发布失败时注意看新加的人话解释
    （`platform_errors.py`）。**优先先点第二十二批那三个（商品页的批量下架 / 批量删除 /
    行内改价改库存）**：它们是唯一「旧做法会改坏真实数据」的三个口子，而且一次请求就能
@@ -3943,3 +4021,16 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
    （502 `retry_after=39`，冷却后同请求 200）。
 7. 桌面 exe 在干净机器上冒烟（缺 WebView2 时要给出可读提示）；注意产物现在含
    playwright driver，`dist\闲鱼AI工作台` 实测 **194 MB**。
+8. **写操作没有幂等键**（`docs/audit/write_consistency.md` 问题 8）：全仓无 `idempotency_key` / `request_id` /
+   dedup，客户端重放就是**二次提交**，关单/退款/发货最敏感。建议在 `services/common` 加统一入口
+   （如 `X-Idempotency-Key` 落 `operation_logs` 去重），先覆盖不可逆写。
+9. **4 条集合端点缺分页**（问题 10）：`GET /api/promotion/write/actions`、`GET /api/trade/{account_id}/addresses`、
+   `GET /api/quick-reply/{account_id}/groups`、`GET /api/im/{account_id}/blacklist` 一次返回全量 ⇒
+   按 `page`/`size` 补，返回体与其它列表端点对齐（`{items,total,page,size,pages}`）。
+10. **覆盖率审计的 77 条可实现缺口**还没逐条落地（`docs/audit/coverage57.md`），43 条无权限/风控里只有 5 条
+    有逐条实测锚点。另外两笔欠账：`docs/audit/ui_review58.md` 24 条只修了 5 条（剩 19 条含 19 处英文 label）；
+    40 条写路由没有 AI/MCP 面（第 58 批接了 2 条，剩 37 条，理由逐条记在 `docs/audit/ai_surface58.md` §3）。
+11. **商品「上架」在本账号权限下不可用**（第 58 批真机三条路径全被拒，错误码见上节）：官方 seller.pc 商品写族里
+    本来也只有 offline / batch.offline / batch.delete / delete / info.update / price.update / quantity.update。
+    ⇒ 换有子账号/主账号权限的账号再试；在此之前**别把「下架 → 上架」当可逆写**。⚠️ 商品 `1085479546711`
+    已被验证探针下架、本项目 API 恢复不了，需**官方 App 手动上架**。

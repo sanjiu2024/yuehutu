@@ -111,3 +111,23 @@ RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点�
 - **协议层**只抽查了 `backend/app/xianyu/trade_write.py:308/333/344/477/535` 与 `backend/app/xianyu/client.py:704`；其余族的 request 构造器未读。
 - **未做**：`backend/tests/run_all.py` 全量基线复跑、`docs/contracts/*.md` 与 `docs/CONTRACTS.md` 逐条比对、真机平台调用（禁止）、任何写操作（禁止）。
 - 已知无法从静态证据判定的项：平台返回体「沉默 vs 0」在**每个**字段上的取舍（`null ≠ 0` 只在 `trade_write` 的 add_memo / 缺回显路径上取到正面证据），需要真机样本才能穷尽。
+---
+
+## 5. 后续处置（Lead 复核，2026-10-15 第 58 批）
+
+本报告的结论在第 58 批被逐条处置或更正；**报告原文保留不改**（它是当时的独立结论），差异以本节与 `docs/audit/ai_surface58.md` §2 为准。
+
+| 报告条目 | 处置 | 证据 |
+| --- | --- | --- |
+| P1-1 财务「充值/提现」（§6 记 ✓） | §6 表已改「—」，并**确认为不可复刻**：官方走收银台外链，14 个 bundle 无财务微应用，`ad-main.js` 只有 `...ad.bp.account.recharge.query` / `withdraw.query` 两个**查询**接口 | `docs/交接文档.md` §6 脚注、§10 第 14 条 |
+| P1-2 营销「活动配置」（§6 记 ✓） | §6 改「—」（`backend/app/api/marketing.py` 全 GET） | `docs/交接文档.md` §6 |
+| P1-4 通知「已读」 | **已实现**：`POST /api/notifications/{account_id}/read`（confirm 闸门在服务层第一行；真机回执 `{"success":true,"data":{"success":true}}` ⇒ `saved=true` + 落审计） | `docs/contracts/notify.md` §2、`logs/notify_read58/`、`scripts/probe_notify_read.py` |
+| P2-5 `confirm_required` 的 HTTP 码 | 已写进 §5.3（400）；并补两档码名：默认 `confirmation_required`、严格档 `confirm_required`，两者都没登记进 `FAIL_STATUS` ⇒ 都落 400 | `docs/交接文档.md` §5.2 / §5.3 |
+| P2-7 判据复制 13+ 份 | **已收敛**到 `backend/app/services/common.py` 单点（19 个 services 模块），回归锁 `backend/tests/test_confirm_gate_single_point.py`（AST 扫描：services 里不许再有自己的 `def _truthy`） | `docs/交接文档.md` §5.2 |
+| P2-9「42 条无 AI/MCP 面」 | 口径差：按「`app.openapi()` 非 GET 路由 vs `TOOL_ROUTES` 的 path」实测改动前 **40** 条（差 2 条未定位到报告算法，不猜）。本批接上 `items_delist` / `items_relist`，其余 37 条逐条给出不接理由 | `docs/audit/ai_surface58.md` §2 / §3 |
+| O6「无 ad 写工具」 | **事实错误**：`backend/app/agents/tools.py:2045 promotion_write_actions`（只读目录）+ `:2059 promotion_write_execute`（写，required 含 confirm）覆盖 `backend/app/xianyu/ad_write.py:73-122` 的 10 个写动作；`backend/app/api/ad_write.py` 的 docstring「没有挂进 main.py」也已过期（`main.py:75 ROUTE_MODULES` 含 `'ad_write'`，本批已更正） | `docs/audit/ai_surface58.md` §2 |
+| O1 风控写 | 澄清：`backend/app/api/risk.py:49/55` 是**纯本地**（白名单登记理由），`:65` 已有 `risk_clear`（`mcp_server/client.py:413-416`）；给 AI 面加「清冷却」等于给模型一个绕过风控的按钮，收益为负 | 同上 |
+| 问题 11 里的 `risk_clear` | 属实（不带 `confirm`），且已在白名单带理由登记 —— 但**不要拿它当闸门样例** | `backend/tests/test_write_routes_have_gates.py:40` |
+| 问题 12 未复跑基线 | 第 58 批复跑：`TOTAL 65 PASS 65 FAIL 0 CASES 2776 SKIPPED 2`（`XIANYU_APP_DIR=%TEMP%\xywb_b58final`） | `C:\Users\Administrator\.dsh-tmp\run_all_b58final.log` |
+
+**仍未处置（保留为待办，见 `docs/交接文档.md` §10）**：问题 8（写操作无幂等键 ⇒ 重放=二次提交）、问题 10（4 条集合端点缺分页）、问题 13（`services/datacenter.py` / `services/marketing.py` 就地判 `'UNAUTHORIZED'`，未走 `platform_errors.py` 单点）。

@@ -6,8 +6,9 @@
   请求体：``{"confirm": true, "payload": {...业务参数...}}``。
   ``confirm`` 必须是字面量 ``true``；不给就是 400 ``confirm_required``，一次协议调用都不发。
 
-注：本 router 只在这里定义，**没有**挂进 ``backend/app/main.py``（不在本任务写范围，
-挂载由 Lead 统一决定）；测试自己 include_router，见 ``backend/tests/test_ad_write_api.py``。
+注：已挂载 —— ``backend/app/main.py:75`` 的 ``ROUTE_MODULES`` 含 ``'ad_write'``（原
+docstring 说「没有挂进 main.py」已过期，2026-10-15 第 58 批更正）；测试自己 include_router，
+见 ``backend/tests/test_ad_write_api.py``。
 """
 from __future__ import annotations
 

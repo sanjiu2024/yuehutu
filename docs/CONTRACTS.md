@@ -325,6 +325,9 @@ GET    /api/items/{account_id}/stats/progress
       --   `h5api.m.goofish.com` 握手即断（`ConnectError: EOF occurred in violation of protocol`），
       --   直连是通的。连接类失败时 `client._net_problem()` 会把本机代理变量名列出来。
 POST   /api/items/{account_id}/sync            -> 从闲鱼拉取在售商品入库
+       -- 返回体含 `off_shelf_missing`（第 58 批，提交 `4b2efb0`）：平台列表里**没有**的商品会被标成
+       -- `off_shelf`。判据是协议层 `list_items` 的 `complete` —— **只在翻到头时为真**，被 `max_pages`
+       -- 截断时不动（「没出现」可能只是没翻到）。旧行为只 upsert 从不清理，已下架商品会永远停在旧值。
 POST   /api/items/{account_id}/publish         {title,price,description,images,category_id,...}
 POST   /api/items/{account_id}/{item_id}/edit  {price?,original_price?,title?,description?,stock?,images?,ai_enabled?}
       -- `images` 是 URL 数组（主图首位），协议层翻成平台 `imageInfoDOList` 提交（见 §2 items 注释）
@@ -740,6 +743,7 @@ GET /api/trade/{account_id}/addresses
 GET /api/shop/{account_id}/sub-accounts?page=&size=
 GET /api/shop/{account_id}/cs-routing
 GET /api/notifications/{account_id}        -- ⚠ 前缀是 /api/notifications（不是 /api/notify）
+POST /api/notifications/{account_id}/read  {message_id,confirm}   -- 第 58 批：标记单条已读（平台没回执就不写审计）
 POST /api/shop/{account_id}/cs-routing/rule   {distribution_method,repeat_customer,offline_message,specified_account_id?,specified_account_nick?,service_time?,confirm}
 POST /api/shop/{account_id}/cs-groups         {operate_type:create|update,group_id?,group_name,mode,specified_type?,specified_type_name?,type_data?,customer_uids?,confirm}
 POST /api/shop/{account_id}/cs-groups/delete  {group_id,confirm}
@@ -1432,7 +1436,7 @@ POST /api/items/{account_id}/publish/precheck
 3. 无权限（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 等）走 `protocol_error` / HTTP 502，
    **不改 `login_state`、不写 `need_relogin`** —— 无权限 ≠ 掉线。
 
-【AI 侧】`TOOL_SPECS` 148 条 / `MASTER_TOOLS` 147 条（去掉 `master_chat` 防递归），
+【AI 侧】`TOOL_SPECS` 150 条 / `MASTER_TOOLS` 149 条（去掉 `master_chat` 防递归），
 其中 **72 条是写工具**（`required` 必含 `confirm`、MCP method 是写方法（`POST`/`PUT`/`PATCH`/`DELETE`）、
 description 带中文警示）；`mcp_server/client.py::TOOL_ROUTES` 149 条。五方对账（specs / master / routes /
 service targets / handlers）+ 「路由 path·query·body ↔ 真实 FastAPI 端点签名」用
