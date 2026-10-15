@@ -630,6 +630,60 @@ class TradePlatformFailureTest(TradePageTest):
         self.assertIsNone(data['paging']['total_count'])
 
 
+class TradeAddressesPagingTest(TradePageTest):
+    """退货地址：平台一次给全量 ⇒ 服务端内存切页；非法分页一次平台都不打（第 59 批）。"""
+
+    #: 真机容器三种之一：`data` 直接是数组。三个地址。
+    ADDRESSES = {'success': True, 'data': [
+        {'addressId': 1, 'name': '张三', 'phoneNum': '13800000001',
+         'address': '浙江省杭州市西湖区某路 1 号', 'defaultAddr': True},
+        {'addressId': 2, 'name': '李四', 'phoneNum': '13800000002',
+         'address': '江苏省南京市玄武区某路 2 号'},
+        {'addressId': 3, 'name': '王五', 'phoneNum': '13800000003',
+         'address': '广东省深圳市南山区某路 3 号'},
+    ], 'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功']}
+
+    def setUp(self):
+        super().setUp()
+        seed_account()
+        self.fake.payloads[trade_proto.ADDRESS_LIST_API] = self.ADDRESSES
+
+    def test_without_paging_params_returns_the_whole_list(self):
+        data = self.ok_data(f'{BASE}/{ACC}/addresses')
+        self.assertEqual(len(data['addresses']), 3)
+        self.assertEqual(data['items'], data['addresses'])
+        self.assertEqual((data['page'], data['size'], data['pages']), (1, 3, 1))
+        self.assertEqual(data['total'], 3)
+        self.assertEqual(len(self.fake.calls), 1)
+
+    def test_paging_slices_in_memory_without_a_second_platform_call(self):
+        data = self.ok_data(f'{BASE}/{ACC}/addresses?page=2&size=2')
+        self.assertEqual([a['address_id'] for a in data['items']], ['3'])
+        self.assertEqual(data['addresses'], data['items'])
+        self.assertEqual((data['page'], data['size'], data['pages'], data['total']),
+                         (2, 2, 2, 3))
+        self.assertEqual(len(self.fake.calls), 1)
+        self.assertIsNone(self.fake.call_of(trade_proto.ADDRESS_LIST_API)['data'])
+
+    def test_only_one_param_uses_the_default_for_the_other(self):
+        data = self.ok_data(f'{BASE}/{ACC}/addresses?size=2')
+        self.assertEqual([a['address_id'] for a in data['items']], ['1', '2'])
+        self.assertEqual((data['page'], data['size'], data['pages']), (1, 2, 2))
+
+    def test_empty_list_is_zero_size_and_zero_pages(self):
+        self.fake.payloads[trade_proto.ADDRESS_LIST_API] = {'success': True, 'data': []}
+        data = self.ok_data(f'{BASE}/{ACC}/addresses')
+        self.assertEqual(data['addresses'], [])
+        self.assertEqual((data['total'], data['size'], data['pages']), (0, 0, 0))
+
+    def test_illegal_paging_is_400_with_zero_platform_calls(self):
+        for query in ('?page=0', '?size=0', '?size=51', '?page=abc', '?size=x'):
+            with self.subTest(query=query):
+                body = self.fail(f'{BASE}/{ACC}/addresses{query}')
+                self.assertEqual(body['code'], 'invalid_fields')
+                self.assertEqual(self.fake.calls, [])
+
+
 class TradeCredentialTest(TradePageTest):
     """登录态：缺 Cookie / need_relogin 一律 409，且一次平台都不打。"""
 

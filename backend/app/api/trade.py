@@ -67,9 +67,14 @@ def complaints(
 
 
 @router.get('/{account_id}/addresses')
-def addresses(account_id: str, user=Depends(current_user)):
+def addresses(
+    account_id: str,
+    page: str = Query('', description='页码，从 1 开始；不传则一次返回全量'),
+    size: str = Query('', description='每页条数 1~50；不传则一次返回全量'),
+    user=Depends(current_user),
+):
     """退货地址列表。真机 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`，会返回 platform_error 信封。"""
-    return _envelope(trade.addresses(account_id))
+    return _envelope(trade.addresses(account_id, page, size))
 
 
 @router.get('/{account_id}/refunds/{refund_id}/refuse-reasons')

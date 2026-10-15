@@ -580,6 +580,9 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
     'items_relist': {
         'module': 'items', 'fn': 'reshelf', 'confirm': True,
         'method': 'POST', 'path': '/api/items/{account_id}/{item_id}/relist'},
+    'notifications_mark_read': {
+        'module': 'notify', 'fn': 'mark_read', 'confirm': True,
+        'method': 'POST', 'path': '/api/notifications/{account_id}/read'},
 }
 
 WRITE_TOOL_NAMES = list(WRITE_TOOLS)
@@ -600,6 +603,8 @@ _CONFIRM_FALSE_CALLS: Dict[str, Dict[str, Any]] = {
         'account_id': 'acc-x', 'session_id': 'cid-1', 'confirm': False},
     'im_blacklist_remove': {
         'account_id': 'acc-x', 'session_id': 'cid-1', 'confirm': False},
+    'notifications_mark_read': {
+        'account_id': 'acc-x', 'message_id': 'msg-1', 'confirm': False},
     'im_card_send': {
         'account_id': 'acc-x', 'session_id': 'cid-1', 'item_id': 'it-1',
         'confirm': False},

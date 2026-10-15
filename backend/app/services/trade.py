@@ -43,11 +43,18 @@ from . import common
 
 MAX_PAGE_SIZE = 50
 
+#: 只给了 `page` 或只给了 `size` 时，缺的那个用的默认页大小（两个都不给 ⇒ 一次全量）。
+DEFAULT_PAGE_SIZE = 10
+
 
 def _text(value: Any) -> str:
     if value is None:
         return ''
     return value if isinstance(value, str) else str(value)
+
+
+def _blank(value: Any) -> bool:
+    return value is None or _text(value).strip() == ''
 
 
 def _now() -> str:
@@ -112,6 +119,47 @@ def _page(page: Any, size: Any) -> Tuple[Optional[int], Optional[int], Optional[
     if not 1 <= page_size <= MAX_PAGE_SIZE:
         return None, None, common.fail(f'每页条数必须在 1~{MAX_PAGE_SIZE} 之间', 'invalid_fields')
     return page_no, page_size, None
+
+
+def _paging(page: Any, size: Any) -> Tuple[int, Optional[int], Optional[Dict[str, Any]]]:
+    """分页参数 → (page_no, page_size, failure)。
+
+    page_size is None 表示「一个分页参数都没给 ⇒ 一次全量」（向后兼容：老调用方拿到的还是
+    完整列表，一条都不少）。非法值在**这里**就翻成 invalid_fields，调用方必须在打平台之前
+    调它（口径同 _list：非法分页一次平台都不打）。
+    """
+    if _blank(page) and _blank(size):
+        return 1, None, None
+    page_no, page_size, failure = _page(
+        _text(page).strip() or 1, _text(size).strip() or DEFAULT_PAGE_SIZE)
+    if failure:
+        return 0, None, failure
+    return page_no, page_size, None
+
+
+def paginate(items: Any, page_no: int, page_size: Optional[int],
+             total: Any = None) -> Dict[str, Any]:
+    """把平台**一次性给全**的列表切成 {items,total,page,size,pages}（内存分页，不多打平台）。
+
+    - page_size is None ⇒ 全量：page=1、size=len(items)、pages=1（空列表 size=0 / pages=0，不除零）。
+    - items 不是列表（平台没给列表字段）⇒ items=None、pages=None：不猜、不补 0。
+    - total 显式给定时用它（话术列表的平台 total 与数出来的条数可能不同）。
+    """
+    if not isinstance(items, list):
+        return {'items': items, 'total': None, 'page': page_no,
+                'size': page_size or 0, 'pages': None}
+    count = len(items) if total is None else total
+    if page_size is None:
+        return {'items': items, 'total': count, 'page': 1, 'size': count,
+                'pages': 1 if count else 0}
+    start = (page_no - 1) * page_size
+    return {
+        'items': items[start:start + page_size],
+        'total': count,
+        'page': page_no,
+        'size': page_size,
+        'pages': (count + page_size - 1) // page_size,
+    }
 
 
 # --------------------------------------------------------------------------- 调用
@@ -232,8 +280,15 @@ def complaints(account_id: str, page: Any = 1, size: Any = 10) -> Dict[str, Any]
                  trade_proto.COMPLAIN_LIST_VERSION, trade_proto.parse_complaints, page, size)
 
 
-def addresses(account_id: str) -> Dict[str, Any]:
-    """退货地址列表。真机 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED` → 返回 platform_error 信封。"""
+def addresses(account_id: str, page: Any = '', size: Any = '') -> Dict[str, Any]:
+    """退货地址列表。真机 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED` → 返回 platform_error 信封。
+
+    平台**一次性返回全部地址**（`data` 直接是数组，官方调用点不带参数）⇒ 服务端**内存分页**，
+    不为分页多打一次平台。`page`/`size` 都不给时保持向后兼容：一次全量。
+    """
+    page_no, page_size, failure = _paging(page, size)
+    if failure:
+        return failure
     client, failure = _client(account_id)
     if failure:
         return failure
@@ -242,6 +297,14 @@ def addresses(account_id: str) -> Dict[str, Any]:
     if failure:
         return failure
     payload = trade_proto.parse_addresses(raw)
+    paged = paginate(payload.get('addresses'), page_no, page_size)
+    payload['addresses'] = paged['items']
+    # `items` 是分页列表的标准键；`addresses` 是历史键（前端 ReturnAddresses.tsx 用它），同一份数据。
+    payload['items'] = paged['items']
+    payload['total'] = paged['total']
+    payload['page'] = paged['page']
+    payload['size'] = paged['size']
+    payload['pages'] = paged['pages']
     payload['account_id'] = account_id
     payload['api'] = api
     return _stamp(payload)

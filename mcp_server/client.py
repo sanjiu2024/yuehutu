@@ -554,6 +554,12 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'method': 'GET', 'path': '/api/notifications/{account_id}',
         'path_params': ['account_id'], 'query': ['page', 'size'],
     },
+    # ---------------- 通知写（POST；confirm 是必填）----------------
+    'notifications_mark_read': {
+        'method': 'POST', 'path': '/api/notifications/{account_id}/read',
+        'path_params': ['account_id'],
+        'body': ['message_id', 'confirm'],
+    },
     # ---------------- 运费模版（只读）----------------
     'item_templates_list': {
         'method': 'GET', 'path': '/api/item-templates/{account_id}',
@@ -1329,6 +1335,18 @@ CANONICAL_SPECS: Dict[str, Dict[str, Any]] = {
                 'confirm': _prop('boolean', '写操作闸门：必须显式 true 才真的提交到闲鱼'),
             },
             'required': ['account_id', 'item_id', 'confirm'],
+        },
+    },
+    'notifications_mark_read': {
+        'description': '把一条站内通知标记为已读（平台写，必须 confirm=true；先用 notifications_list 拿 message_id）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'message_id': _prop('string', '要标记已读的通知 id，用 notifications_list 查'),
+                'confirm': _prop('boolean', '写操作闸门：必须显式 true 才真的提交到闲鱼'),
+            },
+            'required': ['account_id', 'message_id', 'confirm'],
         },
     },
     'chats_list': {

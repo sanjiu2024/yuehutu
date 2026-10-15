@@ -28,8 +28,9 @@ from loguru import logger
 
 from ..xianyu import quick_reply as proto
 from . import common
-# 账号/凭据检查只有一份，直接复用只读服务里的私有助手（同包内，避免两套判定漂移）
-from .trade import _client
+# 账号/凭据检查只有一份，直接复用只读服务里的私有助手（同包内，避免两套判定漂移）；
+# 分页助手同理（`_paging` 校验 + `paginate` 内存切页，口径与 /api/trade 五个列表端点完全一致）。
+from .trade import _client, _paging, paginate
 
 #: 未确认时返回的业务码（`common.FAIL_STATUS` 里没有它 ⇒ 默认 400）。
 CONFIRM_CODE = common.CONFIRM_CODE
@@ -127,12 +128,19 @@ def _call(account_id: str, api: str, data: Dict[str, Any]) -> Tuple[Any, Optiona
 # --------------------------------------------------------------------------- 只读
 
 
-def list_groups(account_id: str) -> Dict[str, Any]:
+def list_groups(account_id: str, page: Any = '', size: Any = '') -> Dict[str, Any]:
     """话术列表（`mtop.taobao.idlemessage.quickreply.list.get.v1`）。
 
     ``groups`` 认不出列表键时给 ``None``（不是 ``[]``）并加一条中文 warning ——
     「平台没给」与「真的没有话术」是两件事。
+
+    平台**一次性给全部分组**（官方调用点 ``b$({})`` 不带参数）⇒ 服务端**内存分页**：
+    `page`/`size` 都不给时保持向后兼容，一次返回全量。`count` 是**本页**条数，
+    `total` 仍是「平台给了就用平台的、否则数出来的条数」（`total_from_platform` 说明是谁给的）。
     """
+    page_no, page_size, failure = _paging(page, size)
+    if failure is not None:
+        return failure
     api, data = proto.list_request()
     value, failure = _call(account_id, api, data)
     if failure is not None:
@@ -141,15 +149,22 @@ def list_groups(account_id: str) -> Dict[str, Any]:
         return _platform_failure(value, api)
 
     parsed = proto.parse_groups(value)
+    paged = paginate(parsed['groups'], page_no, page_size,
+                     total=parsed['total'] if parsed['total_from_platform'] else None)
     warnings: List[Dict[str, Any]] = []
     if not parsed['found_key']:
         warnings.append({'code': 'list_key_missing', 'message': WARN_LIST_KEY_MISSING})
     return _stamp({
         'account_id': account_id,
         'api': api,
-        'groups': parsed['groups'],
-        'count': len(parsed['groups']) if isinstance(parsed['groups'], list) else None,
-        'total': parsed['total'],
+        'groups': paged['items'],
+        # `items` 是分页列表的标准键；`groups` 是历史键（前端话术页用它），同一份数据。
+        'items': paged['items'],
+        'count': len(paged['items']) if isinstance(paged['items'], list) else None,
+        'total': paged['total'],
+        'page': paged['page'],
+        'size': paged['size'],
+        'pages': paged['pages'],
         'total_from_platform': parsed['total_from_platform'],
         'warnings': warnings,
     })

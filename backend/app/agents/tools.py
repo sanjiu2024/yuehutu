@@ -1205,6 +1205,26 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---------------- 通知写（会真的改平台数据；required 必含 confirm） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'notifications_mark_read',
+            'description': '把**一条**站内通知标记为已读（真实写平台；只影响这一条，不改通知内容、不能撤销）。'
+                           '先用 notifications_list 拿到 message_id。'
+                           + _WRITE_HINT + 'account_id 与 message_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'message_id': {'type': 'string', 'description': '要标记已读的通知 id（先用 notifications_list 查）'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'message_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 运费模版（只读） ----------------
     {
         'type': 'function',
@@ -3332,6 +3352,7 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'datacenter_cs_list': ['datacenter', 'cs_list'],
     # ---- 通知 ----
     'notifications_list': ['notify', 'notifications'],
+    'notifications_mark_read': ['notify', 'mark_read'],
     # ---- 运费模版 ----
     'item_templates_list': ['item_templates', 'list_templates'],
     'item_templates_get': ['item_templates', 'template_detail'],
@@ -3632,6 +3653,7 @@ _HANDLERS = {
     'datacenter_card': lambda a: _dispatch_service('datacenter_card', a),
     'datacenter_cs_list': lambda a: _dispatch_service('datacenter_cs_list', a),
     'notifications_list': lambda a: _dispatch_service('notifications_list', a),
+    'notifications_mark_read': lambda a: _dispatch_service('notifications_mark_read', a),
     'item_templates_list': lambda a: _dispatch_service('item_templates_list', a),
     'item_templates_get': lambda a: _dispatch_service('item_templates_get', a),
     'item_templates_create': lambda a: _dispatch_service('item_templates_create', a),

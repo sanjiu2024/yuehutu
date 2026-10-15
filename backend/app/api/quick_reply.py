@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Body, Depends, Query
 from fastapi.responses import JSONResponse
 
 from ..services import common, quick_reply
@@ -30,9 +30,17 @@ def _envelope(result: Any):
 
 
 @router.get('/{account_id}/groups')
-def list_groups(account_id: str, user: Any = Depends(current_user)):
-    """话术列表（只读）。平台没给 `groups` 键时是 `null` + warning，不是 `[]`。"""
-    return _envelope(quick_reply.list_groups(account_id))
+def list_groups(
+    account_id: str,
+    page: str = Query('', description='页码，从 1 开始；不传则一次返回全量'),
+    size: str = Query('', description='每页条数 1~50；不传则一次返回全量'),
+    user: Any = Depends(current_user),
+):
+    """话术列表（只读）。平台没给 `groups` 键时是 `null` + warning，不是 `[]`。
+
+    平台一次给全部分组，分页在服务端内存里切（口径同 `/api/trade` 的五个列表端点）。
+    """
+    return _envelope(quick_reply.list_groups(account_id, page, size))
 
 
 @router.post('/{account_id}/groups')

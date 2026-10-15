@@ -516,8 +516,8 @@ class MasterChatTest(unittest.TestCase):
             'datacenter_commodity',
             'datacenter_card',
             'datacenter_cs_list',
-            # ---- 通知 ----
-            'notifications_list',
+            # ---- 通知（1 读 + 1 写）----
+            'notifications_list', 'notifications_mark_read',
             # ---- 运费模版 ----
             'item_templates_list', 'item_templates_get',
             # ---- 运费模版写（会真的改平台数据，required 必含 confirm）----
@@ -626,6 +626,7 @@ class MasterChatTest(unittest.TestCase):
             'disputes_send_text', 'disputes_send_image', 'disputes_urge', 'disputes_mark_read',
             'items_set_fans_price',
             'trade_compensate_refuse',
+            'notifications_mark_read',
             'im_set_reception',
             'im_clear_unread',
             'trade_add_memo',

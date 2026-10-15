@@ -492,6 +492,49 @@ class QuickReplyReadTest(QuickReplyPageTest):
         self.assertEqual(self.client.get(f'{BASE}/{ACC}/groups').status_code, 401)
 
 
+class QuickReplyGroupsPagingTest(QuickReplyPageTest):
+    """话术列表：平台一次给全部 ⇒ 服务端内存切页；非法分页零平台调用（第 59 批）。"""
+
+    def groups(self, query: str = '') -> Dict[str, Any]:
+        resp = self.client.get(f'{BASE}/{ACC}/groups{query}', headers=self.headers)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        return resp.json()['data']
+
+    def test_without_paging_params_returns_the_whole_list(self):
+        data = self.groups()
+        self.assertEqual(len(data['groups']), 2)
+        self.assertEqual(data['items'], data['groups'])
+        self.assertEqual((data['page'], data['size'], data['pages']), (1, 2, 1))
+        self.assertEqual((data['count'], data['total']), (2, 2))
+
+    def test_paging_slices_in_memory_without_a_second_platform_call(self):
+        data = self.groups('?page=2&size=1')
+        self.assertEqual([g['group_id'] for g in data['groups']], ['9002'])
+        self.assertEqual(data['groups'], data['items'])
+        self.assertEqual((data['page'], data['size'], data['pages']), (2, 1, 2))
+        self.assertEqual(data['count'], 1)
+        self.assertEqual(data['total'], 2)
+        self.assertTrue(data['total_from_platform'])
+        self.assertEqual(len(self.fake.calls), 1)
+
+    def test_illegal_paging_is_400_with_zero_platform_calls(self):
+        for query in ('?page=0', '?size=51', '?page=abc'):
+            with self.subTest(query=query):
+                resp = self.client.get(f'{BASE}/{ACC}/groups{query}', headers=self.headers)
+                self.assertEqual(resp.status_code, 400, resp.text)
+                self.assertEqual(resp.json()['code'], 'invalid_fields')
+                self.assertEqual(self.fake.calls, [])
+
+    def test_missing_list_key_stays_null_even_with_paging(self):
+        self.fake.payloads[proto.LIST_API] = LIST_MISSING
+        data = self.groups('?page=1&size=10')
+        self.assertIsNone(data['groups'])
+        self.assertIsNone(data['items'])
+        self.assertIsNone(data['count'])
+        self.assertIsNone(data['total'])
+        self.assertIsNone(data['pages'])
+
+
 class QuickReplyConfirmGateTest(QuickReplyPageTest):
     """写路径第一道闸门：没点头就一个平台请求都不许发。"""
 
