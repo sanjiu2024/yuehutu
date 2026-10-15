@@ -1493,7 +1493,7 @@ def sync_im_conversations(
     - 消息按平台 msg id 存进 `meta.external_id`，插入前先查一次，
       出站回显（`is_self`）与入站来信都查，避免同一条被记两遍。
 
-    返回 `{'account_id','scanned','conversations','conversations_new','messages',
+    返回 `{'account_id','scanned','conversations_new','messages',
     'messages_skipped','skipped','nicknames_fixed'}`，单个会话拉消息失败时把原因收进
     `warnings` 而不是整个失败（会话已经入库了，如实报出来比丢掉更有用）。失败时返回统一信封。
 
