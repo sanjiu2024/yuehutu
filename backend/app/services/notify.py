@@ -1,4 +1,4 @@
-"""通知中心只读服务（频道树 + 未读数）。
+"""通知中心服务：读（频道树 + 未读数）+ 写（标记一条通知已读）。
 
 真机证据（2026-10-10，`logs/seller_discover/notify_probe.json` /
 `notify_capture.json` / `notify_page2.txt`）：
@@ -12,7 +12,21 @@
   18 秒抓包期间没有任何列表接口被调用，条目由 IM/ACCS 长连接推送。
   所以这里如实给 `items: []` + 中文 warning，绝不造条目。
 
-只读：`notify.WRITE_APIS`（`...pc.notifys.read` 标记已读）故意不实现。
+**写**：标记已读 `...pc.notifys.read`（`notify.WRITE_APIS`）已实现 —— 路由是
+`POST /api/notifications/{account_id}/read`，**未确认（confirm 不是字面量 true）一个平台请求都不发**。
+
+写路径的三条硬口径（与 `services/im_actions.py` 的写族同款）：
+1. 闸门在函数**第一行**，失败 400 `confirmation_required`；
+2. 平台没回执（业务体里没有 `success` 字段）⇒ `saved=False` + warning，
+   **不记审计、不声称已读** —— 真机抓包只落了请求没落响应，回执形状未知，
+   宁可说「可能没生效」（`WARN_MARK_READ_NO_ECHO`）；
+3. 平台拒绝（信封失败 / 业务 `code` 不是 success / `success=false`）⇒ 502
+   `protocol_error` + 平台原话，**不改 `login_state`**（无权限 ≠ 掉线）。
+
+真机证据：标记已读的请求原文在 `logs/seller_discover/notify_capture2.json:93-95`
+（`data={"messageId":"4338118620042.PNM"}`，版本 1.0）——**一次只标记一条**；
+官方页面的「全部标记已读」是逐条 fan-out，我们手里没有能列出条目的 REST 接口
+（条目来自 IM 长连接），所以这里只做单条，**不编造一个「全部」接口**。
 """
 from __future__ import annotations
 
@@ -33,9 +47,29 @@ WARN_NO_LIST_API = (
 WARN_CHANNELS_MISSING = '平台没有返回通知频道（响应里没有 notifyInfoList）'
 WARN_UNREAD_MISSING = '平台没有返回未读数（响应里没有 total），不是 0'
 
+#: 未确认的失败 code：与写族同一口径（`common.FAIL_STATUS` 没有这个键 ⇒ `common.respond` 兜底 400）。
+CONFIRM_CODE = common.CONFIRM_CODE
+
+#: 平台没给回执（业务体里没有 `success` 字段）时的 warning —— **绝不谎报已读**。
+#: 口径同 `services/im_actions.py::WARN_RECEPTION_NO_ECHO`：没回执就不声称改动生效。
+WARN_MARK_READ_NO_ECHO = {
+    'code': 'notify_mark_read_no_echo',
+    'message': '平台没有明确回执（业务体里没有 success 字段），所以这条通知**可能没有被标记已读**。'
+               '刷新通知中心确认 —— 别把它当成已经读过了。',
+}
+
 
 def _text(value: Any) -> str:
     return '' if value is None else str(value)
+
+
+#: 判据单点：services/common.confirm_truthy（宽松档，全仓唯一一份实现）。
+_truthy = common.confirm_truthy
+
+
+def _confirm_gate(action: str, confirm: Any) -> Optional[Dict[str, Any]]:
+    """写路径第一道闸门：**只判确认**，不碰账号、不碰平台。"""
+    return common.confirm_required(action, confirm)
 
 
 def _number_or_none(value: Any) -> Optional[float]:
@@ -194,6 +228,97 @@ def notifications(account_id: str, page: Any = '', size: Any = '') -> Dict[str, 
         'unread': {'total': unread_total},
         'items': [],
         'warnings': warnings,
+        'fetched_at': _stamp(),
+        'source': 'platform',
+    }
+
+
+# --------------------------------------------------------------------------- 写
+
+
+def _write_call(client: Any, api: str, data: Dict[str, Any],
+                version: str) -> Tuple[Any, Optional[Dict[str, Any]]]:
+    """发一次写接口 mtop，返回 `(客户端返回值, 失败信封)`。
+
+    与只读的 `_call` 的区别：这里要拿**整个客户端信封**（判回执要它），所以不经过
+    协议层的 `_data` 抽取；异常 / 方法缺失统一走 `common.call_method` +
+    `common.call_failed`（登录态过期在那里已经被记成 `need_relogin`）。
+    """
+    status, value = common.call_method(client, ('mtop',), api, data, v=version)
+    if status == common.CALL_OK:
+        return value, None
+    failure = common.call_failed(status, value) or common.fail('协议层调用失败', 'protocol_error')
+    failure.setdefault('platform_errors', {
+        'api': api,
+        'explain': str(value) or '协议层未提供该方法',
+    })
+    return None, failure
+
+
+def _platform_failure(value: Any, api: str, fallback: str) -> Dict[str, Any]:
+    """平台回了信封但这次写不算成功 ⇒ 502，把平台原文透出去。
+
+    **不判登录态**：无权限 / 参数不对都不等于掉线，别让用户白扫一次码。
+    """
+    reason = notify_mod.envelope_error(value) or fallback
+    return common.fail(
+        f'平台接口失败: {reason}',
+        'protocol_error',
+        platform_errors={
+            'api': api,
+            'message': notify_mod.envelope_message(value),
+            'explain': reason,
+        },
+    )
+
+
+def mark_read(account_id: str, message_id: Any, confirm: Any = None) -> Dict[str, Any]:
+    """把**一条**通知标记为已读（`mtop.taobao.idlemessage.pc.notifys.read`，版本 1.0）。
+
+    顺序与 `services/im_actions.py::_write` 一致：**确认 → 字段校验 → 建客户端 → 发**。
+    未确认 ⇒ 400 `confirmation_required`；`message_id` 为空 ⇒ 400 `invalid_fields` ——
+    两种情况**一个平台请求都不发**。
+
+    `saved` 只在平台**明确**回了 `success` 字段时才是 `True`；平台没这个字段 ⇒
+    `saved=False` + `WARN_MARK_READ_NO_ECHO`，并且**不记审计** —— 不替平台声称已读。
+    平台拒绝（信封失败 / 业务 code 不是 success / success=false）⇒ 502 + 平台原话。
+    """
+    problem = _confirm_gate('标记通知已读', confirm)
+    if problem is not None:
+        return problem
+    try:
+        api, data, version = notify_mod.mark_read_request(message_id, confirm=True)
+    except ValueError as exc:
+        return common.fail(str(exc), 'invalid_fields')
+
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+    value, failure = _write_call(client, api, data, version)
+    if failure is not None:
+        return failure
+    if notify_mod.envelope_error(value):
+        return _platform_failure(value, api, '平台没有接受这次标记已读')
+
+    parsed = notify_mod.parse_mark_read(value)
+    if not parsed['saved']:
+        return _platform_failure(value, api, parsed['platform_message'] or '平台没有接受这次标记已读')
+
+    # 「平台没给回执」= 不知道有没有生效：不记审计、saved 说 false。
+    no_echo = parsed['platform_success'] is None
+    if not no_echo:
+        common.log_operation(account_id, 'notify_mark_read', data['messageId'], True,
+                             {'api': api, 'message_id': data['messageId']})
+    return {
+        'account_id': account_id,
+        'action': 'notify_mark_read',
+        'api': api,
+        'message_id': data['messageId'],
+        'saved': not no_echo,
+        'submitted': dict(data),
+        'platform_success': parsed['platform_success'],
+        'platform_message': parsed['platform_message'],
+        'warnings': [dict(WARN_MARK_READ_NO_ECHO)] if no_echo else [],
         'fetched_at': _stamp(),
         'source': 'platform',
     }
