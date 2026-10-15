@@ -629,6 +629,23 @@ class MasterChatTest(unittest.TestCase):
             'shop_pc_service_status',
             'datacenter_shop_stats',
             'datacenter_item_status_statistics',
+            'chats_ai_draft',
+            'chats_classify',
+            # 第六十三批（task-22）：投放域活动奖励页 4 条只读
+            'promotion_ad_coupons',
+            'promotion_ad_coupons_statistic',
+            'promotion_ad_account_card_v2',
+            'promotion_ad_activity_detail',
+            # 第六十三批：工作台补 4 条（订单同步 / 会话同步 / 清未读 / 刷资料）
+            'orders_sync',
+            'chats_sync',
+            'chats_mark_read',
+            'accounts_refresh_profile',
+            'items_read_search',
+            'items_read_categories',
+            'items_read_operate_report',
+            'items_read_search_terms',
+            'items_read_preget',
             'master_chat',
         ]
         self.assertEqual(tools.TOOL_NAMES, expected)

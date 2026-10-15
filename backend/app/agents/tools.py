@@ -3870,6 +3870,244 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'chats_ai_draft',
+            'description': '给一个会话生成一条 AI 建议回复（**只生成、不发送、不落库**）。卖家看过再决定要不要发；conversation_id 用 chats_list 查，message_id 不给就用最后一条买家消息。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'conversation_id': {'type': 'integer', 'description': '本地会话 id（chats_list 查）'},
+                    'message_id': {'type': 'integer', 'description': '要回应的消息 id，不给就用最后一条买家消息'},
+                },
+                'required': ['conversation_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'chats_classify',
+            'description': '判断一段买家消息的意图并给出候选快捷回复（本地规则，不调平台）。text 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {'text': {'type': 'string', 'description': '买家原话'}},
+                'required': ['text'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    # ---------------- 第六十三批：投放域活动奖励页 4 条只读（task-22） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_ad_coupons',
+            'description': '活动奖励页的券列表（红包/礼金）。不给参数就用官方首次加载的筛选初值（pageNum=1/pageSize=10/couponType=0/source=BONUS），不是失败；coupon_type 0=全部 2=礼金 3=红包 4=新人券 5=代理商礼金，source BONUS=生效中 COUPON=未生效 HISTORY=已失效。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'page_num': {'type': 'integer', 'description': '页码（官方初值 1）'},
+                    'page_size': {'type': 'integer', 'description': '每页条数（官方初值 10）'},
+                    'coupon_type': {'type': 'integer', 'description': '券类型：0 全部 / 2 礼金 / 3 红包 / 4 新人券 / 5 代理商礼金'},
+                    'source': {'type': 'string', 'description': '来源分组：BONUS 生效中 / COUPON 未生效 / HISTORY 已失效'},
+                    'payload': {'type': 'object', 'description': '整包筛选对象，原样透传给平台（与上面的参数合并，这里优先）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_ad_coupons_statistic',
+            'description': '活动奖励页的券统计（生效中/即将过期/特殊券金额，平台回字符串）。无参数。',
+            'parameters': {
+                'type': 'object',
+                'properties': {'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'}},
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_ad_account_card_v2',
+            'description': '投放账户卡片 V2（活动奖励页的账户卡）。载荷形状官方在别的 chunk 里、我们没取证，所以整包原样透传，不给就发空对象。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'payload': {'type': 'object', 'description': '查询对象，原样透传（官方载荷未取证，不猜键）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'promotion_ad_activity_detail',
+            'description': '活动奖励详情渲染。无参数；不在活动名单里平台会回业务错误（如实透出，不是参数错）。',
+            'parameters': {
+                'type': 'object',
+                'properties': {'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'}},
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    # ---------------- 第六十三批：工作台补 4 条（订单同步 / 会话同步 / 清未读 / 刷资料） ----------------
+    # 都是**只读同步或纯本地**动作，不带确认闸门（登记在 test_write_routes_have_gates.py 的
+    # GATE_FREE_ALLOWLIST 里）；orders_sync / chats_sync 会把平台数据回写本地库，但不改平台。
+    {
+        'type': 'function',
+        'function': {
+            'name': 'orders_sync',
+            'description': '把闲鱼上的订单同步进本地库（用户说「同步一下订单」时用）。只读同步：平台侧不改任何东西；account_id 必填，缺了会报缺少账号。',
+            'parameters': {
+                'type': 'object',
+                'properties': {'account_id': {'type': 'string', 'description': '要同步的账号 id'}},
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'chats_sync',
+            'description': '把闲鱼上的历史会话与消息拉回本地（会话页「同步会话」）。只读同步，不改平台；account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '要同步的账号 id'},
+                    'limit': {'type': 'integer', 'description': '最多拉多少个会话（默认 50，上限 200）'},
+                    'message_limit': {'type': 'integer', 'description': '每个会话最多拉多少条消息（默认 20，上限 100）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'chats_mark_read',
+            'description': '把一个会话的未读清零（纯本地计数，不发给平台）。conversation_id 用 chats_list 查。',
+            'parameters': {
+                'type': 'object',
+                'properties': {'conversation_id': {'type': 'integer', 'description': '本地会话 id（chats_list 查）'}},
+                'required': ['conversation_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'accounts_refresh_profile',
+            'description': '重新拉一次这个账号的昵称与头像并落库（前端「刷新资料」按钮）。拉失败也只回 refreshed=false，不影响账号可用；account_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {'account_id': {'type': 'string', 'description': '要刷新的账号 id'}},
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    # ---------------- 第六十三批：商品读 5 条（task-23，全部只读平台接口） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'items_read_search',
+            'description': '商品列表（服务端搜索 / 分页 / 排序，平台只读接口）。翻页与排序都由平台做；返回 rows / total / page / size，认不出列表键时 rows 是空数组。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'keyword': {'type': 'string', 'description': '搜索关键词（塞进 searchRequest，平台键名未取证）'},
+                    'page': {'type': 'integer', 'description': '页码（默认 1）'},
+                    'size': {'type': 'integer', 'description': '每页条数（官方只给 10 / 20 / 50 三档）'},
+                    'item_status': {'type': 'string', 'description': '商品状态码，默认 0,-9（在售 + 已下架）'},
+                    'biz_type': {'type': 'string', 'description': '官方写死 commonPro'},
+                    'order_field': {'type': 'string', 'description': '排序字段'},
+                    'order_type': {'type': 'string', 'description': 'asc 或 desc（给了方向就必须同时给字段）'},
+                    'search_request': {'type': 'string', 'description': '原始 searchRequest JSON 字符串，给了就原样发（排查用）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'items_read_categories',
+            'description': '商品类目查询（平台只读接口）。入参透传：params 是 JSON 对象字符串，官方调用点没取证所以不猜字段名；平台回什么就原样透出（data 是业务体原文）。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'params': {'type': 'string', 'description': '透传入参，JSON 对象字符串'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'items_read_operate_report',
+            'description': '商品操作报告（平台只读接口）。入参透传，理由同 items_read_categories；平台说缺少 itemId 时是协议层失败（502），如实透出。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'params': {'type': 'string', 'description': '透传入参，JSON 对象字符串（实测至少要 itemId）'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'items_read_search_terms',
+            'description': '商品筛选维度字典（退货 / 发货时效 / 服务保障，平台只读接口，无参）。',
+            'parameters': {
+                'type': 'object',
+                'properties': {'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'}},
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'items_read_preget',
+            'description': '发布 / 编辑商品前的预请求（平台只读接口）：要不要上传首件、行业 id。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'item_id': {'type': 'string', 'description': '商品 id（新建发布时为空）'},
+                    'source_id': {'type': 'string', 'description': '来源 id（发布场景）'},
+                    'publish_scene': {'type': 'string', 'description': '默认 firstHandPublish'},
+                },
+                'required': ['account_id'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 主管 AI（只给 MCP 侧） ----------------
     {
         'type': 'function',
@@ -4466,6 +4704,10 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'promotion_ad_messages_unread': ['ad', 'message_unread'],
     'promotion_ad_message_detail': ['ad', 'message_detail'],
     'promotion_ad_message_read': ['ad', 'message_read'],
+    'promotion_ad_coupons': ['ad', 'coupon_info'],
+    'promotion_ad_coupons_statistic': ['ad', 'coupon_statistic'],
+    'promotion_ad_account_card_v2': ['ad', 'account_card_v2'],
+    'promotion_ad_activity_detail': ['ad', 'activity_detail'],
     'trade_sku_selector': ['trade_write', 'sku_selector'],
     'trade_backfill_report': ['trade_write', 'backfill_report'],
     'trade_smart_form_query': ['trade_write', 'smart_form_query'],
@@ -4478,11 +4720,23 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'orders_logistics': ['orders', 'get_logistics'],
     'risk_events': ['risk_service', 'events'],
     'items_operation_logs': ['items', 'list_operation_logs'],
+    'items_read_search': ['items_read', 'search_items'],
+    'items_read_categories': ['items_read', 'category_query'],
+    'items_read_operate_report': ['items_read', 'operate_report'],
+    'items_read_search_terms': ['items_read', 'search_terms'],
+    'items_read_preget': ['items_read', 'preget'],
+    'chats_ai_draft': ['chats', 'ai_draft'],
+    'chats_classify': ['cs', 'suggest'],
+    'orders_sync': ['orders', 'sync_orders'],
+    'chats_sync': ['chats', 'sync_im_conversations'],
+    'chats_mark_read': ['chats', 'mark_read'],
+    'accounts_refresh_profile': ['accounts', 'refresh_profile'],
 }
 
 # 有额外位置参数（不是直接透传 args 的）在这里补上固定值
 _SERVICE_FIXED_ARGS: Dict[str, Dict[str, Any]] = {
     'finance_income': {'kind': 'income'},
+    'accounts_refresh_profile': {'force': True},
     'finance_expense': {'kind': 'expense'},
 }
 
@@ -4767,6 +5021,10 @@ _HANDLERS = {
     'promotion_ad_messages_unread': lambda a: _dispatch_service('promotion_ad_messages_unread', a),
     'promotion_ad_message_detail': lambda a: _dispatch_service('promotion_ad_message_detail', a),
     'promotion_ad_message_read': lambda a: _dispatch_service('promotion_ad_message_read', a),
+    'promotion_ad_coupons': lambda a: _dispatch_service('promotion_ad_coupons', a),
+    'promotion_ad_coupons_statistic': lambda a: _dispatch_service('promotion_ad_coupons_statistic', a),
+    'promotion_ad_account_card_v2': lambda a: _dispatch_service('promotion_ad_account_card_v2', a),
+    'promotion_ad_activity_detail': lambda a: _dispatch_service('promotion_ad_activity_detail', a),
     'trade_sku_selector': lambda a: _dispatch_service('trade_sku_selector', a),
     'trade_backfill_report': lambda a: _dispatch_service('trade_backfill_report', a),
     'trade_smart_form_query': lambda a: _dispatch_service('trade_smart_form_query', a),
@@ -4779,6 +5037,17 @@ _HANDLERS = {
     'orders_logistics': lambda a: _dispatch_service('orders_logistics', a),
     'risk_events': lambda a: _dispatch_service('risk_events', a),
     'items_operation_logs': lambda a: _dispatch_service('items_operation_logs', a),
+    'items_read_search': lambda a: _dispatch_service('items_read_search', a),
+    'items_read_categories': lambda a: _dispatch_service('items_read_categories', a),
+    'items_read_operate_report': lambda a: _dispatch_service('items_read_operate_report', a),
+    'items_read_search_terms': lambda a: _dispatch_service('items_read_search_terms', a),
+    'items_read_preget': lambda a: _dispatch_service('items_read_preget', a),
+    'chats_ai_draft': lambda a: _dispatch_service('chats_ai_draft', a),
+    'chats_classify': lambda a: _dispatch_service('chats_classify', a),
+    'orders_sync': lambda a: _dispatch_service('orders_sync', a),
+    'chats_sync': lambda a: _dispatch_service('chats_sync', a),
+    'chats_mark_read': lambda a: _dispatch_service('chats_mark_read', a),
+    'accounts_refresh_profile': lambda a: _dispatch_service('accounts_refresh_profile', a),
     'settings_get': _settings_get,
     'agents_prompts_list': _agents_prompts_list,
     'agents_prompt_create': _agents_prompt_create,

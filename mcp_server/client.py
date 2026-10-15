@@ -582,6 +582,51 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'method': 'GET', 'path': '/api/orders/{order_id}/logistics',
         'path_params': ['order_id'],
     },
+    'chats_ai_draft': {
+        'method': 'POST', 'path': '/api/chats/{conversation_id}/ai-draft',
+        'path_params': ['conversation_id'],
+        'body': ['message_id'],
+    },
+    'chats_classify': {
+        'method': 'POST', 'path': '/api/chats/classify',
+        'body': ['text'],
+    },
+    # ---------------- 第六十三批：投放域活动奖励页 4 条只读（task-22） ----------------
+    'promotion_ad_coupons': {
+        'method': 'GET', 'path': '/api/promotion/ad/{account_id}/coupons',
+        'path_params': ['account_id'],
+        'query': ['page_num', 'page_size', 'coupon_type', 'source', 'payload'],
+    },
+    'promotion_ad_coupons_statistic': {
+        'method': 'GET', 'path': '/api/promotion/ad/{account_id}/coupons/statistic',
+        'path_params': ['account_id'],
+    },
+    'promotion_ad_account_card_v2': {
+        'method': 'GET', 'path': '/api/promotion/ad/{account_id}/account-card-v2',
+        'path_params': ['account_id'],
+        'query': ['payload'],
+    },
+    'promotion_ad_activity_detail': {
+        'method': 'GET', 'path': '/api/promotion/ad/{account_id}/activity-detail',
+        'path_params': ['account_id'],
+    },
+    # ---------------- 第六十三批：工作台补 4 条（只读同步 / 纯本地，无 confirm） ----------------
+    'orders_sync': {
+        'method': 'POST', 'path': '/api/orders/sync',
+        'body': ['account_id'],
+    },
+    'chats_sync': {
+        'method': 'POST', 'path': '/api/chats/sync',
+        'body': ['account_id', 'limit', 'message_limit'],
+    },
+    'chats_mark_read': {
+        'method': 'POST', 'path': '/api/chats/{conversation_id}/read',
+        'path_params': ['conversation_id'],
+    },
+    'accounts_refresh_profile': {
+        'method': 'POST', 'path': '/api/accounts/{account_id}/refresh-profile',
+        'path_params': ['account_id'],
+    },
     'risk_events': {
         'method': 'GET', 'path': '/api/risk/events',
         'query': ['limit', 'account_id'],
@@ -589,6 +634,27 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
     'items_operation_logs': {
         'method': 'GET', 'path': '/api/items/{account_id}/operation-logs',
         'path_params': ['account_id'], 'query': ['limit'],
+    },
+    'items_read_search': {
+        'method': 'GET', 'path': '/api/items-read/{account_id}/search',
+        'path_params': ['account_id'],
+        'query': ['keyword', 'page', 'size', 'item_status', 'biz_type', 'order_field', 'order_type', 'search_request'],
+    },
+    'items_read_categories': {
+        'method': 'GET', 'path': '/api/items-read/{account_id}/categories',
+        'path_params': ['account_id'], 'query': ['params'],
+    },
+    'items_read_operate_report': {
+        'method': 'GET', 'path': '/api/items-read/{account_id}/operate-report',
+        'path_params': ['account_id'], 'query': ['params'],
+    },
+    'items_read_search_terms': {
+        'method': 'GET', 'path': '/api/items-read/{account_id}/search-terms',
+        'path_params': ['account_id'],
+    },
+    'items_read_preget': {
+        'method': 'GET', 'path': '/api/items-read/{account_id}/preget',
+        'path_params': ['account_id'], 'query': ['item_id', 'source_id', 'publish_scene'],
     },
     'settings_get': {'method': 'GET', 'path': '/api/settings'},
     'agents_prompts_list': {
@@ -2050,6 +2116,103 @@ CANONICAL_SPECS: Dict[str, Dict[str, Any]] = {
             'required': ['order_id'],
         },
     },
+    'chats_ai_draft': {
+        'description': '给一个会话生成一条 AI 建议回复（只生成、不发送、不落库）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'conversation_id': _prop('integer', '本地会话 id，用 chats_list 查'),
+                'message_id': _prop('integer', '要回应的消息 id，不给就用最后一条买家消息'),
+            },
+            'required': ['conversation_id'],
+        },
+    },
+    'chats_classify': {
+        'description': '判断一段买家消息的意图并给出候选快捷回复（本地规则）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {'text': _prop('string', '买家原话')},
+            'required': ['text'],
+        },
+    },
+    'promotion_ad_coupons': {
+        'description': '活动奖励页的券列表（红包/礼金）。不给参数 = 官方首次加载的筛选初值，不是失败。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'page_num': _prop('string', '页码（官方初值 1）'),
+                'page_size': _prop('string', '每页条数（官方初值 10）'),
+                'coupon_type': _prop('string', '券类型：0 全部 / 2 礼金 / 3 红包 / 4 新人券 / 5 代理商礼金'),
+                'source': _prop('string', '来源分组：BONUS 生效中 / COUPON 未生效 / HISTORY 已失效'),
+                'payload': _prop('object', '整包筛选对象，原样透传（与上面的参数合并，这里优先）'),
+            },
+            'required': ['account_id'],
+        },
+    },
+    'promotion_ad_coupons_statistic': {
+        'description': '活动奖励页的券统计（金额是平台给的字符串）。无参数。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {'account_id': _ACCOUNT_ID},
+            'required': ['account_id'],
+        },
+    },
+    'promotion_ad_account_card_v2': {
+        'description': '投放账户卡片 V2。载荷形状官方在别的 chunk 里、未取证，整包原样透传，不给就发空对象。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'payload': _prop('object', '查询对象，原样透传（不猜键）'),
+            },
+            'required': ['account_id'],
+        },
+    },
+    'promotion_ad_activity_detail': {
+        'description': '活动奖励详情渲染。不在活动名单里平台会回业务错误（如实透出）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {'account_id': _ACCOUNT_ID},
+            'required': ['account_id'],
+        },
+    },
+    'orders_sync': {
+        'description': '把闲鱼上的订单同步进本地库（只读同步，平台侧不改）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {'account_id': _ACCOUNT_ID},
+            'required': ['account_id'],
+        },
+    },
+    'chats_sync': {
+        'description': '把闲鱼上的历史会话与消息拉回本地（只读同步）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'limit': _prop('integer', '最多拉多少个会话（默认 50，上限 200）'),
+                'message_limit': _prop('integer', '每个会话最多拉多少条消息（默认 20，上限 100）'),
+            },
+            'required': ['account_id'],
+        },
+    },
+    'chats_mark_read': {
+        'description': '把一个会话的未读清零（纯本地计数）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {'conversation_id': _prop('integer', '本地会话 id，用 chats_list 查')},
+            'required': ['conversation_id'],
+        },
+    },
+    'accounts_refresh_profile': {
+        'description': '重新拉一次账号的昵称与头像并落库。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {'account_id': _ACCOUNT_ID},
+            'required': ['account_id'],
+        },
+    },
     'risk_events': {
         'description': '看风控事件流水（哪个账号、什么时候、什么类型）。只读本地库。',
         'input_schema': {
@@ -2067,6 +2230,67 @@ CANONICAL_SPECS: Dict[str, Dict[str, Any]] = {
             'properties': {
                 'account_id': _ACCOUNT_ID,
                 'limit': _prop('integer', '最多返回多少条（1-1000，默认 100）'),
+            },
+            'required': ['account_id'],
+        },
+    },
+    'items_read_search': {
+        'description': '商品列表（服务端搜索 / 分页 / 排序，平台只读接口）。翻页与排序由平台做。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'keyword': _prop('string', '搜索关键词（平台键名未取证）'),
+                'page': _prop('integer', '页码（默认 1）'),
+                'size': _prop('integer', '每页条数（官方只给 10 / 20 / 50 三档）'),
+                'item_status': _prop('string', '商品状态码，默认 0,-9'),
+                'biz_type': _prop('string', '官方写死 commonPro'),
+                'order_field': _prop('string', '排序字段'),
+                'order_type': _prop('string', 'asc 或 desc'),
+                'search_request': _prop('string', '原始 searchRequest JSON 字符串（排查用）'),
+            },
+            'required': ['account_id'],
+        },
+    },
+    'items_read_categories': {
+        'description': '商品类目查询（平台只读接口）。入参透传，不猜字段名。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'params': _prop('string', '透传入参，JSON 对象字符串'),
+            },
+            'required': ['account_id'],
+        },
+    },
+    'items_read_operate_report': {
+        'description': '商品操作报告（平台只读接口）。入参透传，实测至少要 itemId。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'params': _prop('string', '透传入参，JSON 对象字符串'),
+            },
+            'required': ['account_id'],
+        },
+    },
+    'items_read_search_terms': {
+        'description': '商品筛选维度字典（退货 / 发货时效 / 服务保障，无参）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {'account_id': _ACCOUNT_ID},
+            'required': ['account_id'],
+        },
+    },
+    'items_read_preget': {
+        'description': '发布 / 编辑商品前的预请求（平台只读接口）：要不要上传首件、行业 id。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'item_id': _prop('string', '商品 id（新建发布时为空）'),
+                'source_id': _prop('string', '来源 id（发布场景）'),
+                'publish_scene': _prop('string', '默认 firstHandPublish'),
             },
             'required': ['account_id'],
         },
