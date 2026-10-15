@@ -771,8 +771,18 @@ export function ItemsPage() {
       {selected.size > 0 && (
         <div className="card it-selbar">
           <div className="row wrap">
-            <strong>已选 {selected.size} 个商品</strong>
-            {mixedAccounts && <Badge tone="warn">跨账号，批量接口只支持单账号</Badge>}
+            {/* 作用域必须与用户看到的数字一致（第 58 批 UI 审查第 5 条）：勾选不随搜索/状态筛选清空，
+                所以「已选 N」要拆成「将操作 M（=列表里看得见的）+ 另有 K 个不在筛选结果里」。 */}
+            <strong>将操作 {selectedItems.length} 个商品</strong>
+            {staleSelection > 0 && (
+              <>
+                <span className="dim">（已勾选 {selected.size} 个，其中 {staleSelection} 个不在当前筛选结果里）</span>
+                <button className="btn sm ghost" onClick={() => setSelected(new Set(list.map((item) => item.item_id)))}>
+                  改为只选当前筛选的 {list.length} 个
+                </button>
+              </>
+            )}
+            {mixedAccounts && <Badge tone="warn">跨账号，批量一次只能作用于一个店铺账号</Badge>}
             <span className="it-spacer" />
             <button className="btn sm" onClick={() => setSelected(new Set())}>
               取消选择
@@ -810,7 +820,7 @@ export function ItemsPage() {
           </div>
           {mixedAccounts && (
             <div className="dim" style={{ fontSize: 12, marginTop: 8 }}>
-              提示：批量接口路径含 account_id，一次只能对一个账号的商品批量操作。请先在左上角筛选到单个账号。
+              提示：批量操作一次只能作用在**一个店铺账号**上 —— 请先在左上方筛选到单个账号，再勾选商品。
             </div>
           )}
           {staleSelection > 0 && (

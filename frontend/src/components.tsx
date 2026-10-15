@@ -80,9 +80,18 @@ function NamedIcon({ name, size = 24 }: { name?: string; size?: number }) {
  */
 export class ErrorBoundary extends Component<
   { children: ReactNode; onReset?: () => void },
-  { error: Error | null }
+  { error: Error | null; showDetail: boolean }
 > {
-  state: { error: Error | null } = { error: null }
+  state: { error: Error | null; showDetail: boolean } = { error: null, showDetail: false }
+
+  /** 报错原文只给「反馈问题」用；复制失败（无剪贴板权限）静默忽略，不二次打扰用户 */
+  copy = (text: string) => {
+    try {
+      void navigator.clipboard?.writeText(text)
+    } catch {
+      /* 忽略：用户仍可手动选中复制 */
+    }
+  }
 
   static getDerivedStateFromError(error: Error) {
     return { error }
@@ -94,31 +103,49 @@ export class ErrorBoundary extends Component<
   }
 
   reset = () => {
-    this.setState({ error: null })
+    this.setState({ error: null, showDetail: false })
     this.props.onReset?.()
   }
 
   render() {
-    const { error } = this.state
+    const { error, showDetail } = this.state
     if (!error) return this.props.children
+    // 默认只给人话：英文 JS 报错铺在页面正中只会让卖家更慌，也帮不上排查（第 58 批 UI 审查第 8 条）
+    const raw = String(error?.stack || error?.message || error)
     return (
       <div className="empty" style={{ padding: '48px 20px' }}>
         <div className="empty-icon">
           <IconXCircle size={26} />
         </div>
         <div className="title">这个页面出了点问题</div>
-        <div className="desc">不影响其它页面。可以点下面的按钮重试，或换到左侧其它菜单。</div>
-        <div className="code-block" style={{ maxWidth: 640, margin: '0 auto 14px', textAlign: 'left' }}>
-          {String(error?.message || error)}
-        </div>
-        <div className="row" style={{ justifyContent: 'center' }}>
+        <div className="desc">不影响其它页面。可以点下面的按钮重试，或换到左侧其它菜单；错误已记到控制台。</div>
+        <div className="row" style={{ justifyContent: 'center', marginBottom: 10 }}>
           <button className="btn primary" onClick={this.reset}>
             重试
           </button>
           <button className="btn" onClick={() => window.location.reload()}>
             刷新页面
           </button>
+          <button
+            className="btn ghost"
+            onClick={() => this.setState({ showDetail: !showDetail })}
+            aria-expanded={showDetail}
+          >
+            {showDetail ? '收起报错详情' : '查看报错详情'}
+          </button>
         </div>
+        {showDetail && (
+          <div style={{ maxWidth: 640, margin: '0 auto', textAlign: 'left' }}>
+            <div className="code-block" style={{ maxHeight: 180, overflow: 'auto', marginBottom: 8 }}>
+              {raw}
+            </div>
+            <div className="row" style={{ justifyContent: 'flex-end' }}>
+              <button className="btn sm" onClick={() => this.copy(raw)}>
+                复制错误信息
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     )
   }
@@ -304,12 +331,15 @@ export function Modal({
   children,
   footer,
   wide,
+  initialFocusRef,
 }: {
   title: ReactNode
   onClose: () => void
   children: ReactNode
   footer?: ReactNode
   wide?: boolean
+  /** 打开时优先聚焦的元素；危险确认框传「取消」按钮，让默认焦点落在安全项上 */
+  initialFocusRef?: { current: HTMLElement | null }
 }) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -337,11 +367,41 @@ export function Modal({
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null
     const node = dialogRef.current
-    if (node && !node.contains(document.activeElement)) node.focus()
+    if (initialFocusRef?.current) initialFocusRef.current.focus()
+    else if (node && !node.contains(document.activeElement)) node.focus()
+
+    // Tab 循环限制在弹窗内（第 58 批 UI 审查第 1 条）：
+    // 否则键盘用户能把焦点走到弹窗背后的按钮上再按空格 —— 危险操作确认框最怕这个。
+    const onTab = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab' || !node) return
+      const focusables = Array.from(
+        node.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      )
+      if (!focusables.length) return
+      const first = focusables[0]
+      const last = focusables[focusables.length - 1]
+      const active = document.activeElement as HTMLElement | null
+      if (!active || !node.contains(active)) {
+        event.preventDefault()
+        first.focus()
+        return
+      }
+      if (event.shiftKey && active === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    window.addEventListener('keydown', onTab, true)
     return () => {
+      window.removeEventListener('keydown', onTab, true)
       if (previous && previous.isConnected) previous.focus()
     }
-  }, [])
+  }, [initialFocusRef])
 
   return (
     <div className="modal-mask" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
@@ -384,13 +444,16 @@ export function ConfirmDialog({
   onCancel: () => void
   busy?: boolean
 }) {
+  // 危险确认框默认聚焦「取消」（安全项）：Enter 不该直接把不可逆操作执行掉
+  const cancelRef = useRef<HTMLButtonElement>(null)
   return (
     <Modal
       title={title}
       onClose={onCancel}
+      initialFocusRef={cancelRef}
       footer={
         <>
-          <button className="btn ghost" onClick={onCancel} disabled={busy}>
+          <button ref={cancelRef} className="btn ghost" onClick={onCancel} disabled={busy}>
             取消
           </button>
           <button className={`btn ${danger ? 'danger' : 'primary'}`} onClick={onConfirm} disabled={busy}>
@@ -431,10 +494,18 @@ export function useToast(): ToastApi {
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([])
 
+  const dismiss = useCallback((id: number) => {
+    setItems((prev) => prev.filter((item) => item.id !== id))
+  }, [])
+
   const push = useCallback((kind: ToastItem['kind'], text: string) => {
     const id = Date.now() + Math.random()
     setItems((prev) => [...prev, { id, kind, text }])
-    window.setTimeout(() => setItems((prev) => prev.filter((item) => item.id !== id)), kind === 'error' ? 6000 : 3600)
+    // 失败提示**不自动消失**（第 58 批 UI 审查第 9 条）：6 秒后消失，用户回来只看到一切正常，
+    // 正是「以为操作成功了」的直接来源；改成常驻 + 手动关闭。
+    if (kind !== 'error') {
+      window.setTimeout(() => setItems((prev) => prev.filter((item) => item.id !== id)), 3600)
+    }
   }, [])
 
   const api = useMemo<ToastApi>(
@@ -449,15 +520,25 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={api}>
       {children}
+      {/* 读屏可达：失败用 role=alert（立即播报），其余 role=status（第 58 批 UI 审查第 9 条） */}
       <div className="toast-host">
         {items.map((item) => {
           const Icon = item.kind === 'error' ? IconXCircle : item.kind === 'success' ? IconCheckCircle : IconInfo
           return (
-            <div key={item.id} className={`toast ${item.kind}`}>
+            <div
+              key={item.id}
+              className={`toast ${item.kind}`}
+              role={item.kind === 'error' ? 'alert' : 'status'}
+            >
               <span className="toast-icon">
                 <Icon size={15} />
               </span>
               <span className="toast-text">{item.text}</span>
+              {item.kind === 'error' && (
+                <button className="toast-close" onClick={() => dismiss(item.id)} aria-label="关闭提示" title="关闭">
+                  <IconClose size={14} />
+                </button>
+              )}
             </div>
           )
         })}

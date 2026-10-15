@@ -803,6 +803,9 @@ td.num {
   max-width: 380px;
 }
 .toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   padding: 10px 14px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
@@ -823,6 +826,23 @@ td.num {
 .toast.info {
   border-color: rgba(96, 165, 250, 0.45);
   color: #cfe1fd;
+}
+.toast-text {
+  flex: 1 1 auto;
+}
+.toast-close {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+}
+.toast-close:hover {
+  opacity: 1;
 }
 @keyframes slide-in {
   from {

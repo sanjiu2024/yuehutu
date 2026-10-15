@@ -988,7 +988,7 @@ const WRITE_SPECS: Record<WriteKind, WriteFormSpec> = {
     fields: [
       { name: 'order_id', label: '订单号', required: true, placeholder: '订单号' },
       { name: 'refund_id', label: '退款单号', required: true, placeholder: '退款列表里的 refund_id' },
-      { name: 'amount', label: '退款金额（元，只用于确认与审计）', placeholder: '可选，例如 12.00' },
+      { name: 'amount', label: '退款金额（元，仅用于对账与审计，不改变平台实际退款）', placeholder: '可选，例如 12.00' },
     ],
     extras: 'pay-type',
     path: (accountId, value) => idPath(accountId, value, 'refund_id', 'refunds/{id}/postage-pay'),

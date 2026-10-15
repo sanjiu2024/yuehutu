@@ -172,7 +172,7 @@ export function RefundsPage() {
     },
     {
       key: 'fee',
-      label: '退款金额（元）',
+      label: '退款金额',
       num: true,
       sortValue: (row) => {
         const value = row.price?.refund_fee ?? row.price?.refund_fee_view
