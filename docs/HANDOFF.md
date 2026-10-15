@@ -63,7 +63,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_gate55_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 63  PASS 63  FAIL 0  CASES 2732  SKIPPED 2
+-> TOTAL 63  PASS 63  FAIL 0  CASES 2737  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -3532,13 +3532,19 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   `async def list_orders(self, account_id='', page=1, size=ORDER_LIST_PAGE_SIZE, max_pages=ORDER_LIST_MAX_PAGES)`，
   内部 `trade.order_list_request(page + i, size)` → `await self.mtop(api, data, v=trade.ORDER_LIST_VERSION)`
   → `trade.parse_orders(result)`；常量 `ORDER_LIST_PAGE_SIZE=20` / `ORDER_LIST_MAX_PAGES=10` /
-  `ORDER_LIST_PAGE_DELAY=0.3`。**翻页判据只能是「这一页满没满」**：`paging_of()` 的 docstring 写明
-  `sold.get` 的分页字段在信封顶层取不到；账号不匹配（`account_id` != `cookie_id`）直接 `ValueError`。
+  `ORDER_LIST_PAGE_DELAY=0.3`。**翻页判据用平台给的 `total_count`**（收尾修正 `feeb3aa` 改写）：
+  `sold.get` 的分页字段**是取得到的**（在 `data.module` 里，`trade.paging_of` 会合并 `body_of`；
+  2026-10-15 实测 `total_count=15`）⇒ 拿够总数就停、页不满但总数还有就继续翻，没有 `total_count`
+  才退回「这一页满没满」；`nextPage` 不用（真机只取过第一页，末页取值无证据）。账号不匹配
+  （`account_id` != `cookie_id`）直接 `ValueError`。
 - ✅ **服务层同时认两种行**：`backend/app/services/orders.py` 新增 `_order_fields()`（配 `_to_float()`），
   既认协议层归一化的**嵌套行**（`buyer.user_id` / `price.total_price` / `order_status`），也认老的
   **扁平契约行**（`buyer_id` / `amount` / `total_fee` / `status`，现有 FakeClient 测试就是这种）；
-  金额缺失落 `None`（**不补 0**，遵循平台沉默口径），退路是 `auction_price × buy_num`；
-  `SHIPPED_STATES` 补真机中文终态 `'交易成功'`；`order_stats` 金额改成 `float(row['amount'] or 0)`
+  金额只认显式金额字段（`amount` / `total_fee` / `price.total_price`），缺失落 `None`（**不补 0**，
+  遵循平台沉默口径）；退路 `auction_price × buy_num` 已在收尾修正 `feeb3aa` 删除（真机
+  `auctionPrice=199.00` / `buyNum=1` 而 `totalPrice=8.00`，推算会把实付记成原价）；
+  `SHIPPED_STATES` 补真机中文终态 `'交易成功'`（收尾修正把同源的 `item_stats.PAID_STATES` 也补上了，
+  否则商品页本地指标的 `paid_orders` 对成交单恒为 0）；`order_stats` 金额改成 `float(row['amount'] or 0)`
   （金额可为 NULL，SUM 会出 NULL）。
 - ✅ **真机复验**（提交 `9dc0e05` 重打包后的 11:47:31 产物，端口 18400，账号 `2217970177348`）：
   同步前 `/api/orders` → `{"orders":[],"total":0}`、`/api/orders/stats` → 全 0；
@@ -3546,11 +3552,13 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   同步后 `/api/orders/stats` → `{"total":15,"amount":1176.81,"by_status":{"交易关闭":5,"交易成功":9,"待发货":1},"pending":1,"shipped":9}`；
   第一条订单 `raw` 是嵌套对象（`buyer.user_id="3020098139"`、`price.total_price="14.90"`、`order_status="交易关闭"`）。
   探针 `C:\Users\Administrator\.dsh-tmp\xy57_orders_probe.py`，原始响应落 `logs/order_sync57/*.json`。
-- ✅ **测试**：新增 `backend/tests/test_xianyu_orders.py`（5 用例：单页归一化 / 满页翻页 / 重复页即停 /
-  账号不匹配即 `ValueError` / 平台拒绝抛 `XianyuError`）；`test_services_orders.py` 加 2 条（归一化嵌套行、
-  金额缺失落 NULL）。全量 **`TOTAL 63 PASS 63 FAIL 0 CASES 2732 SKIPPED 2`**；基线复核：把 4db538f 用
-  `git worktree` 单独跑了一遍 → `62 / 2723`，所以 +1 文件 / +9 用例 = +5（新文件）+4（`OrderShipConfirmGateTest`
-  继承基类，基类用例会跟着重跑一遍）。`scripts/reconcile_tools.py` → 五方一致（本批没动工具面）。
+- ✅ **测试**：新增 `backend/tests/test_xianyu_orders.py`（7 用例：单页归一化 / 满页翻页 / `total_count` 拿够即停 /
+  截断页继续翻 / 重复页即停 / 账号不匹配即 `ValueError` / 平台拒绝抛 `XianyuError`）；`test_services_orders.py`
+  加 3 条（归一化嵌套行、`total_price` 缺失落 NULL、扁平行金额缺失落 NULL）、`test_item_stats_api.py` 加 1 条
+  （中文「交易成功」算已支付）。全量 **`TOTAL 63 PASS 63 FAIL 0 CASES 2737 SKIPPED 2`**；基线复核：把 4db538f 用
+  `git worktree` 单独跑了一遍 → `62 / 2723`，所以 +1 文件 / +14 用例 = 新文件 7 + `test_services_orders.py` 6
+  （3 个新方法；`OrderShipConfirmGateTest` 继承基类，基类用例会跟着重跑一遍 ⇒ ×2）+ `test_item_stats_api.py` 1。
+  `scripts/reconcile_tools.py` → 五方一致（本批没动工具面）。
 - ✅ **打包版五件套**（11:47:31 产物）：闸门 `GATE FAILURES: 0 / 79`、`ASSETS_MATCH=True`、
   `PACKAGED UI SMOKE 29/29`、`[dark] 0/29` / `[light] 0/29`、a11y 三类 0，两份审计都 `NON_GET_API_REQUESTS=[]`。
 - ⚠️ **新显形的口径问题（本批未改，守最小 diff）**：`/api/orders/stats` 的 `amount` 把**关闭单**也算进总额
@@ -3560,15 +3568,33 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 
 > **第五十七批证据链**：`POST /api/orders/sync` → 200 `count=15`（0.91s，单次平台调用）；
 > `/api/orders/stats` 0 → `total=15 amount=1176.81 by_status={交易关闭:5,交易成功:9,待发货:1}`；
-> `GET /api/orders?account_id=2217970177348` → 15 行且 `raw` 为嵌套结构；
-> `TOTAL 63 PASS 63 FAIL 0 CASES 2732 SKIPPED 2`；`reconcile_tools.py` → RECON OK（specs=148 routes=149）；
+> `GET /api/orders?account_id=2217970177348` → `total=15`（该次请求 `size=5`，只回了 5 行；15 行在
+> `sync_response.json` 里），`raw` 为嵌套结构；
+> `TOTAL 63 PASS 63 FAIL 0 CASES 2737 SKIPPED 2`；`reconcile_tools.py` → RECON OK（specs=148 routes=149）；
 > 五件套 `GATE FAILURES: 0 / 79`、`ASSETS_MATCH=True`、`PACKAGED UI SMOKE 29/29`、
 > `[dark] BAD_PAGES 0/29` / `[light] 0/29`、a11y 三类 0 且 `NON_GET_API_REQUESTS=[]`。
+
+> **第五十七批收尾修正（提交 `feeb3aa`，2026-10-15）**：小审查（`subagent`、干净上下文、只审不动手）
+> 在本批代码里找出四处并已逐条修完（重跑全量 + 重打包复验）：
+> ① `backend/app/services/item_stats.py::PAID_STATES` 漏了中文成交终态「交易成功」—— 真机 9 笔成交单的
+> `paid_orders` 全是 0（`SHIPPED_STATES` 改了、同源的这个没改）；② `services/orders.py::_order_fields`
+> 的金额退路 `auction_price × buy_num` 与平台口径不符（真机 `auctionPrice=199.00` / `buyNum=1` 而
+> `totalPrice=8.00`）⇒ 删除，金额缺失就落 `None`；③ `list_orders` 的注释/文档写「`sold.get` 分页字段
+> 取不到」与盘上证据相反（实测 `total_count=15`），翻页改用 `total_count`；④ 文档里的
+> `services/orders.py:184` 行号（插入 `_to_float`/`_order_fields` 后已移到 `:228`）、交接文档 §10 第 8 行
+> 表格列数、以及「`GET /api/orders` → 15 行」的口径（实际那次 `size=5`，15 行在 `sync_response.json` 里）。
+> 修正后 `TOTAL 63 PASS 63 FAIL 0 CASES 2737 SKIPPED 2`、`reconcile_tools.py` → RECON OK。
+> 重打包产物 **`10,226,229 B / 2026-10-15 12:12:27`**（端口 18400），五件套复验：闸门 `GATE FAILURES: 0 / 79`、
+> `ASSETS_MATCH=True`、`PACKAGED UI SMOKE 29/29`、`[dark] BAD_PAGES 0/29` / `[light] 0/29`、a11y 三类 0，
+> 两份审计 `NON_GET_API_REQUESTS=[]`；真机复验 `logs/order_sync57fix/`：连同步两次都是 200 `count=15`、
+> `/api/orders/stats` 仍是 `total=15 amount=1176.81`（幂等、无重复行，`GET /api/orders` 回 15 行），
+> `GET /api/items/2217970177348/stats` 的本地订单指标 `paid_orders` 合计 **10**（orders=15 / buyers=12；
+> 修正前 9 笔「交易成功」全是 0）。
 
 ## 四、已验证 / 未验证（诚实边界）
 
 **已验证**
-- 全部后端逻辑：**63 个测试文件、2732 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
+- 全部后端逻辑：**63 个测试文件、2737 个用例全绿、0 失败**（2 个 skip：`test_xianyu_login.py`
   里本来就有的平台相关跳过、以及需要真人配合的那条）。含真实子进程 MCP 冒烟、
   真实 WS 事件投递、协议层接线（不注入假工厂，真走 store → XianyuClient）、
   IM 入站闭环（帧 → 落库 → AI 回复 → 真的发回去）、风控回灌与衰减。
@@ -3892,7 +3918,9 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
 2. ~~修 `POST /api/orders/sync` 那个空壳（第五十六批发现）~~ **已闭环：第五十七批，提交 `9dc0e05`** ——
    真机 `POST /api/orders/sync` → 200 `count=15`；`list_orders()` 加在
    `backend/app/xianyu/client.py::XianyuClient`（**不是** `xianyu/trade.py`：`common.call_method` 找的是
-   client 实例方法，`trade.py` 只有纯函数）。**接下来这一件小事**：`/api/orders/stats` 的 `amount` 目前
+   client 实例方法，`trade.py` 只有纯函数）。小审查（`subagent`、干净上下文）又抓出四处并已修进
+   `feeb3aa`：`item_stats.PAID_STATES` 补「交易成功」、删掉金额推算退路、翻页改用 `total_count`、
+   文档行号与表格（详见上一节「第五十七批收尾修正」）。**接下来这一件小事**：`/api/orders/stats` 的 `amount` 目前
    把「交易关闭」的订单也算进总额（真机 15 单 1176.81 里有 5 笔关闭单）—— 先定口径（排除关闭/退款单，
    还是拆 `amount` / `amount_paid`），再改 `backend/app/services/orders.py::order_stats`。
 3. 用户在「AI 配置」页填一个真实 API Key 并设为默认 → 主管 AI 与商品 AI 才能真回话。

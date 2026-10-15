@@ -190,8 +190,10 @@
 1. **投诉 / 退货地址无样本**：只能原样透传（见 2.5 / 2.6），字段映射等有权限的账号再补。
 2. **评价记录无样本**：`rateItemVOList[]` 映射来自 bundle，未过真机（见 2.4）。
 3. **金额单位**：全部按平台原文透传字符串（`"39.90"`、`"468.90"`），前端展示前不要自己 `/100`。
-4. **`sold.get` 的分页键**：真机响应尾部被截断，`totalCount/nextPage` 在订单接口上**未确认**；
-   refund/rate 已确认在信封顶层。代码对两者都做了兼容。
+4. **`sold.get` 的分页键**：已确认 —— 在 `data.module` 里（`trade.paging_of` 会合并
+   `body_of`），2026-10-15 真机实测 `paging={total_count:15, next_page:true, last_end_row:0,
+   server_time:null}`（`logs/order_sync57/platform_orders.json`，同账号同日 15 单）。
+   refund/rate 在信封顶层。代码对两者都做了兼容；订单翻页用 `total_count`，不用 `nextPage`
 5. **间歇性客户端异常**：真机 `refund.list` 第 1 次调用抛
    `TypeError: can only concatenate list (not "str") to list`（客户端侧，不是平台 ret），
    重试两次均成功 ⇒ 与 Cookie 续期/累积状态相关，怀疑

@@ -533,7 +533,7 @@ GET    /api/orders/{order_id} ; PUT /api/orders/{order_id}/shipment ; POST /api/
 GET    /api/orders/{order_id}/logistics ; GET /api/orders/stats
       -- ✅ `POST /api/orders/sync` 已通（第 57 批，提交 9dc0e05；2026-10-15 真机实测 → 200 `count=15`）。
       --   落点：`backend/app/xianyu/client.py::XianyuClient.list_orders()` —— 服务层
-      --   `backend/app/services/orders.py:184` 依次找 `list_orders`/`fetch_orders`/`get_orders`，
+      --   `backend/app/services/orders.py:228` 依次找 `list_orders`/`fetch_orders`/`get_orders`，
       --   找的是 **client 实例方法**；`backend/app/xianyu/trade.py` 里只有纯函数
       --   （`order_list_request()` 造请求体、`parse_orders()`/`normalize_order()` 解析）。
       --   ⚠️ 别混淆：订单**页面**读的是平台实时接口 `GET /api/trade/{account_id}/orders`
