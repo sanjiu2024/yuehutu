@@ -105,7 +105,12 @@ def _call_write(client: Any, api: str, data: Any, version: str) -> Tuple[Any, Op
 
 def _submit(account_id: str, action: str, item_id: str, builder, parse, version: str,
             audit: Any = None) -> Dict[str, Any]:
-    """写请求的公共骨架：**已确认**之后才进来（调用方负责闸门与参数校验）。"""
+    """写请求的公共骨架：**已确认**之后才进来（调用方负责闸门与参数校验）。
+
+    幂等（第 59 批，§10-11）：请求带 `Idempotency-Key` 时，同一个键 + 同一个请求指纹**只打平台一次**，
+    重复请求回放上次的响应（带 `idempotent_replay`）；不带这个头的请求行为与加机制之前完全一致。
+    指纹在 `builder()` **之后**算：闸门拒绝（没确认 / 参数不全）不该占用键，也不该写幂等表。
+    """
     client, failure = _client(account_id)
     if failure:
         return failure
@@ -114,6 +119,16 @@ def _submit(account_id: str, action: str, item_id: str, builder, parse, version:
     except (proto.WriteNotConfirmed, ValueError) as exc:
         return common.fail(str(exc), CONFIRM_CODE if isinstance(exc, proto.WriteNotConfirmed)
                            else 'invalid_fields')
+
+    return common.idempotent_call(
+        account_id, action, _text(item_id), data,
+        lambda: _submit_once(client, account_id, action, item_id, api, data, version, parse, audit),
+    )
+
+
+def _submit_once(client: Any, account_id: str, action: str, item_id: str, api: str, data: Any,
+                 version: str, parse, audit: Any) -> Dict[str, Any]:
+    """真正打平台的那一次：成功/失败都写 `operation_logs`（回放时不会走到这里）。"""
     raw, failure = _call_write(client, api, data, version)
     if failure:
         common.log_operation(account_id, action, item_id, False, failure.get('message') or '')

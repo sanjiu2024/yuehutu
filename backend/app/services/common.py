@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextvars
+import hashlib
 import importlib
 import inspect
 import json
@@ -215,6 +217,139 @@ def truthy(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in ('1', 'true', 'yes', 'on', 'y')
+
+
+# --------------------------------------------------------------------------- 幂等键
+
+#: 请求头名（Starlette 的 headers 不区分大小写，这里用小写）。
+IDEMPOTENCY_HEADER = 'idempotency-key'
+
+#: 幂等键存活天数：键由调用方生成，留太久没有意义；清理是「顺手删」不是后台任务。
+IDEMPOTENCY_TTL_DAYS = 7
+
+_idempotency_key: contextvars.ContextVar[str] = contextvars.ContextVar('xianyu_idempotency_key', default='')
+_idempotency_locks: Dict[str, threading.Lock] = {}
+_idempotency_locks_guard = threading.Lock()
+
+
+def set_idempotency_key(value: Any) -> None:
+    """由 HTTP 中间件在请求入口调用。
+
+    写在 contextvar 上而不是函数参数上：写路径的漏斗（`trade_write._submit`）离路由层
+    隔着服务层，逐层传参会把「可选的一次性请求头」变成所有签名都要背的包袱。
+    **同一个 ASGI 任务里 set**：FastAPI 把同步端点丢进线程池时会复制当前 context，
+    所以线程里跑的服务函数照样读得到。
+    """
+    _idempotency_key.set(str(value or '').strip()[:200])
+
+
+def current_idempotency_key() -> str:
+    """当前请求带的幂等键；没带就是空串（此时所有写路径行为与加这个机制之前完全一致）。"""
+    return _idempotency_key.get()
+
+
+def idempotency_lock(key: str) -> threading.Lock:
+    """同一个键的并发请求在本进程内串行化。
+
+    **只挡本进程**：多 worker / 多进程部署时两个进程仍可能同时打平台。要真正挡住得靠
+    数据库唯一约束抢占（`idempotency_keys.key` 已经是主键），这一版没做，边界写在 CONTRACTS。
+    """
+    with _idempotency_locks_guard:
+        lock = _idempotency_locks.get(key)
+        if lock is None:
+            lock = _idempotency_locks[key] = threading.Lock()
+        return lock
+
+
+def idempotency_fingerprint(account_id: str, action: str, item_id: str, payload: Any) -> str:
+    """请求指纹：同一个键必须对应同一个请求，否则是**冲突**而不是重放。"""
+    blob = json.dumps(
+        {
+            'account_id': account_id or '',
+            'action': action or '',
+            'item_id': item_id or '',
+            'payload': payload,
+        },
+        ensure_ascii=False, sort_keys=True, default=str,
+    )
+    return hashlib.sha256(blob.encode('utf-8')).hexdigest()
+
+
+def idempotency_replay(key: str, fingerprint: str) -> Optional[Dict[str, Any]]:
+    """命中返回上次的响应（带 `idempotent_replay: True`），没写过返回 None。
+
+    同一个键 + 不同指纹 ⇒ 直接返回 `conflict` 失败信封（路由层映射成 409），
+    **不打平台也不覆盖原记录** —— 覆盖会让「第一次到底做没做」失去唯一的证据。
+    """
+    if not key:
+        return None
+    row = db.query_one(
+        'SELECT fingerprint, response FROM idempotency_keys WHERE key = ?', (key,))
+    if row is None:
+        return None
+    if (row['fingerprint'] or '') != (fingerprint or ''):
+        return fail(
+            '这个 Idempotency-Key 已经用在另一个请求上：换个新键重发，'
+            '或者原样重发上一次的请求',
+            'conflict', idempotency_key=key,
+        )
+    try:
+        stored = json.loads(row['response'] or '{}')
+    except ValueError:  # pragma: no cover - 表里只写我们自己 json.dumps 的内容
+        stored = {}
+    replay = dict(stored) if isinstance(stored, dict) else {}
+    replay['idempotent_replay'] = True
+    return replay
+
+
+def idempotency_remember(key: str, account_id: str, action: str, fingerprint: str,
+                         response: Any) -> None:
+    """记下这次的响应；顺手清掉过期的键。
+
+    **失败响应也记**：平台可能已经生效、只是响应丢了；此时同键重发若再打一次平台，
+    就正是幂等键要防的双写。想重试请换一个新键。
+    记账失败只 warning —— 幂等是保护，不是写操作的前置条件。
+    """
+    if not key:
+        return
+    try:
+        db.execute(
+            'INSERT INTO idempotency_keys(key, account_id, action, fingerprint, response) '
+            'VALUES(?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET response = excluded.response, '
+            'fingerprint = excluded.fingerprint, created_at = CURRENT_TIMESTAMP',
+            (key, account_id or '', action or '', fingerprint or '',
+             json.dumps(response, ensure_ascii=False, default=str)),
+        )
+        db.execute(
+            "DELETE FROM idempotency_keys WHERE created_at < datetime('now', ?)",
+            (f'-{IDEMPOTENCY_TTL_DAYS} days',),
+        )
+    except Exception as exc:  # pragma: no cover - 记账失败不能影响写操作本身
+        logger.warning(f'[idempotency] 记录幂等键失败: {exc}')
+
+
+def idempotent_call(account_id: str, action: str, item_id: str, payload: Any, call) -> Any:
+    """带幂等闸门地执行一次写调用（第 59 批的**唯一入口**，各写族按需接入）。
+
+    带 `Idempotency-Key` 时：同一个键 + 同一个请求指纹只执行一次 `call()`，重复请求回放上次的
+    返回值（回放结果里已经有 `idempotent_replay`）；不带键时**原样执行**，与没有这个机制时一致。
+    指纹用 `payload`（调用方给「决定这次写什么」的那份数据）算，所以闸门/参数校验要在调用前完成。
+    """
+    key = current_idempotency_key()
+    if not key:
+        return call()
+    fingerprint = idempotency_fingerprint(account_id, action, item_id, payload)
+    replay = idempotency_replay(key, fingerprint)
+    if replay is not None:
+        return replay
+    # 同键并发在本进程内排队；拿到锁**再查一次**，否则两个并发请求会一起打平台。
+    with idempotency_lock(key):
+        replay = idempotency_replay(key, fingerprint)
+        if replay is not None:
+            return replay
+        result = call()
+        idempotency_remember(key, account_id, action, fingerprint, result)
+        return result
 
 
 # --------------------------------------------------------------------------- 协议层适配

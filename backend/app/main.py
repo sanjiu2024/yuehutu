@@ -18,7 +18,7 @@ import importlib
 import os
 import threading
 from contextlib import asynccontextmanager
-from typing import List
+from typing import Any, Dict, List
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -30,7 +30,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.routing import Match, Mount
 
 from .core import config, db, events, security
-from .services import im_service, risk_service, stats_worker
+from .services import common, im_service, risk_service, stats_worker
 from .services import purge as purge_service
 
 # 按需注册的路由模块（api/<name>.py 里必须有 router 对象）
@@ -323,8 +323,35 @@ def _remove_port_file() -> None:
         logger.warning('端口文件删除失败: {}', exc)
 
 
+class IdempotencyKeyMiddleware:
+    """把 `Idempotency-Key` 请求头放进 contextvar，供服务层写漏斗读取（第 59 批）。
+
+    写成**纯 ASGI 中间件**而不是 `@app.middleware('http')`：后者（BaseHTTPMiddleware）会把
+    下游塞进另一个 task，contextvar 能不能带过去要看实现细节；这里就在当前任务里 set，
+    之后 FastAPI 把同步端点丢线程池时会复制 context，服务层照样读得到。
+    没带这个头的请求原样放过 —— 幂等是可选增强，不是新的必填项。
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get('type') != 'http':
+            await self.app(scope, receive, send)
+            return
+        header = ''
+        for name, value in scope.get('headers') or ():
+            if name == b'idempotency-key':
+                header = value.decode('latin-1')
+                break
+        common.set_idempotency_key(header)
+        await self.app(scope, receive, send)
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title=config.APP_TITLE, version=config.VERSION, lifespan=lifespan)
+    # 幂等键要能进到服务层的写漏斗，见 IdempotencyKeyMiddleware 的注释。
+    app.add_middleware(IdempotencyKeyMiddleware)
 
     # 必须挂在 **Starlette** 的 HTTPException 上：FastAPI 的 HTTPException 是它的子类，
     # 而「路由没匹配上」的 404/405 是 Starlette 路由层直接抛父类，只注册子类抓不到，

@@ -257,6 +257,19 @@ CREATE TABLE IF NOT EXISTS agent_chat_messages (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_agent_chat_thread ON agent_chat_messages(thread, id);
+
+-- 写操作幂等键（第 59 批）：请求带 `Idempotency-Key` 时，同一个键 + 同一个请求指纹
+-- 只打平台一次；重复请求回放上次的响应（响应里带 `idempotent_replay`）。
+-- `fingerprint` 是「账号 + 动作 + 载荷」的 sha256：同一个键配不同载荷算**冲突**，不是重放。
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+    key TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL DEFAULT '',
+    fingerprint TEXT NOT NULL DEFAULT '',
+    response TEXT NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_idempotency_created ON idempotency_keys(created_at);
 """
 
 
