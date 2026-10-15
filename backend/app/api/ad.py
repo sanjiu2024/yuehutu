@@ -74,13 +74,22 @@ def package_info(
     account_id: str,
     body: Dict[str, Any] = Body(default={}, description='投放包查询对象，原样透传给平台'),
     payload: str = Query('', description='JSON 对象字符串（发不出 GET body 的客户端用这个）'),
+    entity_type: str = Query('', description='官方必填 entityType：数字 1=商品 / 2=线索'),
+    entity_list: str = Query('', description='官方必填 entityList：JSON 数组字符串，如 [{"entityId":"1","catId":2,"price":300,"areaTarget":false,"startTime":"2026-01-01"}]'),
+    is_goods_selected_tab_change: str = Query('', description='选品 tab 是否切换（官方首次 true）'),
     user=Depends(current_user),
 ):
-    """投放包信息。GET 带 body 不常见，但这是查询不是写；没有 body 时按空对象查。"""
+    """投放包信息。GET 带 body 不常见，但这是查询不是写。
+
+    官方必填 `entityType`（数字）+ `entityList`：给不了 body 的客户端用
+    `entity_type` + `entity_list` 两个查询参数；缺了会 400 `invalid_fields`
+    （真机上平台对残包只回 502 `E_AD_BP_COMMON_PARAM_NULL`）。
+    """
     data = _query_body(body, payload)
     if data is None:
         return _envelope(common.fail('payload 必须是 JSON 对象字符串', 'invalid_fields'))
-    return _envelope(ad.package_info(account_id, data))
+    return _envelope(ad.package_info(account_id, data, entity_type, entity_list,
+                                     is_goods_selected_tab_change))
 
 
 @router.get('/{account_id}/item-search')
@@ -89,15 +98,16 @@ def item_search(
     item_id: str = Query('', description='商品 ID（与 search_key 至少给一个）'),
     search_key: str = Query('', description='搜索词（与 item_id 至少给一个）'),
     campaign_id: str = Query('', description='计划 ID'),
-    need_tabs: str = Query('', description='是否要 tabList（true/false）'),
+    need_tabs: str = Query('', description='是否要 tabList（true/false，默认官方 true）'),
     sort_field: str = Query('', description='排序字段'),
     sort_type: str = Query('', description='排序方向'),
     page_num: str = Query('', description='页码'),
     page_size: str = Query('', description='每页条数'),
+    tab: str = Query('', description='选品页 tab（官方恒带，默认 platReco）'),
     user=Depends(current_user),
 ):
     return _envelope(ad.item_search(account_id, need_tabs, item_id, search_key, campaign_id,
-                                    sort_field, sort_type, page_num, page_size))
+                                    sort_field, sort_type, page_num, page_size, tab))
 
 
 @router.get('/{account_id}/bid-estimates')
@@ -105,12 +115,14 @@ def bid_estimates(
     account_id: str,
     body: Dict[str, Any] = Body(default={}, description='{entityType, entityList, bidTarget, ...}'),
     payload: str = Query('', description='JSON 对象字符串（发不出 GET body 的客户端用这个）'),
+    entity_type: str = Query('', description='官方必填 entityType：数字 1=商品 / 2=线索'),
+    entity_list: str = Query('', description='官方必填 entityList：JSON 数组字符串'),
     user=Depends(current_user),
 ):
     data = _query_body(body, payload)
     if data is None:
         return _envelope(common.fail('payload 必须是 JSON 对象字符串', 'invalid_fields'))
-    return _envelope(ad.customize_bid_estimates(account_id, data))
+    return _envelope(ad.customize_bid_estimates(account_id, data, entity_type, entity_list))
 
 
 @router.get('/{account_id}/groups')

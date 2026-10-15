@@ -21,8 +21,14 @@
   —— 对应本仓库 `client.mtop(api, {'requestJson': request}, v='1.0', spm_cnt=AD_SPM)`；
 * `message.unread.info` 是例外：官方 `data` 为空、**不套 requestJson**。
 
-**真机证据：未真机验证。** 本模块的 11 个接口都是按 bundle 的调用点形状写的，尚未在真机
-（打包版工作台 + 真实 Cookie）上打过探针。因此：
+**真机证据（2026-10-16 更新）：4 条投放域只读接口已真机打通**（账号 2217970177348，
+in-process 探针，只读、串行、间隔 >= 2.2s），逐条的 bundle 偏移、官方 payload 原文、发出的
+requestJson 与平台判读写在 `docs/contracts/ad.md`。结论：`item.searchV2` 缺 `tab`/`needTabs`、
+`package.info` / `customize.bid.estimates` 缺 `entityType`/`entityList`（且 `catId` 必须是
+真实类目 ID，给 0 会得到 `E_AD_BP_COMMON_SYSTEM_EXCEPTION`）、`campaign.log.query` 缺
+`operatorType`/`operationType`（官方初值 0）。因此：
+
+* 官方恒定带的键由 `BODY_DEFAULTS` 补默认值、`BODY_REQUIRED` 拦残包（见下）；
 
 * 平台没返回的字段一律 `None`，**不补 0**；
 * 响应原样透出 `data`，不在这里做「指标认字段」的猜测（与 `datacenter.py` 不同：那边是
@@ -75,6 +81,46 @@ READ_APIS: Dict[str, Dict[str, Any]] = {
 OPERATOR_TYPES = {0: '全部', 1: '用户', 2: '系统'}
 OPERATION_TYPES = {0: '全部', 1: '添加', 2: '更新'}
 
+#: 官方调用点**恒定带**的业务键与首次加载时的默认值（逐条偏移见各函数 docstring）。
+#: 只填官方自己填的默认值，**不替调用方猜业务参数**；调用方给了值就以调用方为准。
+BODY_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    'package_info': {'isGoodsSelectedTabChange': True},
+    'item_search': {'tab': 'platReco', 'needTabs': True},
+    'customize_bid_estimates': {'pcFirstRequest': True},
+    # 官方 @1794033 的初值 s={operatorType:0, operationType:0} 是**恒定带**的：
+    # 真机 2026-10-16 A/B —— 不带这两键回 E_AD_BP_COMMON_SYSTEM_EXCEPTION，
+    # 带 0 就正常返回 data.result（见 docs/contracts/ad.md）。
+    'campaign_log': {'operatorType': 0, 'operationType': 0},
+}
+
+#: 少一条就**不发**：平台对残包只回 `E_AD_BP_COMMON_PARAM_NULL::必填参数为空`（502），
+#: 本地拦下来翻成 400 `invalid_fields` 才说得清是谁的问题。
+#: `item_search` 另外要求 `itemId` / `searchKey` 至少一个（见 `_prepare`）。
+BODY_REQUIRED: Dict[str, tuple] = {
+    'package_info': ('entityType', 'entityList'),
+    'item_search': ('tab',),
+    'customize_bid_estimates': ('entityType', 'entityList'),
+    'campaign_log': ('startDate', 'endDate'),
+}
+
+
+class MissingRequiredParams(ValueError):
+    """业务参数没给全。协议层最后的闸门之一：宁可不发，也不把残包打上平台。"""
+
+
+def _prepare(kind: str, body: Any) -> Dict[str, Any]:
+    """官方默认值 -> 必填校验 -> 真正发出去的业务对象。"""
+    merged: Dict[str, Any] = dict(BODY_DEFAULTS.get(kind, {}))
+    merged.update(_body(body))
+    missing = [key for key in BODY_REQUIRED.get(kind, ()) if not merged.get(key)]
+    if kind == 'item_search' and not (merged.get('itemId') or merged.get('searchKey')):
+        missing.append('itemId 或 searchKey')
+    if missing:
+        raise MissingRequiredParams(
+            f'{kind} 缺少官方必填参数：{"、".join(missing)}'
+            '（官方调用点恒定带，缺了平台回 E_AD_BP_COMMON_PARAM_NULL）')
+    return merged
+
 
 class WriteNotConfirmed(RuntimeError):
     """写接口没有拿到显式确认。协议层最后的闸门：宁可不发，也不许误发。"""
@@ -122,28 +168,59 @@ async def account_info(client: Any, body: Any = None) -> Any:
     """投放账户信息。bundle @3301473 `rqe(e)`；调用点 @3488564 / @3672101 传
     `{orderPrice, promotionMode, bidType, scene}`（`scene` 取 `EAccountRequestScene`，
     如 `CREATION_REAL_TIME` / `CREATION_SUCCESS`）。"""
-    return await _mtop(client, ACCOUNT_INFO_API, {'requestJson': _json_request(body)})
+    return await _mtop(client, ACCOUNT_INFO_API, {'requestJson': _json_request(_prepare('account_info', body))})
 
 
 async def package_info(client: Any, body: Any = None) -> Any:
-    """投放包信息。bundle @3301020 `eqe(e)`；调用点 @3309064 `initPlanInfo` 传整个查询对象，
+    """投放包信息。bundle @3301020 `eqe(e)`；官方调用点 @3677643 / @3396844 传
+    `{entityList, entityType, isGoodsSelectedTabChange}`：
+
+    * `entityType` 是**数字**（@1430758 枚举 `GOOD=1` / `CLUE=2`，页面默认 GOOD）；
+    * `entityList` 每项 = `{entityId:item.itemId, catId:item.catId, price:item.price,
+      areaTarget:false, startTime:item.publishTime}`（@3677643 的 `a.map(...)`）；
+    * `isGoodsSelectedTabChange` 首次加载为 `true`（@3396844 `!0`）。
+
     响应 `data.packageTargetVOList` / `data.bidTargets` / `data.recPromotionMode` /
-    `data.supportOrder`。"""
-    return await _mtop(client, PACKAGE_INFO_API, {'requestJson': _json_request(body)})
+    `data.supportOrder`。真机 2026-10-16 三步证据（见 docs/contracts/ad.md）：
+    只发 `{promotionMode}` → `E_AD_BP_COMMON_PARAM_NULL::必填参数为空`；
+    补齐两个必填键但 `catId=0` → `E_AD_BP_COMMON_SYSTEM_EXCEPTION`；
+    `catId` 给真实类目 ID → 200 + `packageTargetVOList`。
+    **`catId` 必须是真实类目 ID**（本地 `items.category_id`），这里不替调用方编。
+    """
+    return await _mtop(client, PACKAGE_INFO_API,
+                       {'requestJson': _json_request(_prepare('package_info', body))})
 
 
 async def item_search(client: Any, body: Any = None) -> Any:
-    """商品搜索 V2。bundle @3301167 `tqe(e)`；调用点 @3408019 传
-    `{needTabs, itemId|searchKey, campaignId, sortField?, sortType?}`，
-    响应 `data.result.{tabList,itemList}` + `data.total`。"""
-    return await _mtop(client, ITEM_SEARCH_API, {'requestJson': _json_request(body)})
+    """商品搜索 V2。bundle @3301167 `tqe(e)`；状态初值 @3406850
+    `KYe={pageNum:1,pageSize:10,tab:'platReco',queryVal:''}`；调用点 @3408019 组
+    `{pageNum, pageSize, tab, needTabs:!(tabList.length>0), itemId|searchKey,
+    campaignId, sortField?, sortType?}` —— `tab` 与 `needTabs` 官方**恒定带**，
+    默认值 `tab='platReco'` / `needTabs=true`（首次加载）。
+
+    真机 2026-10-16：不发 `tab` 时平台回 `E_AD_BP_COMMON_PARAM_NULL::必填参数为空`。
+    响应 `data.result.{tabList,itemList}` + `data.total`。
+    """
+    return await _mtop(client, ITEM_SEARCH_API,
+                       {'requestJson': _json_request(_prepare('item_search', body))})
 
 
 async def customize_bid_estimates(client: Any, body: Any = None) -> Any:
-    """自定义出价估算。bundle @3301315 `nqe(e)`；调用点 @3313962 / @3314544 / @3315969 传
-    `{entityType, entityList, bidTarget, bidPrice, noBid, pcFirstRequest, campaignId?}`，
-    响应 `data.customizeBidRecommendVOList` / `data.bidTargets`。"""
-    return await _mtop(client, CUSTOMIZE_BID_ESTIMATES_API, {'requestJson': _json_request(body)})
+    """自定义出价估算。bundle @3301315 `nqe(e)`；三个调用点 @3315969 / @3314544 /
+    @3313962 传 `{entityType, entityList, pcFirstRequest, bidTarget?, bidPrice?,
+    noBid?, campaignId?}`：
+
+    * `entityList` 由 `getEntityList()`（@3305143）拼 `{entityId:item.itemId,
+      catId:item.catId, price:item.price, areaTarget, startTime:item.publishTime}`；
+    * `pcFirstRequest`：按 entityList / bidMethod 调用是 `true`，按 bidPrice 调用是 `false`
+      （默认给 `true`，出价那条走 `payload` 覆盖）。
+
+    响应 `data.customizeBidRecommendVOList` / `data.bidTargets`。真机 2026-10-16：
+    与 `package.info` 同形 —— `catId=0` 回 `E_AD_BP_COMMON_SYSTEM_EXCEPTION`，
+    真实类目 ID 回 200（见 docs/contracts/ad.md）。
+    """
+    return await _mtop(client, CUSTOMIZE_BID_ESTIMATES_API,
+                       {'requestJson': _json_request(_prepare('customize_bid_estimates', body))})
 
 
 async def group_list(client: Any, body: Any = None) -> Any:
@@ -151,7 +228,7 @@ async def group_list(client: Any, body: Any = None) -> Any:
     调用点 @3454098 传 `{pageNum,pageSize,startDate,endDate,campaignId,includeEndDate:true,groupStatus?}`，
     @3493409 追加 `excludeGroupStatus / campaignTitleLike / promotionMode / bidTargets`；
     响应 `data.result`。"""
-    return await _mtop(client, GROUP_LIST_API, {'requestJson': _json_request(body)})
+    return await _mtop(client, GROUP_LIST_API, {'requestJson': _json_request(_prepare('group_list', body))})
 
 
 async def group_data(client: Any, body: Any = None) -> Any:
@@ -159,27 +236,34 @@ async def group_data(client: Any, body: Any = None) -> Any:
     `{startDate,endDate,includeEndDate:true,adGroupId,allPeriod:false}`；
     响应含 `data` 与 `previousData`（官方在「昨天→今天」时拍成
     `dataDetailVOList` / `previousDataDetailVOList`）。"""
-    return await _mtop(client, GROUP_DATA_API, {'requestJson': _json_request(body)})
+    return await _mtop(client, GROUP_DATA_API, {'requestJson': _json_request(_prepare('group_data', body))})
 
 
 async def campaign_log(client: Any, body: Any = None) -> Any:
     """计划操作日志。bundle @1665384 `IW(e)` —— 官方包装不带 v（见 `_mtop` 的口径）；调用点 @1794033 传
-    `{startDate,endDate,pageNum,pageSize,campaignId:Number(r)||0,operatorType?,operationType?}`；
-    枚举 @1784368 / @1784654：`operatorType` 0=全部/1=用户/2=系统，
-    `operationType` 0=全部/1=添加/2=更新。"""
-    return await _mtop(client, CAMPAIGN_LOG_API, {'requestJson': _json_request(body)})
+    `{startDate,endDate,pageNum,pageSize,campaignId:Number(r)||0,operatorType,operationType}`：
+    日期初值是**近 7 天** `YYYYMMDD`，枚举初值 `{operatorType:0, operationType:0}`
+    （@1784368 / @1784654：`operatorType` 0=全部/1=用户/2=系统，`operationType` 0=全部/1=添加/2=更新）。
+
+    本地要求日期区间非空（空串不是合法日期）。真机 2026-10-16 A/B：**不带**这两个枚举键时
+    平台回 `E_AD_BP_COMMON_SYSTEM_EXCEPTION::闲鱼太累了，请稍后再试～`，带 0 正常返回
+    `data.result`（见 docs/contracts/ad.md）—— 所以 `BODY_DEFAULTS` 补 0。
+    响应 `data.result` + `data.total`。
+    """
+    return await _mtop(client, CAMPAIGN_LOG_API,
+                       {'requestJson': _json_request(_prepare('campaign_log', body))})
 
 
 async def message_list(client: Any, body: Any = None) -> Any:
     """推广消息列表。bundle @3678207 `XQe(e)`；调用点 @3698592 传 `{pageNum,pageSize}`，
     响应 `data.total` + 列表。"""
-    return await _mtop(client, MESSAGE_LIST_API, {'requestJson': _json_request(body)})
+    return await _mtop(client, MESSAGE_LIST_API, {'requestJson': _json_request(_prepare('message_list', body))})
 
 
 async def message_detail(client: Any, body: Any = None) -> Any:
     """推广消息详情。bundle @3678352 `KQe(e)`；调用点 @3696148 传 `{messageId}`，
     响应 `data.title` / `data.content`。"""
-    return await _mtop(client, MESSAGE_DETAIL_API, {'requestJson': _json_request(body)})
+    return await _mtop(client, MESSAGE_DETAIL_API, {'requestJson': _json_request(_prepare('message_detail', body))})
 
 
 async def message_unread(client: Any) -> Any:

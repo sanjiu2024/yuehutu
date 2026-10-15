@@ -17,22 +17,26 @@
 >   `backend/tests/test_xianyu_ad.py`（协议层请求形状）。
 > * **真机证据（2026-10-16，打包版 18400 + 真实 Cookie，账号 `2217970177348`）**：11 条只读打了 9 条 ——
 >   **6 条 200**（`apis` 静态目录 / `account-info` / `groups` / `groups/data` / `messages` / `messages/unread`），
->   **3 条被平台拒**（`package-info`、`campaign.log.query` → `E_AD_BP_COMMON_SYSTEM_EXCEPTION`；`item.searchV2` → `E_AD_BP_COMMON_PARAM_NULL`，**还缺别的必填项，未解**），
+>   **3 条被平台拒**（`package-info`、`campaign.log.query` → `E_AD_BP_COMMON_SYSTEM_EXCEPTION`；`item.searchV2` → `E_AD_BP_COMMON_PARAM_NULL`），
 >   **2 条未打**（`bid.estimates` 缺合法 `entityType/entityList`；`message.detail` 该账号 `message.list` 的 `total=0`）。
 >   唯一写接口（消息已读）**未打**（本批统一不做写试打；它不改交易状态，属「零副作用」档，可先打）。原始响应见 `logs/probe60/`（`logs/` 不入仓）。
 >   因此：平台没返回的字段一律 `None`，**不用 0 顶替**；响应 `data` 原样透出，不做「认字段」的猜测。
+> * **真机复打（2026-10-16 第二轮，in-process 只读探针，同一账号）**：上面 3 条被拒的 + 1 条未打的
+>   **全部打通（4/4）** —— 根因是「官方调用点恒定带的业务键没给全」，逐条证据见 §8。修复落在
+>   `backend/app/xianyu/ad.py`（`BODY_DEFAULTS` / `BODY_REQUIRED` / `MissingRequiredParams`）与
+>   `backend/app/services/ad.py`（残包翻 400 `invalid_fields`、`entity_type`/`entity_list` 便利入口、`_payload_only`）。
 
 ## 0. 一句话结论
 
 | 能力 | 接口（mtop） | 真机结果 | 结论 |
 | --- | --- | --- | --- |
 | 投放账户信息 | `mtop.taobao.idle.ad.account.info` | ✅ 200（`{cashBalance:3358,totalBalance:3358,usableBalance:3358}`） | 接了 |
-| 投放包信息 | `mtop.taobao.idle.ad.package.info` | ❌ 502 `E_AD_BP_COMMON_SYSTEM_EXCEPTION` | 接了 |
-| 商品搜索 V2 | `mtop.taobao.idle.ad.item.searchV2` | ❌ 502 `E_AD_BP_COMMON_PARAM_NULL`（缺必填） | 接了 |
-| 自定义出价估算 | `mtop.taobao.idle.ad.customize.bid.estimates` | 未打（缺合法 entityType/entityList） | 接了 |
+| 投放包信息 | `mtop.taobao.idle.ad.package.info` | ❌ 502 `E_AD_BP_COMMON_SYSTEM_EXCEPTION` → **✅ 200（2026-10-16 复打，见 §8）** | 接了 |
+| 商品搜索 V2 | `mtop.taobao.idle.ad.item.searchV2` | ❌ 502 `E_AD_BP_COMMON_PARAM_NULL`（缺必填） → **✅ 200（2026-10-16 复打，见 §8）** | 接了 |
+| 自定义出价估算 | `mtop.taobao.idle.ad.customize.bid.estimates` | 未打（缺合法 entityType/entityList） → **✅ 200（2026-10-16 复打，见 §8）** | 接了 |
 | 投放单元列表 | `mtop.taobao.idle.ad.group.list` | ✅ 200（不传 campaignId 也能通） | 接了 |
 | 投放单元数据 | `mtop.taobao.idle.ad.group.data.query` | ✅ 200 | 接了 |
-| 计划操作日志 | `mtop.taobao.idle.ad.campaign.log.query` | ❌ 502 `E_AD_BP_COMMON_SYSTEM_EXCEPTION` | 接了 |
+| 计划操作日志 | `mtop.taobao.idle.ad.campaign.log.query` | ❌ 502 `E_AD_BP_COMMON_SYSTEM_EXCEPTION` → **✅ 200（2026-10-16 复打，见 §8）** | 接了 |
 | 推广消息列表 | `mtop.taobao.idle.ad.message.list` | ✅ 200（该账号 total=0） | 接了 |
 | 推广消息详情 | `mtop.taobao.idle.ad.message.detail` | 未打（该账号 total=0，无 id） | 接了 |
 | 推广消息未读数 | `mtop.taobao.idle.ad.message.unread.info` | ✅ 200（unreadCount） | 接了（**唯一不套 requestJson** 的一条） |
@@ -177,7 +181,7 @@ bundle 里 `group.list` / `campaign.log.query` 的包装**没有写 `v`**，但�
 | 协议层模块导入不到 | 503 | `xianyu_not_ready` | **不是**「平台没数据」，页面不该显示成空 |
 | 平台拒绝（无权限 / 风控 / 其它 `FAIL_*`）、协议层抛异常、响应非 dict | 502 | `protocol_error` | 平台原文透出；**无权限 ≠ 掉线**，不写 `need_relogin` |
 
-## 5. 真机探针清单（Lead 在打包版上跑；**本批尚未跑过**）
+## 5. 真机探针清单（原口径：Lead 在打包版上跑；**2026-10-16 已在 in-process 只读探针上跑完 4 条，见 §8**）
 
 前置：账号已完成扫码登录（库里 `account_credentials.cookie` 非空、`login_state='active'`）；
 `{acc}` 换成真实账号 id。**读接口**按下面最小参数逐个打，看 `success` 与 `data` 形状；
@@ -222,7 +226,85 @@ XIANYU_APP_DIR=$TEMP/xywb_adcov PYTHONPATH=. PYTHONIOENCODING=utf-8 /c/Python310
 * `test_ad_api.py`（50 个用例）：HTTP 信封 / 参数形状 / 错误语义（400/404/409/502/503）/
   只读探测（对**真 app** 验非 GET 405）/ 写闸门（`confirm` 严格档、协议层二次闸门）/
   幂等键回放 / 操作留痕 / 端到端（真协议层 + 假 mtop）/ 真 app 幂等。
-* `test_xianyu_ad.py`（8 个用例）：协议层 `api` 名、`requestJson` 内容、`v/spm_cnt`、
-  未读数不套 `requestJson`、写闸门拒绝时**一个字节都不发**。
+* `test_xianyu_ad.py`（13 个用例）：协议层 `api` 名、`requestJson` 内容、`v/spm_cnt`、
+  未读数不套 `requestJson`、写闸门拒绝时**一个字节都不发**；官方默认值补齐（`BODY_DEFAULTS`）、
+  调用方值覆盖默认值、缺必填键在协议层就被 `MissingRequiredParams` 拦下（**一个字节都不发**）、
+  服务层 `read()` 不把便利键 `entity_type`/`entity_list` 透传成 payload。
 * 闸门白名单：`backend/tests/test_write_routes_have_gates.py` 通过（`POST /messages/read` 的服务函数
   签名含 `confirm` 且含 `confirm_required` 标记），**没有**往 `GATE_FREE_ALLOWLIST` 加条目。
+## 8. 真机复打（2026-10-16 第二轮）：4 条 502 的根因与修复
+
+- 账号：`2217970177348`（月狐兔_，`login_state=active`）；方式：**in-process 只读探针**
+  `/c/Users/Administrator/.dsh-tmp/ad_probe62.py`，走 `services/ad.py` 只读入口 + 真机 mtop；
+  **只读、串行、每条间隔 ≥ 2.2s，没有任何写操作**。未走打包版 18400（那是修复前的冻结代码，没有重打包）。
+- 原始响应：`logs/fail62/kurumi/ad_*.json` + `history.jsonl`（`logs/` 不入仓）。
+- 信封口径先排除：四条官方**全部**套 `requestJson`（`yp({api, v:'1.0', data:{requestJson: JSON.stringify(e)}})`），
+  与本仓库 `client.mtop(api, {'requestJson': ...})` 一致 —— **不存在 `inputJson` / `param` 之类的另一层信封**。
+  502 的根因是 `requestJson` 里的业务键缺了，不是信封错了。
+
+| 接口 | bundle 偏移（调用点） | 修复前 | 修复后发出的 requestJson | 平台结果 | 判读 |
+| --- | --- | --- | --- | --- | --- |
+| `item.searchV2` | @3301167（@3408019） | 502 `E_AD_BP_COMMON_PARAM_NULL::必填参数为空` | `{"tab":"platReco","needTabs":true,"itemId":"1047949964912","pageNum":1,"pageSize":10}` | 200 `undefined`，`data` = `nextPage, result, total, totalPage` | **已解**：缺 `tab` / `needTabs` |
+| `package.info` | @3301020（@3677643 / @3396844） | 502 `E_AD_BP_COMMON_PARAM_NULL::必填参数为空` | `{"isGoodsSelectedTabChange":true,"entityType":1,"entityList":[{"entityId":"1047949964912","catId":"50023914","price":15.0,"areaTarget":false,"startTime":"2026-10-16 03:45:45"}]}` | 200 `undefined`，`data` = `bidTargets, optimizeGoalList, packageTargetVOList, recBidTarget, recBidTargetExperiment, recPromotionMode, supportOrder` | **已解**：缺 `entityType` / `entityList`，且 `catId` 必须是真实类目 ID |
+| `customize.bid.estimates` | @3301315（@3315969 / @3314544 / @3313962） | 本地 `invalid_fields`（必填键没给） | `{"pcFirstRequest":true,"entityType":1,"entityList":[{"entityId":"1047949964912","catId":"50023914","price":15.0,"areaTarget":false,"startTime":"2026-10-16 03:45:45"}]}` | 200 `undefined`，`data` = `bidTargets, customizeBidRecommendVOList, entityType, optimizeGoalList, recBidTarget, recBidTargetExperiment` | **已解**：缺 `entityType` / `entityList` |
+| `campaign.log.query` | @1665384（@1794033） | 502 `E_AD_BP_COMMON_SYSTEM_EXCEPTION::闲鱼太累了，请稍后再试～` | `{"operatorType":0,"operationType":0,"startDate":"20261009","endDate":"20261016","campaignId":0,"pageNum":1,"pageSize":5}` | 200 `undefined`，`data` = `nextPage, result, total, totalPage` | **已解**：缺 `operatorType` / `operationType`（官方初值 0） |
+
+HTTP 状态口径：mtop 业务码走 `ret`（成功 `SUCCESS::调用成功`，业务失败 `FAIL::E_AD_BP_COMMON_*`），HTTP 一律 200；
+本仓库 API 层把业务失败翻成 502（`services/common.py:644 call_failed`），把协议层拦下的残包翻成 400 `invalid_fields`
+（`services/ad.py` 的 `_call` 特判 `MissingRequiredParams`，照 `WriteNotConfirmed` → `confirm_required` 的先例）。
+
+### 8.1 `item.searchV2` —— 缺 `tab` / `needTabs`
+
+- 官方 payload 原文（@3408019）：`i = {...Le(F,['queryVal','sortField','sortType']), needTabs:!(y&&y.length>0), ...('itemId'===C?{itemId:e}:{searchKey:e}), campaignId:c, ...(t&&{sortField:t}), ...(n&&{sortType:n})}`；状态初值 @3406850 `KYe={pageNum:1,pageSize:10,tab:'platReco',queryVal:''}`。
+- 复打发出的：`{"tab":"platReco","needTabs":true,"itemId":"1047949964912","pageNum":1,"pageSize":10}`（耗时 0.5s）
+- 判读：**已解**。`tab`（+`needTabs`）是官方恒定带的键，缺了就是 `E_AD_BP_COMMON_PARAM_NULL`；协议层补 `tab='platReco'` / `needTabs=true`（`BODY_DEFAULTS`）。
+
+### 8.2 `package.info` —— 缺 `entityType` / `entityList`，且 `catId` 必须是真实类目 ID
+
+- 官方 payload 原文（@3677643）：`l({entityList:t, entityType:r, isGoodsSelectedTabChange:e}, f)`，其中 `t=a.map(e=>({entityId:e.itemId, catId:e.catId, price:e.price, areaTarget:false, startTime:e.publishTime}))`；@3396844 `m({entityList:e, entityType:p, isGoodsSelectedTabChange:!0})`；`entityType` 枚举 @1430758 是**数字** `GOOD=1` / `CLUE=2`。
+- 复打发出的：`{"isGoodsSelectedTabChange":true,"entityType":1,"entityList":[{"entityId":"1047949964912","catId":"50023914","price":15.0,"areaTarget":false,"startTime":"2026-10-16 03:45:45"}]}`（耗时 0.22s）
+- 三步 A/B（都真机打到）：
+  1. 只发 `{promotionMode:'CUSTOMIZE'}`（第一轮）→ `E_AD_BP_COMMON_PARAM_NULL::必填参数为空`；
+  2. 补齐 `entityType=1` + `entityList` 但 `catId=0`（本地 `items` 表没有 `cat_id` 列，误取 0）→ `E_AD_BP_COMMON_SYSTEM_EXCEPTION::闲鱼太累了，请稍后再试～`；
+  3. `catId` 取真实类目（`items.category_id=50023914`）→ 200 + `packageTargetVOList` / `bidTargets` / `recPromotionMode` / `supportOrder`。
+- ⇒ **`catId` 必须是真实类目 ID**；给 0 时平台回的是 SYSTEM_EXCEPTION 而不是 PARAM_NULL，很容易误判成「参数够了、平台自己挂了」。
+
+### 8.3 `customize.bid.estimates` —— 缺 `entityType` / `entityList`
+
+- 官方 payload 原文：@3315969 `{entityType:materialType, entityList:getEntityList(), pcFirstRequest:true, campaignId?, noBid?}`；@3314544 `{entityType, entityList, noBid, pcFirstRequest:true}`；@3313962 `{entityType, entityList, bidTarget, bidPrice, noBid, pcFirstRequest:false, campaignId}`；`getEntityList()`（@3305143）每项 = `{entityId:item.itemId, catId:item.catId, price:item.price, areaTarget, startTime:item.publishTime}`。
+- 复打发出的：`{"pcFirstRequest":true,"entityType":1,"entityList":[{"entityId":"1047949964912","catId":"50023914","price":15.0,"areaTarget":false,"startTime":"2026-10-16 03:45:45"}]}`（耗时 0.28s）
+- 判读：**已解**。与 `package.info` 同形：`entityType` + `entityList` 必填，`catId=0` 同样回 SYSTEM_EXCEPTION；`pcFirstRequest` 协议层默认 `true`（出价那条走 `payload` 覆盖成 `false`）。
+
+### 8.4 `campaign.log.query` —— 缺 `operatorType` / `operationType`（干净的 A/B）
+
+- 官方 payload 原文（@1794033）：`o={startDate:u[0], endDate:u[1], pageNum:f.pageNum, pageSize:f.pageSize, campaignId:r?Number(r):0, operatorType:s.operatorType, operationType:s.operationType}`，初值 `s={operatorType:0, operationType:0}`，日期区间初值是**近 7 天**。
+- 复打发出的：`{"operatorType":0,"operationType":0,"startDate":"20261009","endDate":"20261016","campaignId":0,"pageNum":1,"pageSize":5}`（耗时 0.15s）
+- 同一账号、同一日期区间、同一 `campaignId=0`，**只差这两个枚举键**：不带 → `E_AD_BP_COMMON_SYSTEM_EXCEPTION`（`logs/probe60/ad_campaign_log.json`），带 0 → 200 + `data.result`。
+- ⇒ 协议层 `BODY_DEFAULTS` 给 `campaign_log` 补 `operatorType=0` / `operationType=0`（官方初值就是 0）。
+- 这条**推翻了** §1 之后 `test_ad_api.py::test_campaign_log_omits_unset_enums` 里「带 0 与不带不是一回事」的反向理解 —— 真机上恰恰是「不带就挂」。该测试断言的是**服务层**参数（服务层仍然不带，未动，不在本次写盘范围）；协议层补默认值对它是不可见的。
+
+### 8.5 关键教训
+
+1. **信封没问题，缺的是业务键**：四条全套 `requestJson`，先排除「我们平铺发了参数」这个假设。
+2. **PARAM_NULL 与 SYSTEM_EXCEPTION 是两类问题**：前者是「键没给」，后者也可能是「键给了但值没用」（`catId=0`）。只看错误码会把值域问题误判成平台故障。
+3. **官方恒定带的键要照抄，不要按需给**：`tab` / `needTabs` / `operatorType` / `operationType` / `pcFirstRequest` / `isGoodsSelectedTabChange` 官方每次调用都带。
+4. **默认值只填官方自己填的**：`BODY_DEFAULTS` 每一条都能在 bundle 调用点找到出处（`tab='platReco'` @3406850、枚举 0 @1794033 初值、`pcFirstRequest:true` @3315969），没有一个是猜的业务参数。
+5. **残包不发**：`BODY_REQUIRED` 在协议层拦下缺键 → 400 `invalid_fields`，而不是把 502 甩给调用方。
+6. **便利键不许透传**：第一次复打时 `read()` 把 `entity_type` / `entity_list` 当成整包 payload 发给了平台（`request_json` 里两种命名同时出现），现在由 `_payload_only` 剔除。
+
+### 8.6 仍未验证 / 存疑
+
+- 只用**一个账号 + 一个商品**（`item_id=1047949964912`、`category_id=50023914`、`price=15.0`）验证；多类目、线索包（`entityType=2` / `CLUE`）、`bidPrice` 那条出价路径、`searchKey` 搜索路径都没打真机。
+- `price` 口径（元 vs 分）没单独验证：`items.price=15.0`（元）平台接受了；官方 `e.price` 来自选品接口的 item 对象，两边是否同口径未确认。
+- `campaign.log.query` 只验证了 `campaignId=0`（全部计划），指定某个 `campaignId` 未验证。
+- 打包版 18400 是修复前的冻结代码、**未重打包**，这四条在打包版上仍是 502；要在打包版验证得重新打包（本次未做）。
+- 全量测试套件没跑，只跑了 `backend/tests/test_xianyu_ad.py`（13 条 OK）与 `backend/tests/test_ad_api.py`（50 条 OK）。
+
+### 8.7 复现
+
+```bash
+export PYTHONPATH=. PYTHONIOENCODING=utf-8
+/c/Python310/python.exe /c/Users/Administrator/.dsh-tmp/ad_probe62.py   # 只读探针：4 条串行、间隔 2.2s
+/c/Python310/python.exe backend/tests/test_xianyu_ad.py                 # 协议层形状 + 官方默认值 + 残包拦截
+/c/Python310/python.exe backend/tests/test_ad_api.py                    # 服务/接口层（不在本次写盘范围）
+```

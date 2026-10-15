@@ -117,6 +117,41 @@ def _flag(value: Any, *, default: bool = False) -> bool:
     return _text(value).strip().lower() in ('1', 'true', 'yes')
 
 
+#: `read()` 里被当成「便利参数」取走的键，不许留在整包 payload 里（真机复打时曾把
+#: `entity_type` / `entity_list` 原样透给平台，见 docs/contracts/ad.md）。
+_CONVENIENCE_KEYS = ('entity_type', 'entity_list', 'is_goods_selected_tab_change')
+
+
+def _payload_only(data: Dict[str, Any]) -> Dict[str, Any]:
+    """整包 payload：剔掉便利参数键，其余原样透传。"""
+    return {key: value for key, value in data.items() if key not in _CONVENIENCE_KEYS}
+
+
+def _entities(entity_type: Any = '', entity_list: Any = '') -> Dict[str, Any]:
+    """官方 `entityList` 那两个必填键：`entityType` 是**数字**（1=商品 / 2=线索）。
+
+    `entity_list` 收 JSON 数组字符串或已是数组的值，元素原样透传 —— 官方每项是
+    `{entityId, catId, price, areaTarget, startTime}`，这里不替平台编字段。
+    """
+    body: Dict[str, Any] = {}
+    text = _text(entity_type).strip()
+    if text:
+        body['entityType'] = _int(text, name='entity_type')
+    raw: Any = entity_list
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if raw.startswith('['):
+            try:
+                raw = json.loads(raw)
+            except ValueError as exc:
+                raise ValueError(f'entity_list 不是合法 JSON 数组：{exc}') from exc
+    if raw:
+        if not isinstance(raw, (list, tuple)):
+            raise ValueError('entity_list 必须是数组（官方是对象数组）')
+        body['entityList'] = list(raw)
+    return body
+
+
 class _BoundProtocol:
     """把「模块级协议函数」和「调用它的 client」绑成可交给 `call_method` 的对象。
 
@@ -163,6 +198,12 @@ def _call(name: str, client: Any, *args: Any):
             # 空 dict 是合法答复（平台就是没给字段），但非 dict 是协议异常。
             return None, common.fail('推广接口没有返回响应对象', 'protocol_error')
         return value, None
+    # 协议层自己拦下的「残包」要翻成 400：真机上平台只回 502 +
+    # `E_AD_BP_COMMON_PARAM_NULL::必填参数为空`，说不清是谁的问题（照
+    # `WriteNotConfirmed` -> `confirm_required` 的先例）。
+    missing = getattr(module, 'MissingRequiredParams', None)
+    if missing is not None and isinstance(value, missing):
+        return None, common.fail(str(value), 'invalid_fields')
     problem = common.call_failed(status, value)
     if problem is not None:
         return None, problem
@@ -229,18 +270,37 @@ def account_info(account_id: str, order_price: str = '', promotion_mode: str = '
     return _read(account_id, 'account_info', body)
 
 
-def package_info(account_id: str, payload: Any = None) -> Dict[str, Any]:
-    """投放包信息：`initPlanInfo` 用的整包查询对象，原样透传给平台。"""
+def package_info(account_id: str, payload: Any = None, entity_type: Any = '',
+                 entity_list: Any = '', is_goods_selected_tab_change: Any = '') -> Dict[str, Any]:
+    """投放包信息：官方必填 `entityType`（数字 1=商品 / 2=线索）+ `entityList`。
+
+    `payload` 是 `initPlanInfo` 用的整包查询对象（原样透传）；`entity_type` /
+    `entity_list` 是给「发不出 GET body」的调用方的便利入口（`entity_list` 收 JSON
+    数组字符串）。缺必填键时**不发平台**，直接 400 —— 真机上平台只回 502
+    `E_AD_BP_COMMON_PARAM_NULL`（协议层 `BODY_REQUIRED`）。
+    """
     body = dict(payload) if isinstance(payload, dict) else {}
+    try:
+        body.update(_entities(entity_type, entity_list))
+    except ValueError as exc:
+        return common.fail(str(exc), 'invalid_fields')
+    if _text(is_goods_selected_tab_change).strip() != '':
+        body['isGoodsSelectedTabChange'] = _flag(is_goods_selected_tab_change)
     return _read(account_id, 'package_info', body)
 
 
 def item_search(account_id: str, need_tabs: Any = '', item_id: str = '', search_key: str = '',
                 campaign_id: str = '', sort_field: str = '', sort_type: str = '',
-                page_num: Any = '', page_size: Any = '') -> Dict[str, Any]:
-    """商品搜索 V2：`itemId` 与 `searchKey` 至少给一个。"""
+                page_num: Any = '', page_size: Any = '', tab: str = '') -> Dict[str, Any]:
+    """商品搜索 V2：`itemId` 与 `searchKey` 至少给一个；`tab` 官方恒带。
+
+    `tab` / `needTabs` 不给时由协议层补官方首次加载的默认值
+    （`tab='platReco'`、`needTabs=true`），见 `backend/app/xianyu/ad.py`。
+    """
     try:
         body: Dict[str, Any] = {}
+        if _text(tab).strip():
+            body['tab'] = _text(tab).strip()
         if _text(need_tabs).strip() != '':
             body['needTabs'] = _flag(need_tabs)
         if _text(item_id).strip():
@@ -264,9 +324,17 @@ def item_search(account_id: str, need_tabs: Any = '', item_id: str = '', search_
     return _read(account_id, 'item_search', body)
 
 
-def customize_bid_estimates(account_id: str, payload: Any = None) -> Dict[str, Any]:
-    """自定义出价估算：`{entityType, entityList, bidTarget, bidPrice, noBid, pcFirstRequest}`。"""
+def customize_bid_estimates(account_id: str, payload: Any = None, entity_type: Any = '',
+                            entity_list: Any = '') -> Dict[str, Any]:
+    """自定义出价估算：官方必填 `{entityType, entityList}`（`pcFirstRequest` 协议层补）。
+
+    出价那条（`bidTarget` / `bidPrice` / `noBid` / `pcFirstRequest:false`）走 `payload`。
+    """
     body = dict(payload) if isinstance(payload, dict) else {}
+    try:
+        body.update(_entities(entity_type, entity_list))
+    except ValueError as exc:
+        return common.fail(str(exc), 'invalid_fields')
     if not body:
         return common.fail('customize.bid.estimates 需要请求体（entityType / entityList 等）',
                            'invalid_fields')
@@ -380,13 +448,17 @@ def read(account_id: str, kind: str, params: Any = None) -> Dict[str, Any]:
         return account_info(account_id, **{k: data.get(k, '') for k in
                                            ('order_price', 'promotion_mode', 'bid_type', 'scene')})
     if name == 'package_info':
-        return package_info(account_id, data)
+        return package_info(account_id, _payload_only(data), data.get('entity_type', ''),
+                            data.get('entity_list', ''),
+                            data.get('is_goods_selected_tab_change', ''))
     if name == 'item_search':
         return item_search(account_id, **{k: data.get(k, '') for k in
                                           ('need_tabs', 'item_id', 'search_key', 'campaign_id',
-                                           'sort_field', 'sort_type', 'page_num', 'page_size')})
+                                           'sort_field', 'sort_type', 'page_num', 'page_size',
+                                           'tab')})
     if name == 'customize_bid_estimates':
-        return customize_bid_estimates(account_id, data)
+        return customize_bid_estimates(account_id, _payload_only(data), data.get('entity_type', ''),
+                                       data.get('entity_list', ''))
     if name == 'group_list':
         return group_list(account_id, **{k: data.get(k, '') for k in
                                          ('start_date', 'end_date', 'page_num', 'page_size',
