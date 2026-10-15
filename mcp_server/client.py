@@ -796,6 +796,17 @@ TOOL_ROUTES: Dict[str, Dict[str, Any]] = {
         'path_params': ['account_id', 'item_id'],
         'body': ['price', 'quantity', 'confirm'],
     },
+    # 单条上下架（平台写，body 必须带 confirm；服务层第一道就是闸门）
+    'items_delist': {
+        'method': 'POST', 'path': '/api/items/{account_id}/{item_id}/delist',
+        'path_params': ['account_id', 'item_id'],
+        'body': ['confirm'],
+    },
+    'items_relist': {
+        'method': 'POST', 'path': '/api/items/{account_id}/{item_id}/relist',
+        'path_params': ['account_id', 'item_id'],
+        'body': ['confirm'],
+    },
     # ---------------- 改收货地址审批（1 读 + 2 写）----------------
     # 读那条**不能**带 confirm：带了就会被 confirm 闸门拦下，只读工具不该要点头。
     'trade_order_address_request': {
@@ -1294,6 +1305,30 @@ CANONICAL_SPECS: Dict[str, Dict[str, Any]] = {
             'type': 'object',
             'properties': {'account_id': _ACCOUNT_ID},
             'required': ['account_id'],
+        },
+    },
+    'items_delist': {
+        'description': '下架单件商品（平台写，必须 confirm=true；可再上架，不是删除）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'item_id': _ITEM_ID,
+                'confirm': _prop('boolean', '写操作闸门：必须显式 true 才真的提交到闲鱼'),
+            },
+            'required': ['account_id', 'item_id', 'confirm'],
+        },
+    },
+    'items_relist': {
+        'description': '重新上架单件已下架商品（平台写，必须 confirm=true）。',
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'account_id': _ACCOUNT_ID,
+                'item_id': _ITEM_ID,
+                'confirm': _prop('boolean', '写操作闸门：必须显式 true 才真的提交到闲鱼'),
+            },
+            'required': ['account_id', 'item_id', 'confirm'],
         },
     },
     'chats_list': {

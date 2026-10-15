@@ -553,6 +553,8 @@ class MasterChatTest(unittest.TestCase):
             'qualification_submit_packages', 'qualification_oss_credential',
             # ---- 商品写（会真的改平台数据，required 必含 confirm）----
             'items_batch_offline', 'items_batch_delete', 'items_quick_edit',
+            # 第五十八批（task-8）：单条上下架（前端 Items.tsx:471/:511 一直在用）
+            'items_delist', 'items_relist',
             # ---- 改收货地址审批（1 读 + 2 写；读那条故意不是写名字的前缀）----
             'trade_order_address_request',
             'trade_order_address_agree', 'trade_order_address_refuse',
@@ -599,6 +601,7 @@ class MasterChatTest(unittest.TestCase):
             'item_templates_create', 'item_templates_modify', 'item_templates_delete',
             'item_templates_unbind',
             'items_batch_offline', 'items_batch_delete', 'items_quick_edit',
+            'items_delist', 'items_relist',
             'trade_order_address_agree', 'trade_order_address_refuse',
             'shop_cs_routing_rule_save', 'shop_cs_group_save', 'shop_cs_group_delete',
             'trade_order_address_agree', 'trade_order_address_refuse',

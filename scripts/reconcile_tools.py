@@ -180,7 +180,11 @@ WRITE_PREFIX = ('trade_write_', 'trade_address_', 'promotion_write_', 'qualifica
                 'items_set_fans_price',
                 # 第五十三批：这两条**一直**是写工具（发货 / 给买家发消息），
                 # 只是原先规格里没声明 confirm、也没进这张表 —— 属于反向盲区。
-                'chats_send', 'orders_deliver')
+                'chats_send', 'orders_deliver',
+                # 第五十八批（task-8）：单条上下架。同样只加**完整工具名** ——
+                # 'items_' 宽前缀会把只读的 items_fans_price / items_listing_precheck /
+                # items_sync 一起误判成写工具。
+                'items_delist', 'items_relist')
 write_names = [n for n in specs if n.startswith(WRITE_PREFIX) and n != 'promotion_write_actions']
 print(f'write_tools={len(write_names)}')
 for s in T.TOOL_SPECS:

@@ -2170,6 +2170,45 @@ TOOL_SPECS: List[Dict[str, Any]] = [
             },
         },
     },
+    # ---------------- 单条上下架（会真的改平台在售状态；required 必含 confirm） ----------------
+    {
+        'type': 'function',
+        'function': {
+            'name': 'items_delist',
+            'description': '下架**单件**商品（从「在售」变「已下架」，买家搜不到也买不了；可再上架，不是删除）。'
+                           '批量下架用 items_batch_offline。'
+                           + _WRITE_HINT + 'account_id 与 item_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'item_id': {'type': 'string', 'description': '要下架的商品 ID'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'item_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'items_relist',
+            'description': '重新上架**单件**已下架商品（回到「在售」，买家又能搜到、能买）。'
+                           '批量上架用 items_batch_edit / batch-publish 族。'
+                           + _WRITE_HINT + 'account_id 与 item_id 必填。',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'account_id': {'type': 'string', 'description': '闲鱼账号 id（unb）'},
+                    'item_id': {'type': 'string', 'description': '要重新上架的商品 ID'},
+                    'confirm': {'type': 'boolean', 'description': '必须显式传 true 才真的执行'},
+                },
+                'required': ['account_id', 'item_id', 'confirm'],
+                'additionalProperties': False,
+            },
+        },
+    },
     # ---------------- 改收货地址审批（1 读 + 2 写） ----------------
     # 读工具名故意**不是**写工具名的前缀（`trade_order_address_request` vs
     # `trade_order_address_agree`），否则加前缀的写工具名单会把它误判成写工具。
@@ -3353,6 +3392,9 @@ _SERVICE_TARGETS: Dict[str, List[str]] = {
     'items_batch_offline': ['items', 'batch_offline'],
     'items_batch_delete': ['items', 'batch_delete'],
     'items_quick_edit': ['items', 'quick_edit'],
+    # 单条上下架：走同一个 downshelf/reshelf 服务函数（confirm 闸门在服务层第一道）。
+    'items_delist': ['items', 'downshelf'],
+    'items_relist': ['items', 'reshelf'],
     # ---- 粉丝价（1 读 + 1 写；写是整份替换，会真的改平台上三组粉丝价）----
     'items_fans_price': ['fans_price', 'read'],
     'items_set_fans_price': ['fans_price', 'set_prices'],
@@ -3438,6 +3480,13 @@ _SERVICE_FIXED_ARGS: Dict[str, Dict[str, Any]] = {
     'finance_expense': {'kind': 'expense'},
 }
 
+# 工具参数名与 service 形参名不一致时的翻译表（工具名 → {工具参数: 服务形参}）。
+# 单条上下架走的是 downshelf/reshelf 这对**收序列**的服务函数，工具侧对外只暴露 item_id。
+_SERVICE_ARG_MAPS: Dict[str, Dict[str, str]] = {
+    'items_delist': {'item_id': 'item_ids'},
+    'items_relist': {'item_id': 'item_ids'},
+}
+
 
 def _resolve_service(fn_name: str):
     """按工具名查到真正的 service 函数。返回 (callable, error)。"""
@@ -3482,7 +3531,8 @@ async def _dispatch_service(fn_name: str, args: Dict[str, Any]) -> Dict[str, Any
     if target is None:
         return {'ok': False, 'error': error or f'业务模块还没实现 {fn_name}()'}
     call_args = dict(_SERVICE_FIXED_ARGS.get(fn_name, {}))
-    call_args.update(_filter_args(target, args))
+    mapped = {v: args[k] for k, v in _SERVICE_ARG_MAPS.get(fn_name, {}).items() if k in args}
+    call_args.update(_filter_args(target, {**args, **mapped}))
     result = target(**call_args)
     if inspect.isawaitable(result):
         result = await result
@@ -3633,6 +3683,8 @@ _HANDLERS = {
     'items_batch_offline': lambda a: _dispatch_service('items_batch_offline', a),
     'items_batch_delete': lambda a: _dispatch_service('items_batch_delete', a),
     'items_quick_edit': lambda a: _dispatch_service('items_quick_edit', a),
+    'items_delist': lambda a: _dispatch_service('items_delist', a),
+    'items_relist': lambda a: _dispatch_service('items_relist', a),
     'items_fans_price': lambda a: _dispatch_service('items_fans_price', a),
     'items_set_fans_price': lambda a: _dispatch_service('items_set_fans_price', a),
     # ---- 草稿箱 ----

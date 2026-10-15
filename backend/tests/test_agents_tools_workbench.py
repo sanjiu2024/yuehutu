@@ -570,6 +570,16 @@ WRITE_TOOLS: Dict[str, Dict[str, Any]] = {
     'trade_add_memo': {
         'module': 'trade_write', 'fn': 'add_memo', 'confirm': True,
         'method': 'POST', 'path': '/api/trade/{account_id}/orders/{order_id}/memo'},
+    # ---- 第五十八批（task-8）：单条上下架（写）----
+    # 工具参数是单数 item_id（路由路径里就叫这个），服务层收的是序列 item_ids，
+    # 由 tools._SERVICE_ARG_MAPS 改名 —— 见下面
+    # test_spec_properties_are_accepted_by_the_service_function。
+    'items_delist': {
+        'module': 'items', 'fn': 'downshelf', 'confirm': True,
+        'method': 'POST', 'path': '/api/items/{account_id}/{item_id}/delist'},
+    'items_relist': {
+        'module': 'items', 'fn': 'reshelf', 'confirm': True,
+        'method': 'POST', 'path': '/api/items/{account_id}/{item_id}/relist'},
 }
 
 WRITE_TOOL_NAMES = list(WRITE_TOOLS)
@@ -897,14 +907,19 @@ class RepoWideCrossCheckTest(unittest.TestCase):
                 if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
                     continue
                 props = set(params_of(name).get('properties', {}))
-                kept = set(tools._filter_args(target, {k: None for k in props}))
-                self.assertEqual(props - kept, set(),
+                # 工具参数名与服务形参名不一致时（items_delist.item_id →
+                # downshelf(item_ids=…)），以 tools._SERVICE_ARG_MAPS 声明为准：
+                # 对账要看**改名之后**的实参名，否则会把合法的改名当成「参数被丢掉」。
+                mapping = tools._SERVICE_ARG_MAPS.get(name, {})
+                effective = {mapping.get(k, k) for k in props}
+                kept = set(tools._filter_args(target, {k: None for k in effective}))
+                self.assertEqual(effective - kept, set(),
                                  f'{name} 的这些参数会被 _filter_args 静默丢掉')
                 required = [p.name for p in sig.parameters.values()
                             if p.default is p.empty
                             and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)]
-                self.assertEqual(set(required) - props, set(),
-                                 f'{name} 的服务层必填参数没写进 spec.properties')
+                self.assertEqual(set(required) - effective, set(),
+                                 f'{name} 的服务层必填参数没写进 spec.properties / _SERVICE_ARG_MAPS')
 
 
 class WriteToolDispatchTest(unittest.TestCase):
