@@ -154,12 +154,13 @@ def _ad_range(start_date: str, end_date: str, page: int, size: int) -> Dict[str,
         'includeEndDate': True, 'allPeriod': False,
     }
 
-# 安全中心（闲气值 / 违规记录）：官方微应用会把卖家工作台的**站点 CODE** 放进
-# 请求头 `idle_site_biz_code`（取值就是工作台 URL 上的 `?site=COMMONPRO`）。
-# 不带这个头时平台回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`，data.errorMsg 是
-# 「站点CODE不能为空」；带了空串是「用户无权限访问当前站点[]」——都**不是**账号掉线。
-# 真机已验证：带上 `COMMONPRO` 后 score.get / violation.list 都返回 SUCCESS。
-SECURITY_SITE_BIZ_CODE = 'COMMONPRO'
+# 安全中心（闲气值 / 违规记录）：除通用头外还要 origin/referer 指向卖家工作台。
+# 站点 CODE 本身已由通用 mtop 路径默认带上（见下），这里不重复解释。
+# 站点 CODE 自 2026-10-16 起已是**通用 mtop 路径的默认头**（`mtop.SITE_BIZ_CODE`，
+# 见 backend/app/xianyu/mtop.py 的注释与 docs/audit/permission_rootcause62.md）：
+# seller.platform 一族少这个头会被判成「账号没权限」，真机对照证明补上就通。
+# 这里保留常量名是为了兼容既有引用，取值以 `mtop.SITE_BIZ_CODE` 为唯一来源。
+SECURITY_SITE_BIZ_CODE = mtop.SITE_BIZ_CODE
 SECURITY_API = 'mtop.idle.pc.security.score.get'
 SECURITY_VIOLATION_API = 'mtop.idle.pc.security.violation.list'
 
@@ -368,6 +369,10 @@ class XianyuClient:
                 'origin': 'https://www.goofish.com',
                 'referer': 'https://www.goofish.com/',
                 'cookie': self.cookie_str.replace('\n', '').replace('\r', ''),
+                # 站点 CODE 是**每个** mtop 请求都要带的（见 mtop.SITE_BIZ_CODE）：
+                # 少它时 seller.platform 一族会被判成「账号没权限」，
+                # 而真机对照证明补上就通。`extra_headers` 仍可覆盖。
+                'idle_site_biz_code': mtop.SITE_BIZ_CODE,
             })
             if extra_headers:
                 headers.update(extra_headers)

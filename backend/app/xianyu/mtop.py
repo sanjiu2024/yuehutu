@@ -34,6 +34,21 @@ JSV_VERSION = '2.7.2'
 DEFAULT_SPM_CNT = 'a21ybx.publish.0.0'
 DEFAULT_TIMEOUT = 25
 
+# 卖家工作台的**站点 CODE**：官方微应用的每个 mtop 请求都带这个头
+# （取值就是工作台 URL 上的 `?site=COMMONPRO`）。
+#
+# 不带它的后果很误导人：`seller.platform` 一族的接口在**鉴权阶段**就被拒，
+# ret 是 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`，data.errorMsg 写「站点CODE不能为空」，
+# 看起来像「这个账号没权限」—— 其实是我们的请求少了一个头（H2，不是账号权限）。
+# 2026-10-16 真机对照（同接口 / 同 cookie / 同 sign，只差这一个头）：
+#   * `mtop.taobao.idle.seller.platform.pc.item.status.statistics` → SUCCESS（total=44）
+#   * `mtop.taobao.idle.seller.platform.item.pc.search.categories` → SUCCESS
+#   * `mtop.alibaba.idle.seller.platform.order.backfill.report` → 鉴权通过，
+#     错误码推进到参数层（`FAIL_SYS_BIZPARAM_MISSED::缺少业务参数orderId`）
+# 空串不算「带了」（平台回「用户无权限访问当前站点[]」）。
+# 证据：`docs/audit/permission_rootcause62.md`、`logs/fail62/perm/*.json`。
+SITE_BIZ_CODE = 'COMMONPRO'
+
 # 只有这两个 Cookie 会在响应里续期，也只需要合并这两个。
 TOKEN_COOKIES = ('_m_h5_tk', '_m_h5_tk_enc')
 
