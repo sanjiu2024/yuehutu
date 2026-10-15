@@ -3499,7 +3499,7 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
   冷却过后同一条请求 200 —— 第 46 批那套「平台风控 → 冷却阶梯 → 到点自动放行」在真机上生效。
 - ❌ **新缺陷：`POST /api/orders/sync` 是空壳**，永远返回 503 `xianyu_not_ready`。真机实测
   `{"success":false,"message":"协议层尚未实现 list_orders","code":"xianyu_not_ready"}`。
-  根因：`backend/app/services/orders.py:176 sync_orders()` 依次找
+  根因：`backend/app/services/orders.py:176` 的 `sync_orders()` 在 :184 依次找
   `('list_orders','fetch_orders','get_orders')` 三个方法名，而 `backend/app/xianyu/trade.py`
   **一个都没有**（那里只有造请求体的 `order_list_request()` 与解析用的 `normalize_order()`，
   真正发请求的入口是第 38 批那条 `GET /api/trade/{account_id}/orders`）。
@@ -3845,7 +3845,7 @@ docstring 与 `docs/CONTRACTS.md` 同步订正成「平台侧**有**删除接口
    原先那条「Cookie 在 2026-10-07 被判过期、要先重新扫码」**已经过时**（另注：账号
    `3998190171`（卒奥aa）已被用户删除）。仍然需要登录态的功能现在可以直接验。
 2. **修 `POST /api/orders/sync` 那个空壳（第五十六批发现，建议最先做）**：它永远返回 503
-   `协议层尚未实现 list_orders` —— `backend/app/services/orders.py:176` 找的
+   `协议层尚未实现 list_orders` —— `backend/app/services/orders.py:184` 找的
    `list_orders`/`fetch_orders`/`get_orders` 在 `backend/app/xianyu/trade.py` 里一个都没有。
    补法：在 `trade.py` 加 `list_orders()` 协程（复用现成的 `order_list_request()` 造请求体、
    `normalize_order()` 解析），`sync_orders` 把结果 upsert 进本地订单表并 publish
