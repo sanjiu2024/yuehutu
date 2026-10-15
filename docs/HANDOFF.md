@@ -63,7 +63,7 @@
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_gate55_full&& C:\Python310\python.exe backend\tests\run_all.py"
--> TOTAL 72  PASS 72  FAIL 0  CASES 3089  SKIPPED 2
+-> TOTAL 73  PASS 73  FAIL 0  CASES 3116  SKIPPED 2
    （唯一 skip 仍在 test_xianyu_login.py：security.py:63-64 的空密码分支）
 ```
 
@@ -83,8 +83,8 @@ cmd /c "cd frontend && npx tsc --noEmit"
 -> TSC_EXIT=0
 cmd /c "cd frontend && npm run build"
 -> BUILD_EXIT=0   ✓ 97 modules transformed.
-   frontend/dist/assets/index-BhT_UXe6.js (719,837 B；gzip 206,017 B —— node zlib level 6 复算，构建日志那行记的是「206.02 kB」。**vite 报的「648.74 kB」是字符数口径**：该文件按 UTF-8 读出来正好 648,740 个字符，719,837 − 648,740 = 71,097 是 35,629 个非 ASCII 字符多占的字节，别把它当字节数用)
-   frontend/dist/assets/index-BpLeM6Kv.css (158.94 kB, gzip 24.97 kB)
+   frontend/dist/assets/index-BDiRHuSq.js (720,071 B；gzip 203,954 B —— node zlib level 6 复算，构建日志那行记的是「203.95 kB」。**vite 报的「648.94 kB」是字符数口径**：该文件按 UTF-8 读出来正好 648,944 个字符）
+   frontend/dist/assets/index-N30SP59r.css (159.10 kB, gzip 24.99 kB)
 ```
 
 ```text
@@ -3915,6 +3915,126 @@ first.hand / backend 族 → `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（官方 seller.p
 - 五件套（打包版 18400，**对 03:04 产物重跑**）全过：闸门 **0/79**；`ASSETS_MATCH=True`（`index-BpLeM6Kv.css` + `index-BhT_UXe6.js`）；**29/29 页**；对比度 **dark 0/29 / light 0/29**；a11y 三类 0；两份审计 `NON_GET_API_REQUESTS=[]`。日志落盘 `.dsh-tmp/gate61c.log` / `assets61c.log` / `smoke61c.log` / `contrast61c.log` / `a11y61c.log`（大审查指出本批原先只有上下文里的结果、盘上无日志，这次补齐）。
 - 真机只读复验（打包版 18400，账号 2217970177348，`logs/probe61/`）：**区域码三级全通** —— `token=CN` → **31 个省**、`CN^^^北京` → 1 个市、`CN^^^北京^^^北京市` → **17 个区**；`unconsign-detail` **200**（该单平台没给内容 ⇒ 200 + `no_evidence` warning，如实不谎报）；`delivery-place` 502 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`、`item-status-statistics` 502 同码、`pc-service-status` 502 `FAIL_BIZ_COMMON_SYSTEM_ERROR::系统错误请稍候再试`、`shop-stats` 不给 `session_id` → 400 本地校验 / 给 `probe61` → 200 且平台业务体 `{code:SESSION_INVALID,msg:会话信息获取失败}` 原样透出。**全程只读，零写操作。**
 - 第 61 批真机写验证见 A 段（`logs/write61/`）；本地无未提交残留（`git status --porcelain` 空）。
+
+### 第六十二批：站点 CODE 头（「无权限」的根因）+ 投放四条 payload + 智能表单平铺载荷 + 失败人话（353~360）
+
+用户问「怎么还有一堆 api 调用失败的」。本批把真机见过的 54 条失败逐条归因（`docs/audit/api_failures62.md`），
+发现**最大一类不是账号没权限，而是我们少发了一个通用请求头**；另有 4 条投放读接口是我们少发业务键。
+两类都修了，并真机只读复打翻成 200。
+
+#### A 站点 CODE：`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 的根因（`614216a`）
+
+- 现象：`mtop.taobao.idle.seller.platform.*` 一族（数据页 datacompass 10 条、商品发布类目 3 条、订单 backfill、物流 delivery-place、批量下架）
+  全部回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`，人话被翻成「这个账号没有开通这个功能的权限」。
+- 真机对照（`docs/audit/permission_rootcause62.md`，17 个变体，原始响应 `logs/fail62/perm/*.json`）：
+  代表接口 `mtop.taobao.idle.seller.platform.pc.item.status.statistics` v1.0，上游 HTTP 恒 200；
+  **只加一个请求头 `idle_site_biz_code: COMMONPRO` 就 `SUCCESS::调用成功`** 并返回真实数据（在卖 44 / 下架 1）。
+  不带或带空串时平台回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED` + `data.errorMsg=站点CODE不能为空` + `permissionCode`；
+  只加 origin/referer 或 spm_pre/log_id 无效；`v=2.0` 是 `FAIL_SYS_API_NOT_FOUNDED`。
+- 为什么是通用头：官方 xianyu 侧所有 mtop 包装器（`trade_bundle/main.js` hO 偏移 1979500、`js_main.js` gC 偏移 1802774、
+  `datacenter_main.js` 偏移 2254100）都写死 `{appKey:'34839810', accountSite:'xianyu', type:'POST', v:'1.0',
+  ext_querys:{spm_cnt,spm_pre,log_id}}` 并注入 `ext_headers:{idle_site_biz_code, idle_user_group_member_id}`；
+  URL 拼装 = `https://h5api.m.goofish.com/h5/<api>/<v>/`，与我们的 `API_BASE` 一致 ⇒ 不是网关/appKey 差异。
+- 改动：`backend/app/xianyu/mtop.py::SITE_BIZ_CODE = 'COMMONPRO'`（唯一来源，长注释写清三条真机对照）；
+  `XianyuClient.mtop()` 默认 headers 带上它（`extra_headers` 仍可覆盖）；`SECURITY_SITE_BIZ_CODE` 改为引用同一常量。
+  全仓只有三处手工拼 headers（`client.py:366` mtop / `client.py:1200` 图片上传 / `login.py:144` 登录），另两处非 mtop ⇒ 无遗漏。
+- 回归：`backend/tests/test_xianyu_site_header.py` 5 条（`SiteGateStub` 模拟鉴权门：没带/空串回 UNAUTHORIZED，带了 SUCCESS）。
+- 仍然真的没权限的只有一条：`merchant.delivery.place.detail.query`（补头后仍拒，`permissionCode=merchant:deliveryadress:query`）。
+
+#### B 投放四条读接口：少发官方恒定业务键（`45d5e7e`）
+
+信封（`requestJson`）本来是对的，缺的是官方调用点恒定带的键：`item.searchV2` 缺 `tab`/`needTabs`（官方初值 `platReco`/`true`）；
+`package.info` 与 `customize.bid.estimates` 缺 `entityType`/`entityList`，且 **`catId=0` 会让平台回 `E_AD_BP_COMMON_SYSTEM_EXCEPTION`**（伪装成平台故障，换真实类目 `50023914` 才 200）；
+`campaign.log.query` 缺 `operatorType`/`operationType`（干净 A/B：不带 → SYSTEM_EXCEPTION、带 0 → 200）。
+补齐后真机只读复打 **4/4 全部 200**（原始响应 `logs/fail62/kurumi/`）。
+协议层加 `BODY_DEFAULTS`/`BODY_REQUIRED`：官方恒定键补默认值、调用方给的值优先；残包本地拦下翻 400 `invalid_fields`，
+不再把「谁的问题」丢给平台的 502 文案。契约与逐条 bundle 偏移见 `docs/contracts/ad.md` §8。
+
+#### C 智能表单查询：改用官方平铺载荷（`bc79dd6`）
+
+官方载荷是表单页 URL 的查询串：平铺、值一律字符串、无信封键。改动：协议层加平铺守卫（值是 dict/list/tuple 或 None/bool → ValueError）、
+`smart_form_params_from_url`/`smart_form_params_from_buttons`；服务层 `smart_form_query` 支持 `order_id`，
+先从订单按钮里找 `longCycleFillFormInfo` 的表单页 URL 再拆参，取不到返回 `smart_form_params_unavailable` 并列出真实按钮码，
+**不拿 orderId 冒充表单参数**。
+
+**诚实边界**：本账号 15 笔订单没有任何一笔带智能表单按钮（平台从未下发表单页 URL）⇒ 用真实参数能否 200 仍未证实，接口可用性未确认。
+
+#### D 失败人话：翻译单点 + `hint` 字段（`5b38008`）
+
+- 用户在商品页「操作日志」与风控页看到的只有平台原文，分不清「自己没权限 / 平台故障 / 设计内风控冷却」。
+- `backend/app/services/platform_errors.py::describe(*texts)`：先 `explain()` 按码解释，认不出再看是不是无权限类（`permission_hint`），都不认返回空串（不编解释）。
+  真机 logs 里确实有只有人话没有码的行（`mtop.taobao.idlemessage.customer.leave.session: 无权限访问`）。
+- `decorate()` 改用 `describe()`；**`platform_code` 只在原文真有码时给**（裸人话行没有码，编一个会让按码分支的前端说错话）。
+- `items.list_operation_logs` 与 `risk_service.events` 各加 `hint` 字段（`message`/`detail` 保持平台原文）；前端在说明列渲染 `hint`（`--text-dim` 同档色）。
+
+#### E 数据页 datacompass：入参形状 + 横幅指标解析（本批）
+
+- 现象：数据页三页（总览 / 粉丝 / 客服）的指标长期全 null。补上站点 CODE 后平台的真实答复才露出来：业务体 `INPUT_PARAM_ILLEGAL::输入参数不合法`。
+- 根因 1（入参）：官方这三个接口认 `{dateType, dateRange}` —— 自定义区间 = `dateType='customDate'` + `dateRange='20260901|20260930'`（**竖线字符串**，不是数组、不是横线）。我们原先发 `dateType='month'` + `ms` + `date:[begin,finish]` 数组 ⇒ 平台一律 `INPUT_PARAM_ILLEGAL`。
+  真机：该形状下 23/23 个 datacompass 调用 `SUCCESS::调用成功`（`logs/fail62/datacompass_kurumi62.json`）；带横线的日期、超 31 天的区间都回 `INPUT_PARAM_ILLEGAL`（`20260901|20261001` 含头尾 31 天过、`20260801|20260930` 不过）
+  ⇒ 协议层 `normalize_date` / `date_range` + `MAX_RANGE_DAYS=31`；服务层四个入口先拦回 400 `invalid_fields`（不再让协议层 `ValueError` 变成 502）。
+- 根因 2（解析）：指标名在**值**里 —— `data.graphBannerBenchData.bannerDataList = [{name:'onlCnt', data:45, dataFormat:'45'}, …]`，按别名找**键**永远命中不了。新增 `banner_values()`（`find_number` 先查横幅、再按键名找），百分比优先取 `dataFormat`（`respRate3min: 0.7103` + `'71.03%'` ⇒ 契约要 71.03）。
+- 交易卡 `parse_card(kind='trade')`：指标全在 `data.itemFlowTransferData` 里（`chatCnt` / `ipv` / `chatPayUcvr` …），原先整块进 `extra` ⇒ 这张卡的指标恒空；现在展开成指标，并在 `extra` 留一份原样数据。
+- 真机复验（in-process，账号 2217970177348，20260901–20260930，原始响应 `logs/fail62/dc_after62.json`）：三页 `code: success`，指标首次有值 ——
+  · 总览 `{visits:168, online_items:45, inquiry_visitors:26}`
+  · 粉丝 `{fans_total:5, fans_new:2}`
+  · 客服 `{inquiry_visitors:18, reply_rate_3min:71.03, avg_reply_seconds:1874.25}`
+  仍为 null 的（**不补 0、不猜标签**）：`inquiry_count`（`manualSessCnt` 与 `consultItmCnt` 谁是「询单量」说不准 ⇒ 故意不映射）、`satisfaction` / `unreplied_count`（平台 `data: null`）。
+
+#### F 失败归因审计（本批新增两篇）
+
+- `docs/audit/api_failures62.md`：54 条失败 = 账号权限缺 26 + 平台侧故障/瞬态 17 + 参数形状没猜对 7 + 语义正确拒绝 1 + 本地 400 必填 6；
+  **失败不按 mtop 前缀分族**（同一 `mtop.alibaba.idle.seller.platform.*` 下有的全成功、有的全失败）⇒ 不能拿前缀当权限白名单。
+- `docs/audit/permission_rootcause62.md`：站点 CODE 根因（见 A）。
+- 口径：`risk_events` 21 条 `hit` 里 16 条是设计内的风控冷却（`RGV587_ERROR`），3 条是第 58 批修掉前的假阳性；
+  `operation_logs` 52 条失败里 26 条是 2026-10-05~10-08 早期开发遗留（`manual_verify` 找不到文件），5 条是探针自己打的。
+
+#### 验收（第 62 批）
+
+```text
+cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_b62final2&& C:\Python310\python.exe backend\tests\run_all.py"
+-> TOTAL 73  PASS 73  FAIL 0  CASES 3116  SKIPPED 2      （日志 .dsh-tmp/run_all_b62final2.log）
+```
+
+```text
+C:\Python310\python.exe scripts\reconcile_tools.py
+-> specs=195 master=194 routes=196 targets=174 handlers=195
+   write_tools=82  route_checked=196  ALIASES=22
+   RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
+```
+
+```text
+create_app().openapi() -> 240 路径 / 258 操作（GET 128 / POST 115 / PUT 9 / DELETE 5 / PATCH 1；本批未加路由）
+```
+
+```text
+dist\闲鱼AI工作台\闲鱼AI工作台.exe -> 10,305,408 B / 2026-10-16 04:29:18（带前端重打包）
+五件套（同一产物，日志 .dsh-tmp/{gate,assets,smoke,contrast,a11y}62.log）：
+  scripts/probe_write_gate.py --port 18400 -> GATE FAILURES: 0 / 79
+  scripts/check_assets.py --port 18400     -> ASSETS_MATCH=True
+  scripts/packaged_ui_smoke.py --port 18400-> PACKAGED UI SMOKE  29/29 页通过
+  scripts/contrast_audit.py --threshold 4.0-> [dark] BAD_PAGES 0/29  [light] BAD_PAGES 0/29  NON_GET_API_REQUESTS=[]
+  scripts/a11y_audit.py --port 18400       -> 无名字按钮 0 / 无标签输入框 0 / 焦点不可见 []  NON_GET_API_REQUESTS=[]
+```
+
+**打包版 HTTP 对照（before → after，`logs/fail62/http_before62/` → `logs/fail62/http_after62/`）**
+
+| 路由 | before | after |
+| --- | --- | --- |
+| 数据页商品状态统计 | 502 protocol_error | 200 |
+| 商品发布类目树 | 502 protocol_error | 200 |
+| 订单回填报告 | 502 protocol_error | 502 protocol_error |
+| 数据总览（46 天旧区间） | 200 | 400 invalid_fields |
+| 投放 campaign-log | 502 protocol_error | 200 |
+| 投放 item-search | 502 protocol_error | 200 |
+| 数据总览（31 天） | （缺） | 200 |
+| 粉丝页（31 天） | （缺） | 200 |
+| 客服页（31 天） | （缺） | 200 |
+| 投放 package-info | （缺） | 200 |
+| 投放 bid-estimates | （缺） | 200 |
+
+package-info / bid-estimates 要用官方形状 `entity_type=1` + `entity_list=[{entityId,catId,price,areaTarget,startTime}]`（带 `promotionMode=CUSTOMIZE` 反而回 `E_AD_BP_COMMON_SYSTEM_EXCEPTION`）—— 这两条是本批新加的便利入参，真机 200。
+
 
 ## 四、已验证 / 未验证（诚实边界）
 
