@@ -32,7 +32,7 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe desktop\main.py"
 ## 测试
 
 ```powershell
-# 全量基线（14 个测试文件，逐个子进程跑）
+# 全量基线（62 个测试文件 / 2723 个用例，逐个子进程跑）
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\Python310\python.exe backend\tests\run_all.py"
 
 # 单个文件
@@ -53,7 +53,8 @@ cmd /c "set PYTHONPATH=.&& C:\Python310\python.exe scripts\smoke_write.py 18090"
 
 | 文件 | 内容 |
 | --- | --- |
-| [docs/HANDOFF.md](docs/HANDOFF.md) | 交接与验收记录：九条诉求逐条对照、真实命令与输出、**已验证 / 未验证**边界 |
+| [docs/交接文档.md](docs/交接文档.md) | **接手先看这份**：五分钟跑起来、目录地图、四条关键链路、六条硬口径、能力清单、真机证据、待办与避坑手册 |
+| [docs/HANDOFF.md](docs/HANDOFF.md) | 按批次的开发日志：九条诉求逐条对照、真实命令与输出、**已验证 / 未验证**边界 |
 | [docs/CONTRACTS.md](docs/CONTRACTS.md) | 契约：19 张表 DDL / REST 清单 / 编排协议 / MCP 工具集 |
 | [docs/PACKAGING.md](docs/PACKAGING.md) | 打包、产物路径、常见坑 |
 | [docs/MCP.md](docs/MCP.md) | 挂进 DeepSeek Harness 的配置与排错 |
