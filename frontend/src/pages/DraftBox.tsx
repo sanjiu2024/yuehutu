@@ -13,7 +13,7 @@
 
 import { useEffect, useState } from 'react'
 import { api, errorText } from '../api'
-import { AsyncBox, Badge, ConfirmDialog, Modal, Notice, useToast } from '../components'
+import { AsyncBox, Badge, ConfirmDialog, Modal, Notice, Pager, useToast } from '../components'
 import { IconBox, IconEye, IconRefresh, IconTrash } from '../icons'
 import { useAsync } from '../hooks/useAsync'
 import { formatMoney, formatTime, prettyJson, truncate } from '../format'
@@ -529,24 +529,21 @@ export function DraftBox({ accountId }: { accountId: string }) {
           </table>
         </div>
 
-        <div className="dr-pager">
-          <button className="btn sm" onClick={() => setPage((n) => Math.max(1, n - 1))} disabled={page <= 1}>
-            上一页
-          </button>
-          <span className="dim">
-            第 {drafts.data?.page ?? page} / {Math.max(1, pages)} 页
-          </span>
-          <button
-            className="btn sm"
-            onClick={() => setPage((n) => n + 1)}
-            disabled={pages > 0 && page >= pages}
-          >
-            下一页
-          </button>
-          {drafts.data?.fetched_at && (
-            <span className="dim dr-fetched">抓取于 {formatTime(drafts.data.fetched_at)}</span>
-          )}
-        </div>
+        <Pager
+          page={page}
+          pageSize={size}
+          total={pages > 0 ? pages * size : undefined}
+          hasNext={pages > 0 && page < pages}
+          onPage={setPage}
+          note={
+            <>
+              第 {drafts.data?.page ?? page} / {Math.max(1, pages)} 页
+              {drafts.data?.fetched_at && (
+                <span className="dim dr-fetched"> 抓取于 {formatTime(drafts.data.fetched_at)}</span>
+              )}
+            </>
+          }
+        />
       </AsyncBox>
 
       {detailFor && (

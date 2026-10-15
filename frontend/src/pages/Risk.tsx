@@ -505,16 +505,8 @@ export function RiskPage() {
                 <span className="rk-dim">共 {rows.length} 个账号</span>
               </div>
             </div>
-            <AsyncBox loading={risk.loading} error={risk.error} notReady={risk.notReady} onRetry={risk.reload}>
-              {rows.length === 0 ? (
-                <div className="rk-empty">
-                  <span className="rk-empty-icon">
-                    <IconUsers size={22} />
-                  </span>
-                  <div className="rk-empty-title">还没有账号</div>
-                  <div className="rk-empty-desc">先在账号页扫码登录一个账号，这里才会出现风控状态。</div>
-                </div>
-              ) : (
+            <AsyncBox loading={risk.loading} error={risk.error} notReady={risk.notReady} onRetry={risk.reload} empty={rows.length === 0} emptyTitle="还没有账号" emptyDesc="先在账号页扫码登录一个账号，这里才会出现风控状态。">
+              {(
                 <div className="rk-card-body">
                   <table className="rk-table">
                     <thead>
@@ -590,16 +582,11 @@ export function RiskPage() {
               error={events.error}
               notReady={events.notReady}
               onRetry={events.reload}
+              empty={eventList.length === 0}
+              emptyTitle="没有风控事件"
+              emptyDesc="账号触发风控、被拒解除、验证通过时都会记在这里。"
             >
-              {eventList.length === 0 ? (
-                <div className="rk-empty">
-                  <span className="rk-empty-icon">
-                    <IconShield size={22} />
-                  </span>
-                  <div className="rk-empty-title">没有风控事件</div>
-                  <div className="rk-empty-desc">账号触发风控、被拒解除、验证通过时都会记在这里。</div>
-                </div>
-              ) : (
+              {(
                 <div className="rk-scroll">
                   <table className="rk-table">
                     <thead>

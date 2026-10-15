@@ -25,7 +25,7 @@
 import { useState } from 'react'
 
 import { api, errorText } from '../api'
-import { AsyncBox, Badge, ConfirmDialog, Modal, Notice, useToast } from '../components'
+import { AsyncBox, Badge, ConfirmDialog, Modal, Notice, Pager, useToast } from '../components'
 import { formatTime } from '../format'
 import { useAsync } from '../hooks/useAsync'
 import { IconInfo, IconPlus, IconRefresh, IconUser } from '../icons'
@@ -539,27 +539,20 @@ export function SubAccountsPage() {
               </div>
             )}
 
-            <AsyncBox loading={data.loading} error={data.error} notReady={data.notReady} onRetry={data.reload}>
+            <AsyncBox loading={data.loading} error={data.error} notReady={data.notReady} onRetry={data.reload} empty={Array.isArray(rows) && rows.length === 0} emptyTitle="这个账号下没有子账号" emptyDesc="平台返回的子账号列表是空的；如果确定应该有，点「重新加载」再看一次。">
               <ListBody items={rows} extra={extra} />
             </AsyncBox>
 
             {Array.isArray(rows) && rows.length > 0 && (
-              <div className="sh-pager">
-                <span className="sh-muted">
-                  第 {page} 页{!isMissing(total) ? ` · 共 ${count(total)} 条` : ''}
-                </span>
-                <span className="sh-spacer" />
-                <button className="btn sm" onClick={() => setPage((n) => Math.max(1, n - 1))} disabled={page <= 1 || data.loading}>
-                  上一页
-                </button>
-                <button
-                  className="btn sm"
-                  onClick={() => setPage((n) => n + 1)}
-                  disabled={data.loading || hasNext === false || (hasNext !== true && isMissing(total))}
-                >
-                  下一页
-                </button>
-              </div>
+              <Pager
+                page={page}
+                pageSize={PAGE_SIZE}
+                total={!isMissing(total) && Number.isFinite(Number(total)) ? Number(total) : undefined}
+                loading={data.loading}
+                hasNext={hasNext === true || (!isMissing(total) && hasNext !== false)}
+                onPage={setPage}
+                note={<>第 {page} 页{!isMissing(total) ? ` · 共 ${count(total)} 条` : ''}</>}
+              />
             )}
 
             <div className="sh-note">

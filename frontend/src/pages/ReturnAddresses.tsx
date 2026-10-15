@@ -133,20 +133,20 @@ function formToBody(form: AddressForm): Record<string, unknown> {
 function validate(form: AddressForm): string[] {
   const problems: string[] = []
   const name = form.contact_name.trim()
-  if (!name) problems.push('收件人 contact_name')
-  else if (name.length > MAX_NAME) problems.push(`收件人 contact_name 超过 ${MAX_NAME} 字`)
+  if (!name) problems.push('收件人')
+  else if (name.length > MAX_NAME) problems.push(`收件人超过 ${MAX_NAME} 字`)
 
   const phone = normalizeMobile(form.mobile_phone)
-  if (!phone) problems.push('手机号 mobile_phone')
-  else if (!/^\d{11}$/.test(phone)) problems.push('手机号 mobile_phone 要是 11 位数字（去空格/横线后）')
+  if (!phone) problems.push('手机号')
+  else if (!/^\d{11}$/.test(phone)) problems.push('手机号要是 11 位数字（去空格/横线后）')
 
-  if (!form.province_name.trim()) problems.push('省 province_name')
-  if (!form.city_name.trim()) problems.push('市 city_name')
-  if (!form.district_name.trim()) problems.push('区/县 district_name')
+  if (!form.province_name.trim()) problems.push('省')
+  if (!form.city_name.trim()) problems.push('市')
+  if (!form.district_name.trim()) problems.push('区/县')
 
   const detail = form.detail_address.trim()
-  if (!detail) problems.push('详细地址 detail_address')
-  else if (detail.length > MAX_DETAIL) problems.push(`详细地址 detail_address 超过 ${MAX_DETAIL} 字`)
+  if (!detail) problems.push('详细地址')
+  else if (detail.length > MAX_DETAIL) problems.push(`详细地址超过 ${MAX_DETAIL} 字`)
   return problems
 }
 
@@ -483,34 +483,53 @@ export function ReturnAddressesPage() {
           }
         >
           <div className="ra-form">
-            <Field label="收件人 contact_name" tip={`必填，≤${MAX_NAME} 字`}>
+            <Field label="收件人" tip={`必填，≤${MAX_NAME} 字`}>
               <input
+                title="平台字段 contact_name"
                 value={form.contact_name}
                 maxLength={MAX_NAME}
                 onChange={(event) => patchForm({ contact_name: event.target.value })}
               />
             </Field>
-            <Field label="手机号 mobile_phone" tip="必填，11 位数字（空格与横线会被去掉）">
+            <Field label="手机号" tip="必填，11 位数字（空格与横线会被去掉）">
               <input
+                title="平台字段 mobile_phone"
                 value={form.mobile_phone}
                 onChange={(event) => patchForm({ mobile_phone: event.target.value })}
               />
             </Field>
-            <Field label="省 province_name" tip="必填">
-              <input value={form.province_name} onChange={(event) => patchForm({ province_name: event.target.value })} />
+            <Field label="省" tip="必填">
+              <input
+                title="平台字段 province_name"
+                value={form.province_name}
+                onChange={(event) => patchForm({ province_name: event.target.value })}
+              />
             </Field>
-            <Field label="市 city_name" tip="必填">
-              <input value={form.city_name} onChange={(event) => patchForm({ city_name: event.target.value })} />
+            <Field label="市" tip="必填">
+              <input
+                title="平台字段 city_name"
+                value={form.city_name}
+                onChange={(event) => patchForm({ city_name: event.target.value })}
+              />
             </Field>
-            <Field label="区/县 district_name" tip="必填">
-              <input value={form.district_name} onChange={(event) => patchForm({ district_name: event.target.value })} />
+            <Field label="区/县" tip="必填">
+              <input
+                title="平台字段 district_name"
+                value={form.district_name}
+                onChange={(event) => patchForm({ district_name: event.target.value })}
+              />
             </Field>
-            <Field label="区级区域码 area_id" tip="可选。平台要的是区级区域码，我们没有来源，留空就不发这个键">
-              <input value={form.area_id} onChange={(event) => patchForm({ area_id: event.target.value })} />
+            <Field label="区级区域码（选填）" tip="区/县的行政区划代码，例如 330106；不清楚就留空，平台若因此拒绝会显示原因">
+              <input
+                title="平台字段 area_id"
+                value={form.area_id}
+                onChange={(event) => patchForm({ area_id: event.target.value })}
+              />
             </Field>
             <div className="ra-form-wide">
-              <Field label="详细地址 detail_address" tip={`必填，≤${MAX_DETAIL} 字（不含省市区）`}>
+              <Field label="详细地址" tip={`必填，≤${MAX_DETAIL} 字（不含省市区）`}>
                 <input
+                  title="平台字段 detail_address"
                   value={form.detail_address}
                   maxLength={MAX_DETAIL}
                   onChange={(event) => patchForm({ detail_address: event.target.value })}
@@ -521,10 +540,11 @@ export function ReturnAddressesPage() {
               <label className="ra-check-label">
                 <input
                   type="checkbox"
+                  title="平台字段 default_addr"
                   checked={form.default_addr}
                   onChange={(event) => patchForm({ default_addr: event.target.checked })}
                 />
-                <span>设为默认退货地址（default_addr）</span>
+                <span>设为默认退货地址</span>
               </label>
             </div>
           </div>

@@ -46,7 +46,7 @@ export function adoptDesktopToken(): void {
 if (typeof window !== 'undefined') adoptDesktopToken()
 
 /** 后端路由还没写出来时给的提示（前端页面仍可用，只是数据为空）。 */
-export const NOT_READY_HINT = '该功能的后端接口还没就绪，请稍后再试或联系管理员'
+export const NOT_READY_HINT = '这个功能当前版本还不能用，后续更新会补上'
 
 export class ApiError extends Error {
   code: string

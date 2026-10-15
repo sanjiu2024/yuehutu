@@ -312,18 +312,11 @@ export function OverviewPage({ onGoto }: { onGoto: (page: string) => void }) {
               error={conversations.error}
               notReady={conversations.notReady}
               onRetry={conversations.reload}
+              empty={recent.length === 0}
+              emptyTitle="还没有会话"
+              emptyDesc="账号在线并收到买家消息后，会话会出现在这里；平台上已有的历史会话可以在会话页点「同步历史会话」拉回来。"
             >
-              {recent.length === 0 ? (
-                <div className="ov-empty">
-                  <span className="ov-empty-icon">
-                    <IconChat size={22} />
-                  </span>
-                  <span className="ov-empty-title">还没有会话</span>
-                  <span className="ov-empty-desc">
-                    账号在线并收到买家消息后，会话会出现在这里；平台上已有的历史会话可以在会话页点「同步历史会话」拉回来。
-                  </span>
-                </div>
-              ) : (
+              {(
                 <div className="ov-list">
                   {recent.map((conversation) => {
                     const mode = modeLabel(conversation.mode)
@@ -372,16 +365,8 @@ export function OverviewPage({ onGoto }: { onGoto: (page: string) => void }) {
                 管理账号
               </button>
             </header>
-            <AsyncBox loading={accounts.loading} error={accounts.error} notReady={accounts.notReady} onRetry={accounts.reload}>
-              {accountList.length === 0 ? (
-                <div className="ov-empty">
-                  <span className="ov-empty-icon">
-                    <IconUser size={22} />
-                  </span>
-                  <span className="ov-empty-title">还没有绑定闲鱼账号</span>
-                  <span className="ov-empty-desc">去「账号」页扫码登录一个账号，商品和会话才会有数据。</span>
-                </div>
-              ) : (
+            <AsyncBox loading={accounts.loading} error={accounts.error} notReady={accounts.notReady} onRetry={accounts.reload} empty={accountList.length === 0} emptyTitle="还没有绑定闲鱼账号" emptyDesc="去「账号」页扫码登录一个账号，商品和会话才会有数据。">
+              {(
                 <div className="ov-list">
                   {accountList.map((account) => {
                     const login = loginStateLabel(account.login_state)
@@ -414,16 +399,8 @@ export function OverviewPage({ onGoto }: { onGoto: (page: string) => void }) {
                 去风控页
               </button>
             </header>
-            <AsyncBox loading={risk.loading} error={risk.error} notReady={risk.notReady} onRetry={risk.reload}>
-              {riskStates.length === 0 ? (
-                <div className="ov-empty">
-                  <span className="ov-empty-icon ok">
-                    <IconCheckCircle size={22} />
-                  </span>
-                  <span className="ov-empty-title">暂无风控记录</span>
-                  <span className="ov-empty-desc">没有触发风控事件，账号运行正常。</span>
-                </div>
-              ) : (
+            <AsyncBox loading={risk.loading} error={risk.error} notReady={risk.notReady} onRetry={risk.reload} empty={riskStates.length === 0} emptyTitle="暂无风控记录" emptyDesc="没有触发风控事件，账号运行正常。">
+              {(
                 <div className="ov-list">
                   {riskStates.map((item, index) => {
                     const isBlocked = blockedIds.includes(item.account_id || '')

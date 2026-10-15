@@ -21,7 +21,7 @@
 
 import { useMemo, useState } from 'react'
 import { api } from '../api'
-import { AsyncBox, Badge, Field, Notice, Stat } from '../components'
+import { AsyncBox, Badge, Field, Notice, Pager, Stat } from '../components'
 import { formatTime } from '../format'
 import { useAsync } from '../hooks/useAsync'
 import { IconChart, IconClock, IconInfo, IconRefresh, IconTag } from '../icons'
@@ -372,22 +372,15 @@ function BillPanel({ kind, accountId }: { kind: 'income' | 'expense'; accountId:
           </table>
         </div>
 
-        <div className="fn-pager">
-          <span className="dim">
-            第 {text(data?.page ?? page)} 页 · 本页 {rows.length} 条 · 共 {count(data?.total)} 条
-          </span>
-          <span className="fn-spacer" />
-          <button className="btn sm" disabled={bills.loading || page <= 1} onClick={() => setPage((n) => Math.max(1, n - 1))}>
-            上一页
-          </button>
-          <button
-            className="btn sm"
-            disabled={bills.loading || !data?.has_next}
-            onClick={() => setPage((n) => n + 1)}
-          >
-            下一页
-          </button>
-        </div>
+        <Pager
+          page={page}
+          pageSize={PAGE_SIZE}
+          total={typeof data?.total === 'number' ? data.total : undefined}
+          loading={bills.loading}
+          hasNext={Boolean(data?.has_next)}
+          onPage={setPage}
+          note={<>第 {text(data?.page ?? page)} 页 · 本页 {rows.length} 条 · 共 {count(data?.total)} 条</>}
+        />
       </AsyncBox>
 
       <ReadOnlyNotice />
@@ -497,24 +490,14 @@ function InvoicePanel({ accountId }: { accountId: string }) {
           <span className="dim">共 {count(data?.total_count)} 条</span>
         </div>
 
-        <div className="fn-pager">
-          <span className="dim">第 {text(data?.page ?? page)} 页</span>
-          <span className="fn-spacer" />
-          <button
-            className="btn sm"
-            disabled={invoices.loading || page <= 1}
-            onClick={() => setPage((n) => Math.max(1, n - 1))}
-          >
-            上一页
-          </button>
-          <button
-            className="btn sm"
-            disabled={invoices.loading || !data?.has_next}
-            onClick={() => setPage((n) => n + 1)}
-          >
-            下一页
-          </button>
-        </div>
+        <Pager
+          page={page}
+          pageSize={PAGE_SIZE}
+          loading={invoices.loading}
+          hasNext={Boolean(data?.has_next)}
+          onPage={setPage}
+          note={<>第 {text(data?.page ?? page)} 页</>}
+        />
       </AsyncBox>
 
       <div className="fn-section-head">

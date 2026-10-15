@@ -3,7 +3,7 @@ import { api, ApiError, errorText } from '../api'
 import { AsyncBox, ConfirmDialog, Modal, Notice, Stat, useToast } from '../components'
 import { useAsync } from '../hooks/useAsync'
 import { IconChart, IconCopy, IconEdit, IconInfo, IconRefresh, IconShield, IconWarn } from '../icons'
-import { formatTime } from '../format'
+import { fenToYuan, formatMoney, formatTime } from '../format'
 import type { Account } from '../types'
 import './promotion.css'
 
@@ -106,12 +106,12 @@ function flowTime(value: unknown): string {
   return text || '-'
 }
 
-/** 平台指标里的金额单位是**分**；拿不到就显示「-」，绝不补 0。 */
+/**
+ * 平台指标里的金额单位是**分**（契约与断言都在 format.ts 的 `fenToYuan`）；
+ * 换算成元后走全站统一的 `formatMoney`（千分位 + 2 位 + ¥），拿不到就「-」，绝不补 0。
+ */
 function cents(value: unknown): string {
-  if (value === null || value === undefined || value === '') return '-'
-  const n = Number(value)
-  if (!Number.isFinite(n)) return '-'
-  return (n / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return formatMoney(fenToYuan(value))
 }
 
 /** 计数与比率：拿不到显示「-」。 */

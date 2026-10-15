@@ -18,7 +18,7 @@
 
 import { useState } from 'react'
 import { api } from '../api'
-import { AsyncBox, Notice } from '../components'
+import { AsyncBox, Notice, Pager } from '../components'
 import { formatTime } from '../format'
 import { useAsync } from '../hooks/useAsync'
 import { IconChart, IconClock, IconRefresh } from '../icons'
@@ -226,24 +226,13 @@ function CsListTable({ accountId, kind, start, end }: {
           <Warnings items={data.data?.warnings} />
           <RealRangeNote real={data.data?.real_date_range} begin={undefined} />
           {(Array.isArray(rows) && rows.length > 0) || page > 1 ? (
-            <div className="dc-pager">
-              <button
-                type="button"
-                className="btn sm"
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                disabled={page <= 1 || data.loading}
-              >
-                上一页
-              </button>
-              <button
-                type="button"
-                className="btn sm"
-                onClick={() => setPage((p) => p + 1)}
-                disabled={data.loading || !Array.isArray(rows) || rows.length < PAGE_SIZE}
-              >
-                下一页
-              </button>
-            </div>
+            <Pager
+              page={page}
+              pageSize={PAGE_SIZE}
+              loading={data.loading}
+              hasNext={Array.isArray(rows) && rows.length >= PAGE_SIZE}
+              onPage={setPage}
+            />
           ) : null}
         </>
       </AsyncBox>

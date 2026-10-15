@@ -17,7 +17,7 @@
 
 import { useState } from 'react'
 import { api } from '../api'
-import { AsyncBox, ConfirmDialog, Modal, Notice, useToast } from '../components'
+import { AsyncBox, ConfirmDialog, Modal, Notice, Pager, useToast } from '../components'
 import { formatTime } from '../format'
 import { useAsync } from '../hooks/useAsync'
 import { IconEdit, IconPlus, IconRefresh, IconSearch, IconTrash } from '../icons'
@@ -535,14 +535,13 @@ export function ItemTemplatesPage() {
           )}
 
           {(hasPrev || hasNext) && (
-            <div className="sh-pager">
-              <button className="btn sm" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={!hasPrev || data.loading}>
-                上一页
-              </button>
-              <button className="btn sm" onClick={() => setPage((p) => p + 1)} disabled={!hasNext || data.loading}>
-                下一页
-              </button>
-            </div>
+            <Pager
+              page={page}
+              pageSize={PAGE_SIZE}
+              loading={data.loading}
+              hasNext={hasNext}
+              onPage={setPage}
+            />
           )}
 
           <div className="sh-note">

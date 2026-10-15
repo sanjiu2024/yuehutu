@@ -24,7 +24,6 @@ import {
   IconSearch,
   IconShield,
   IconTrash,
-  IconUser,
   IconWarn,
   IconXCircle,
 } from '../icons'
@@ -273,36 +272,18 @@ export function AccountsPage() {
         error={accounts.error}
         notReady={accounts.notReady}
         onRetry={accounts.reload}
+        empty={list.length === 0 || filtered.length === 0}
+        emptyFiltered={list.length > 0 && filtered.length === 0}
+        onClearFilters={() => setKeyword('')}
+        emptyTitle={list.length === 0 ? '还没有闲鱼账号' : '没有匹配的账号'}
+        emptyDesc={list.length === 0 ? '点右上角「扫码添加账号」，用手机闲鱼 App 扫一下二维码就能绑定；建议先在手机上关掉「二次验证」以免频繁重登。' : '换个关键词试试，或清空筛选。'}
+        emptyAction={list.length === 0 ? (
+          <button className="btn primary sm" onClick={() => setQrOpen(true)}>
+            <IconQr size={14} /> 扫码添加账号
+          </button>
+        ) : undefined}
       >
-        {list.length === 0 ? (
-          <div className="ac-empty">
-            <span className="ac-empty-icon">
-              <IconUser size={22} />
-            </span>
-            <span className="ac-empty-title">还没有闲鱼账号</span>
-            <span className="ac-empty-desc">
-              点右上角「扫码添加账号」，用手机闲鱼 App 扫一下二维码就能绑定；建议先在手机上关掉「二次验证」以免频繁重登。
-            </span>
-            <span className="ac-empty-actions">
-              <button className="btn primary sm" onClick={() => setQrOpen(true)}>
-                <IconQr size={14} /> 扫码添加账号
-              </button>
-            </span>
-          </div>
-        ) : filtered.length === 0 ? (
-          <div className="ac-empty">
-            <span className="ac-empty-icon">
-              <IconSearch size={22} />
-            </span>
-            <span className="ac-empty-title">没有匹配的账号</span>
-            <span className="ac-empty-desc">换个关键词试试，或清空筛选。</span>
-            <span className="ac-empty-actions">
-              <button className="btn sm" onClick={() => setKeyword('')}>
-                <IconClose size={14} /> 清空筛选
-              </button>
-            </span>
-          </div>
-        ) : (
+        {(
           <div className="ac-grid">
             {filtered.map((account) => {
               const login = loginStateLabel(account.login_state)

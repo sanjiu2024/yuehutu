@@ -235,9 +235,9 @@ function factsOf(body: Record<string, unknown>): string[] {
 
 function ruleDraft(form: RuleForm): { body: Record<string, unknown>; problems: string[] } {
   const problems: string[] = []
-  if (!form.distribution_method) problems.push('分配方式 distribution_method')
-  if (!form.repeat_customer) problems.push('重复进线策略 repeat_customer')
-  if (!form.offline_message) problems.push('离线消息处理方式 offline_message')
+  if (!form.distribution_method) problems.push('分配方式')
+  if (!form.repeat_customer) problems.push('重复进线策略')
+  if (!form.offline_message) problems.push('离线消息处理方式')
 
   const body: Record<string, unknown> = {
     distribution_method: form.distribution_method,
@@ -248,8 +248,8 @@ function ruleDraft(form: RuleForm): { body: Record<string, unknown>; problems: s
   if (form.offline_message === 'SPECIFIED_ACCOUNT') {
     const id = form.specified_account_id.trim()
     const nick = form.specified_account_nick.trim()
-    if (!id) problems.push('指定账号 ID specified_account_id')
-    if (!nick) problems.push('指定账号昵称 specified_account_nick')
+    if (!id) problems.push('指定账号 ID')
+    if (!nick) problems.push('指定账号昵称')
     body.specified_account_id = id
     body.specified_account_nick = nick
   }
@@ -267,12 +267,12 @@ function ruleDraft(form: RuleForm): { body: Record<string, unknown>; problems: s
 function groupDraft(form: GroupForm): { body: Record<string, unknown>; problems: string[] } {
   const problems: string[] = []
   const name = form.group_name.trim()
-  if (!name) problems.push('分组名 group_name')
+  if (!name) problems.push('分组名')
   else if (name.length > GROUP_NAME_MAX) problems.push(`分组名不能超过 ${GROUP_NAME_MAX} 个字`)
-  if (!form.mode) problems.push('服务范围 mode')
+  if (!form.mode) problems.push('服务范围')
 
   const key = form.group_id.trim()
-  if (form.operate_type === 'update' && !key) problems.push('分组 ID group_id（修改必填）')
+  if (form.operate_type === 'update' && !key) problems.push('分组 ID（修改必填）')
 
   const body: Record<string, unknown> = {
     operate_type: form.operate_type,
@@ -293,12 +293,12 @@ function groupDraft(form: GroupForm): { body: Record<string, unknown>; problems:
       try {
         parsed = JSON.parse(raw)
       } catch {
-        problems.push('type_data 不是合法 JSON')
+        problems.push('指定类型数据不是合法 JSON')
         parsed = undefined
       }
       if (parsed !== undefined) {
         if (Array.isArray(parsed) && parsed.length > 0) body.type_data = parsed
-        else problems.push('type_data 必须是**非空 JSON 数组**（平台只认数组）')
+        else problems.push('指定类型数据必须是非空 JSON 数组（平台只认数组）')
       }
     }
   }
@@ -605,8 +605,9 @@ function RuleFormModal({
       }
     >
       <div className="cs-form">
-        <Field label="分配方式 distribution_method">
+        <Field label="分配方式">
           <select
+            title="平台字段 distribution_method"
             value={form.distribution_method}
             onChange={(e) => onChange({ distribution_method: e.target.value })}
             disabled={busy}
@@ -620,8 +621,9 @@ function RuleFormModal({
           </select>
         </Field>
 
-        <Field label="重复进线策略 repeat_customer" tip="枚举字符串，不是布尔值">
+        <Field label="重复进线策略" tip="枚举字符串，不是布尔值">
           <select
+            title="平台字段 repeat_customer"
             value={form.repeat_customer}
             onChange={(e) => onChange({ repeat_customer: e.target.value })}
             disabled={busy}
@@ -635,8 +637,9 @@ function RuleFormModal({
           </select>
         </Field>
 
-        <Field label="离线消息处理方式 offline_message">
+        <Field label="离线消息处理方式">
           <select
+            title="平台字段 offline_message"
             value={form.offline_message}
             onChange={(e) => onChange({ offline_message: e.target.value })}
             disabled={busy}
@@ -652,16 +655,18 @@ function RuleFormModal({
 
         {form.offline_message === 'SPECIFIED_ACCOUNT' && (
           <>
-            <Field label="指定账号 ID specified_account_id" tip="平台要的是账号 ID，纯数字会被转成整数">
+            <Field label="指定账号 ID" tip="平台要的是账号 ID，纯数字会被转成整数">
               <input
+                title="平台字段 specified_account_id"
                 value={form.specified_account_id}
                 onChange={(e) => onChange({ specified_account_id: e.target.value })}
                 placeholder="例如 2201234567890"
                 disabled={busy}
               />
             </Field>
-            <Field label="指定账号昵称 specified_account_nick" tip="与 ID 成对必填">
+            <Field label="指定账号昵称" tip="与 ID 成对必填">
               <input
+                title="平台字段 specified_account_nick"
                 value={form.specified_account_nick}
                 onChange={(e) => onChange({ specified_account_nick: e.target.value })}
                 placeholder="账号昵称"
@@ -671,17 +676,19 @@ function RuleFormModal({
           </>
         )}
 
-        <Field label="服务时间 service_time.start_time" tip="可选：要么都填、要么都不填">
+        <Field label="服务时间（开始）" tip="可选：要么都填、要么都不填">
           <input
             type="time"
+            title="平台字段 service_time.start_time"
             value={form.start_time}
             onChange={(e) => onChange({ start_time: e.target.value })}
             disabled={busy}
           />
         </Field>
-        <Field label="服务时间 service_time.end_time">
+        <Field label="服务时间（结束）">
           <input
             type="time"
+            title="平台字段 service_time.end_time"
             value={form.end_time}
             onChange={(e) => onChange({ end_time: e.target.value })}
             disabled={busy}
@@ -732,8 +739,9 @@ function GroupFormModal({
     >
       <div className="cs-form">
         {editing && (
-          <Field label="分组 ID group_id" tip="修改时必须带；来自列表回显">
+          <Field label="分组 ID" tip="修改时必须带；来自列表回显">
             <input
+              title="平台字段 group_id"
               value={form.group_id}
               onChange={(e) => onChange({ group_id: e.target.value })}
               placeholder="分组 ID"
@@ -742,8 +750,9 @@ function GroupFormModal({
           </Field>
         )}
 
-        <Field label="分组名 group_name" tip={`最多 ${GROUP_NAME_MAX} 个字`}>
+        <Field label="分组名" tip={`最多 ${GROUP_NAME_MAX} 个字`}>
           <input
+            title="平台字段 group_name"
             value={form.group_name}
             onChange={(e) => onChange({ group_name: e.target.value })}
             placeholder="分组名"
@@ -751,8 +760,13 @@ function GroupFormModal({
           />
         </Field>
 
-        <Field label="服务范围 mode" tip="原样透传，不做大小写转换">
-          <select value={form.mode} onChange={(e) => onChange({ mode: e.target.value })} disabled={busy}>
+        <Field label="服务范围" tip="原样透传，不做大小写转换">
+          <select
+            title="平台字段 mode"
+            value={form.mode}
+            onChange={(e) => onChange({ mode: e.target.value })}
+            disabled={busy}
+          >
             <option value="">请选择…</option>
             {enumOptions(GROUP_MODE_LABELS, GROUP_MODES).map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -764,25 +778,28 @@ function GroupFormModal({
 
         {form.mode === 'specified' && (
           <>
-            <Field label="指定类型 specified_type" tip="留空就用平台缺省值 ORDER">
+            <Field label="指定类型" tip="留空就用平台缺省值 ORDER">
               <input
+                title="平台字段 specified_type"
                 value={form.specified_type}
                 onChange={(e) => onChange({ specified_type: e.target.value })}
                 placeholder="ORDER"
                 disabled={busy}
               />
             </Field>
-            <Field label="指定类型名称 specified_type_name" tip="可选">
+            <Field label="指定类型名称" tip="可选">
               <input
+                title="平台字段 specified_type_name"
                 value={form.specified_type_name}
                 onChange={(e) => onChange({ specified_type_name: e.target.value })}
                 placeholder="类型名称"
                 disabled={busy}
               />
             </Field>
-            <Field label="type_data" tip="非空 JSON 数组；留空就不发这个键">
+            <Field label="指定类型数据" tip="非空 JSON 数组；留空就不发这个键">
               <textarea
                 rows={3}
+                title="平台字段 type_data"
                 value={form.type_data}
                 onChange={(e) => onChange({ type_data: e.target.value })}
                 placeholder='["…"]'
@@ -792,8 +809,9 @@ function GroupFormModal({
           </>
         )}
 
-        <Field label="customer_uids" tip="客服 ID，用逗号或空格分隔；留空就不发这个键">
+        <Field label="客服 ID 列表" tip="用逗号或空格分隔；留空就不发这个键">
           <input
+            title="平台字段 customer_uids"
             value={form.customer_uids}
             onChange={(e) => onChange({ customer_uids: e.target.value })}
             placeholder="例如 2201, 2202"

@@ -5,7 +5,7 @@
  *  - 买家名兜底：`peer_nickname` 为空时显示「买家 <peer_user_id>」（后端宁缺勿错下发空串）；
  *  - 「同步历史会话」= `POST /api/chats/sync`（IM 只收「正在发生」的推送，不点这个按钮界面会是空的）；
  *  - 实时刷新一律走 WebSocket topic 订阅（`useAsync(..., topics)` + `xywb:refresh-messages`），**不轮询**；
- *  - 发送框 `Ctrl/Cmd+Enter` 发送，发送中禁用。
+ *  - 发送框 `Enter` 发送、`Shift+Enter` 换行（输入法组合态不发送），发送中禁用。
  *
  * task-44 起：
  *  - 图片消息出缩略图（点开用全站唯一一份 `ImageViewer`）、语音消息出播放器（原生 `<audio>`，
@@ -63,6 +63,12 @@ const MODES: Array<{ value: string; label: string; desc: string }> = [
 
 /** 列表/面板里的实时刷新订阅的 topic（后端真实 topic 名）。 */
 const LIVE_TOPICS = ['chats.message', 'chats.mode_changed', 'chats.ai_reply', 'items.updated', 'risk.changed']
+
+/** 快捷键提示里的修饰键：Mac 上显示 ⌘，其余显示 Ctrl（发送本身只按 Enter 就够）。 */
+const MOD_KEY =
+  typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent)
+    ? '⌘'
+    : 'Ctrl'
 
 /**
  * 会话级写操作（第 40 批）的返回形状。
@@ -1673,12 +1679,13 @@ function ChatWindow({
           className="ch-textarea"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="在这里自己回消息，按 Ctrl+Enter 发送…"
+          placeholder="在这里自己回消息，按 Enter 发送，Shift+Enter 换行…"
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-              e.preventDefault()
-              void send()
-            }
+            if (e.key !== 'Enter' || e.shiftKey) return
+            // 中文/日文输入法在组合态里按 Enter 是「上屏选字」，不能当成发送
+            if (e.nativeEvent.isComposing || e.keyCode === 229) return
+            e.preventDefault()
+            void send()
           }}
         />
         <div className="ch-compose-bottom">
@@ -1689,8 +1696,9 @@ function ChatWindow({
             <IconSparkle size={15} /> {drafting ? '生成中…' : 'AI 帮我拟一条'}
           </button>
           <span className="ch-compose-tip">
-            <span className="ch-kbd">Ctrl</span> + <span className="ch-kbd">Enter</span> 发送 · 发图 / 发语音 / 打电话
-            请用上方「打开闲鱼官方页面」
+            <span className="ch-kbd">Enter</span> 发送 · <span className="ch-kbd">Shift</span> +{' '}
+            <span className="ch-kbd">Enter</span> 换行（<span className="ch-kbd">{MOD_KEY}</span> +{' '}
+            <span className="ch-kbd">Enter</span> 也可以）· 发图 / 发语音 / 打电话 请用上方「打开闲鱼官方页面」
           </span>
         </div>
       </div>

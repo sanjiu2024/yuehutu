@@ -26,11 +26,60 @@ export function formatClock(value?: string | number | null): string {
   return parts.length > 1 ? parts[1] : full
 }
 
+/**
+ * 金额统一出口：千分位 + 固定 2 位 + 前缀 ¥；空值与非数字一律 `-`。
+ * 非数字不再把原值当金额吐出来（既没 ¥ 也没对齐），原值请配 `moneyTitle()` 放进 title 排查。
+ */
 export function formatMoney(value?: number | string | null): string {
   if (value === undefined || value === null || value === '') return '-'
+  const num = Number(typeof value === 'string' ? value.replace(/,/g, '').trim() : value)
+  if (!Number.isFinite(num)) return '-'
+  return `¥${num.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+/** 非数字金额的原值（供 title 排查）；能正常格式化的返回 `''`。 */
+export function moneyTitle(value?: number | string | null): string {
+  if (value === undefined || value === null || value === '') return ''
+  const num = Number(typeof value === 'string' ? value.replace(/,/g, '').trim() : value)
+  return Number.isFinite(num) ? '' : String(value)
+}
+
+/**
+ * 交易组（Orders/Refunds）的金额口径：平台原样的**元字符串**（`"39.90"`），**不能 /100**。
+ * 契约见 `docs/contracts/trade.md`。整数元字符串（`"39"`）同样合法，不误伤。
+ * 契约破了只 console.warn（线上不能因为一个异常金额白屏），并返回 null 让调用方画 `-`。
+ */
+export function parseYuanAmountString(value: unknown): number | null {
+  if (value === undefined || value === null || value === '') return null
+  const raw = String(value).trim()
+  const num = Number(raw)
+  if (!Number.isFinite(num)) {
+    console.warn(`[xywb] 交易金额不是能解析的元字符串：${raw}（契约见 docs/contracts/trade.md，金额必须是元、不能 /100）`)
+    return null
+  }
+  if (raw.includes('/')) {
+    console.warn(`[xywb] 交易金额疑似带「/100」的加工痕迹：${raw}（平台给的就是元字符串，再除一次会小 100 倍）`)
+    return null
+  }
+  return num
+}
+
+/**
+ * 推广组（Promotion）的金额口径：平台指标里的金额单位是**分**，这里换算成元。
+ * 非整数分按契约破了处理：console.warn + 返回 null，调用方画 `-`（不猜、不四舍五入掩盖）。
+ */
+export function fenToYuan(value: unknown): number | null {
+  if (value === undefined || value === null || value === '') return null
   const num = Number(value)
-  if (Number.isNaN(num)) return String(value)
-  return `¥${num.toFixed(2)}`
+  if (!Number.isFinite(num)) {
+    console.warn(`[xywb] 推广金额不是数字：${String(value)}（平台指标金额单位是分）`)
+    return null
+  }
+  if (!Number.isInteger(num)) {
+    console.warn(`[xywb] 推广金额不是整数分：${String(value)}（分是整数，小数说明口径串了，可能是元）`)
+    return null
+  }
+  return num / 100
 }
 
 /** 后端布尔字段是真 bool；同时容忍历史 0/1 与字符串。 */

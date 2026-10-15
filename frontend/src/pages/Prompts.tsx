@@ -391,41 +391,18 @@ export function PromptsPage() {
         error={prompts.error}
         notReady={prompts.notReady}
         onRetry={prompts.reload}
+        empty={list.length === 0 || visible.length === 0}
+        emptyFiltered={list.length > 0 && visible.length === 0}
+        onClearFilters={() => { setScopeFilter(''); setKeyword(''); setOnlyEnabled(false) }}
+        emptyTitle={list.length === 0 ? '还没有提示词' : '没有匹配的提示词'}
+        emptyDesc={list.length === 0 ? '新建一条全局提示词，告诉 AI 你是谁、怎么说话、哪些话不能说。' : '换个关键词，或把级别筛选调回「全部」。'}
+        emptyAction={list.length === 0 ? (
+          <button className="btn primary" onClick={() => openEditor({ ...EMPTY_FORM })}>
+            <IconPlus size={14} /> 新建提示词
+          </button>
+        ) : undefined}
       >
-        {list.length === 0 ? (
-          <div className="pr-empty">
-            <span className="pr-empty-icon">
-              <IconPrompts size={22} />
-            </span>
-            <div className="pr-empty-title">还没有提示词</div>
-            <div className="pr-empty-desc">新建一条全局提示词，告诉 AI 你是谁、怎么说话、哪些话不能说。</div>
-            <div className="pr-empty-actions">
-              <button className="btn primary" onClick={() => openEditor({ ...EMPTY_FORM })}>
-                <IconPlus size={14} /> 新建提示词
-              </button>
-            </div>
-          </div>
-        ) : visible.length === 0 ? (
-          <div className="pr-empty">
-            <span className="pr-empty-icon">
-              <IconSearch size={22} />
-            </span>
-            <div className="pr-empty-title">没有匹配的提示词</div>
-            <div className="pr-empty-desc">换个关键词，或把级别筛选调回「全部」。</div>
-            <div className="pr-empty-actions">
-              <button
-                className="btn"
-                onClick={() => {
-                  setScopeFilter('')
-                  setKeyword('')
-                  setOnlyEnabled(false)
-                }}
-              >
-                清除筛选条件
-              </button>
-            </div>
-          </div>
-        ) : (
+        {(
           <div className="pr-groups">
             {grouped.map((group) => (
               <section className="pr-card" key={group.meta.value}>

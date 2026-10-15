@@ -24,9 +24,9 @@
 
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { api, ApiError, errorText } from '../api'
-import { AsyncBox, Badge, ConfirmDialog, Field, Modal, Notice, useToast } from '../components'
+import { AsyncBox, Badge, ConfirmDialog, Field, Modal, Notice, Pager, useToast } from '../components'
 import { useAsync } from '../hooks/useAsync'
-import { formatTime } from '../format'
+import { formatTime, moneyTitle, parseYuanAmountString } from '../format'
 import {
   IconCheckCircle, IconChevronDown, IconChevronRight, IconClock, IconEdit, IconLink, IconRefresh,
   IconSend, IconShield, IconSparkle, IconWarn,
@@ -268,6 +268,8 @@ export interface TradeListViewProps<T> {
   hasPrev: boolean
   hasNext: boolean
   onPage: (page: number) => void
+  /** 每页条数切换（不传则不显示条数选择）。 */
+  onPageSize?: (size: number) => void
   /** 表格上方的自定义区块（汇总卡、说明等）。 */
   toolbar?: ReactNode
 }
@@ -278,7 +280,7 @@ export function TradeListView<T>(props: TradeListViewProps<T>) {
   const {
     rows, columns, loading, error, notReady, onRetry, rowKey,
     emptyTitle, emptyDesc, detail, statusFilter, keywordOf, dateOf,
-    page, pageSize, total, hasPrev, hasNext, onPage, toolbar,
+    page, pageSize, total, hasNext, onPage, onPageSize, toolbar,
   } = props
 
   const [status, setStatus] = useState('')
@@ -396,6 +398,7 @@ export function TradeListView<T>(props: TradeListViewProps<T>) {
         error={error}
         notReady={notReady}
         empty={!loading && !error && source.length === 0}
+        emptyFiltered={filtering}
         emptyTitle={emptyTitle}
         emptyDesc={emptyDesc}
         onRetry={onRetry}
@@ -478,16 +481,21 @@ export function TradeListView<T>(props: TradeListViewProps<T>) {
               </table>
             </div>
 
-            <div className="tr-pager">
-              <span className="tr-note">
-                第 {num(page)} 页 · 每页 {num(pageSize)} 条 · 本页显示 {num(sorted.length)} 条
-                {filtering ? `（本页共 ${num(source.length)} 条）` : ''}
-                {' · '}平台返回总数 {num(total)}
-              </span>
-              <span className="tr-spacer" />
-              <button className="btn sm" disabled={!hasPrev} onClick={() => onPage(page - 1)}>上一页</button>
-              <button className="btn sm" disabled={!hasNext} onClick={() => onPage(page + 1)}>下一页</button>
-            </div>
+            <Pager
+              page={page}
+              pageSize={pageSize}
+              total={typeof total === 'number' ? total : undefined}
+              hasNext={hasNext}
+              onPage={onPage}
+              onPageSize={onPageSize}
+              note={
+                <>
+                  第 {num(page)} 页 · 每页 {num(pageSize)} 条 · 本页显示 {num(sorted.length)} 条
+                  {filtering ? `（本页共 ${num(source.length)} 条）` : ''}
+                  {' · '}平台返回总数 {num(total)}
+                </>
+              }
+            />
           </div>
         )}
       </AsyncBox>
@@ -1007,8 +1015,11 @@ const WRITE_SPECS: Record<WriteKind, WriteFormSpec> = {
     action: '撤销投诉',
     desc: (
       <>
-        平台接口 <code>mtop.taobao.idle.cco.shop.complain.apply.revoke</code>：撤销自己发起的那条投诉。
-        平台以 <code>data.success</code> 判成败，失败原因取 <code>data.failReason</code>。
+        撤销你在这笔订单上发起的那条投诉。撤销后这条投诉入口会关闭、不能再提，也无法恢复。
+        <details className="tech-details">
+          <summary>技术详情</summary>
+          平台接口 mtop.taobao.idle.cco.shop.complain.apply.revoke；平台以 data.success 判成败，失败原因取 data.failReason。
+        </details>
       </>
     ),
     fields: [
@@ -2537,7 +2548,7 @@ export function OrdersPage() {
   const [write, setWrite] = useState<WriteDraft | null>(null)
   /** 正在看「买家申请改收货地址」的订单号；null 表示面板关着。 */
   const [modifyOrderId, setModifyOrderId] = useState<string | null>(null)
-  const pageSize = 10
+  const [pageSize, setPageSize] = useState(10)
 
   const state = useAsync<OrdersResult>(
     () =>
@@ -2547,7 +2558,7 @@ export function OrdersPage() {
         // 页签计数要多打一次 `order.count`，只有第一页需要。
         include_counts: page === 1,
       }),
-    [accountId, page],
+    [accountId, page, pageSize],
     Boolean(accountId),
     ['accounts.changed'],
   )
@@ -2628,9 +2639,21 @@ export function OrdersPage() {
       label: '实付款（元）',
       num: true,
       sortValue: (row) => toSortNumber(row.price?.total_price ?? row.price?.auction_price),
-      render: (row) => (
-        <span className="tr-money">{money(row.price?.total_price ?? row.price?.auction_price)}</span>
-      ),
+      render: (row) => {
+        const rawAmount = row.price?.total_price ?? row.price?.auction_price
+        // 元字符串契约校验（`docs/contracts/trade.md`）：`parseYuanAmountString` 破了只 console.warn
+        // 并给 null。这里**仍然原样显示**平台给的值（本页 `money()` 刻意不做数值加工，把原值换成 `-`
+        // 会丢排查线索），只把「为什么可疑」写进 title。
+        const parsed = parseYuanAmountString(rawAmount)
+        return (
+          <span
+            className="tr-money"
+            title={parsed === null && moneyTitle(rawAmount) ? `平台金额不是能解析的元字符串：${moneyTitle(rawAmount)}` : undefined}
+          >
+            {money(rawAmount)}
+          </span>
+        )
+      },
     },
     {
       key: 'buttons',
@@ -2775,6 +2798,10 @@ export function OrdersPage() {
         hasPrev={page > 1}
         hasNext={Number(data?.paging?.next_page ?? 0) > page}
         onPage={setPage}
+        onPageSize={(next) => {
+          setPageSize(next)
+          setPage(1)
+        }}
         toolbar={
           tabs.length > 0 ? (
             <section className="card">

@@ -16,6 +16,7 @@ import { useState } from 'react'
 import { api } from '../api'
 import { Badge, Field, Notice } from '../components'
 import { useAsync } from '../hooks/useAsync'
+import { formatMoney, moneyTitle } from '../format'
 import { IconShield } from '../icons'
 import {
   AccountBar,
@@ -180,9 +181,10 @@ export function RefundsPage() {
         const n = Number(value)
         return Number.isFinite(n) ? n : null
       },
-      render: (row) => (
-        <span className="tr-money">{money(row.price?.refund_fee ?? row.price?.refund_fee_view)}</span>
-      ),
+      render: (row) => {
+        const fee = row.price?.refund_fee ?? row.price?.refund_fee_view
+        return <span className="tr-money" title={moneyTitle(fee)}>{formatMoney(fee)}</span>
+      },
     },
     {
       key: 'time',
@@ -238,7 +240,7 @@ export function RefundsPage() {
         setPicked={(id) => { setPicked(id); setPage(1) }}
         extra={
           <span className="tr-note">
-            退款总额 <b className="tr-money">{money(data?.total_refund_fee)}</b> 元
+            退款总额 <b className="tr-money" title={moneyTitle(data?.total_refund_fee)}>{formatMoney(data?.total_refund_fee)}</b>
           </span>
         }
       />
@@ -310,7 +312,7 @@ function RefundDetail({ row }: { row: TradeRefund }) {
         </span>
       </Field>
       <Field label="退款">
-        <span>金额 <b className="tr-money">{money(row.price?.refund_fee)}</b> 元</span>
+        <span>金额 <b className="tr-money" title={moneyTitle(row.price?.refund_fee)}>{formatMoney(row.price?.refund_fee)}</b></span>
         <span className="tr-sub">平台展示值 {money(row.price?.refund_fee_view)}</span>
         <span className="tr-sub">单价 {money(row.price?.auction_price)} · 数量 {num(row.price?.buy_num)}</span>
         <span className="tr-sub">原因 {money(row.reason)}</span>

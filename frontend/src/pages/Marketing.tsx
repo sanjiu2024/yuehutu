@@ -33,7 +33,7 @@
 
 import { useState, type ReactNode } from 'react'
 import { api } from '../api'
-import { AsyncBox, Field, Notice, Stat } from '../components'
+import { AsyncBox, Field, Notice, Pager, Stat } from '../components'
 import { formatTime } from '../format'
 import { useAsync, type AsyncState } from '../hooks/useAsync'
 import { IconChart, IconRefresh } from '../icons'
@@ -541,22 +541,28 @@ function ListPanel({
             </Notice>
           )}
 
-          <AsyncBox loading={state.loading} error={state.error} notReady={state.notReady} onRetry={state.reload}>
+          <AsyncBox loading={state.loading} error={state.error} notReady={state.notReady} onRetry={state.reload} empty={Array.isArray(rows) && rows.length === 0} emptyTitle="这段时间没有数据" emptyDesc="平台返回的列表是空的：既不是没拿到数据，也不是请求失败，换个时间区间再试。">
             <ListBody rows={rows} columns={columns} extra={extra} kind={kind} />
 
             {showPager && (
-              <div className="mk-pager">
-                <span className="dim">
-                  第 {text(data?.page ?? page)} 页 · 本页 {count(rowList.length)} 条 · 共 {count(data?.total ?? data?.total_count)} 条
-                </span>
-                <span className="mk-spacer" />
-                <button className="btn sm" disabled={state.loading || page <= 1} onClick={() => onPage?.(Math.max(1, page - 1))}>
-                  上一页
-                </button>
-                <button className="btn sm" disabled={state.loading || !hasNext} onClick={() => onPage?.(page + 1)}>
-                  下一页
-                </button>
-              </div>
+              <Pager
+                page={page}
+                pageSize={size}
+                total={
+                  Number.isFinite(Number(data?.total ?? data?.total_count))
+                    ? Number(data?.total ?? data?.total_count)
+                    : undefined
+                }
+                loading={state.loading}
+                hasNext={hasNext}
+                onPage={(next: number) => onPage?.(next)}
+                note={
+                  <>
+                    第 {text(data?.page ?? page)} 页 · 本页 {count(rowList.length)} 条 · 共{' '}
+                    {count(data?.total ?? data?.total_count)} 条
+                  </>
+                }
+              />
             )}
           </AsyncBox>
         </>

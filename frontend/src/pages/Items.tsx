@@ -357,6 +357,9 @@ export function ItemsPage() {
   const [busy, setBusy] = useState(false)
   /** 当前展开「更多」菜单的行 key（`account_id/item_id`），同一时间只开一个。 */
   const [menuFor, setMenuFor] = useState<string | null>(null)
+  /** 行内菜单的容器与触发按钮：打开时焦点进第一项、Esc 关闭后还给按钮（第 58 批 UI 审查第 18 条）。 */
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  const menuTriggerRef = useRef<HTMLElement | null>(null)
   /** 大图查看：点缩略图后打开，多图可翻页。 */
   const [lightbox, setLightbox] = useState<{ urls: string[]; index: number; title: string } | null>(null)
   const [confirmAction, setConfirmAction] = useState<{ title: string; message: ReactNode; run: () => Promise<void> } | null>(null)
@@ -373,11 +376,22 @@ export function ItemsPage() {
   }, [queryInput])
 
   // 菜单开着时，点页面任何其他地方（含另一个菜单按钮）就收起：避免多个菜单叠在一起。
+  // 键盘可达性（第 58 批 UI 审查第 18 条）：打开时焦点进第一项，Esc 关闭并把焦点还给触发按钮。
   useEffect(() => {
     if (!menuFor) return
     const close = () => setMenuFor(null)
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setMenuFor(null)
+      menuTriggerRef.current?.focus()
+    }
     document.addEventListener('click', close)
-    return () => document.removeEventListener('click', close)
+    document.addEventListener('keydown', onKey)
+    menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')?.focus()
+    return () => {
+      document.removeEventListener('click', close)
+      document.removeEventListener('keydown', onKey)
+    }
   }, [menuFor])
 
   const items = useAsync<ItemListResult>(
@@ -456,15 +470,18 @@ export function ItemsPage() {
   }
 
   const setShelf = (item: Item, action: 'delist' | 'relist') => {
+    const verb = action === 'delist' ? '下架' : '上架'
     setConfirmAction({
       title: action === 'delist' ? '下架商品' : '重新上架',
+      // 单条是最常用的下架路径，危险信息不能比批量弱（第 58 批 UI 审查第 2 条）：
+      // 复用批量的 writeConfirmMessage，把「真的动闲鱼 + 不可撤销 + 商品 ID」补齐。
       message: (
         <>
-          确定要{action === 'delist' ? '下架' : '上架'} <strong>{truncate(item.title || item.item_id, 40)}</strong> 吗？
+          确定要{verb} <strong>{truncate(item.title || item.item_id, 40)}</strong> 吗？
+          <div style={{ marginTop: 8 }}>{writeConfirmMessage(verb, [item])}</div>
         </>
       ),
       run: async () => {
-        const verb = action === 'delist' ? '下架' : '上架'
         // 单条上下架也返回 {ok, warnings, failed}：协议层没推成功时是个 warning，
         // 直接报「已下架」会让用户以为闲鱼上真的下架了。
         const result = await api.post<BatchResult>(
@@ -686,7 +703,7 @@ export function ItemsPage() {
           }}
           style={{ width: 180 }}
           aria-label="账号筛选"
-          title="商品按账号隔离：批量操作一次只能作用在一个账号上"
+          title="商品按账号隔离：批量操作一次只能管一个店铺账号"
         >
           <option value="">全部账号</option>
           {accountList.map((account) => (
@@ -782,7 +799,7 @@ export function ItemsPage() {
                 </button>
               </>
             )}
-            {mixedAccounts && <Badge tone="warn">跨账号，批量一次只能作用于一个店铺账号</Badge>}
+            {mixedAccounts && <Badge tone="warn">跨账号，批量操作一次只能管一个店铺账号</Badge>}
             <span className="it-spacer" />
             <button className="btn sm" onClick={() => setSelected(new Set())}>
               取消选择
@@ -798,9 +815,11 @@ export function ItemsPage() {
               disabled={mixedAccounts || !selectedAccount}
               onClick={batchOffline}
               title={
-                selectedAccount
-                  ? '把选中的商品在闲鱼上真的下架（一次请求，不可撤销）'
-                  : '选中的商品不在当前筛选结果里，先清空筛选或重新勾选'
+                mixedAccounts
+                  ? '批量操作一次只能管一个店铺账号，请先在左上方筛选到单个账号'
+                  : selectedAccount
+                    ? '把选中的商品在闲鱼上真的下架（一次请求，不可撤销）'
+                    : '选中的商品不在当前筛选结果里，先清空筛选或重新勾选'
               }
             >
               批量下架
@@ -810,17 +829,21 @@ export function ItemsPage() {
               disabled={mixedAccounts || !selectedAccount}
               onClick={batchDelete}
               title={
-                selectedAccount
-                  ? '把选中的商品在闲鱼上真的删除（不是只删本地记录，不可撤销）'
-                  : '选中的商品不在当前筛选结果里，先清空筛选或重新勾选'
+                mixedAccounts
+                  ? '批量操作一次只能管一个店铺账号，请先在左上方筛选到单个账号'
+                  : selectedAccount
+                    ? '把选中的商品在闲鱼上真的删除（不是只删本地记录，不可撤销）'
+                    : '选中的商品不在当前筛选结果里，先清空筛选或重新勾选'
               }
             >
               批量删除
             </button>
           </div>
           {mixedAccounts && (
-            <div className="dim" style={{ fontSize: 12, marginTop: 8 }}>
-              提示：批量操作一次只能作用在**一个店铺账号**上 —— 请先在左上方筛选到单个账号，再勾选商品。
+            <div style={{ marginTop: 8 }}>
+              <Notice kind="warn">
+                批量操作一次只能管一个店铺账号：请先在左上方筛选到单个账号，再勾选商品。
+              </Notice>
             </div>
           )}
           {staleSelection > 0 && (
@@ -839,13 +862,19 @@ export function ItemsPage() {
           商品列表
           <span className="hint">
             共 {total} 条
-            {list.length < total ? ` · 只显示了前 ${list.length} 条（用搜索或状态筛选缩小范围）` : ''}
             {counts
               ? ` · 在售 ${counts.onsale} · 已下架/售罄/已卖出 ${counts.offline} · 已售出 ${counts.sold}`
               : ''}
             {' · 点表头排序'}
           </span>
         </h3>
+        {/* 截断提示从工具栏小字提升到列表旁（第 58 批 UI 审查第 17 条）：
+            一次只拉 500 条，用户必须看得见「还有多少没看到」。 */}
+        {list.length < total && (
+          <Notice kind="info">
+            当前筛选结果共 {total} 条，这里只显示了前 {list.length} 条（用搜索或状态筛选缩小范围）。
+          </Notice>
+        )}
         <AsyncBox
           loading={items.loading}
           error={items.error}
@@ -1024,8 +1053,12 @@ export function ItemsPage() {
                           <button
                             className="btn sm ghost"
                             title="更多操作"
+                            aria-label="更多操作"
+                            aria-haspopup="menu"
+                            aria-expanded={menuFor === rowKey}
                             onClick={(event) => {
                               event.stopPropagation()
+                              menuTriggerRef.current = event.currentTarget
                               setMenuFor((prev) => (prev === rowKey ? null : rowKey))
                             }}
                           >
@@ -1035,8 +1068,14 @@ export function ItemsPage() {
                         {/* 菜单做成「行内展开」而不是绝对定位浮层：表格容器是 overflow-x:auto，
                             浮层会被裁掉一半，展开在单元格里最稳。 */}
                         {menuFor === rowKey && (
-                          <div className="it-menu" onClick={(event) => event.stopPropagation()}>
+                          <div
+                            className="it-menu"
+                            role="menu"
+                            ref={menuRef}
+                            onClick={(event) => event.stopPropagation()}
+                          >
                             <button
+                              role="menuitem"
                               disabled={imageList.length === 0}
                               title={imageList.length === 0 ? '这个商品没有图片' : '查看大图'}
                               onClick={() => {
@@ -1047,6 +1086,7 @@ export function ItemsPage() {
                               <IconEye size={13} /> 查看大图
                             </button>
                             <button
+                              role="menuitem"
                               onClick={() => {
                                 setMenuFor(null)
                                 void copyId(item.item_id)
@@ -1055,6 +1095,7 @@ export function ItemsPage() {
                               <IconCopy size={13} /> 复制商品 ID
                             </button>
                             <button
+                              role="menuitem"
                               className="danger"
                               onClick={() => {
                                 setMenuFor(null)
@@ -1064,6 +1105,7 @@ export function ItemsPage() {
                               <IconTrash size={13} /> 删除
                             </button>
                             <button
+                              role="menuitem"
                               title="只删本地这一行，不动闲鱼上的商品"
                               onClick={() => {
                                 setMenuFor(null)
@@ -3038,8 +3080,8 @@ function QuickEditModal({
           label="价格（元）"
           tip={
             item.price !== undefined && item.price !== null
-              ? `当前 ${formatMoney(item.price)}；上限 ${PRICE_MAX}`
-              : `上限 ${PRICE_MAX}`
+              ? `当前 ${formatMoney(item.price)}；上限 ${formatMoney(PRICE_MAX)}`
+              : `上限 ${formatMoney(PRICE_MAX)}`
           }
         >
           <input

@@ -23,7 +23,7 @@
 
 import { useMemo, useState } from 'react'
 import { api, errorText } from '../api'
-import { AsyncBox, ConfirmDialog, Field, Notice, useToast } from '../components'
+import { AsyncBox, ConfirmDialog, Field, Notice, Pager, useToast } from '../components'
 import { formatTime } from '../format'
 import { useAsync, type AsyncState } from '../hooks/useAsync'
 import { IconRefresh, IconShield, IconUpload } from '../icons'
@@ -347,7 +347,7 @@ function ListPanel({
 
       <WarningList warnings={warnings} />
 
-      <AsyncBox loading={state.loading} error={state.error} notReady={state.notReady} onRetry={state.reload}>
+      <AsyncBox loading={state.loading} error={state.error} notReady={state.notReady} onRetry={state.reload} empty={!isMissing(data) && found !== null && rows.length === 0} emptyTitle="平台返回了 0 条" emptyDesc="这次是真的没有数据（不是没拿到字段），换个账号或稍后刷新看看。">
         {isMissing(data) ? (
           <div className="ql-empty">
             <Notice kind="warn">
@@ -368,16 +368,15 @@ function ListPanel({
         )}
 
         {showPager && found !== null && (
-          <div className="ql-pager">
-            <span className="dim">第 {text(pick(data, ['page']) ?? page)} 页</span>
-            <span className="ql-spacer" />
-            <button className="btn sm" disabled={state.loading || page <= 1} onClick={() => onPage?.(Math.max(1, page - 1))}>
-              上一页
-            </button>
-            <button className="btn sm" disabled={state.loading || !hasNext} onClick={() => onPage?.(page + 1)}>
-              下一页
-            </button>
-          </div>
+          <Pager
+            page={page}
+            pageSize={size}
+            total={typeof found === 'number' ? found : undefined}
+            loading={state.loading}
+            hasNext={hasNext}
+            onPage={(next) => onPage?.(next)}
+            note={<>第 {text(pick(data, ['page']) ?? page)} 页</>}
+          />
         )}
       </AsyncBox>
 

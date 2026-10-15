@@ -269,16 +269,20 @@ export function Skeleton({
 
 /**
  * 统一的「加载 / 出错 / 未就绪 / 空」渲染器。
- * 后端接口还没写出来时显示友好提示，绝不白屏。
+ * 空态只有三种固定形态（真空 / 筛选没命中 / 未就绪），页面只传文案，不要各页自己拼。
+ * 首屏用骨架屏；已有内容时的刷新保留旧内容 + 顶部细进度条（stale-while-revalidate），不整块闪白。
  */
 export function AsyncBox({
   loading,
   error,
   notReady,
   empty,
-  emptyTitle = '暂无数据',
+  emptyTitle,
   emptyDesc,
   emptyIcon = 'box',
+  emptyFiltered = false,
+  onClearFilters,
+  emptyAction,
   onRetry,
   children,
 }: {
@@ -289,14 +293,34 @@ export function AsyncBox({
   emptyTitle?: string
   emptyDesc?: ReactNode
   emptyIcon?: string
+  /** 空数组且当前带筛选条件：套用「筛选没命中」的固定文案与一键清空动作。 */
+  emptyFiltered?: boolean
+  onClearFilters?: () => void
+  /** 页面自带的空态主操作（如「扫码添加账号」）。给了就优先于内置的「清空筛选 / 重新加载」。 */
+  emptyAction?: ReactNode
   onRetry?: () => void
   children: ReactNode
 }) {
-  if (loading) return <Loading />
+  const lastContent = useRef<ReactNode>(null)
+  useEffect(() => {
+    if (!loading && !error && !notReady && !empty) lastContent.current = children
+  }, [loading, error, notReady, empty, children])
+
+  if (loading) {
+    const stale = lastContent.current
+    // 首屏没有旧内容 → 骨架屏（位置固定、不跳动）；刷新 → 保留旧内容，只在顶部压一条细进度条。
+    if (!stale) return <Skeleton lines={4} />
+    return (
+      <div className="async-refreshing" aria-busy="true">
+        <div className="async-progress" role="progressbar" aria-label="正在刷新" />
+        {stale}
+      </div>
+    )
+  }
   if (notReady)
     return (
       <Notice kind="warn" onRetry={onRetry}>
-        该功能的后端接口还没就绪（并行开发中），页面其余部分可正常使用。
+        这个功能当前版本还不能用，后续更新会补上。你可以先用左侧其它菜单，或稍后再回来看看。
       </Notice>
     )
   if (error)
@@ -309,10 +333,16 @@ export function AsyncBox({
     return (
       <Empty
         icon={emptyIcon}
-        title={emptyTitle}
-        desc={emptyDesc}
+        title={emptyTitle ?? (emptyFiltered ? '没有符合条件的记录' : '暂无数据')}
+        desc={emptyDesc ?? (emptyFiltered ? '换个关键词或放宽筛选条件试试。' : undefined)}
         action={
-          onRetry ? (
+          emptyAction ? (
+            emptyAction
+          ) : emptyFiltered && onClearFilters ? (
+            <button className="btn sm" onClick={onClearFilters}>
+              清空筛选
+            </button>
+          ) : onRetry ? (
             <button className="btn sm" onClick={onRetry}>
               重新加载
             </button>
@@ -321,6 +351,128 @@ export function AsyncBox({
       />
     )
   return <>{children}</>
+}
+
+/* ---------------- 分页条 ---------------- */
+
+const DEFAULT_PAGE_SIZES = [10, 20, 50]
+
+/**
+ * 统一分页条：上一页 / 下一页 + 页码区间 + 每页条数 + 跳页。
+ * 通用电商后台基线（Ant Design、千牛）都长这样，不要再各页自己拼「上一页/下一页」两个按钮。
+ * 给 total 才能画页码区间与跳页；只有 has_next 的接口就只画上一页/下一页。
+ */
+export function Pager({
+  page,
+  pageSize,
+  total,
+  onPage,
+  onPageSize,
+  loading = false,
+  hasNext,
+  pageSizes = DEFAULT_PAGE_SIZES,
+  note,
+}: {
+  page: number
+  pageSize: number
+  total?: number
+  onPage: (next: number) => void
+  onPageSize?: (next: number) => void
+  loading?: boolean
+  hasNext?: boolean
+  pageSizes?: number[]
+  note?: ReactNode
+}) {
+  const [jump, setJump] = useState('')
+  const pageCount =
+    typeof total === 'number' && Number.isFinite(total) && total >= 0 && pageSize > 0
+      ? Math.max(1, Math.ceil(total / pageSize))
+      : undefined
+  const nums: (number | '…')[] = []
+  if (pageCount !== undefined && pageCount > 1) {
+    const from = Math.max(1, page - 2)
+    const to = Math.min(pageCount, page + 2)
+    if (from > 1) {
+      nums.push(1)
+      if (from > 2) nums.push('…')
+    }
+    for (let i = from; i <= to; i += 1) nums.push(i)
+    if (to < pageCount) {
+      if (to < pageCount - 1) nums.push('…')
+      nums.push(pageCount)
+    }
+  }
+  const jumpTo = (raw: string) => {
+    const n = Math.floor(Number(raw))
+    if (!Number.isFinite(n) || n < 1) return
+    onPage(pageCount !== undefined ? Math.min(pageCount, n) : n)
+    setJump('')
+  }
+  return (
+    <div className="pager">
+      {note && <span className="pager-note">{note}</span>}
+      <span className="pager-spacer" />
+      {onPageSize && (
+        <label className="pager-size">
+          每页
+          <select value={pageSize} disabled={loading} onChange={(e) => onPageSize(Number(e.target.value))}>
+            {pageSizes.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+          条
+        </label>
+      )}
+      <button type="button" className="btn sm" disabled={loading || page <= 1} onClick={() => onPage(Math.max(1, page - 1))}>
+        上一页
+      </button>
+      {nums.map((n, i) =>
+        n === '…' ? (
+          <span key={`gap-${i}`} className="pager-gap">
+            …
+          </span>
+        ) : (
+          <button
+            key={n}
+            type="button"
+            className={`btn sm pager-num${n === page ? ' active' : ''}`}
+            aria-current={n === page ? 'page' : undefined}
+            disabled={loading}
+            onClick={() => onPage(n)}
+          >
+            {n}
+          </button>
+        ),
+      )}
+      <button
+        type="button"
+        className="btn sm"
+        disabled={loading || (pageCount !== undefined ? page >= pageCount : hasNext === false)}
+        onClick={() => onPage(page + 1)}
+      >
+        下一页
+      </button>
+      {pageCount !== undefined && pageCount > 1 && (
+        <span className="pager-jump">
+          跳至
+          <input
+            className="pager-jump-input"
+            value={jump}
+            inputMode="numeric"
+            aria-label="跳转到第几页"
+            onChange={(e) => setJump(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') jumpTo(jump)
+            }}
+            onBlur={() => jump !== '' && jumpTo(jump)}
+          />
+          页
+        </span>
+      )}
+    </div>
+  )
 }
 
 /* ---------------- 弹窗 ---------------- */

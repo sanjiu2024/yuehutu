@@ -22,7 +22,7 @@
 
 import { useState } from 'react'
 import { api } from '../api'
-import { AsyncBox, Notice } from '../components'
+import { AsyncBox, Notice, Pager } from '../components'
 import { formatTime } from '../format'
 import { useAsync } from '../hooks/useAsync'
 import { IconChart, IconClock, IconImage, IconRefresh, IconSearch, IconSort } from '../icons'
@@ -30,7 +30,6 @@ import type { Account } from '../types'
 import { daysAgo, isRangeOk, num, realRangeText } from './datacenterShared'
 import './commodity.css'
 
-const PAGE_SIZES = [10, 20, 50] as const
 /** 商品信息列固定在最左（官方 `fixed: 'left'`）。 */
 const INFO_KEY = 'accountName'
 
@@ -451,43 +450,17 @@ export function CommodityDataPage() {
                 </div>
               )}
 
-              <div className="cm-pager">
-                <button
-                  type="button"
-                  className="btn sm"
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  disabled={page <= 1}
-                >
-                  上一页
-                </button>
-                <button
-                  type="button"
-                  className="btn sm"
-                  onClick={() => setPage((p) => p + 1)}
-                  disabled={pages !== null ? page >= pages : rows.length < size}
-                >
-                  下一页
-                </button>
-                <div className="dc-field cm-size">
-                  <label className="dc-label" htmlFor="cm-size">
-                    每页
-                  </label>
-                  <select
-                    id="cm-size"
-                    value={size}
-                    onChange={(e) => {
-                      setSize(Number(e.target.value))
-                      setPage(1)
-                    }}
-                  >
-                    {PAGE_SIZES.map((n) => (
-                      <option key={n} value={n}>
-                        {n} 条
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+              <Pager
+                page={page}
+                pageSize={size}
+                total={pages !== null ? pages * size : undefined}
+                hasNext={pages !== null ? page < pages : rows.length >= size}
+                onPage={setPage}
+                onPageSize={(next) => {
+                  setSize(next)
+                  setPage(1)
+                }}
+              />
 
               <RealRangeNote real={data.data?.real_date_range} begin={data.data?.begin_time} />
               {warnings.length > 0 && (
