@@ -137,6 +137,14 @@ WRITE_APIS = (
     'mtop.taobao.idle.cco.shop.complain.apply.revoke',
     # 第四十九批（订单备注）：同样是写协议层的超集要求，漏一个断言就红。
     'mtop.taobao.idle.merchant.add.memo',
+    # 第六十批（交易处理写能力）：订单取消 / 关闭（IM 路径）/ 延迟确认收货 /
+    # 卖家改价 / 智能表单回填，共 5 条。只读层必须拦住它们（`assert_read_only`），
+    # 漏一个 `test_trade_write_api.py::WriteContractTest` 的超集断言就红。
+    'mtop.taobao.idle.trade.order.cancel',
+    'mtop.taobao.idle.trade.close.by.seller',
+    'mtop.taobao.idle.trade.seller.delay.confirm',
+    'mtop.taobao.idle.trade.user.adjust.price',
+    'mtop.taobao.merchant.heracles.inno.smart.form.callback',
 )
 
 

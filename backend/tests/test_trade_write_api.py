@@ -17,6 +17,10 @@
 跑法（仓库根目录）：
     cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& C:\\Python310\\python.exe backend\\tests\\test_trade_write_api.py"
 
+**第六十批追加**：IM 侧订单处理四写（取消 / 关闭 / 延长收货 / 逐 SKU 改价）与三条只读
+（SKU 选择器 / 验货报告 / 智能表单元数据 + 智能表单提交）—— 接口名与形状同样来自 bundle 偏移，
+**全部未经真机验证**；写类照样先过 `confirm` 闸门，只读类没有闸门。
+
 **不打真实闲鱼平台**：协议层用假模块注入（`install_fake_protocol`）。
 """
 from __future__ import annotations
@@ -157,6 +161,63 @@ ADJUST_RENDER_NO_PRICES = {'success': True, 'message': 'SUCCESS::调用成功',
                                                'merchantItemVO': {'itemId': 7},
                                                'merchantPriceVO': {'buyNum': 1}}}}
 
+# --- 第六十批：IM 侧订单处理 + SKU 选择器 / 验货报告 / 智能表单 -------------------
+# 形状全部按 bundle 手写（偏移见 backend/app/xianyu/trade_write.py 常量注释），不是真机原文。
+
+#: IM 侧「取消订单」`trade.order.cancel` v2.0（官方这条只回信封，没有业务体）
+ORDER_CANCEL_OK = {'success': True, 'data': {}, 'message': 'SUCCESS::调用成功',
+                   'ret': ['SUCCESS::调用成功']}
+#: IM 侧「关闭订单」`trade.close.by.seller` v2.0
+CLOSE_IM_OK = {'success': True, 'data': {}, 'message': 'SUCCESS::调用成功',
+               'ret': ['SUCCESS::调用成功']}
+#: IM 侧「延长收货」`trade.seller.delay.confirm` v1.0
+SELLER_DELAY_OK = {'success': True, 'data': {}, 'message': 'SUCCESS::调用成功',
+                   'ret': ['SUCCESS::调用成功']}
+#: IM 侧「改价」`trade.user.adjust.price` v1.0
+USER_ADJUST_OK = {'success': True, 'data': {}, 'message': 'SUCCESS::调用成功',
+                  'ret': ['SUCCESS::调用成功']}
+
+#: SKU 选择器（只读）：官方读 `data.{components,skuInfo}`，在 components 里按 render 找三种组件
+SKU_SELECTOR_OK = {'success': True, 'message': 'SUCCESS::调用成功', 'data': {
+    'skuInfo': [{'skuId': '1'}],
+    'components': [
+        {'render': 'skuItemInfo', 'data': {'itemId': 7}}, 
+        {'render': 'specificationInfo', 'data': {'specs': []}},
+        {'render': 'quantityInfo', 'data': {'num': 1}},
+    ]}}
+#: 同一条，但平台没给 components（`sku_info` 还是给的 —— 两件事要分开判）
+SKU_SELECTOR_NO_COMPONENTS = {'success': True, 'message': 'SUCCESS::调用成功',
+                              'data': {'skuInfo': [], 'other': 1}}
+
+#: 验货报告（只读）：官方只在 `data.code == 'success'` 时取 `data.data`
+BACKFILL_OK = {'success': True, 'message': 'SUCCESS::调用成功',
+               'data': {'code': 'success', 'data': {'reportId': 'R1', 'items': []}}}
+#: 成功但没有报告体（不许造空对象）
+BACKFILL_EMPTY = {'success': True, 'message': 'SUCCESS::调用成功',
+                  'data': {'code': 'success'}}
+#: 平台明确给了失败 code
+BACKFILL_FAIL = {'success': True, 'message': 'SUCCESS::调用成功',
+                 'data': {'code': 'REPORT_NOT_FOUND', 'data': None}}
+
+#: 智能表单（只读）：`data.result.formSchema.schemaData` 是 JSON **字符串**
+SMART_FORM_OK = {'success': True, 'message': 'SUCCESS::调用成功', 'data': {'result': {
+    'formSchema': {'schemaData': json.dumps({'type': 'object', 'properties': {}})},
+    'formData': {'field1': 'v1'}}}}
+#: 平台没给 formSchema（schema 必须 None，不许自己编一个空表单）
+SMART_FORM_NO_SCHEMA = {'success': True, 'message': 'SUCCESS::调用成功',
+                        'data': {'result': {'formData': {'a': 1}}}}
+
+#: 智能表单提交（写）：成功判据是 `data.result.success`，**不是**顶层 success
+SMART_FORM_CALLBACK_OK = {'success': True, 'message': 'SUCCESS::调用成功',
+                          'data': {'result': {'success': True}}}
+#: 顶层 success 为真、但业务体没有 result.success ⇒ form_success=None + warning
+SMART_FORM_CALLBACK_NO_RECEIPT = {'success': True, 'message': 'SUCCESS::调用成功',
+                                  'data': {'result': {}}}
+#: 业务级失败（官方前端就是读 data.result.success）
+SMART_FORM_CALLBACK_BIZ_FAIL = {'success': True, 'message': 'SUCCESS::调用成功',
+                                'data': {'result': {'success': False,
+                                                    'message': '表单校验不通过'}}}
+
 #: 确认闸门的反例（`True`/`'true'`/`1` 之外的都不算点头）
 FALSE_LIKE = (False, None, 0, 'false', 'FALSE', 'no', 'yes', '', [], {})
 
@@ -235,6 +296,14 @@ def full_client(**overrides: Any) -> FakeTradeClient:
         cp_proto.REFUSE_API: COMP_REFUSE_OK,
         proto.ADD_MEMO_API: MEMO_OK,
         proto.ADJUST_PRICE_RENDER_API: ADJUST_RENDER_OK,
+        proto.ORDER_CANCEL_API: ORDER_CANCEL_OK,
+        proto.CLOSE_BY_SELLER_IM_API: CLOSE_IM_OK,
+        proto.SELLER_DELAY_CONFIRM_API: SELLER_DELAY_OK,
+        proto.USER_ADJUST_PRICE_API: USER_ADJUST_OK,
+        proto.SKU_SELECTOR_API: SKU_SELECTOR_OK,
+        proto.BACKFILL_REPORT_API: BACKFILL_OK,
+        proto.SMART_FORM_QUERY_API: SMART_FORM_OK,
+        proto.SMART_FORM_CALLBACK_API: SMART_FORM_CALLBACK_OK,
     }
     payloads.update(overrides)
     return FakeTradeClient(payloads)
@@ -324,6 +393,13 @@ class WriteConfirmGateTest(TradeWritePageTest):
                                                     'proof_urls': ['https://img/a.jpg']}),
             (f'{BASE}/{ACC}/complaints/C1/proof', {'proof_desc': '凭证',
                                                    'proof_urls': ['https://img/a.jpg']}),
+            # 第六十批：IM 侧四个写动作也必须先拿确认
+            (f'{BASE}/{ACC}/orders/O1/cancel', {'close_reason': '买家不想要了'}),
+            (f'{BASE}/{ACC}/orders/O1/close-im', {'close_reason': '买家不想要了'}),
+            (f'{BASE}/{ACC}/orders/O1/delay-single', {'days': 3}),
+            (f'{BASE}/{ACC}/orders/O1/adjust-price-sku', {'skus': {'sku-1': '12.50'}}),
+            (f'{BASE}/{ACC}/smart-form/submit',
+             {'callback_code': 'CB1', 'ext': {'event': 'submit', 'formData': '{}'}}),
         ]
         for path, body in cases:
             with self.subTest(path=path):
@@ -1649,6 +1725,566 @@ class AdjustPriceRenderTest(TradeWritePageTest):
 
     def test_requires_login(self):
         resp = self.get(self.path(), headers={})
+        self.assertEqual(resp.status_code, 401, resp.text)
+
+
+class ImOrderWriteTest(TradeWritePageTest):
+    """第六十批：IM 侧订单处理四写（取消 / 关闭 / 延长收货 / 逐 SKU 改价）。
+
+    官方 IM 聊天页用的是**另一组接口名**（bundle 偏移 1831813~1854657），工作台 bundle
+    里查无此名 —— 所以不合并成别名，各自一条路由；下面同时钉住「名字不同、载荷形状」。
+    """
+
+    # -- 协议层 ----------------------------------------------------------
+
+    def test_api_names_and_versions_are_verbatim(self):
+        self.assertEqual(proto.ORDER_CANCEL_API, 'mtop.taobao.idle.trade.order.cancel')
+        self.assertEqual(proto.ORDER_CANCEL_VERSION, '2.0')
+        self.assertEqual(proto.CLOSE_BY_SELLER_IM_API, 'mtop.taobao.idle.trade.close.by.seller')
+        self.assertEqual(proto.CLOSE_BY_SELLER_IM_VERSION, '2.0')
+        self.assertEqual(proto.SELLER_DELAY_CONFIRM_API,
+                         'mtop.taobao.idle.trade.seller.delay.confirm')
+        self.assertEqual(proto.SELLER_DELAY_CONFIRM_VERSION, '1.0')
+        self.assertEqual(proto.USER_ADJUST_PRICE_API, 'mtop.taobao.idle.trade.user.adjust.price')
+        self.assertEqual(proto.USER_ADJUST_PRICE_VERSION, '1.0')
+
+    def test_order_cancel_is_not_the_workbench_close_api(self):
+        """同载荷、不同接口名：两条都必须留在白名单里，谁也不许吞掉谁。"""
+        self.assertNotEqual(proto.ORDER_CANCEL_API, proto.CLOSE_BY_SELLER_API)
+        self.assertNotEqual(proto.CLOSE_BY_SELLER_IM_API, proto.CLOSE_BY_SELLER_API)
+        for api in (proto.ORDER_CANCEL_API, proto.CLOSE_BY_SELLER_IM_API,
+                    proto.CLOSE_BY_SELLER_API):
+            self.assertIn(api, proto.WRITE_APIS)
+
+    def test_order_cancel_payload_puts_the_id_in_tid_and_biz_order_id(self):
+        api, data = proto.order_cancel_request(9, '买家不想要了', confirm=True)
+        self.assertEqual(api, proto.ORDER_CANCEL_API)
+        self.assertEqual(data, {'tid': '9', 'bizOrderId': '9', 'closeReason': '买家不想要了'})
+        _, same = proto.close_by_seller_im_request(9, '买家不想要了', confirm=True)
+        self.assertEqual(same, data, '两条接口名不同，但官方载荷逐字相同')
+
+    def test_im_close_requests_refuse_false_like_confirm(self):
+        for bad in (False, None, 0, 'false', ''):
+            with self.assertRaises(proto.WriteNotConfirmed):
+                proto.order_cancel_request(9, '原因', confirm=bad)
+            with self.assertRaises(proto.WriteNotConfirmed):
+                proto.close_by_seller_im_request(9, '原因', confirm=bad)
+
+    def test_im_close_requests_require_a_reason(self):
+        for bad in ('', '   ', None):
+            with self.assertRaises(ValueError):
+                proto.order_cancel_request(9, bad, confirm=True)
+        with self.assertRaises(ValueError):
+            proto.order_cancel_request('', '原因', confirm=True)
+
+    def test_seller_delay_confirm_is_one_order_and_seconds(self):
+        api, data = proto.seller_delay_confirm_request('9', 3, confirm=True)
+        self.assertEqual(api, proto.SELLER_DELAY_CONFIRM_API)
+        self.assertEqual(data, {'orderId': '9', 'delayTime': '259200'})
+        for days, seconds in ((5, 432000), (7, 604800), (10, 864000)):
+            _, one = proto.seller_delay_confirm_request('9', days, confirm=True)
+            self.assertEqual(one['delayTime'], str(seconds), days)
+        self.assertNotIn('orderIdList', data, '单订单版没有 orderIdList，别抄批量版')
+
+    def test_seller_delay_days_are_the_four_official_ones(self):
+        self.assertEqual(tuple(proto.SELLER_DELAY_DAYS), (3, 5, 7, 10))
+        for bad in (0, 1, 4, 30, 'x', None, True):
+            with self.assertRaises(ValueError):
+                proto.seller_delay_confirm_request('9', bad, confirm=True)
+
+    def test_user_adjust_price_converts_yuan_to_fen_per_sku(self):
+        api, data = proto.user_adjust_price_request(
+            '9', {'sku-1': '12.50', 'sku-2': 1.5}, confirm=True)
+        self.assertEqual(api, proto.USER_ADJUST_PRICE_API)
+        self.assertEqual(data, {'orderId': '9', 'sku-1': '1250', 'sku-2': '150'})
+
+    def test_user_adjust_price_keeps_an_integer_as_fen(self):
+        """官方前端自己就是 mul(100) 后的分：整数别再乘一次。"""
+        _, data = proto.user_adjust_price_request('9', {'sku-1': 1250}, confirm=True)
+        self.assertEqual(data['sku-1'], '1250')
+
+    def test_user_adjust_price_accepts_pairs_and_rejects_bad_keys(self):
+        _, data = proto.user_adjust_price_request(
+            '9', [{'key': 'sku-1', 'value': '2.5'}], confirm=True)
+        self.assertEqual(data, {'orderId': '9', 'sku-1': '250'})
+        _, data = proto.user_adjust_price_request('9', [['sku-9', '3.50']], confirm=True)
+        self.assertEqual(data, {'orderId': '9', 'sku-9': '350'})
+        for bad in ({}, {'': '1'}, {'orderId': '1'}, {'sku-1': ''}, {'sku-1': 'abc'},
+                    {'sku-1': None}, {'sku-1': True}, []):
+            with self.assertRaises(ValueError):
+                proto.user_adjust_price_request('9', bad, confirm=True)
+
+    def test_the_new_read_only_apis_are_registered_as_reads(self):
+        for api in (proto.SKU_SELECTOR_API, proto.BACKFILL_REPORT_API,
+                    proto.SMART_FORM_QUERY_API):
+            self.assertIn(api, proto.READ_APIS)
+            self.assertNotIn(api, proto.WRITE_APIS)
+        self.assertIn(proto.SMART_FORM_CALLBACK_API, proto.WRITE_APIS)
+        self.assertNotIn(proto.SMART_FORM_CALLBACK_API, proto.READ_APIS)
+
+    def test_the_read_only_layer_blacklists_the_new_write_apis(self):
+        for api in (proto.ORDER_CANCEL_API, proto.CLOSE_BY_SELLER_IM_API,
+                    proto.SELLER_DELAY_CONFIRM_API, proto.USER_ADJUST_PRICE_API,
+                    proto.SMART_FORM_CALLBACK_API):
+            self.assertIn(api, trade_proto.WRITE_APIS, api)
+
+    # -- 路由 ------------------------------------------------------------
+
+    def test_cancel_happy_path(self):
+        data = self.ok_data(BASE + '/%s/orders/9/cancel' % ACC,
+                            {'close_reason': '买家不想要了', 'confirm': True})
+        self.assertEqual(data.get('action'), 'trade_order_cancel')
+        self.assertEqual(self.fake.apis(), [proto.ORDER_CANCEL_API])
+        self.assertEqual(self.fake.call_of(proto.ORDER_CANCEL_API)['data'],
+                         {'tid': '9', 'bizOrderId': '9', 'closeReason': '买家不想要了'})
+        self.assertEqual(self.fake.call_of(proto.ORDER_CANCEL_API)['v'], '2.0')
+        self.assertIn('trade_order_cancel', [row['action'] for row in self.logs()])
+
+    def test_close_im_happy_path(self):
+        data = self.ok_data(BASE + '/%s/orders/9/close-im' % ACC,
+                            {'close_reason': '买家不想要了', 'confirm': True})
+        self.assertEqual(data.get('action'), 'trade_close_by_seller_im')
+        self.assertEqual(self.fake.apis(), [proto.CLOSE_BY_SELLER_IM_API])
+        self.assertEqual(self.fake.call_of(proto.CLOSE_BY_SELLER_IM_API)['v'], '2.0')
+
+    def test_delay_single_happy_path(self):
+        data = self.ok_data(BASE + '/%s/orders/9/delay-single' % ACC,
+                            {'days': 3, 'confirm': True})
+        self.assertEqual(data.get('action'), 'trade_seller_delay_confirm')
+        self.assertEqual(self.fake.call_of(proto.SELLER_DELAY_CONFIRM_API)['data'],
+                         {'orderId': '9', 'delayTime': '259200'})
+        self.assertEqual(self.fake.call_of(proto.SELLER_DELAY_CONFIRM_API)['v'], '1.0')
+
+    def test_adjust_price_sku_happy_path(self):
+        data = self.ok_data(BASE + '/%s/orders/9/adjust-price-sku' % ACC,
+                            {'skus': {'sku-1': '12.50'}, 'confirm': True})
+        self.assertEqual(data.get('action'), 'trade_user_adjust_price')
+        self.assertEqual(self.fake.call_of(proto.USER_ADJUST_PRICE_API)['data'],
+                         {'orderId': '9', 'sku-1': '1250'})
+        row = db.query_one("SELECT detail FROM operation_logs "
+                           "WHERE action='trade_user_adjust_price'")
+        self.assertEqual(json.loads(row['detail']),
+                         {'order_id': '9', 'sku_keys': ['sku-1']}, '审计里要有 SKU 键名')
+
+    def test_bad_sku_price_is_rejected_before_the_client(self):
+        payload = self.fail(BASE + '/%s/orders/9/adjust-price-sku' % ACC,
+                            {'skus': {'sku-1': ''}, 'confirm': True})
+        self.assertEqual(payload.get('code'), 'invalid_fields')
+        self.assertEqual(self.fake.calls, [], '字段校验必须早于建客户端')
+
+    def test_confirm_gate_blocks_every_new_write_route(self):
+        cases = (
+            (BASE + '/%s/orders/9/cancel' % ACC, {'close_reason': '原因'}),
+            (BASE + '/%s/orders/9/close-im' % ACC, {'close_reason': '原因'}),
+            (BASE + '/%s/orders/9/delay-single' % ACC, {'days': 3}),
+            (BASE + '/%s/orders/9/adjust-price-sku' % ACC, {'skus': {'k': '1'}}),
+            (BASE + '/%s/smart-form/submit' % ACC,
+             {'callback_code': 'CB1', 'ext': {'event': 'submit', 'formData': '{}'}}),
+        )
+        for path, body in cases:
+            payload = self.fail(path, body)
+            self.assertEqual(payload.get('code'), 'confirmation_required', (path, payload))
+        self.assertEqual(self.fake.calls, [], '没确认就一个平台请求都不许发')
+
+    def test_missing_reason_is_invalid_fields_and_sends_nothing(self):
+        payload = self.fail(BASE + '/%s/orders/9/cancel' % ACC,
+                            {'close_reason': '   ', 'confirm': True})
+        self.assertEqual(payload.get('code'), 'invalid_fields')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_same_idempotency_key_hits_the_platform_once(self):
+        svc_common.set_idempotency_key('tc60-cancel-1')
+        try:
+            first = trade_write_svc.order_cancel(ACC, '9', '买家不想要了', confirm=True)
+            second = trade_write_svc.order_cancel(ACC, '9', '买家不想要了', confirm=True)
+        finally:
+            svc_common.set_idempotency_key('')
+        self.assertFalse(first.get('idempotent_replay'))
+        self.assertTrue(second.get('idempotent_replay'), second)
+        self.assertEqual(self.fake.apis(), [proto.ORDER_CANCEL_API],
+                         '同一个 Idempotency-Key 只许打平台一次')
+        self.assertEqual(len([row for row in self.logs()
+                              if row['action'] == 'trade_order_cancel']), 1,
+                         '回放不该再写一条操作日志')
+
+    def test_platform_refusal_is_502_and_not_a_logout(self):
+        self.fake.payloads[proto.ORDER_CANCEL_API] = NO_PERMISSION
+        payload = self.fail(BASE + '/%s/orders/9/cancel' % ACC,
+                            {'close_reason': '原因', 'confirm': True}, status=502)
+        self.assertEqual(payload.get('code'), 'protocol_error')
+        self.assertEqual(self.login_state(), 'active', '无权限 ≠ 掉线')
+
+    def test_new_routes_are_registered_with_the_right_methods(self):
+        paths = {(route.path, tuple(sorted(getattr(route, 'methods', ()))))
+                 for route in trade_write_api.router.routes}
+        for suffix in ('/orders/{order_id}/cancel', '/orders/{order_id}/close-im',
+                       '/orders/{order_id}/delay-single',
+                       '/orders/{order_id}/adjust-price-sku'):
+            self.assertIn((BASE + '/{account_id}' + suffix, ('POST',)), paths)
+        for suffix in ('/items/{item_id}/sku-selector',
+                       '/orders/{order_id}/backfill-report', '/smart-form/query'):
+            self.assertIn((BASE + '/{account_id}' + suffix, ('GET',)), paths)
+        self.assertIn((BASE + '/{account_id}/smart-form/submit', ('POST',)), paths)
+
+    def test_requires_login(self):
+        resp = self.post(BASE + '/%s/orders/9/cancel' % ACC,
+                         {'close_reason': '原因', 'confirm': True}, headers={})
+        self.assertEqual(resp.status_code, 401, resp.text)
+
+
+class SkuSelectorTest(TradeWritePageTest):
+    """只读：SKU 选择器（GET …/items/{item_id}/sku-selector，bundle 偏移 1841759）。"""
+
+    def path(self, item_id: str = '7') -> str:
+        return BASE + '/%s/items/%s/sku-selector' % (ACC, item_id)
+
+    # -- 协议层 ----------------------------------------------------------
+
+    def test_api_name_version_and_registration(self):
+        self.assertEqual(proto.SKU_SELECTOR_API,
+                         'mtop.taobao.idle.trade.common.sku.selector')
+        self.assertEqual(proto.SKU_SELECTOR_VERSION, '1.0')
+        self.assertIn(proto.SKU_SELECTOR_API, proto.READ_APIS)
+        self.assertNotIn(proto.SKU_SELECTOR_API, proto.WRITE_APIS)
+
+    def test_request_is_the_official_shape(self):
+        api, data = proto.sku_selector_request(7)
+        self.assertEqual(api, proto.SKU_SELECTOR_API)
+        self.assertEqual(data, {'itemId': '7'})
+        with self.assertRaises(ValueError):
+            proto.sku_selector_request('')
+
+    def test_parse_reads_the_three_components_by_render(self):
+        parsed = proto.parse_sku_selector(SKU_SELECTOR_OK)
+        self.assertTrue(parsed['found'])
+        self.assertEqual(parsed['sku_info'], [{'skuId': '1'}])
+        self.assertEqual(len(parsed['components']), 3)
+        self.assertEqual(parsed['component_data']['skuItemInfo'], {'itemId': 7})
+        self.assertEqual(parsed['component_data']['specificationInfo'], {'specs': []})
+        self.assertEqual(parsed['component_data']['quantityInfo'], {'num': 1})
+        self.assertEqual(parsed['raw_keys'], ['components', 'skuInfo'])
+
+    def test_parse_never_invents_components(self):
+        parsed = proto.parse_sku_selector({'success': True, 'data': {}})
+        self.assertIsNone(parsed['components'])
+        self.assertIsNone(parsed['component_data'])
+        self.assertIsNone(parsed['sku_info'])
+        self.assertEqual(parsed['raw_keys'], [])
+        empty = proto.parse_sku_selector(SKU_SELECTOR_NO_COMPONENTS)
+        self.assertIsNone(empty['components'], '平台没给就是 None，不许包一个空列表')
+        self.assertEqual(empty['raw_keys'], ['other', 'skuInfo'])
+
+    # -- 路由 ------------------------------------------------------------
+
+    def test_happy_path_is_read_only_and_calls_the_platform_once(self):
+        resp = self.get(self.path())
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertEqual(data['api'], proto.SKU_SELECTOR_API)
+        self.assertEqual(data['item_id'], '7')
+        self.assertEqual(data['component_data']['skuItemInfo'], {'itemId': 7})
+        self.assertEqual(data['warnings'], [])
+        self.assertEqual(self.fake.apis(), [proto.SKU_SELECTOR_API])
+        self.assertEqual(self.fake.call_of(proto.SKU_SELECTOR_API)['data'], {'itemId': '7'})
+        self.assertEqual(self.fake.call_of(proto.SKU_SELECTOR_API)['v'], '1.0')
+        self.assertEqual(self.logs(), [], '只读路径不写操作日志')
+
+    def test_missing_components_is_a_warning_not_invented_specs(self):
+        self.fake.payloads[proto.SKU_SELECTOR_API] = SKU_SELECTOR_NO_COMPONENTS
+        data = self.get(self.path()).json()['data']
+        self.assertIsNone(data['components'])
+        self.assertEqual([w['code'] for w in data['warnings']], ['sku_selector_missing'])
+        self.assertIn('不替你编', data['warnings'][0]['message'])
+
+    def test_empty_item_id_is_rejected_before_the_client(self):
+        payload = trade_write_svc.sku_selector(ACC, '   ')
+        self.assertEqual(payload.get('code'), 'invalid_fields')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_platform_refusal_is_a_protocol_error_and_not_a_logout(self):
+        self.fake.payloads[proto.SKU_SELECTOR_API] = NO_PERMISSION
+        resp = self.get(self.path())
+        self.assertEqual(resp.status_code, 502, resp.text)
+        self.assertEqual(resp.json()['code'], 'protocol_error')
+        self.assertEqual(self.login_state(), 'active')
+
+    def test_missing_cookie_is_409_and_never_calls_platform(self):
+        seed_account(cookie='', login_state='active')
+        resp = self.get(self.path())
+        self.assertEqual(resp.status_code, 409, resp.text)
+        self.assertEqual(self.fake.apis(), [])
+
+    def test_post_on_the_read_path_is_not_allowed(self):
+        self.assertEqual(self.post(self.path()).status_code, 405)
+
+    def test_unknown_account_is_404(self):
+        resp = self.get('/api/trade/nope/items/7/sku-selector')
+        self.assertEqual(resp.status_code, 404, resp.text)
+
+    def test_requires_login(self):
+        self.assertEqual(self.get(self.path(), headers={}).status_code, 401)
+
+
+class BackfillReportTest(TradeWritePageTest):
+    """只读：验货报告（GET …/orders/{order_id}/backfill-report，bundle 偏移 2608355）。"""
+
+    def path(self, order_id: str = '9') -> str:
+        return BASE + '/%s/orders/%s/backfill-report' % (ACC, order_id)
+
+    # -- 协议层 ----------------------------------------------------------
+
+    def test_api_name_version_and_registration(self):
+        self.assertEqual(proto.BACKFILL_REPORT_API,
+                         'mtop.alibaba.idle.seller.platform.order.backfill.report')
+        self.assertEqual(proto.BACKFILL_REPORT_VERSION, '1.0')
+        self.assertIn(proto.BACKFILL_REPORT_API, proto.READ_APIS)
+        self.assertNotIn(proto.BACKFILL_REPORT_API, proto.WRITE_APIS)
+
+    def test_request_is_the_official_shape(self):
+        api, data = proto.backfill_report_request(9)
+        self.assertEqual(api, proto.BACKFILL_REPORT_API)
+        self.assertEqual(data, {'orderId': '9'})
+        with self.assertRaises(ValueError):
+            proto.backfill_report_request('')
+
+    def test_parse_only_takes_the_report_when_the_code_says_success(self):
+        parsed = proto.parse_backfill_report(BACKFILL_OK)
+        self.assertEqual(parsed['code'], 'success')
+        self.assertTrue(parsed['report_ok'])
+        self.assertEqual(parsed['report'], {'reportId': 'R1', 'items': []})
+        self.assertNotIn('success', parsed,
+                         '业务码不许占用顶层 success（会被 common.respond 当失败信封）')
+        empty = proto.parse_backfill_report(BACKFILL_EMPTY)
+        self.assertTrue(empty['report_ok'])
+        self.assertIsNone(empty['report'], '成功但没报告体 ⇒ None，不许造空对象')
+        failed = proto.parse_backfill_report(BACKFILL_FAIL)
+        self.assertEqual(failed['code'], 'REPORT_NOT_FOUND')
+        self.assertFalse(failed['report_ok'])
+        self.assertIsNone(failed['report'])
+        self.assertEqual(failed['raw_keys'], ['code', 'data'])
+
+    def test_parse_without_any_code_is_not_success(self):
+        parsed = proto.parse_backfill_report({'success': True, 'data': {}})
+        self.assertIsNone(parsed['code'])
+        self.assertFalse(parsed['report_ok'], '没给 code 就不许当成功')
+
+    # -- 路由 ------------------------------------------------------------
+
+    def test_happy_path_is_read_only_and_calls_the_platform_once(self):
+        resp = self.get(self.path())
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertEqual(data['api'], proto.BACKFILL_REPORT_API)
+        self.assertEqual(data['order_id'], '9')
+        self.assertEqual(data['report']['reportId'], 'R1')
+        self.assertEqual(data['warnings'], [])
+        self.assertEqual(self.fake.apis(), [proto.BACKFILL_REPORT_API])
+        self.assertEqual(self.fake.call_of(proto.BACKFILL_REPORT_API)['data'], {'orderId': '9'})
+        self.assertEqual(self.logs(), [])
+
+    def test_empty_report_is_a_warning_not_a_fabricated_body(self):
+        self.fake.payloads[proto.BACKFILL_REPORT_API] = BACKFILL_EMPTY
+        data = self.get(self.path()).json()['data']
+        self.assertIsNone(data['report'])
+        self.assertEqual([w['code'] for w in data['warnings']], ['backfill_report_empty'])
+
+    def test_platform_level_failure_code_is_not_an_http_failure(self):
+        """平台业务码不是 success ⇒ 200 + report_ok=false + 中文 warning（不是 400）。"""
+        self.fake.payloads[proto.BACKFILL_REPORT_API] = BACKFILL_FAIL
+        resp = self.get(self.path())
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertFalse(data['report_ok'])
+        self.assertEqual(data['code'], 'REPORT_NOT_FOUND')
+        self.assertIsNone(data['report'])
+        self.assertEqual([w['code'] for w in data['warnings']],
+                         ['backfill_report_unavailable'])
+
+    def test_empty_order_id_is_rejected_before_the_client(self):
+        payload = trade_write_svc.backfill_report(ACC, '')
+        self.assertEqual(payload.get('code'), 'invalid_fields')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_post_on_the_read_path_is_not_allowed(self):
+        self.assertEqual(self.post(self.path()).status_code, 405)
+
+    def test_requires_login(self):
+        self.assertEqual(self.get(self.path(), headers={}).status_code, 401)
+
+
+class SmartFormTest(TradeWritePageTest):
+    """智能表单：只读元数据（GET .../smart-form/query）+ 提交（POST .../smart-form/submit）。
+
+    偏移 3077683 / 3081308（工作台）与 798950 / 802676（IM 侧）两处逐字相同。
+    提交的 extJson 是 JSON.stringify({event, ..., formData})，而 formData 本身已是
+    JSON **字符串** ⇒ 平台收到的是双层字符串；成功判据是 data.result.success。
+    """
+
+    def query_path(self, query: str = '') -> str:
+        path = BASE + '/%s/smart-form/query' % ACC
+        return path + ('?params=' + query if query else '')
+
+    def submit_path(self) -> str:
+        return BASE + '/%s/smart-form/submit' % ACC
+
+    # -- 协议层：元数据 --------------------------------------------------
+
+    def test_api_names_versions_and_registration(self):
+        self.assertEqual(proto.SMART_FORM_QUERY_API,
+                         'mtop.taobao.merchant.heracles.inno.smart.form.query')
+        self.assertEqual(proto.SMART_FORM_QUERY_VERSION, '1.0')
+        self.assertEqual(proto.SMART_FORM_CALLBACK_API,
+                         'mtop.taobao.merchant.heracles.inno.smart.form.callback')
+        self.assertEqual(proto.SMART_FORM_CALLBACK_VERSION, '1.0')
+        self.assertIn(proto.SMART_FORM_QUERY_API, proto.READ_APIS)
+        self.assertIn(proto.SMART_FORM_CALLBACK_API, proto.WRITE_APIS)
+        self.assertNotIn(proto.SMART_FORM_CALLBACK_API, proto.READ_APIS)
+
+    def test_query_request_passes_the_url_params_through_verbatim(self):
+        api, data = proto.smart_form_query_request({'formId': '9', 'bizType': 'order'})
+        self.assertEqual(api, proto.SMART_FORM_QUERY_API)
+        self.assertEqual(data, {'formId': '9', 'bizType': 'order'})
+        _, from_query = proto.smart_form_query_request('formId=9&bizType=order')
+        self.assertEqual(from_query, {'formId': '9', 'bizType': 'order'})
+        _, from_json = proto.smart_form_query_request('{"formId": "9"}')
+        self.assertEqual(from_json, {'formId': '9'})
+        for bad in ('', '   ', {}, [], None):
+            with self.assertRaises(ValueError):
+                proto.smart_form_query_request(bad)
+        with self.assertRaises(ValueError):
+            proto.smart_form_query_request('{不是 JSON}')
+
+    def test_parse_query_decodes_the_schema_string_and_keeps_the_raw_one(self):
+        parsed = proto.parse_smart_form_query(SMART_FORM_OK)
+        self.assertTrue(parsed['found'])
+        self.assertEqual(parsed['schema'], {'type': 'object', 'properties': {}})
+        self.assertEqual(parsed['schema_raw'],
+                         json.dumps({'type': 'object', 'properties': {}}))
+        self.assertEqual(parsed['form_data'], {'field1': 'v1'})
+        self.assertEqual(parsed['raw_keys'], ['formData', 'formSchema'])
+
+    def test_parse_query_never_invents_a_schema(self):
+        parsed = proto.parse_smart_form_query(SMART_FORM_NO_SCHEMA)
+        self.assertIsNone(parsed['schema'])
+        self.assertIsNone(parsed['schema_raw'])
+        self.assertEqual(parsed['form_data'], {'a': 1})
+
+    # -- 协议层：提交 ----------------------------------------------------
+
+    def test_callback_request_stringifies_the_ext_once(self):
+        api, data = proto.smart_form_callback_request(
+            'CB1', {'event': 'submit', 'formData': '{"a": 1}'}, confirm=True)
+        self.assertEqual(api, proto.SMART_FORM_CALLBACK_API)
+        self.assertEqual(data['callbackCode'], 'CB1')
+        self.assertEqual(json.loads(data['extJson']),
+                         {'event': 'submit', 'formData': '{"a": 1}'})
+        self.assertIsInstance(json.loads(data['extJson'])['formData'], str,
+                              'formData 本身已是 JSON 字符串 ⇒ 双层字符串')
+
+    def test_callback_request_sends_an_already_built_string_verbatim(self):
+        given = '{"event": "submit", "formData": "{}"}'
+        _, data = proto.smart_form_callback_request('CB1', given, confirm=True)
+        self.assertEqual(data['extJson'], given)
+
+    def test_callback_request_rejects_bad_input_and_false_like_confirm(self):
+        for bad in (None, '', '   ', {}, [], 1):
+            with self.assertRaises(ValueError):
+                proto.smart_form_callback_request('CB1', bad, confirm=True)
+        with self.assertRaises(ValueError):
+            proto.smart_form_callback_request('CB1', '{不是 JSON}', confirm=True)
+        with self.assertRaises(ValueError):
+            proto.smart_form_callback_request('', {'event': 'submit'}, confirm=True)
+        for bad in (False, None, 0, 'false', ''):
+            with self.assertRaises(proto.WriteNotConfirmed):
+                proto.smart_form_callback_request('CB1', {'event': 'submit'}, confirm=bad)
+
+    def test_parse_callback_reads_the_business_flag_only(self):
+        self.assertTrue(proto.parse_smart_form_callback(SMART_FORM_CALLBACK_OK)['form_success'])
+        receipt = proto.parse_smart_form_callback(SMART_FORM_CALLBACK_NO_RECEIPT)
+        self.assertIsNone(receipt['form_success'], '没回执就是 None，不拿顶层 success 冒充')
+        failed = proto.parse_smart_form_callback(SMART_FORM_CALLBACK_BIZ_FAIL)
+        self.assertFalse(failed['form_success'])
+        self.assertEqual(failed['form_message'], '表单校验不通过')
+
+    # -- 路由：只读元数据 ------------------------------------------------
+
+    def test_query_happy_path_is_read_only(self):
+        resp = self.get(self.query_path('formId%3D9%26bizType%3Dorder'))
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertEqual(data['api'], proto.SMART_FORM_QUERY_API)
+        self.assertEqual(data['params'], {'formId': '9', 'bizType': 'order'})
+        self.assertEqual(data['schema'], {'type': 'object', 'properties': {}})
+        self.assertEqual(data['warnings'], [])
+        self.assertEqual(self.fake.apis(), [proto.SMART_FORM_QUERY_API])
+        self.assertEqual(self.fake.call_of(proto.SMART_FORM_QUERY_API)['data'],
+                         {'formId': '9', 'bizType': 'order'})
+        self.assertEqual(self.logs(), [], '只读路径不写操作日志')
+
+    def test_query_without_params_is_invalid_fields(self):
+        resp = self.get(self.query_path())
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertEqual(resp.json().get('code'), 'invalid_fields')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_query_missing_schema_is_a_warning_not_a_fabricated_form(self):
+        self.fake.payloads[proto.SMART_FORM_QUERY_API] = SMART_FORM_NO_SCHEMA
+        data = self.get(self.query_path('formId=9')).json()['data']
+        self.assertIsNone(data['schema'])
+        self.assertEqual([w['code'] for w in data['warnings']], ['smart_form_schema_missing'])
+
+    def test_query_read_path_rejects_post(self):
+        self.assertEqual(self.post(self.query_path()).status_code, 405)
+
+    # -- 路由：提交 ------------------------------------------------------
+
+    def test_submit_happy_path_sends_the_official_payload_and_audits(self):
+        ext = {'event': 'submit', 'formData': '{"a": 1}'}
+        data = self.ok_data(self.submit_path(),
+                            {'callback_code': 'CB1', 'ext': ext, 'confirm': True})
+        self.assertEqual(data.get('action'), 'trade_smart_form_callback')
+        self.assertTrue(data['form_success'])
+        self.assertEqual(self.fake.apis(), [proto.SMART_FORM_CALLBACK_API])
+        self.assertEqual(self.fake.call_of(proto.SMART_FORM_CALLBACK_API)['data'],
+                         {'callbackCode': 'CB1',
+                          'extJson': json.dumps(ext, ensure_ascii=False)})
+        self.assertEqual(self.fake.call_of(proto.SMART_FORM_CALLBACK_API)['v'], '1.0')
+        self.assertEqual(data.get('submitted', {}).get('callback_code'), 'CB1')
+        self.assertIn('trade_smart_form_callback', [row['action'] for row in self.logs()])
+
+    def test_submit_without_receipt_is_a_warning_not_a_success_claim(self):
+        self.fake.payloads[proto.SMART_FORM_CALLBACK_API] = SMART_FORM_CALLBACK_NO_RECEIPT
+        data = self.ok_data(self.submit_path(),
+                            {'callback_code': 'CB1', 'ext': {'event': 'submit'},
+                             'confirm': True})
+        self.assertIsNone(data['form_success'])
+        self.assertEqual([w['code'] for w in data['warnings']], ['smart_form_no_receipt'])
+
+    def test_submit_business_failure_is_reported_as_failure(self):
+        self.fake.payloads[proto.SMART_FORM_CALLBACK_API] = SMART_FORM_CALLBACK_BIZ_FAIL
+        data = self.ok_data(self.submit_path(),
+                            {'callback_code': 'CB1', 'ext': {'event': 'submit'},
+                             'confirm': True})
+        self.assertFalse(data['form_success'])
+        self.assertEqual(data['form_message'], '表单校验不通过')
+
+    def test_submit_without_ext_is_invalid_fields_before_the_client(self):
+        payload = self.fail(self.submit_path(), {'callback_code': 'CB1', 'confirm': True})
+        self.assertEqual(payload.get('code'), 'invalid_fields')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_submit_platform_refusal_is_502_and_not_a_logout(self):
+        self.fake.payloads[proto.SMART_FORM_CALLBACK_API] = NO_PERMISSION
+        payload = self.fail(self.submit_path(),
+                            {'callback_code': 'CB1', 'ext': {'event': 'submit'},
+                             'confirm': True}, status=502)
+        self.assertEqual(payload.get('code'), 'protocol_error')
+        self.assertEqual(self.login_state(), 'active')
+
+    def test_submit_requires_login(self):
+        resp = self.post(self.submit_path(),
+                         {'callback_code': 'CB1', 'ext': {'event': 'submit'},
+                          'confirm': True}, headers={})
         self.assertEqual(resp.status_code, 401, resp.text)
 
 

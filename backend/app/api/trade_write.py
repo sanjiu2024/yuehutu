@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Body, Depends, Query
 from fastapi.responses import JSONResponse
 
 from ..services import common, trade_write
@@ -503,3 +503,133 @@ def add_memo(
     return _envelope(trade_write.add_memo(
         account_id, order_id, body.get('memo'), body.get('memo_group', 1),
         confirm=body.get('confirm')))
+
+
+# ------------------------------------------------------- 第 60 批：IM 侧订单处理 + 商品 SKU / 验货报告 / 智能表单
+#
+# 官方交易页在 IM 聊天侧另有一组同功能**不同接口名**的写接口（bundle 偏移见协议层注释）：
+# 官方工作台 bundle 里查无此名，所以不合并成别名 —— 各自一条路由，由调用方选路。
+
+
+@router.post('/{account_id}/orders/{order_id}/cancel')
+def order_cancel(
+    account_id: str,
+    order_id: str,
+    body: Dict[str, Any] = Body(default={}, description='{close_reason, confirm}'),
+    user=Depends(current_user),
+):
+    """取消订单（IM 侧）：`mtop.taobao.idle.trade.order.cancel` v2.0。**不可撤销**。
+
+    与 `POST /orders/{order_id}/close` **同载荷不同接口名**（官方 IM 页按开关二选一），
+    两个名字都真实存在，所以两条路都留着。`close_reason` 必填。
+    """
+    return _envelope(trade_write.order_cancel(
+        account_id, order_id, body.get('close_reason'), confirm=body.get('confirm')))
+
+
+@router.post('/{account_id}/orders/{order_id}/close-im')
+def order_close_by_seller_im(
+    account_id: str,
+    order_id: str,
+    body: Dict[str, Any] = Body(default={}, description='{close_reason, confirm}'),
+    user=Depends(current_user),
+):
+    """关闭订单（IM 侧）：`mtop.taobao.idle.trade.close.by.seller` v2.0。**不可撤销**。
+
+    与工作台那条（`…trade.merchant.close.by.seller`）同载荷、不同接口名。
+    """
+    return _envelope(trade_write.close_by_seller_im(
+        account_id, order_id, body.get('close_reason'), confirm=body.get('confirm')))
+
+
+@router.post('/{account_id}/orders/{order_id}/delay-single')
+def order_seller_delay_confirm(
+    account_id: str,
+    order_id: str,
+    body: Dict[str, Any] = Body(default={}, description='{days, confirm}，days ∈ 3/5/7/10'),
+    user=Depends(current_user),
+):
+    """延长收货（**单个订单**）：`mtop.taobao.idle.trade.seller.delay.confirm` v1.0。
+
+    `delayTime` 平台要**秒**（按 `days × 86400` 换算）；批量版是 `POST /orders/{order_id}/delay`
+    （另一个接口、另一个载荷），两条别混。
+    """
+    return _envelope(trade_write.seller_delay_confirm(
+        account_id, order_id, body.get('days'), confirm=body.get('confirm')))
+
+
+@router.post('/{account_id}/orders/{order_id}/adjust-price-sku')
+def order_user_adjust_price(
+    account_id: str,
+    order_id: str,
+    body: Dict[str, Any] = Body(
+        default={}, description='{skus: {skuKey: 价格}, confirm}；非整数按元、整数按分'),
+    user=Depends(current_user),
+):
+    """改价（IM 侧，**逐 SKU**）：`mtop.taobao.idle.trade.user.adjust.price` v1.0。
+
+    `skus` 的键名由调用方原样透传（平台字段名不替它编）；工作台那条整单两字段的是
+    `POST /orders/{order_id}/adjust-price`。
+    """
+    return _envelope(trade_write.user_adjust_price(
+        account_id, order_id, body.get('skus'), confirm=body.get('confirm')))
+
+
+@router.get('/{account_id}/items/{item_id}/sku-selector')
+def item_sku_selector(
+    account_id: str,
+    item_id: str,
+    user=Depends(current_user),
+):
+    """SKU 选择器（**只读**，没有 `confirm`）：`…trade.common.sku.selector` v1.0。
+
+    官方读 `data.{components,skuInfo}`，在 `components` 里按 `render` 找
+    `skuItemInfo` / `specificationInfo` / `quantityInfo`；平台没给组件时加中文 warning。
+    """
+    return _envelope(trade_write.sku_selector(account_id, item_id))
+
+
+@router.get('/{account_id}/orders/{order_id}/backfill-report')
+def order_backfill_report(
+    account_id: str,
+    order_id: str,
+    user=Depends(current_user),
+):
+    """验货报告（**只读**，没有 `confirm`）：`…platform.order.backfill.report` v1.0。
+
+    官方只在 `data.code == 'success'` 时取 `data.data`；成功但没报告体时 `report=null` + warning。
+    """
+    return _envelope(trade_write.backfill_report(account_id, order_id))
+
+
+@router.get('/{account_id}/smart-form/query')
+def smart_form_query(
+    account_id: str,
+    params: str = Query(
+        default='', description='页面 URL 的查询参数（`a=1&b=2`）或 JSON 对象串'),
+    user=Depends(current_user),
+):
+    """智能表单元数据（**只读**，没有 `confirm`）：`…heracles.inno.smart.form.query` v1.0。
+
+    官方把页面 URL 的查询参数整个当载荷发出去，所以这里也**整份透传**：
+    `params` 收 `a=1&b=2` 这种查询串，也收 `{"a": 1}` 这种 JSON 串（键名不替平台编）。
+    只读 ⇒ 故意做成 GET，免得被当成写路由（服务层也不会发任何写请求）。
+    """
+    return _envelope(trade_write.smart_form_query(account_id, params))
+
+
+@router.post('/{account_id}/smart-form/submit')
+def smart_form_submit(
+    account_id: str,
+    body: Dict[str, Any] = Body(
+        default={}, description='{callback_code, ext, confirm}；ext 给对象或已是官方那个 JSON 串'),
+    user=Depends(current_user),
+):
+    """提交智能表单：`mtop.taobao.merchant.heracles.inno.smart.form.callback` v1.0。
+
+    官方 `{callbackCode, extJson}`：`extJson` 是 `JSON.stringify({event, …, formData})`，
+    而 `formData` 本身已是 JSON **字符串** ⇒ 平台收到双层字符串。成功判据是
+    `data.result.success`（官方成功 toast「填写成功」），**不是**顶层 `success`。
+    """
+    return _envelope(trade_write.smart_form_callback(
+        account_id, body.get('callback_code'), body.get('ext'), confirm=body.get('confirm')))

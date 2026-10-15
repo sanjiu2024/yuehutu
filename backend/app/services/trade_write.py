@@ -866,6 +866,228 @@ def add_memo(account_id: str, order_id: Any, memo: Any, memo_group: Any = 1, *,
     return payload
 
 
+# --------------------------------------------------------------------------- IM 侧订单处理 + 商品 SKU / 验货报告 / 智能表单
+#
+# 第 60 批：官方交易页在 IM 聊天侧另有一组同功能不同名的接口（bundle 偏移见协议层注释）：
+#   order.cancel          @1832140 v2.0 {tid,bizOrderId,closeReason}（写）
+#   close.by.seller       @1831960 v2.0 {tid,bizOrderId,closeReason}（写，与上面同载荷不同名）
+#   seller.delay.confirm  @1832406 v1.0 {delayTime(秒),orderId}（写，单订单）
+#   user.adjust.price     @1831813 v1.0 {orderId, <skuKey>: '<分>'}（写，逐 SKU）
+#   common.sku.selector   @1841759 v1.0 {itemId} → data.{components,skuInfo}（只读）
+#   order.backfill.report @2608355 v1.0 {orderId} → data.code/data.data（只读）
+#   smart.form.query      @3077683 v1.0 <URL 查询参数> → data.result.formSchema（只读）
+#   smart.form.callback   @3081308 v1.0 {callbackCode,extJson}（写）
+#
+# 官方工作台**没有**前四条中的任何一条（main.js 里查无此名），所以不合并成别名：
+# 各自一个服务函数、各自一条路由，由调用方选路。
+
+
+def _read_api(account_id: str, api: str, data: Any, version: str, parse) -> Dict[str, Any]:
+    """只读接口的公共骨架：`_call_api` + 解析 + 打戳（写类**不走**这里）。"""
+    client, failure = _client(account_id)
+    if failure:
+        return failure
+    raw, failure = _call_api(client, api, data, version)
+    if failure:
+        return failure
+    payload = parse(raw)
+    payload['account_id'] = account_id
+    payload['api'] = api
+    return _stamp(payload)
+
+
+def order_cancel(account_id: str, order_id: Any, close_reason: Any, *,
+                 confirm: Any = False) -> Dict[str, Any]:
+    """取消订单（IM 侧 `mtop.taobao.idle.trade.order.cancel` v2.0）。
+
+    与 `close_order` **同载荷不同接口名**：官方 IM 聊天页在同一处按开关二选一
+    （偏移 1853279/1853504），两个名字都真实存在，所以保留两条路。
+    **不可撤销**，原因必填（候选来自 `close_reasons`）。
+    """
+    if not _truthy(confirm):
+        return _confirm_required('取消订单')
+    failure = _missing(('订单号', order_id), ('取消原因', close_reason))
+    if failure:
+        return failure
+    return _submit(account_id, 'trade_order_cancel', _text(order_id),
+                   lambda: proto.order_cancel_request(order_id, close_reason, confirm=True),
+                   proto.parse_write_result, proto.ORDER_CANCEL_VERSION)
+
+
+def close_by_seller_im(account_id: str, order_id: Any, close_reason: Any, *,
+                       confirm: Any = False) -> Dict[str, Any]:
+    """关闭订单（IM 侧 `mtop.taobao.idle.trade.close.by.seller` v2.0）。
+
+    与工作台那条（`...merchant.close.by.seller`）同载荷、不同接口名；工作台 bundle 里
+    没有这个名字，所以单独登记，不拿 `in` 判成同一个。**不可撤销**，原因必填。
+    """
+    if not _truthy(confirm):
+        return _confirm_required('关闭订单')
+    failure = _missing(('订单号', order_id), ('关闭原因', close_reason))
+    if failure:
+        return failure
+    return _submit(account_id, 'trade_close_by_seller_im', _text(order_id),
+                   lambda: proto.close_by_seller_im_request(order_id, close_reason, confirm=True),
+                   proto.parse_write_result, proto.CLOSE_BY_SELLER_IM_VERSION)
+
+
+def seller_delay_confirm(account_id: str, order_id: Any, days: Any, *,
+                         confirm: Any = False) -> Dict[str, Any]:
+    """延长收货（**单个订单**，`mtop.taobao.idle.trade.seller.delay.confirm` v1.0）。
+
+    `delayTime` 单位秒（协议层按 `days × 86400` 换算），`days` 只认 3/5/7/10 四档。
+    批量版是 `delay_confirm`（另一个接口、另一个载荷），别混。
+    """
+    if not _truthy(confirm):
+        return _confirm_required('延长收货时间')
+    failure = _missing(('订单号', order_id), ('延长天数', days))
+    if failure:
+        return failure
+    return _submit(account_id, 'trade_seller_delay_confirm', _text(order_id),
+                   lambda: proto.seller_delay_confirm_request(order_id, days, confirm=True),
+                   proto.parse_write_result, proto.SELLER_DELAY_CONFIRM_VERSION,
+                   audit={'order_id': _text(order_id), 'days': _text(days)})
+
+
+def user_adjust_price(account_id: str, order_id: Any, skus: Any, *,
+                      confirm: Any = False) -> Dict[str, Any]:
+    """改价（IM 侧 `mtop.taobao.idle.trade.user.adjust.price` v1.0）—— **逐 SKU**。
+
+    `skus` 是 `{skuKey: 价格}`：键名由调用方原样透传（平台字段名不替它编），
+    值口径见协议层 `_sku_price_fen`（非整数按元、整数按分）。
+    """
+    if not _truthy(confirm):
+        return _confirm_required('修改订单价格')
+    failure = _missing(('订单号', order_id), ('SKU 价格', skus))
+    if failure:
+        return failure
+    try:
+        api, data = proto.user_adjust_price_request(order_id, skus, confirm=True)
+    except (proto.WriteNotConfirmed, ValueError) as exc:
+        code = CONFIRM_CODE if isinstance(exc, proto.WriteNotConfirmed) else 'invalid_fields'
+        return common.fail(str(exc), code)
+    audit = {'order_id': _text(order_id), 'sku_keys': sorted(k for k in data if k != 'orderId')}
+    return _submit(account_id, 'trade_user_adjust_price', _text(order_id),
+                   lambda: (api, data), proto.parse_write_result,
+                   proto.USER_ADJUST_PRICE_VERSION, audit=audit)
+
+
+def sku_selector(account_id: str, item_id: Any) -> Dict[str, Any]:
+    """SKU 选择器 —— **只读**，所以没有 `confirm`。
+
+    官方读 `data.{components,skuInfo}`，在 `components` 里按 `render` 找
+    `skuItemInfo` / `specificationInfo` / `quantityInfo`。平台没给 `components` 时
+    加一条中文 warning —— 不替用户编规格出来。
+    """
+    failure = _missing(('商品 ID', item_id))
+    if failure:
+        return failure
+    api, data = proto.sku_selector_request(item_id)
+    payload = _read_api(account_id, api, data, proto.SKU_SELECTOR_VERSION, proto.parse_sku_selector)
+    if common.is_failure(payload):
+        return payload
+    payload['item_id'] = _text(item_id)
+    warnings: list = []
+    if payload.get('components') is None:
+        warnings.append({
+            'code': 'sku_selector_missing',
+            'message': '平台没有返回 SKU 组件（可能改了字段名），这里不替你编规格；请到官方商品页核对。',
+        })
+    payload['warnings'] = warnings
+    return payload
+
+
+def backfill_report(account_id: str, order_id: Any) -> Dict[str, Any]:
+    """验货报告 —— **只读**，所以没有 `confirm`。
+
+    官方只在 `data.code == 'success'` 时取 `data.data`；成功但没给报告体时
+    `report=None` + warning（如实报「平台没给」，不造空对象）。
+    """
+    failure = _missing(('订单号', order_id))
+    if failure:
+        return failure
+    api, data = proto.backfill_report_request(order_id)
+    payload = _read_api(account_id, api, data, proto.BACKFILL_REPORT_VERSION,
+                        proto.parse_backfill_report)
+    if common.is_failure(payload):
+        return payload
+    payload['order_id'] = _text(order_id)
+    warnings: list = []
+    if not payload.get('report_ok'):
+        warnings.append({
+            'code': 'backfill_report_unavailable',
+            'message': '平台没有给出这一单的报告（data.code=%s），这里不替你编报告内容；'
+                       '可以去官方卖家工作台核对。' % (payload.get('code') or '未知'),
+        })
+    elif payload.get('report') is None:
+        warnings.append({
+            'code': 'backfill_report_empty',
+            'message': '平台回了成功但没带报告体（可能字段名变了），这里不替你编报告内容。',
+        })
+    payload['warnings'] = warnings
+    return payload
+
+
+def smart_form_query(account_id: str, params: Any) -> Dict[str, Any]:
+    """智能表单元数据 —— **只读**，所以没有 `confirm`。
+
+    `params` 是页面 URL 的查询参数（官方原样发出去的那个对象），键名不替平台编。
+    """
+    failure = _missing(('表单参数', params))
+    if failure:
+        return failure
+    try:
+        api, data = proto.smart_form_query_request(params)
+    except ValueError as exc:
+        return common.fail(str(exc), 'invalid_fields')
+    payload = _read_api(account_id, api, data, proto.SMART_FORM_QUERY_VERSION,
+                        proto.parse_smart_form_query)
+    if common.is_failure(payload):
+        return payload
+    payload['params'] = data
+    warnings: list = []
+    if payload.get('schema') is None:
+        warnings.append({
+            'code': 'smart_form_schema_missing',
+            'message': '平台没有返回表单结构（可能字段名变了），这里不替你编表单；请到官方页面核对。',
+        })
+    payload['warnings'] = warnings
+    return payload
+
+
+def smart_form_callback(account_id: str, callback_code: Any, ext: Any = None, *,
+                        confirm: Any = False) -> Dict[str, Any]:
+    """提交智能表单（`mtop.taobao.merchant.heracles.inno.smart.form.callback` v1.0）。
+
+    成功判据是 `data.result.success`（官方成功 toast「填写成功」），**不是**顶层 `success`；
+    平台没给这个字段时 `form_success=None` + warning —— 不拿顶层成功冒充业务成功。
+    """
+    if not _truthy(confirm):
+        return _confirm_required('提交智能表单')
+    failure = _missing(('callbackCode', callback_code), ('表单内容', ext))
+    if failure:
+        return failure
+    try:
+        api, data = proto.smart_form_callback_request(callback_code, ext, confirm=True)
+    except (proto.WriteNotConfirmed, ValueError) as exc:
+        code = CONFIRM_CODE if isinstance(exc, proto.WriteNotConfirmed) else 'invalid_fields'
+        return common.fail(str(exc), code)
+    audit = {'callback_code': _text(callback_code), 'ext_length': len(_text(data.get('extJson')))}
+    payload = _submit(account_id, 'trade_smart_form_callback', _text(callback_code),
+                      lambda: (api, data), proto.parse_smart_form_callback,
+                      proto.SMART_FORM_CALLBACK_VERSION, audit=audit)
+    if common.is_failure(payload):
+        return payload
+    if payload.get('form_success') is None:
+        payload['warnings'] = [{
+            'code': 'smart_form_no_receipt',
+            'message': ('平台接受了这次提交，但没有回执字段（data.result.success）—— '
+                        '无法确认表单是否已生效，请到官方页面核对。'),
+        }]
+    payload['submitted'] = audit
+    return payload
+
+
 # --------------------------------------------------------------------------- 赔付 / 维权服务
 #
 #   detail.query   @831798  v1.0  {orderId, serviceCode} + **valueType:'string'**（只读）

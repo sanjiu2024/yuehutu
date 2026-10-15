@@ -35,12 +35,12 @@
 - **失败响应也会被记住**（平台可能已生效、只是响应丢了）⇒ 想重试请**换一个新键**。
 - 没 `confirm`、参数不全的请求在指纹之前就被闸门拦掉，**不占键**；补上确认后同一个键仍可正常提交。
 - 落点：`backend/app/main.py::IdempotencyKeyMiddleware` → `backend/app/services/common.py::idempotent_call` →
-  本族唯一漏斗 `backend/app/services/trade_write.py::_submit`（本文件 §1 表里的 **21 个 POST 全部覆盖**）。
+  本族唯一漏斗 `backend/app/services/trade_write.py::_submit`（本文件 §1 表里的 **26 个 POST 全部覆盖**）。
 - 边界：同键并发只在本进程内串行（多 worker 部署挡不住，要靠主键抢占才能根治，本批没做）；
   键是调用方的责任 —— 不能复用到别的请求，也不做限流。
 - 完整语义与其它写族的覆盖情况见 `docs/CONTRACTS.md` §9；用例 `backend/tests/test_idempotency.py`（14 条）。
 
-## 1. HTTP（21 个 POST + 5 个只读 GET，全部要求登录）
+## 1. HTTP（26 个 POST + 8 个只读 GET，全部要求登录）
 
 | 方法 | 路径 | body | 说明 |
 | --- | --- | --- | --- |
@@ -67,6 +67,14 @@
 | **GET** | `/api/trade/{account_id}/refunds/{refund_id}/verify-token` | —（无 body，**无 `confirm`**） | 退款凭证（只读，见 §7） |
 | **GET** | `/api/trade/{account_id}/orders/{order_id}/modify-address` | —（无 body，**无 `confirm`**） | 买家改地址申请（只读，见 §9） |
 | **GET** | `/api/trade/{account_id}/orders/{order_id}/close-reasons` | —（无 body，**无 `confirm`**） | 关单可选原因（只读，见 §10） |
+| POST | `/api/trade/{account_id}/orders/{order_id}/cancel` | `{close_reason, confirm}` | IM 侧取消订单（见 §13.1） |
+| POST | `/api/trade/{account_id}/orders/{order_id}/close-im` | `{close_reason, confirm}` | IM 侧关闭订单，**另一个 mtop 名**（见 §13.1） |
+| POST | `/api/trade/{account_id}/orders/{order_id}/delay-single` | `{days, confirm}` | 单订单延长收货，`days` ∈ 3/5/7/10（见 §13.1） |
+| POST | `/api/trade/{account_id}/orders/{order_id}/adjust-price-sku` | `{skus, confirm}` | 按 SKU 改价，`skus` = `{skuKey: 元}`（见 §13.1） |
+| POST | `/api/trade/{account_id}/smart-form/submit` | `{callback_code, ext, confirm}` | 智能表单提交，**会真的提交表单**（见 §13.1） |
+| **GET** | `/api/trade/{account_id}/items/{item_id}/sku-selector` | —（无 body，**无 `confirm`**） | 商品 SKU 选择器（只读，见 §13.2） |
+| **GET** | `/api/trade/{account_id}/orders/{order_id}/backfill-report` | —（无 body，**无 `confirm`**） | 验货/回填报告（只读，见 §13.2） |
+| **GET** | `/api/trade/{account_id}/smart-form/query?params=` | —（`params` 走 query，**无 `confirm`**） | 智能表单查询（只读，见 §13.2） |
 
 - body 用 `Dict[str, Any] = Body(default={})` 收，字段校验交给服务层 → 统一信封；
   用 FastAPI 的必填字段校验会先返回 422 的裸 body。
@@ -504,4 +512,136 @@ refuseProofs: "[\"https://.../1.png\"]", isManual}`（两个 JSON 串都用紧�
   缺总价或运费 ⇒ `null` + warning，**不补 0**。
 - 平台没给 module ⇒ 200 + `found:false` + warning（不是 502）。
 - 无权限等平台拒绝 ⇒ 502 `protocol_error`，**不写 `need_relogin`**。
+
+## 13. 第六十批：IM 侧订单处理 + SKU 选择器 / 验货报告 / 智能表单（5 写 + 3 只读）
+
+> **证据来源（两条，都是静态提取，零平台请求）**：
+> 1. 卖家工作台交易微应用 bundle
+>    `https://g.alicdn.com/idle-pc/idle-seller-trade/0.0.26/js/main.js`（3,879,584 B），
+>    本地副本 `C:\Users\Administrator\.dsh-tmp\trade_bundle\main.js`；
+> 2. **IM 聊天页 bundle** `js_008_vendors.js`（5,857,382 B），
+>    本地副本 `C:\Users\Administrator\.dsh-tmp\seller_scan\js_008_vendors.js` ——
+>    本批 4 条写接口里有 4 条**只**出现在这一份里（工作台 bundle 里 `NOT FOUND`）。
+>
+> **⚠️ 本批 8 条接口全部未经真机验证**：5 条写接口一律禁止对真实平台试打（会真的取消订单 /
+> 真的提交表单）；3 条只读接口见 §13.5 的真机清单（Lead 会拿真实 itemId/orderId 打）。
+>
+> 偏移都是**字符偏移**（两份 bundle 都是纯 ASCII，字符偏移 = 字节偏移），
+> 用 `grep -bo '<接口名>'` 可复现；下面每条都给了「可复现的搜索串」。
+
+### 13.1 五条写接口
+
+| 路由 | 服务层函数 | 平台接口 | 版本 | 请求载荷 | 幂等 action | 证据（偏移 + 搜索串） |
+| --- | --- | --- | --- | --- | --- | --- |
+| `POST /api/trade/{account_id}/orders/{order_id}/cancel` | `services.trade_write.order_cancel` | `mtop.taobao.idle.trade.order.cancel` | **2.0** | `{tid, bizOrderId, closeReason}`（`tid` = `bizOrderId` = 订单号） | `trade_order_cancel` | `js_008_vendors.js` **1832140**，串 `mtop.taobao.idle.trade.order.cancel` |
+| `POST /api/trade/{account_id}/orders/{order_id}/close-im` | `services.trade_write.close_by_seller_im` | `mtop.taobao.idle.trade.close.by.seller` | **2.0** | 同上（逐字同形状） | `trade_close_by_seller_im` | `js_008_vendors.js` **1831960**，串 `mtop.taobao.idle.trade.close.by.seller` |
+| `POST /api/trade/{account_id}/orders/{order_id}/delay-single` | `services.trade_write.seller_delay_confirm` | `mtop.taobao.idle.trade.seller.delay.confirm` | 1.0 | `{orderId, delayTime: str(days*86400)}` | `trade_seller_delay_confirm` | `js_008_vendors.js` **1832406**（定义）/ **1854657**（调用 `g6({delayTime:String(86400*Number(e9)),orderId:eI})`） |
+| `POST /api/trade/{account_id}/orders/{order_id}/adjust-price-sku` | `services.trade_write.user_adjust_price` | `mtop.taobao.idle.trade.user.adjust.price` | 1.0 | `{orderId, <skuKey>: '<分>'}`（**每个 SKU 一个键**） | `trade_user_adjust_price` | `js_008_vendors.js` **1831813**（定义）/ **1854181**（调用，价格 `yj(price).mul(100).toString()`） |
+| `POST /api/trade/{account_id}/smart-form/submit` | `services.trade_write.smart_form_callback` | `mtop.taobao.merchant.heracles.inno.smart.form.callback` | 1.0 | `{callbackCode, extJson}`（`extJson` 是 JSON 串，里面的 `formData` **又是**一个 JSON 串 ⇒ 双层） | `trade_smart_form_callback` | `main.js` **3081308** 与 `js_008_vendors.js` **802676**（两处逐字相同） |
+
+共同规则（与 §0 三条红线一致）：
+
+- **没 `confirm` 一个字都不发**：端点 body 里的 `confirm` 必须**字面量 `true`**，否则 400
+  `confirmation_required` 且零平台请求；协议层构造器再拦一次（`WriteNotConfirmed`）。
+  5 条都带 `confirm` 形参 ⇒ `backend/tests/test_write_routes_have_gates.py` 自然认可，**没有改白名单**。
+- **幂等**：5 条都走 `_submit` ⇒ 带 `Idempotency-Key` 时同键同载荷只打平台一次、回放带
+  `idempotent_replay: true`；同键不同载荷 → 409 `conflict`。
+- 字段校验在**建客户端之前**（免费）：订单号空 → 400 `invalid_fields`；
+  `days` 不在 `(3,5,7,10)` → 400；`skus` 键名空或叫 `orderId` → 400；`close_reason` 空 → 400。
+
+`order.cancel` / `close.by.seller` **不是**已有 `mtop.taobao.idle.trade.merchant.close.by.seller`（§10）的别名：
+三个接口名在 bundle 里都是**独立字符串**，工作台 bundle 里根本没有前两个名字。
+同一 UI 里两者按一个开关二选一：`js_008_vendors.js` **1853279/1853504** 原文
+`eF?g5({tid:eI,closeReason:eG,bizOrderId:eI}).then(...):g4({tid:eI,...})`（`g5` = `close.by.seller`，`g4` = `order.cancel`）。
+`eF` 在 **1849855** 被赋值为 `(0,e$.Fn)(eP)`（`eP` = `commonData.seller`）—— **`eF` 的具体语义没定论**（见 §13.6）。
+
+### 13.2 三条只读接口
+
+| 路由 | 服务层函数 | 平台接口 | 版本 | 请求载荷 | 响应读法 | 证据 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `GET /api/trade/{account_id}/items/{item_id}/sku-selector` | `services.trade_write.sku_selector` | `mtop.taobao.idle.trade.common.sku.selector` | 1.0 | `{itemId}` | `data.{components,skuInfo}`；`components` 里按 `render` 归到 `skuItemInfo` / `specificationInfo` / `quantityInfo`（各取 `.data`） | `js_008_vendors.js` **1841759** |
+| `GET /api/trade/{account_id}/orders/{order_id}/backfill-report` | `services.trade_write.backfill_report` | `mtop.alibaba.idle.seller.platform.order.backfill.report` | 1.0 | `{orderId}` | 官方只在 `data.code === 'success'` 时取 `data.data` | `main.js` **2608355** |
+| `GET /api/trade/{account_id}/smart-form/query?params=` | `services.trade_write.smart_form_query` | `mtop.taobao.merchant.heracles.inno.smart.form.query` | 1.0 | 页面 URL 的查询参数对象（官方 `cO(t.url)`），**原样透传** | `data.result.formSchema.schemaData`（**JSON 字符串**，解一层）+ `data.result.formData` | `main.js` **3077683** / `js_008_vendors.js` **798950** |
+
+三条共同口径：
+
+- **总是**返回 `warnings`（没警告就是 `[]`），与 §11.1 / §10 的只读接口一致。
+- 平台拒绝（`NO_PERMISSION` / `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`）⇒ 502 `protocol_error`，
+  **不动 `login_state`**（无权限 ≠ 掉线）。
+- 平台没给的东西一律 `null` + warning，**不补 0、不编空对象**：
+  `sku_selector_missing`（没 `components`）/ `backfill_report_unavailable`（`data.code` 不是 `success`，消息带原文 code）/
+  `backfill_report_empty`（`code=success` 但没 `data`）/ `smart_form_schema_missing`（没 `formSchema`）/
+  `smart_form_no_receipt`（提交顶层成功但业务体没给 `result.success`）。
+- `smart_form_query` 的 `params` 走 query：**值里的 `=`/`&` 必须 URL 转义**
+  （`?params=formId%3D9%26bizType%3Dorder`），否则 FastAPI 只拿到 `params=formId=9`。
+  之所以用 GET 而不是 POST：非 GET 会被写路由闸门测试当成写路由要求 `confirm`，
+  而这条**是只读**，不该为了迁就测试去加假闸门。
+- 智能表单提交的**成功判据是业务体的 `data.result.success`**（官方前端就是读它），
+  **不是**信封顶层 `success`；业务级失败原样透出 `form_message`（官方 toast「填写成功」同理）。
+
+### 13.3 服务层实现口径
+
+- 写类：全部复用 §0.1 的唯一漏斗 `services/trade_write.py::_submit`
+  （`_client` → 字段校验 → `common.idempotent_call` → `_call_api` → 解析 → `common.respond`），
+  所以 confirm 闸门、幂等、`operation_logs` 审计、平台失败透出**自动**生效。
+- 只读类：走新增的 `_read_api(account_id, api, data, version, parse)` 骨架
+  （`_client` → `common.call_method(client, ('mtop',), api, data, v=version)` → 解析 → 打戳）。
+- 协议层：`backend/app/xianyu/trade_write.py`，模块级纯函数 + client 作为入参，
+  **没有**往 `backend/app/xianyu/client.py` 加方法。
+
+### 13.4 测试
+
+```
+XIANYU_APP_DIR=$TEMP/xywb_tw_cov PYTHONPATH=. PYTHONIOENCODING=utf-8 \
+  /c/Python310/python.exe backend/tests/test_trade_write_api.py            # Ran 210 tests OK
+XIANYU_APP_DIR=$TEMP/xywb_tw_cov PYTHONPATH=. PYTHONIOENCODING=utf-8 \
+  /c/Python310/python.exe backend/tests/test_xianyu_trade_write.py         # Ran 11 tests OK
+```
+
+- `backend/tests/test_trade_write_api.py`：本批新增 4 个类 —— `ImOrderWriteTest`（协议形状 / 路由 /
+  幂等同键只打一次 / 审计 detail）、`SkuSelectorTest`、`BackfillReportTest`、`SmartFormTest`，
+  并给 `WriteConfirmGateTest` 补了 5 条「无 confirm 必须 400 且零平台请求」。
+- `backend/tests/test_xianyu_trade_write.py`（本批新建）：**协议层真实往返**（`httpx.MockTransport` 假 mtop
+  服务端）—— 请求真发出去、`api`/`v`/`data` 逐字断言、解析器喂真实信封；
+  另锁一条「`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 从 `client.mtop` 抛 `XianyuError`（`ret` 原文），
+  服务层认成 `protocol_error` 而不是掉线」。
+
+### 13.5 真机可验证清单（Lead 打真机用）
+
+**能打（只读，零副作用）**：
+
+| 方法 | 路径 | 最小参数 | 预期 |
+| --- | --- | --- | --- |
+| GET | `/api/trade/{account_id}/items/{item_id}/sku-selector` | 真实 `item_id` | 200；有 `components` ⇒ `found:true`；无权限 ⇒ 502 `protocol_error` |
+| GET | `/api/trade/{account_id}/orders/{order_id}/backfill-report` | 真实 `order_id` | 200（`report_ok` 真/假都算正常回话）；无权限 ⇒ 502 |
+| GET | `/api/trade/{account_id}/smart-form/query?params=formId%3D9%26bizType%3Dorder` | 任意 `params` | 200；`schema` 可能 `null` + `smart_form_schema_missing` |
+
+**负例探针（只读，零副作用）**：`item_id` / `order_id` 用**不存在的号** ⇒ 期望 200 + 空体（或平台
+业务 code），**不是** 500；这一条只验「不猜数据、不 500」。
+
+**不能打（会产生真实副作用，一律禁止）**：
+
+- `orders/{order_id}/cancel` —— 真的取消订单；
+- `orders/{order_id}/close-im` —— 真的关闭订单；
+- `orders/{order_id}/delay-single` —— 真的延长收货；
+- `orders/{order_id}/adjust-price-sku` —— 真的改价（会通知买家）；
+- `smart-form/submit` —— 真的提交表单（可能触发平台工单）。
+
+### 13.6 未做 / 不确定项（如实记）
+
+1. **`eF` 开关语义没定论**：`order.cancel` 与 `close.by.seller` 在同一 UI 里按 `eF` 二选一，
+   但 `eF` 具体判什么（卖家身份？订单来源？IM 场景？）**没查清**。本批按「两个接口名都真实存在、
+   各给一条路由」处理，**不替平台决定什么时候用哪个** —— 选择权留给调用方。
+2. **`close_reason` 的合法取值**只能来自 §10 的 `close-reasons` 接口；本批不做本地白名单，
+   原样透传（编一份原因列表就是猜数据）。
+3. **`user.adjust.price` 的 SKU 键名**由调用方原样给：官方调用点是「遍历页面上的 SKU 表」拼键，
+   键名含义（skuId？规格串？）**没有从 bundle 里确认到**，所以后端不校验、不转换键名，只转金额单位。
+4. **金额单位口径**（`_sku_price_fen`）：整数（含 `'2'`）按**分**原样用，非整数（`'12.50'` / `1.5`）按**元** ×100。
+   官方调用点先 `.mul(100)` 再 `toString()` ⇒ 平台侧收的是**分的字符串**；但「调用方给的是元还是分」
+   只能靠小数位判断，这是**启发式**，写进契约以免误用。
+5. **`extJson` 双层字符串**照官方原样发（外层 `extJson` 是串，里面的 `formData` 也是串）；
+   我们只保证「给 dict 就序列化、给串就校验是合法 JSON 后原样发」，**不重组**官方字段。
+6. **`backfill.report` 的 `data.code` 除了 `'success'` 还有哪些值**没样本；本批把非 `success`
+   一律当「不可用」+ warning 透出原文 code，不猜含义。
+7. **智能表单 `params` 的字段名**全部透传，不做白名单 —— 官方就是拿页面 URL 的 query 直接发。
 - AI 侧只读工具 `trade_adjust_price_render`。

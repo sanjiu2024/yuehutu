@@ -121,6 +121,77 @@ SECONDS_PER_DAY = 24 * 60 * 60
 BATCH_REMIND_API = 'mtop.taobao.idle.trade.merchant.batch.remind.confirm'
 BATCH_REMIND_VERSION = '1.0'
 
+#: IM 侧「取消订单」变体。bundle 偏移 1832140（`js_008_vendors.js`）：
+#: `g4=function(eu){var ef=eu.tid,em=eu.closeReason,eg=eu.bizOrderId;
+#:   return G({api:"mtop.taobao.idle.trade.order.cancel",v:"2.0",
+#:             data:{tid:ef,closeReason:em,bizOrderId:eg}})}`
+#: —— 载荷与 `CLOSE_BY_SELLER_API` **逐字相同**（同一个订单号进 `tid` 与 `bizOrderId`），
+#: 只有接口名不同：IM 聊天页按一个开关二选一（偏移 1853279/1853504：
+#: `eF?g5({...})` 走 `trade.close.by.seller`，否则 `g4({...})` 走 `trade.order.cancel`）。
+#: 卖家工作台 bundle（`trade_bundle/main.js`）里**没有**这个名字 ⇒ 不把两者当同一个接口。
+ORDER_CANCEL_API = 'mtop.taobao.idle.trade.order.cancel'
+ORDER_CANCEL_VERSION = '2.0'
+
+#: IM 侧「关闭订单」变体。bundle 偏移 1831960（`js_008_vendors.js`）：
+#: `g5=function(eu){var ef=eu.tid,em=eu.closeReason,eg=eu.bizOrderId;
+#:   return G({api:"mtop.taobao.idle.trade.close.by.seller",v:"2.0",
+#:             data:{tid:ef,closeReason:em,bizOrderId:eg}})}`
+#: —— 与卖家工作台的 `mtop.taobao.idle.trade.merchant.close.by.seller` 同载荷、不同接口名；
+#: 工作台 bundle 里没有这个名字，所以单独登记，别拿 `in` 判成同一个。
+CLOSE_BY_SELLER_IM_API = 'mtop.taobao.idle.trade.close.by.seller'
+CLOSE_BY_SELLER_IM_VERSION = '2.0'
+
+#: IM 侧「延长收货」（**单个订单**，不是工作台的批量版）。bundle 偏移 1832406：
+#: `g6=function(eu){var ef=eu.delayTime,em=eu.orderId;
+#:   return G({api:"mtop.taobao.idle.trade.seller.delay.confirm",v:"1.0",
+#:             data:{delayTime:ef,orderId:em}})}`
+#: 调用点偏移 1854657：`g6({delayTime:String(86400*Number(e9)),orderId:eI})` ——
+#: `delayTime` 是**秒**（官方按「天」选，再乘 86400），只有 3/5/7/10 四档可选。
+#: 与批量版（`BATCH_DELAY_API`，载荷 `{orderIdList,delayTime}`）不同接口、不同载荷形状。
+SELLER_DELAY_CONFIRM_API = 'mtop.taobao.idle.trade.seller.delay.confirm'
+SELLER_DELAY_CONFIRM_VERSION = '1.0'
+
+#: IM 侧「改价」。bundle 偏移 1831813：
+#: `g0=function(eu){return G({api:"mtop.taobao.idle.trade.user.adjust.price",v:"1.0",data:eu})}`
+#: 调用点偏移 1854181 构造载荷：逐 SKU 键 `yj(价格).mul(100).toString()`，再并上 `orderId`
+#: —— **每个 SKU 一个键**、值是分（`mul(100)`），所以这条不是工作台那条「整单两个费用字段」
+#: 的形状。这里如实透传调用方给的键值，**不替平台编字段名**
+#:（工作台那条 `ADJUST_PRICE_API` 才是我们 UI 的主路径）。
+USER_ADJUST_PRICE_API = 'mtop.taobao.idle.trade.user.adjust.price'
+USER_ADJUST_PRICE_VERSION = '1.0'
+
+#: SKU 选择器（**只读**）。bundle 偏移 1841759（`js_008_vendors.js`）：
+#: `G({api:"mtop.taobao.idle.trade.common.sku.selector",v:"1.0",data:{itemId:ew}})`，
+#: 消费点读 `resp.data.{components,skuInfo}`，在 `components` 里按 `render` 找
+#: `skuItemInfo` / `specificationInfo` / `quantityInfo` 三种组件（各自 `.data`）。
+SKU_SELECTOR_API = 'mtop.taobao.idle.trade.common.sku.selector'
+SKU_SELECTOR_VERSION = '1.0'
+
+#: 验货报告（**只读**）。bundle 偏移 2608355（`trade_bundle/main.js`）：
+#: `hO({api:"mtop.alibaba.idle.seller.platform.order.backfill.report",v:"1.0",
+#:     data:{orderId:e}})`；消费点读 `data.code === "success"` 才取 `data.data`。
+BACKFILL_REPORT_API = 'mtop.alibaba.idle.seller.platform.order.backfill.report'
+BACKFILL_REPORT_VERSION = '1.0'
+
+#: 智能表单（**只读**：取表单元数据）。bundle 偏移 3077683（`trade_bundle/main.js`）与
+#: 798950（`js_008_vendors.js`）两处调用点逐字相同：
+#: `hO({api:"mtop.taobao.merchant.heracles.inno.smart.form.query",v:"1.0",data:<解析 url 得到的对象>})`
+#: —— 载荷是**页面 URL 的查询参数**（官方 `cO(t.url)` / `ap.DP(ef.url)`），
+#: 所以这里要求调用方原样给那份对象，**不替平台编键名**。
+#: 响应读 `data.result.formSchema.schemaData`（JSON **字符串**）与 `data.result.formData`。
+SMART_FORM_QUERY_API = 'mtop.taobao.merchant.heracles.inno.smart.form.query'
+SMART_FORM_QUERY_VERSION = '1.0'
+
+#: 智能表单提交（**写**）。bundle 偏移 3081308 / 802676 两处逐字相同：
+#: `{callbackCode:s, extJson:JSON.stringify({event:v.event, ...其余字段, formData:a})}`
+#: 其中 `formData` 是**已 JSON.stringify 的字符串**、`extJson` 再被 stringify 一层 ⇒
+#: 平台收到的是「字符串里套字符串」。成功判据 `data.result.success`，成功 toast「填写成功」。
+SMART_FORM_CALLBACK_API = 'mtop.taobao.merchant.heracles.inno.smart.form.callback'
+SMART_FORM_CALLBACK_VERSION = '1.0'
+
+#: IM 侧延长收货的天数档位（官方界面只给这四档，`delayTime = 天 × 86400`）。
+SELLER_DELAY_DAYS: Tuple[int, ...] = (3, 5, 7, 10)
+
 #: 支付运费退款（卖家承担运费）。bundle 偏移 **2835556**：
 #: `hO({api:"mtop.taobao.idle.merchant.postage.refund.pay",v:"1.0",
 #:     ttid:"1@tbwang_mac_1.0.0#pc",data:{orderId,refundId,payType},needLoginPC:!0})`；
@@ -192,11 +263,24 @@ WRITE_APIS: Tuple[str, ...] = (
     POSTAGE_PAY_API,
     COMPLAIN_REVOKE_API,
     ADD_MEMO_API,
+    ORDER_CANCEL_API,
+    CLOSE_BY_SELLER_IM_API,
+    SELLER_DELAY_CONFIRM_API,
+    USER_ADJUST_PRICE_API,
+    SMART_FORM_CALLBACK_API,
 ) + tuple(COMPLAIN_PROOF_APIS.values())
 
-#: 本模块里**只读**的接口（查退款凭证、查关单原因、改价前渲染）。单独列出来，免得被误当成
-#: 写接口加进黑名单，也免得有人给它加 confirm 闸门 —— 它们不改变任何平台状态。
-READ_APIS: Tuple[str, ...] = (VERIFY_URL_API, CLOSE_REASON_API, ADJUST_PRICE_RENDER_API)
+#: 本模块里**只读**的接口（查退款凭证、查关单原因、改价前渲染、SKU 选择器、验货报告、智能表单）。
+#: 单独列出来，免得被误当成写接口加进黑名单，也免得有人给它加 confirm 闸门 ——
+#: 它们不改变任何平台状态。
+READ_APIS: Tuple[str, ...] = (
+    VERIFY_URL_API,
+    CLOSE_REASON_API,
+    ADJUST_PRICE_RENDER_API,
+    SKU_SELECTOR_API,
+    BACKFILL_REPORT_API,
+    SMART_FORM_QUERY_API,
+)
 
 
 class WriteNotConfirmed(RuntimeError):
@@ -552,6 +636,199 @@ def add_memo_request(order_id: Any, memo: Any, memo_group: Any = 1,
     return ADD_MEMO_API, {'orderId': order, 'memo': text, 'memoGroup': group}
 
 
+def _sku_price_fen(value: Any) -> Optional[int]:
+    """SKU 价格键的值：官方是 `yj(价格).mul(100).toString()` ⇒ **分**。
+
+    调用方给元（`'12.5'` / `12.5`）就换成 125；给整数且明确是分（`1250`）就原样用。
+    两种都给不出（空值 / 非数字）⇒ None，由调用方报错，**绝不猜 0**。
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float('inf'), float('-inf')):
+            return None
+        return int(round(value * 100)) if value != int(value) else int(value)
+    text = _text(value).strip()
+    if not text:
+        return None
+    try:
+        number = Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+    if number == number.to_integral_value():
+        return int(number)
+    return int((number * 100).to_integral_value())
+
+
+def order_cancel_request(order_id: Any, close_reason: Any,
+                         *, confirm: bool = False) -> Tuple[str, Dict[str, Any]]:
+    """IM 侧「取消订单」（`mtop.taobao.idle.trade.order.cancel` v2.0）。
+
+    载荷与 `close_order_request` **逐字相同**（同一个订单号同时进 `tid` 与 `bizOrderId`），
+    只是接口名不同 —— 官方 IM 聊天页在同一处按开关二选一（偏移 1853279/1853504）。
+    所以两者**不是别名**，各自保留一个构造器，由调用方选路。
+    """
+    require_confirm(confirm, '取消订单')
+    order = _text(order_id)
+    if not order:
+        raise ValueError('订单号不能为空')
+    reason = _text(close_reason).strip()
+    if not reason:
+        raise ValueError('取消原因不能为空（候选见 close_reason_request）')
+    return ORDER_CANCEL_API, {'tid': order, 'bizOrderId': order, 'closeReason': reason}
+
+
+def close_by_seller_im_request(order_id: Any, close_reason: Any,
+                               *, confirm: bool = False) -> Tuple[str, Dict[str, Any]]:
+    """IM 侧「关闭订单」（`mtop.taobao.idle.trade.close.by.seller` v2.0）。
+
+    与工作台的 `close_order_request` 同载荷、不同接口名（`merchant.close.by.seller`），
+    工作台 bundle 里没有这个名字 ⇒ 单独登记。
+    """
+    require_confirm(confirm, '关闭订单（IM）')
+    order = _text(order_id)
+    if not order:
+        raise ValueError('订单号不能为空')
+    reason = _text(close_reason).strip()
+    if not reason:
+        raise ValueError('关闭原因不能为空（候选见 close_reason_request）')
+    return CLOSE_BY_SELLER_IM_API, {'tid': order, 'bizOrderId': order, 'closeReason': reason}
+
+
+def seller_delay_confirm_request(order_id: Any, days: Any,
+                                 *, confirm: bool = False) -> Tuple[str, Dict[str, Any]]:
+    """延长收货（**单个订单**，`mtop.taobao.idle.trade.seller.delay.confirm` v1.0）。
+
+    官方调用点（偏移 1854657）是 `{delayTime:String(86400*Number(days)),orderId}`：
+    `delayTime` 单位**秒**，天数只给 `SELLER_DELAY_DAYS`（3/5/7/10）四档。
+    批量版是另一个接口（`delay_confirm_request`，载荷 `orderIdList`），别混。
+    """
+    require_confirm(confirm, '延长收货')
+    order = _text(order_id)
+    if not order:
+        raise ValueError('订单号不能为空')
+    count = _int_or_none(days)
+    if count is None or count not in SELLER_DELAY_DAYS:
+        raise ValueError('延长天数只能是 %s 之一' % '/'.join(str(d) for d in SELLER_DELAY_DAYS))
+    return SELLER_DELAY_CONFIRM_API, {
+        'orderId': order,
+        'delayTime': str(count * SECONDS_PER_DAY),
+    }
+
+
+def user_adjust_price_request(order_id: Any, skus: Any,
+                              *, confirm: bool = False) -> Tuple[str, Dict[str, Any]]:
+    """IM 侧改价（`mtop.taobao.idle.trade.user.adjust.price` v1.0）。
+
+    官方调用点（偏移 1854181）是**逐 SKU 一个键**、值为分（`mul(100)`），再并上 `orderId`：
+    `{orderId: <订单号>, <skuKey>: '<分>', ...}`。键名是平台/调用方给的，
+    这里**原样透传、不替平台编字段名**（工作台那条整单两字段的走 `adjust_price_request`）。
+
+    值口径：非整数（`12.5` / `'12.5'`）按**元**换算成 125；整数（`1250`）按**分**原样用
+    —— 官方前端自己就是 `mul(100)` 后的分，别把 1250 又乘一次。
+    """
+    require_confirm(confirm, '改价（IM）')
+    order = _text(order_id)
+    if not order:
+        raise ValueError('订单号不能为空')
+    if isinstance(skus, dict):
+        pairs = list(skus.items())
+    else:
+        pairs = []
+        for item in _list_of(skus):
+            if isinstance(item, dict):
+                pairs.append((item.get('key') or item.get('skuKey'), item.get('value') or item.get('price')))
+            elif isinstance(item, (list, tuple)) and len(item) == 2:
+                pairs.append((item[0], item[1]))
+    if not pairs:
+        raise ValueError('至少给一个 SKU 的价格（{skuKey: 价格}）')
+    data: Dict[str, Any] = {'orderId': order}
+    for key, value in pairs:
+        name = _text(key).strip()
+        if not name or name == 'orderId':
+            raise ValueError('SKU 键名不能为空，也不能占用 orderId')
+        fen = _sku_price_fen(value)
+        if fen is None:
+            raise ValueError('SKU %s 的价格给不出来（空值或非数字）' % name)
+        data[name] = str(fen)
+    return USER_ADJUST_PRICE_API, data
+
+
+def sku_selector_request(item_id: Any) -> Tuple[str, Dict[str, Any]]:
+    """SKU 选择器（只读，不要 confirm）。官方载荷只有 `{itemId}`。"""
+    item = _text(item_id)
+    if not item:
+        raise ValueError('商品 ID 不能为空')
+    return SKU_SELECTOR_API, {'itemId': item}
+
+
+def backfill_report_request(order_id: Any) -> Tuple[str, Dict[str, Any]]:
+    """验货报告（只读，不要 confirm）。官方载荷只有 `{orderId}`。"""
+    order = _text(order_id)
+    if not order:
+        raise ValueError('订单号不能为空')
+    return BACKFILL_REPORT_API, {'orderId': order}
+
+
+def smart_form_query_request(params: Any) -> Tuple[str, Dict[str, Any]]:
+    """智能表单元数据（只读，不要 confirm）。
+
+    官方把**页面 URL 的查询参数**整个当载荷发出去（`cO(t.url)` / `ap.DP(ef.url)`），
+    所以这里要求调用方原样给那份对象：键名是平台的，不替它编，也不筛键。
+    """
+    if isinstance(params, str):
+        text = params.strip()
+        if text.startswith('{') or text.startswith('['):
+            try:
+                params = json.loads(text)
+            except ValueError:
+                raise ValueError('智能表单参数不是合法 JSON')
+        else:
+            from urllib.parse import parse_qsl
+            params = dict(parse_qsl(text.lstrip('?'), keep_blank_values=True))
+    if not isinstance(params, dict) or not params:
+        raise ValueError('智能表单参数不能为空（给页面 URL 的查询参数对象）')
+    return SMART_FORM_QUERY_API, dict(params)
+
+
+def smart_form_callback_request(callback_code: Any, ext: Any = None,
+                                *, confirm: bool = False) -> Tuple[str, Dict[str, Any]]:
+    """智能表单提交（写，必须 confirm）。
+
+    官方形状（偏移 3081308 / 802676 逐字相同）：
+    `{callbackCode, extJson: JSON.stringify({event, ...其余字段, formData})}` ——
+    `formData` 本身已是 JSON **字符串**，`extJson` 再 stringify 一层 ⇒ 平台收到双层字符串。
+    所以：`ext` 给 dict 就由我们 `json.dumps(..., ensure_ascii=False)` 编一层；
+    `ext` 给字符串就**原样**发（调用方自己保证已是官方那个字符串）。
+    成功判据是 `data.result.success`（见 `parse_smart_form_callback`）。
+    """
+    require_confirm(confirm, '提交智能表单')
+    code = _text(callback_code).strip()
+    if not code:
+        raise ValueError('callbackCode 不能为空')
+    if ext is None:
+        raise ValueError('extJson 不能为空（至少要有 event 与 formData）')
+    if isinstance(ext, str):
+        text = ext.strip()
+        if not text:
+            raise ValueError('extJson 不能为空')
+        if text.startswith('{') or text.startswith('['):
+            try:
+                json.loads(text)
+            except ValueError:
+                raise ValueError('extJson 不是合法 JSON')
+        payload = text
+    elif isinstance(ext, dict):
+        if not ext:
+            raise ValueError('extJson 不能为空')
+        payload = json.dumps(ext, ensure_ascii=False)
+    else:
+        raise ValueError('extJson 只收对象或 JSON 字符串')
+    return SMART_FORM_CALLBACK_API, {'callbackCode': code, 'extJson': payload}
+
+
 # --------------------------------------------------------------------------- 响应解析
 
 def parse_write_result(raw: Any) -> Dict[str, Any]:
@@ -768,4 +1045,118 @@ def parse_adjust_price_render(raw: Any) -> Dict[str, Any]:
             'ship_fee': _or_none(price.get('postFee')),
         },
         'raw_keys': sorted(body.keys())[:20],
+    }
+
+
+def _json_or_none(value: Any) -> Any:
+    """把平台给的 JSON **字符串**解成对象；解不出来就 None（不吞成空字典）。"""
+    if isinstance(value, (dict, list)):
+        return value
+    text = _text(value).strip()
+    if not text or text[0] not in '{[':
+        return None
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
+def parse_sku_selector(raw: Any) -> Dict[str, Any]:
+    """SKU 选择器（只读）。官方读 `data.{components,skuInfo}`，并在 `components` 里按
+    `render` 找 `skuItemInfo` / `specificationInfo` / `quantityInfo` 三种组件（各自 `.data`）。
+
+    `sku_info` 官方是**数组**（长度 1~2：单品/多规格）—— 这里只认列表，
+    平台给别的形状就 None（不自己包一层）。`components` 原样透出，方便调用方按需取。
+    """
+    payload = parse_write_result(raw)
+    body = payload['platform_body'] if isinstance(payload['platform_body'], dict) else {}
+    inner = body.get('data')
+    inner = inner if isinstance(inner, dict) else body
+    components = inner.get('components') if isinstance(inner, dict) else None
+    sku_info = inner.get('skuInfo') if isinstance(inner, dict) else None
+    named: Dict[str, Any] = {}
+    if isinstance(components, list):
+        for component in components:
+            item = component if isinstance(component, dict) else {}
+            render = _text(item.get('render'))
+            if render in ('skuItemInfo', 'specificationInfo', 'quantityInfo'):
+                named[render] = _or_none(item.get('data'))
+    return {
+        **payload,
+        'found': bool(inner),
+        'components': _or_none(components),
+        'component_data': named or None,
+        'sku_info': sku_info if isinstance(sku_info, list) else None,
+        'raw_keys': sorted(inner.keys())[:20] if isinstance(inner, dict) else [],
+    }
+
+
+def parse_backfill_report(raw: Any) -> Dict[str, Any]:
+    """验货报告（只读）。官方只在 `data.code == 'success'` 时取 `data.data`。
+
+    成功但没有报告体 ⇒ `report=None`（如实报「平台没给」，不造空对象）。
+    """
+    payload = parse_write_result(raw)
+    # 注意：公共助手 `body_of` 会把 `data.data` / `data.module` **解开**，而这条接口的
+    # `code` 就在信封外层 `data` 上（官方 `data.code === 'success'` 才取 `data.data`），
+    # 所以这里必须读**外层** `data`，不能用 `platform_body`（否则 code 恒为 None）。
+    outer = decode_payload(raw)
+    body = outer.get('data') if isinstance(outer, dict) else None
+    body = body if isinstance(body, dict) else {}
+    code = _text(body.get('code')) or None
+    report = body.get('data')
+    # **不能**叫 `success`：`common.respond` 把顶层 `success is False` 当失败信封（HTTP 400），
+    # 而这里说的是「平台业务码不是 success」——两件事，撞名会让只读查询变成 400。
+    return {
+        **payload,
+        'code': code,
+        'report_ok': code == 'success',
+        'report': _or_none(report),
+        'raw_keys': sorted(body.keys())[:20],
+    }
+
+
+def parse_smart_form_query(raw: Any) -> Dict[str, Any]:
+    """智能表单元数据（只读）。官方读 `data.result.formSchema.schemaData`（JSON **字符串**）
+    与 `data.result.formData`。
+
+    `schema` 是解出来的对象（解不出给 None），`schema_raw` 保留平台原文；
+    `form_data` 官方也可能是字符串 ⇒ 同样解一层。
+    """
+    payload = parse_write_result(raw)
+    body = payload['platform_body'] if isinstance(payload['platform_body'], dict) else {}
+    inner = body.get('data')
+    inner = inner if isinstance(inner, dict) else body
+    result = inner.get('result') if isinstance(inner, dict) else None
+    result = result if isinstance(result, dict) else {}
+    schema = result.get('formSchema')
+    schema = schema if isinstance(schema, dict) else {}
+    schema_raw = _text(schema.get('schemaData')) or None
+    return {
+        **payload,
+        'found': bool(inner),
+        'schema': _json_or_none(schema_raw),
+        'schema_raw': schema_raw,
+        'form_data': _json_or_none(result.get('formData')),
+        'raw_keys': sorted(result.keys())[:20],
+    }
+
+
+def parse_smart_form_callback(raw: Any) -> Dict[str, Any]:
+    """智能表单提交（写）。官方成功判据是 `data.result.success`（成功 toast「填写成功」）。
+
+    这条**没有**顶层 `success` 语义，所以除了公共字段之外单独给 `form_success`；
+    平台没给这个字段就 None —— 不拿顶层 `success` 冒充业务成功。
+    """
+    payload = parse_write_result(raw)
+    body = payload['platform_body'] if isinstance(payload['platform_body'], dict) else {}
+    inner = body.get('data')
+    inner = inner if isinstance(inner, dict) else body
+    result = inner.get('result') if isinstance(inner, dict) else None
+    result = result if isinstance(result, dict) else {}
+    success = result.get('success')
+    return {
+        **payload,
+        'form_success': success if isinstance(success, bool) else None,
+        'form_message': _text(result.get('message') or result.get('failReason')) or None,
     }
