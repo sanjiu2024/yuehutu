@@ -1,7 +1,7 @@
 # coverage63 核销报告：coverage57 §3「可实现」77 条逐条状态
 
 - 工作流：coverage63（第 63 批，共享任务板 task-25）
-- 仓库：`C:\Users\Administrator\Projects\xianyu-ai-workbench`（HEAD `511ce58`）
+- 仓库：`C:\Users\Administrator\Projects\xianyu-ai-workbench`（第 63 批收尾；HEAD 见 `git log -1`）
 - 对照文档：`docs/audit/coverage57.md` §3（该文件第 36-112 行，正好 77 行）
 - 口径：**逐条**给状态，每条一行；序号沿用 coverage57 §3 的行序，便于逐行对账
 
@@ -15,7 +15,7 @@
 | 不可实现（有真机平台拒绝硬证据） | 2 |
 | **合计** | **77** |
 
-逐条证据见 §三。口径与复跑方式见 §二 —— **本表由脚本按同一口径生成，不是手填**。
+逐条证据见 §三。口径与复跑方式见 §二 —— **本表由脚本按同一口径生成，不是手填**；重算脚本已入仓：`scripts/coverage63_recompute.py`。
 
 ## 二、判定口径（可复跑）
 
@@ -23,6 +23,7 @@
 2. **仅登记** = 常量定义了，但引用只出现在**只读名单 / 不支持表**里（`WRITE_APIS`、`UNSUPPORTED`），没有调用路径。
 3. **未实现** = 连字面量都没有（注释里提到接口名不算，那是「登记」不是「实现」）。
 4. **不可实现** = 有**真机**平台拒绝硬证据（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED`），且日志能指到具体那条 api。
+5. **重算**：`python scripts/coverage63_recompute.py` → `IMPL 39 / REG 2 / UNIMPL 34 / DENIAL 2 = 77`（对不上就非 0 退出）。注意 `scripts/coverage_audit.py` 是**另一个对象**（bundle 里 362 个 mtop 名的四分法 36/43/26/29），别与本文这 77 条混用。
 
 扫描方式（复跑：在仓库根执行）：
 

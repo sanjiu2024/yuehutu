@@ -89,8 +89,8 @@ cmd /c "cd frontend && npm run build"
 
 ```text
 cmd /c "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& set XIANYU_APP_DIR=%TEMP%\xywb_recon50&& C:\Python310\python.exe scripts\reconcile_tools.py"
--> specs=195 master=194 routes=196 targets=174 handlers=195
-   write_tools=82  route_checked=196
+-> specs=210 master=209 routes=211 targets=189 handlers=210
+   write_tools=82  route_checked=211
    RECON OK：五方一致，且每条路由的 path/query/body 都被真实端点接受。
    （新增写工具后必须同步改本脚本的 WRITE_PREFIX 元组，否则必然假阳性）
 ```
@@ -4392,7 +4392,7 @@ package-info / bid-estimates 要用官方形状 `entity_type=1` + `entity_list=[
 
 - `backend/app/services/items.py::_push_update` / `update_item` 改成**平台确认后才写本地**：平台拒（`CALL_ERROR`）时本地 `items` 行不动，
   失败进 `failed`（`code='protocol_error'`）。原实现「先写本地再打平台」会把「本地说改了、平台没改」的脏数据留在库里。
-- 幂等键（`Idempotency-Key`，第 59 批那套）铺满剩下的写族 8 处：`ad_write.py:92`、`security_write.py:98`、`trade_write.py:520`（退货地址提交）、
+- 幂等键（`Idempotency-Key`，第 59 批那套）铺满写族 8 处写入口（**不含商品写族**，欠账见 `docs/交接文档.md` §10 第 39 条）：`ad_write.py:92`、`security_write.py:98`、`trade_write.py:520`（退货地址提交）、
   `shop.py:411/476/526`、`orders.py:290/358`（发货 / 发货确认）。
 - 回归：`test_items_api.py`（编辑失败不改本地）、`test_ad_write_api.py` / `test_security_write_api.py` / `test_shop_write_api.py` /
   `test_address_write_api.py` / `test_services_orders.py` 各自的幂等用例。
@@ -4405,7 +4405,7 @@ coverage57 §3 的 77 条缺口逐条核销成**可复跑口径**：**已实现 
 口径：已实现＝协议层有 `大写常量 = '<mtop名>'` 且该常量在 `backend/app` 里有定义行以外的引用（注册表 / `client.mtop(...)` / 服务层）；
 仅登记＝常量只出现在 `WRITE_APIS`/`UNSUPPORTED` 里、无调用路径（`mtop.alibaba.idle.pc.service.open`、`mtop.taobao.idle.ad.bp.data.download`）；
 不可实现＝真机 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（`mtop.idle.pc.backend.idleitem.editdetail`、`...backend.idleitem.preget`）。
-原报告自相矛盾（§一表填 0/77/0、正文写 30/45/2、§三 77 行全是机器扫描原文），本批按脚本重算重写；行内证据含定义处 `文件:行` + 调用点 `文件:行`。
+原报告自相矛盾（§一表填 0/77/0、正文写 30/45/2、§三 77 行全是机器扫描原文），本批按脚本重算重写（重算脚本已入仓：`scripts/coverage63_recompute.py`，输出 `IMPL 39 / REG 2 / UNIMPL 34 / DENIAL 2 = 77`）；行内证据含定义处 `文件:行` + 调用点 `文件:行`。
 另修 `scripts/coverage_audit.py`：拒绝证据改用**完整 mtop 名 + 词边界**匹配，避免 `idleitem.edit` 误命中 `...idleitem.editdetail`。
 真机顺带证伪一条口径：「空串 ≠ 缺失」（`unconsign_detail` 的 `content=''` 但 `imageList` 有图）。
 
