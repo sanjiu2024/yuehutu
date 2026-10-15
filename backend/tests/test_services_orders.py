@@ -312,6 +312,38 @@ class OrdersServiceTest(unittest.TestCase):
         self.assertEqual(len(logs), 1)
         self.assertEqual(logs[0]['success'], 1)
 
+    def test_update_shipment_same_key_hits_the_protocol_once(self):
+        """第 63 批（CONTRACTS 9）：同键同载荷只推一次平台、只写一条操作日志。"""
+        install_client(self.client)
+        self.seed('O1')
+        common.set_idempotency_key('ord-ship-1')
+        try:
+            first = orders.update_shipment('O1', '顺丰', 'SF001', confirm=True)
+            second = orders.update_shipment('O1', '顺丰', 'SF001', confirm=True)
+        finally:
+            common.set_idempotency_key('')
+
+        self.assertEqual(self.client.calls, [('ship_order', 'acc1', 'O1', '顺丰', 'SF001')],
+                         "同键同载荷只许推平台一次")
+        self.assertEqual(len(db.query('SELECT * FROM shipments')), 1)
+        self.assertEqual(len(db.query("SELECT * FROM operation_logs WHERE action='update_shipment'")), 1)
+        self.assertFalse(first.get('idempotent_replay'), first)
+        self.assertTrue(second.get('idempotent_replay'), second)
+
+    def test_deliver_same_key_writes_once(self):
+        """deliver 是纯本地写，但同样吃幂等键：回放不再改库、不再写第二条日志。"""
+        self.seed('O1')
+        common.set_idempotency_key('ord-deliver-1')
+        try:
+            first = orders.deliver('O1')
+            second = orders.deliver('O1')
+        finally:
+            common.set_idempotency_key('')
+
+        self.assertEqual(first['status'], 'delivered')
+        self.assertTrue(second.get('idempotent_replay'), second)
+        self.assertEqual(len(db.query("SELECT * FROM operation_logs WHERE action='deliver'")), 1)
+
     def test_update_shipment_pushes_to_protocol(self):
         install_client(self.client)
         self.seed('O1')

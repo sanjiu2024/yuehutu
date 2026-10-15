@@ -107,3 +107,29 @@
 - router 未挂进 `main.py`（写范围外）。
 - 写操作暂未写 `operation_logs`（留痕）与 `promotion.changed` 事件 —— 本次只要求协议层+服务层+API+单测+契约。
 - `campaign.start.before` 只做透传，未把它的返回（是否可启动）与本地状态做校验。
+
+## 幂等键（`Idempotency-Key`，第 63 批接入）
+
+带 `Idempotency-Key` 请求头时，**同一键 + 同一指纹**（`account_id` / action / item_id / payload
+的 sha256，见 `backend/app/services/common.py::idempotency_fingerprint`）只打平台一次；重复请求
+回放上次响应，响应体里带 `idempotent_replay: true`。同键不同指纹 → `409 conflict`
+（`code='conflict'`）。**不带请求头时行为与接入前完全一致**。
+
+请求头由 `backend/app/main.py::IdempotencyKeyMiddleware`（纯 ASGI）放进 contextvar，
+服务层写漏斗 `common.idempotent_call(account_id, action, item_id, payload, call)` 读取。
+
+| 写族 | 幂等 action | 接入点 |
+| --- | --- | --- |
+| 推广（超级擦亮） | 请求体 `action`（如 `campaign_edit`） | `backend/app/services/ad_write.py::_write` |
+| 安全中心 | 请求体 `action`（如 `security_appeal_submit`） | `backend/app/services/security_write.py::_submit` |
+| 客服分组 / 分流规则 | `cs_group_save` / `cs_group_delete` / `cs_routing_rule_save` | `backend/app/services/shop.py` |
+| 退货地址 | 路由 action（`add` / `update` / `delete` / `default`） | `backend/app/services/trade_write.py::_address_submit` |
+| 订单发货 / 标记发货 | `update_shipment` / `deliver` | `backend/app/services/orders.py` |
+
+回归用例（每个写族至少一条「同键同载荷只打平台一次 + `idempotent_replay`」）：
+`backend/tests/test_ad_write_api.py::AdWriteIdempotencyTest`、
+`backend/tests/test_security_write_api.py::SecurityWriteIdempotencyTest`、
+`backend/tests/test_shop_write_api.py::ShopWriteIdempotencyTest`、
+`backend/tests/test_address_write_api.py::AddressWriteIdempotencyTest`、
+`backend/tests/test_services_orders.py::OrdersServiceTest::test_update_shipment_same_key_hits_the_protocol_once`、
+`::test_deliver_same_key_writes_once`。

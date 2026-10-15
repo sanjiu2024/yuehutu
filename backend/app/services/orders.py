@@ -285,6 +285,18 @@ def update_shipment(order_id: Any, company: str, tracking_no: str, *,
     if not tracking_no:
         return common.fail('快递单号不能为空', 'invalid_fields')
 
+    # 幂等（第 63 批，§9）：同键同载荷只打平台一次，重复请求回放上次响应（带
+    # `idempotent_replay`）。落库/审计/广播都在闸门里面，回放时不会重复插一条 shipments。
+    return common.idempotent_call(
+        order['account_id'], 'update_shipment', order['order_id'],
+        {'company': company, 'tracking_no': tracking_no},
+        lambda: _update_shipment_once(order, company, tracking_no),
+    )
+
+
+def _update_shipment_once(order: Dict[str, Any], company: str,
+                          tracking_no: str) -> Dict[str, Any]:
+    """真正落库 + 推平台的那一次（幂等回放时不会走到这里）。"""
     existing = _latest_shipment(order['order_id'])
     if existing is not None and existing.get('tracking_no') == tracking_no and existing.get('company') == company:
         shipment_id = existing['id']
@@ -334,11 +346,24 @@ def update_shipment(order_id: Any, company: str, tracking_no: str, *,
 
 
 def deliver(order_id: Any) -> Any:
-    """标记已发货（不带物流单号时用；CONTRACTS §3 的 POST /api/orders/{id}/deliver）。"""
+    """标记已发货（不带物流单号时用；CONTRACTS §3 的 POST /api/orders/{id}/deliver）。
+
+    **纯本地**（不推平台），但仍接幂等键（第 63 批，§9）：同键重发回放上次响应，
+    不会再写一次库、也不会重复广播 `orders.delivered`。
+    """
     row = _find_order(order_id)
     if row is None:
         return common.fail(f'订单不存在: {order_id}', 'not_found')
     order = _row_to_order(row)
+    return common.idempotent_call(
+        order['account_id'], 'deliver', order['order_id'],
+        {'order_id': order['order_id']},
+        lambda: _deliver_once(order),
+    )
+
+
+def _deliver_once(order: Dict[str, Any]) -> Any:
+    """真正改本地状态的那一次（幂等回放时不会走到这里）。"""
     db.execute('UPDATE orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', ('delivered', order['id']))
     common.log_operation(order['account_id'], 'deliver', order['item_id'] or '', True, {'order_id': order['order_id']})
     common.publish('orders.delivered', {'order_id': order['order_id']})

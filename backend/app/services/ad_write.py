@@ -86,7 +86,29 @@ def _write(account_id: str, action: str, payload: Any = None, confirm: Any = Fal
     client, failure = _client(account_id)
     if failure:
         return failure
-    status, value = common.call_method(protocol.WriteClient(client), (action,), payload or {}, confirm=True)
+    body = payload if isinstance(payload, dict) else {}
+    # 幂等（第 63 批，§9）：带 `Idempotency-Key` 时同键同载荷只打平台一次，重复请求回放上次
+    # 响应（带 `idempotent_replay`）。指纹用**已确认、已过白名单**的 body 算。
+    return common.idempotent_call(
+        account_id, action, _write_subject(body), body,
+        lambda: _write_once(client, account_id, action, body),
+    )
+
+
+def _write_subject(payload: Any) -> str:
+    """幂等指纹里的「对象 id」：推广写都是按 campaignId / id 定位一条计划。"""
+    if not isinstance(payload, dict):
+        return ''
+    for key in ('campaignId', 'campaign_id', 'id', 'groupId'):
+        value = payload.get(key)
+        if value not in (None, ''):
+            return _text(value)
+    return ''
+
+
+def _write_once(client: Any, account_id: str, action: str, payload: Any) -> Dict[str, Any]:
+    """真正打平台的那一次（幂等回放时不会走到这里）。"""
+    status, value = common.call_method(protocol.WriteClient(client), (action,), payload, confirm=True)
     if status == common.CALL_ERROR and isinstance(value, protocol.WriteNotConfirmed):
         return common.fail('协议层拒绝了没有确认的写请求', 'confirm_required')
     failure = common.call_failed(status, value)

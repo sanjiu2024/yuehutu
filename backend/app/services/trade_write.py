@@ -515,6 +515,17 @@ def _address_submit(account_id: str, action: str, fields: Dict[str, Any],
         return failure
 
     api, data = addr_proto.request_of(action, confirm=True, **fields)
+    # 幂等（第 63 批，§9）：同键同载荷只打平台一次，重复请求回放上次响应（带
+    # `idempotent_replay`）。指纹用**构造好的请求体**算 —— 闸门与字段校验都已在上面完成。
+    return common.idempotent_call(
+        account_id, action, _text(fields.get('contact_id') or ''), data,
+        lambda: _address_submit_once(client, account_id, action, api, data, audit),
+    )
+
+
+def _address_submit_once(client: Any, account_id: str, action: str, api: str,
+                         data: Dict[str, Any], audit: Any) -> Dict[str, Any]:
+    """真正打平台的那一次（幂等回放时不会走到这里）。"""
     raw, failure = _call_write(client, api, data, addr_proto.DEFAULT_VERSION)
     if failure:
         common.log_operation(account_id, action, '', False, failure.get('message') or '')

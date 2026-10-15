@@ -93,6 +93,18 @@ def _submit(account_id: str, action: str, audit_id: str,
             str(exc),
             CONFIRM_CODE if isinstance(exc, proto.WriteNotConfirmed) else 'invalid_fields',
         )
+    # 幂等（第 63 批，§9）：同键同载荷只打平台一次，重复请求回放上次响应（带
+    # `idempotent_replay`）；解析与落审计都在闸门里面，回放时不会重复留痕。
+    return common.idempotent_call(
+        account_id, action, _text(audit_id), data,
+        lambda: _submit_once(client, account_id, action, audit_id, api, data, version, parse, business),
+    )
+
+
+def _submit_once(client: Any, account_id: str, action: str, audit_id: str, api: str,
+                 data: Dict[str, Any], version: str, parse: Callable[[Any], Dict[str, Any]],
+                 business: Optional[Callable[[Any], str]]) -> Dict[str, Any]:
+    """真正打平台的那一次（幂等回放时不会走到这里）。"""
     raw, failure = _call(client, api, data, version)
     if failure:
         common.log_operation(account_id, action, audit_id, False, failure.get('message') or '')

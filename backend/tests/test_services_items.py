@@ -1020,6 +1020,9 @@ class StockPatchTest(ItemsServiceTest):
         账号 2221063792739 的商品 1087852912806 把库存改成 100 时，平台回
         `FAIL_BIZ_ITEM_ERROR_MULTI_INVENTORY_ITEM_CAN_NOT_PUBLISH::亲，您不能发布多库存宝贝哦`。
         只报「改动仅本地生效」用户只会以为软件坏了。
+
+        第 63 批改口径：**平台拒绝就不改本地**（第 61 批 `a221f85` 的修法）—— 所以
+        这里断言本地库存仍是 1，且失败走 `failed[]` + `protocol_error`。
         """
         self.seed('I1', stock=1)
 
@@ -1036,10 +1039,13 @@ class StockPatchTest(ItemsServiceTest):
         self.assertFalse(result['synced'])
         self.assertIn('FAIL_BIZ_ITEM_ERROR_MULTI_INVENTORY_ITEM_CAN_NOT_PUBLISH', result['warning'])
         self.assertIn('单件库存', result['warning'])
-        self.assertEqual(result['item']['stock'], 100)  # 本地照样改好，不能因为平台拒绝就丢改动
+        # 平台没确认就不许改本地：本地仍是 1，不能出现「平台没改、本地改了」的假同步
+        self.assertEqual(result['item']['stock'], 1)
+        self.assertEqual(result['updated_fields'], [])
+        self.assertEqual(result['failed'][0]['code'], 'protocol_error')
 
     def test_unknown_platform_error_is_passed_through_unchanged(self):
-        """没见过的错误码**不许编解释**：原文照抄，只加「仅本地生效」的前缀。"""
+        """没见过的错误码**不许编解释**：原文照抄，只加「本地未改动」的前缀。"""
         self.seed('I1', stock=1)
 
         class Rejecting(FakeClient):
@@ -1049,7 +1055,8 @@ class StockPatchTest(ItemsServiceTest):
 
         install_fake_protocol(Rejecting('acc1'))
         result = items.update_item('I1', {'stock_set': 5}, account_id='acc1', confirm=True)
-        self.assertEqual(result['warning'], '协议层修改失败，改动仅本地生效: FAIL_SYS_SOMETHING_NEW::没见过的错误')
+        self.assertEqual(result['warning'], '平台修改失败，本地未改动: FAIL_SYS_SOMETHING_NEW::没见过的错误')
+        self.assertEqual(result['item']['stock'], 1)  # 平台拒绝 ⇒ 本地不动
 
     def test_same_prefix_but_new_error_code_is_not_translated(self):
         """**同前缀的新错误码不许套用旧解释**（独立审查 D4）。

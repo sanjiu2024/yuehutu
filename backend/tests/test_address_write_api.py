@@ -72,6 +72,7 @@ FORM = {
 }
 
 
+from backend.app.main import IdempotencyKeyMiddleware
 class SessionExpiredError(RuntimeError):
     """与协议层同名：`common._is_session_expired` 按**类名**认登录态过期。"""
 
@@ -162,6 +163,7 @@ class AddressWritePageTest(unittest.TestCase):
         self.fake = full_client()
         install_fake_protocol(self.fake)
         app = FastAPI()
+        app.add_middleware(IdempotencyKeyMiddleware)
         app.include_router(trade_write_api.router)
         self.app_ctx = TestClient(app)
         self.client = self.app_ctx.__enter__()
@@ -619,6 +621,26 @@ class AddressRouteTest(unittest.TestCase):
             '/api/trade/{account_id}/addresses/{contact_id}/delete': ['POST'],
             '/api/trade/{account_id}/addresses/{contact_id}/default': ['POST'],
         })
+
+
+
+
+class AddressWriteIdempotencyTest(AddressWritePageTest):
+    """第 63 批：退货地址写族接上幂等键（Idempotency-Key，CONTRACTS 9）。"""
+
+    def test_same_key_and_payload_hits_the_platform_once(self):
+        path = self.add_path()
+        body = {**FORM, "confirm": True}
+        headers = dict(self.headers, **{"Idempotency-Key": "addr-idem-1"})
+
+        first = self.post(path, body, headers=headers)
+        second = self.post(path, body, headers=headers)
+
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(self.fake.apis(), [proto.ADD_API], "同键同载荷只许打平台一次")
+        self.assertNotIn("idempotent_replay", first.json()["data"], first.text)
+        self.assertTrue(second.json()["data"]["idempotent_replay"], second.text)
 
 
 if __name__ == '__main__':

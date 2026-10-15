@@ -66,6 +66,7 @@ def _field(row: Any, name: str, index: int) -> Any:
         return row[index]
 
 
+from backend.app.main import IdempotencyKeyMiddleware
 class FakeSecurityClient:
     """假协议层：记录每次 mtop 调用，按需返回预置信封。"""
 
@@ -139,6 +140,7 @@ class SecurityWriteApiTest(unittest.TestCase):
         self.fake = FakeSecurityClient()
         install_fake_protocol(self.fake)
         app = FastAPI()
+        app.add_middleware(IdempotencyKeyMiddleware)
         app.include_router(security_write_api.router)
         self.app_ctx = TestClient(app)
         self.client = self.app_ctx.__enter__()
@@ -390,6 +392,27 @@ class SecurityWriteApiTest(unittest.TestCase):
                             {'punish_id': 987, 'confirm': True}, status=502)
         self.assertIn('SYSTEM_ERROR', payload.get('message', ''))
         self.assertEqual(payload['platform_errors']['api'], proto.APPEAL_URGE_API)
+
+
+
+
+class SecurityWriteIdempotencyTest(SecurityWriteApiTest):
+    """第 63 批：安全中心写族接上幂等键（Idempotency-Key，CONTRACTS 9）。"""
+
+    def test_same_key_and_payload_hits_the_platform_once(self):
+        self.stub(proto.APPEAL_SUBMIT_API, SUBMIT_OK)
+        path = f"/api/security-center/{ACC}/appeal/submit"
+        body = {"parameter": {"formId": "F-1", "appealReason": "误判"}, "confirm": True}
+        headers = dict(self.headers, **{"Idempotency-Key": "sec-idem-1"})
+
+        first = self.client.post(path, json=body, headers=headers)
+        second = self.client.post(path, json=body, headers=headers)
+
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(self.fake.apis(), [proto.APPEAL_SUBMIT_API], "同键同载荷只许打平台一次")
+        self.assertNotIn("idempotent_replay", first.json()["data"], first.text)
+        self.assertTrue(second.json()["data"]["idempotent_replay"], second.text)
 
 
 if __name__ == '__main__':

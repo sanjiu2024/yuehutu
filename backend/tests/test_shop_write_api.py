@@ -84,6 +84,7 @@ GROUP_BODY: Dict[str, Any] = {
 }
 
 
+from backend.app.main import IdempotencyKeyMiddleware
 class SessionExpiredError(RuntimeError):
     """与协议层同名：`common._is_session_expired` 按**类名**认登录态过期。"""
 
@@ -407,6 +408,7 @@ class ShopWritePageTest(unittest.TestCase):
         self.fake = full_client()
         install_fake_protocol(self.fake)
         app = FastAPI()
+        app.add_middleware(IdempotencyKeyMiddleware)
         app.include_router(shop_api.router)
         self.app_ctx = TestClient(app)
         self.client = self.app_ctx.__enter__()
@@ -719,6 +721,26 @@ class ShopWriteRouteTest(unittest.TestCase):
                                 # 第六十一批（READ-COVERAGE-61）：小铺服务开通状态，只读
                                 f'{BASE}/{{account_id}}/pc-service-status',
                                 f'{BASE}/{{account_id}}/profile'})
+
+
+
+
+class ShopWriteIdempotencyTest(ShopWritePageTest):
+    """第 63 批：客服分组写族接上幂等键（Idempotency-Key，CONTRACTS 9）。"""
+
+    def test_same_key_and_payload_hits_the_platform_once(self):
+        path = self.groups_path()
+        body = GROUP_BODY
+        headers = dict(self.headers, **{"Idempotency-Key": "shop-idem-1"})
+
+        first = self.post(path, body, headers=headers)
+        second = self.post(path, body, headers=headers)
+
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(self.fake.apis(), [proto.GROUP_API], "同键同载荷只许打平台一次")
+        self.assertNotIn("idempotent_replay", first.json()["data"], first.text)
+        self.assertTrue(second.json()["data"]["idempotent_replay"], second.text)
 
 
 if __name__ == '__main__':

@@ -26,6 +26,7 @@ ACC = '2217970177348'
 BASE = '/api/promotion/write'
 
 
+from backend.app.main import IdempotencyKeyMiddleware
 class XianyuError(Exception):
     """与协议层同名：``common._is_session_expired`` 按**类名**认登录态过期，不看文案。"""
 
@@ -99,6 +100,7 @@ class AdWriteTestBase(unittest.TestCase):
         self.fake = FakeWriteClient()
         install_fake_protocol(self.fake)
         app = FastAPI()
+        app.add_middleware(IdempotencyKeyMiddleware)
         app.include_router(ad_write_api.router)
         self.app_ctx = TestClient(app)
         self.client = self.app_ctx.__enter__()
@@ -324,6 +326,27 @@ class AdWriteServiceTest(AdWriteTestBase):
         self.assertEqual(ad_write_service.execute(ACC, 'recharge', {}, True)['code'], 'unsupported')
         self.assertEqual(ad_write_service.execute(ACC, 'withdraw', {}, True)['code'], 'unsupported')
         self.assertEqual(self.fake.calls, [])
+
+
+
+
+class AdWriteIdempotencyTest(AdWriteTestBase):
+    """第 63 批：推广写族接上幂等键（Idempotency-Key，CONTRACTS 9）。"""
+
+    def test_same_key_and_payload_hits_the_platform_once(self):
+        seed_account()
+        path = f"{BASE}/{ACC}/campaign_edit"
+        body = {"confirm": True, "payload": {"campaignId": 12345, "title": "新标题"}}
+        headers = dict(self.headers, **{"Idempotency-Key": "adw-idem-1"})
+
+        first = self.client.post(path, json=body, headers=headers)
+        second = self.client.post(path, json=body, headers=headers)
+
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(len(self.fake.calls), 1, "同键同载荷只许打平台一次")
+        self.assertNotIn("idempotent_replay", first.json()["data"], first.text)
+        self.assertTrue(second.json()["data"]["idempotent_replay"], second.text)
 
 
 if __name__ == '__main__':

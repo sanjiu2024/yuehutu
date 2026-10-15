@@ -406,6 +406,17 @@ def save_routing_rule(account_id: str, distribution_method: Any = '', repeat_cus
     if failure:
         return failure
 
+    # 幂等（第 63 批，§9）：同键同载荷只打平台一次，重复请求回放上次响应（带
+    # `idempotent_replay`）—— 「发请求 + 落审计 + 广播」都在闸门里，回放时不再打平台。
+    return common.idempotent_call(
+        account_id, 'cs_routing_rule_save', '', data,
+        lambda: _save_routing_rule_once(client, api, data, account_id),
+    )
+
+
+def _save_routing_rule_once(client: Any, api: str, data: Dict[str, Any],
+                            account_id: str) -> Dict[str, Any]:
+    """真正打平台 + 落审计 + 广播的那一次（幂等回放时不会走到这里）。"""
     value, failure = _send_write(client, api, data, 'cs_routing_rule_save', account_id)
     if failure:
         return failure
@@ -461,6 +472,16 @@ def save_cs_group(account_id: str, group_name: Any = '', mode: Any = '',
     if failure:
         return failure
 
+    # 幂等（第 63 批，§9）：同键同载荷只打平台一次，重复请求回放上次响应（带 `idempotent_replay`）。
+    return common.idempotent_call(
+        account_id, 'cs_group_save', _text(data.get('groupId')), data,
+        lambda: _save_cs_group_once(client, api, data, account_id, group_id, mode),
+    )
+
+
+def _save_cs_group_once(client: Any, api: str, data: Dict[str, Any], account_id: str,
+                        group_id: Any, mode: Any) -> Dict[str, Any]:
+    """真正打平台 + 落审计 + 广播的那一次（幂等回放时不会走到这里）。"""
     value, failure = _send_write(client, api, data, 'cs_group_save', account_id)
     if failure:
         return failure
@@ -501,6 +522,16 @@ def delete_cs_group(account_id: str, group_id: Any = '', confirm: Any = False) -
     if failure:
         return failure
 
+    # 幂等（第 63 批，§9）：同键同载荷只打平台一次，重复请求回放上次响应（带 `idempotent_replay`）。
+    return common.idempotent_call(
+        account_id, 'cs_group_delete', _text(data.get('groupId')), data,
+        lambda: _delete_cs_group_once(client, api, data, account_id),
+    )
+
+
+def _delete_cs_group_once(client: Any, api: str, data: Dict[str, Any],
+                          account_id: str) -> Dict[str, Any]:
+    """真正打平台 + 落审计 + 广播的那一次（幂等回放时不会走到这里）。"""
     value, failure = _send_write(client, api, data, 'cs_group_delete', account_id)
     if failure:
         return failure

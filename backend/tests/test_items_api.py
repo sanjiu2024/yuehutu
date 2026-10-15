@@ -823,6 +823,64 @@ class ItemShelfPlatformFailureApiTest(ItemsApiTest):
         self.assertEqual(data['warnings'][0]['code'], 'not_pushed')
         self.assertEqual(self.status_of('A1'), 'on_sale')
 
+# --------------------------------------------------------------------------- 编辑平台失败（第 63 批）
+
+class EditRejectClient(FakeClient):
+    """平台**真的拒绝**编辑的假协议层（第 63 批，与第 61 批 PlatformRejectClient 同款）。
+
+    编辑与上下架走同一个 mtop（mtop.idle.pc.idleitem.edit），平台拒绝时协议层抛
+    MTOP 调用失败 ... FAIL_BIZ_JSON_ERROR::发布失败，请稍后重试吧!（原文照抄）。
+    """
+
+    REAL_MESSAGE = PlatformRejectClient.REAL_MESSAGE
+
+    async def edit_item(self, item_id: str, payload: dict) -> Dict[str, Any]:
+        self.calls.append(('edit_item', item_id, payload))
+        raise RuntimeError(self.REAL_MESSAGE)
+
+
+class ItemEditPlatformFailureApiTest(ItemsApiTest):
+    """平台明确拒绝编辑时：本地字段**一个字节都不改**，失败如实进 failed（第 63 批）。
+
+    第 63 批真缺陷（与第 61 批 _set_status 同款）：_push_update 平台报错只记 warning，
+    本地 UPDATE 却已经落库 ⇒ 本地价格与平台不一致。修法：本地 UPDATE 挪到平台确认之后，
+    平台 CALL_ERROR 时进 failed[]（code=protocol_error）+ log_operation(..., False, ...)。
+    """
+
+    def price_of(self, item_id: str, account: str = ACC) -> float:
+        row = db.query_one('SELECT price FROM items WHERE account_id = ? AND item_id = ?',
+                           (account, item_id))
+        return float(row['price'])
+
+    def test_edit_platform_reject_keeps_local_fields(self):
+        seed('A1', account=ACC, price=100.0, status='on_sale', stock=1)
+        install_fake_protocol(EditRejectClient(ACC))
+
+        resp = self.client.post(f'/api/items/{ACC}/A1/edit',
+                                json={'confirm': True, 'price': 1.0}, headers=self.headers)
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()['data']
+        self.assertFalse(data['synced'], resp.text)
+        self.assertEqual(data['updated_fields'], [], resp.text)
+        self.assertEqual([f['id'] for f in data['failed']], ['A1'], resp.text)
+        self.assertEqual(data['failed'][0]['code'], 'protocol_error')
+        self.assertIn('FAIL_BIZ_JSON_ERROR', data['failed'][0]['message'], resp.text)
+        self.assertIn('本地未改动', data['failed'][0]['message'], resp.text)
+        # 核心断言：本地价格保持原值（平台侧仍是 100.0）
+        self.assertEqual(self.price_of('A1'), 100.0)
+
+    def test_edit_reject_logs_a_failure_and_emits_no_event(self):
+        seed('A1', account=ACC, price=100.0, status='on_sale', stock=1)
+        install_fake_protocol(EditRejectClient(ACC))
+
+        self.client.post(f'/api/items/{ACC}/A1/edit',
+                         json={'confirm': True, 'price': 1.0}, headers=self.headers)
+
+        self.assertEqual([r['success'] for r in db.query('SELECT success FROM operation_logs')], [0],
+                         "平台失败要落一条失败操作日志")
+        self.assertEqual(updates(), [], '一条都没改成 → 不发 items.updated')
+
 # --------------------------------------------------------------------------- 发布数据源（第 60 批）
 
 #: 发布数据源路由用到的 5 个协议函数名（`services/items.py` 里的 `*_CALL` 常量）

@@ -628,23 +628,29 @@ def _platform_error_hint(value: Any) -> str:
     return f'（{hint}）' if hint else ''
 
 
-def _push_update(client: Any, account_id: str, item_id: str, payload: Dict[str, Any]) -> Optional[str]:
-    """尽力把 ``payload`` 推给协议层；返回警告文本或 None（协议层未就绪也算警告，不算失败）。
+def _push_update(client: Any, account_id: str, item_id: str,
+                 payload: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """尽力把 ``payload`` 推给协议层；返回 ``(warning, failure)``。
+
+    两者互斥：``failure`` 非空 = 平台**明确拒绝**（`CALL_ERROR`），调用方必须当失败处理、
+    **一个字节都不许改本地**（第 63 批，对齐 `_set_status` 的第 61 批修法 —— 以前这里只返回一句
+    warning 就放行，于是本地改好、平台还是旧值，是假绿）。`CALL_MISSING` / 协议层未就绪仍是
+    既定「本地优先」口径，走 ``warning``。
 
     真签名是 ``XianyuClient.edit_item(item_id, payload)``（**两个参数**，没有
     ``account_id``）；多传一个 account_id 会在 Python 层就 ``TypeError``，
     表现为 502 ``protocol_error``，跟平台无关。
 
-    ``payload`` 为空 = 本次没有任何可推的字段（例如 ``images: []``），返回 None。
+    ``payload`` 为空 = 本次没有任何可推的字段（例如 ``images: []``），返回 ``(None, None)``。
     """
     if not payload:
-        return None
+        return None, None
     status, value = common.call_method(client, ('edit_item',), item_id, payload)
     if status == common.CALL_OK:
-        return None
+        return None, None
     if status == common.CALL_MISSING:
-        return '协议层尚未实现商品修改，改动仅本地生效'
-    return f'协议层修改失败，改动仅本地生效: {value}{_platform_error_hint(value)}'
+        return '协议层尚未实现商品修改，改动仅本地生效', None
+    return None, f'平台修改失败，本地未改动: {value}{_platform_error_hint(value)}'
 
 
 def update_item(item_id: Any, fields: Dict[str, Any], account_id: Optional[str] = None,
@@ -704,16 +710,23 @@ def update_item(item_id: Any, fields: Dict[str, Any], account_id: Optional[str] 
                              {'fields': {}, 'noop': True})
         return {'item': item, 'synced': True, 'updated_fields': [], 'noop': True}
 
-    sets = ', '.join(f'{column} = ?' for column in db_values)
-    db.execute(
-        f'UPDATE items SET {sets}, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-        list(db_values.values()) + [item['id']],
-    )
-
+    # 平台调用排在本地 UPDATE **之前**（第 63 批）：平台明确拒绝时一个字节都不改本地 ——
+    # 否则本地是「已改」、平台还是旧值，与 `_set_status` 第 61 批修掉的是同一个假绿。
     warning = None
     client, _err = common.get_client(item['account_id'])
     if client is not None:
-        warning = _push_update(client, item['account_id'], item['item_id'], payload)
+        warning, failure = _push_update(client, item['account_id'], item['item_id'], payload)
+        if failure:
+            common.log_operation(item['account_id'], 'update_item', item['item_id'], False, failure)
+            # HTTP 200 + `failed`（与 `_set_status` 的批量形状同款）：平台拒绝是**业务失败**、
+            # 不是协议层 502；前端按 `failed[]` 弹错误，不会把这次编辑当成成功。
+            return {
+                'item': get_item_by_account(item['account_id'], item['item_id']),
+                'synced': False,
+                'updated_fields': [],
+                'warning': failure,
+                'failed': [{'id': item['item_id'], 'code': 'protocol_error', 'message': failure}],
+            }
     elif payload:
         warning = '协议层尚未就绪，改动仅本地生效'
     if sold_not_pushed:
@@ -726,6 +739,15 @@ def update_item(item_id: Any, fields: Dict[str, Any], account_id: Optional[str] 
         # 用户看到「已修改并同步」而一半只落本地。
         note = _local_only_note(local_only)
         warning = f'{warning}；{note}' if warning else note
+
+    # 本地 UPDATE 挪到这里（第 63 批）：平台已确认成功（或协议层未就绪的既定「本地优先」口径）
+    # 才动库。平台明确拒绝的那条在上面 `failure` 分支已经 return，一个字节都没改。
+    if db_values:
+        sets = ', '.join(f'{column} = ?' for column in db_values)
+        db.execute(
+            f'UPDATE items SET {sets}, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            list(db_values.values()) + [item['id']],
+        )
 
     # 回读必须按 `(account_id, item_id)` 配对：同一个 item_id 可能存在于多个账号，
     # 用 get_item(item_id) 单键查会把**别的账号**的商品塞进返回值里。
@@ -755,12 +777,12 @@ def _batch_summary(
     """批量结果的统一形状。
 
     - `ok` / `synced` = 完全成功（本地已改 **且** 已推送到协议层）；
-    - `warnings` / `local_only` = 本地改了但没推出去（协议层未就绪，或字段平台根本不支持；
-      编辑被平台拒绝也走这里 —— 编辑本地优先）；
+    - `warnings` / `local_only` = 本地改了但没推出去（协议层未就绪，或字段平台根本不支持）；
     - `noop` = 本次没有实际改动（例如只传 `images: []` 表示不改图），**不算 ok、也不算
       local_only**；
-    - `failed` = 完全没改的逐条明细（不存在、字段非法、跨账号，以及上下架被平台明确拒绝时
-      本地一个字节都没动），`skipped` = 同一批的 id 索引（一眼看出一条都没动）。
+    - `failed` = 完全没改的逐条明细（不存在、字段非法、跨账号，以及上下架、编辑被平台明确
+      拒绝时本地一个字节都没动 —— 第 61/63 批改成「平台确认后才写本地」），
+      `skipped` = 同一批的 id 索引（一眼看出一条都没动）。
 
     恒等式：`total == ok + local_only + noop + len(failed)`。
     """
