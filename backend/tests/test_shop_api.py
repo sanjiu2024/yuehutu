@@ -36,6 +36,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from backend.app import main as app_main  # noqa: E402
 from backend.app.api import shop as shop_api  # noqa: E402
 from backend.app.core import db, security  # noqa: E402
+from backend.app.services import shop as shop_service  # noqa: E402
 from backend.app.xianyu import shop as shop_proto  # noqa: E402
 from backend.tests.testenv import use_temp_app_dir  # noqa: E402
 
@@ -49,6 +50,13 @@ ROLE_LIST_API = shop_proto.ROLE_LIST_API
 CS_RULE_API = shop_proto.CS_ROUTING_RULE_API
 CS_GROUP_API = shop_proto.CS_GROUP_API
 CS_AGENTS_API = shop_proto.CS_AGENT_LIST_API
+
+#: 第 61 批：发布页服务开通状态（只读）。协议层 _data 先剥一层外层信封，
+#: 所以假客户端这里回的是**带 code 的业务信封**，服务层再取 data 内层。
+PC_STATUS_API = shop_proto.PC_SERVICE_STATUS_API
+PC_STATUS_INNER = {'serviceCode': 'YB', 'open': True, 'unknownField': {'a': 1}}
+PC_STATUS_OK = {'code': 'success', 'data': PC_STATUS_INNER}
+
 
 #: 真机 `sub.account.info.list`（2026-10-10 账号 2217970177348）：这个账号确实没有子账号，
 #: `total: 0` 是**平台明说的 0**，可以照用。
@@ -149,6 +157,7 @@ def full_client(**overrides: Any) -> FakeShopClient:
         CS_RULE_API: CS_RULE,
         CS_GROUP_API: CS_GROUP,
         CS_AGENTS_API: CS_AGENTS,
+        PC_STATUS_API: PC_STATUS_OK,
     }
     payloads.update(overrides)
     return FakeShopClient(payloads)
@@ -529,6 +538,89 @@ class ShopApiTest(unittest.TestCase):
         self.assertIn(f'{BASE}/{{account_id}}/sub-accounts', paths,
                       "create_app() 没挂上小铺路由（main.py 的 ROUTE_MODULES 需要 'shop'）")
         self.assertIn(f'{BASE}/{{account_id}}/cs-routing', paths)
+
+
+
+class ShopCoverage61Test(unittest.TestCase):
+    """第 61 批只读（发布页服务开通状态）的 service 层端到端用例（此前一条都没跑过）。
+
+    刻意**不继承** ShopApiTest：那个基类自带一堆用例，继承会把它们再跑一遍。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        use_temp_app_dir(cls.tmp.name)
+
+    @classmethod
+    def tearDownClass(cls):
+        remove_fake_protocol()
+        db.reset_connection()
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        db.reset_connection()
+        remove_fake_protocol()
+        for table in ('accounts', 'account_credentials', 'operation_logs', 'risk_state'):
+            db.execute(f'DELETE FROM {table}')
+        self.fake = full_client()
+        install_fake_protocol(self.fake)
+        app = FastAPI()
+        app.include_router(shop_api.router)
+        self.app_ctx = TestClient(app)
+        self.client = self.app_ctx.__enter__()
+        self.user_id = int(db.execute(
+            "INSERT INTO users(username, password_hash, is_admin) VALUES('shop61','x',1)"))
+        self.headers = {'Authorization': 'Bearer ' + security.issue_token(self.user_id)}
+        seed_account()
+
+    def tearDown(self):
+        db.execute('DELETE FROM users')
+        self.app_ctx.__exit__(None, None, None)
+
+    def get(self, path, query='', headers=None):
+        return self.client.get(f'{path}{query}',
+                               headers=self.headers if headers is None else headers)
+
+    def _data(self, path, query=''):
+        resp = self.get(path, query)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        return resp.json()['data']
+
+    def test_pc_service_status_sends_service_code_and_passes_body_through(self):
+        data = self._data('/api/shop/%s/pc-service-status' % ACC, '?service_code=YB')
+        self.assertEqual(self.fake.args_of(PC_STATUS_API), {'serviceCode': 'YB'})
+        self.assertEqual(data['api'], shop_proto.PC_SERVICE_STATUS_API)
+        self.assertEqual(data['service_code'], 'YB')
+        self.assertEqual(data['data'], PC_STATUS_INNER)
+        self.assertEqual(data['warnings'], [])
+        self.assertEqual(data['source'], 'platform')
+        self.assertTrue(data['fetched_at'])
+
+    def test_pc_service_status_route_is_read_only(self):
+        """这条只读不许被登记成写（写的那条是 pc.service.open，本批明确不接）。"""
+        self.assertIn(shop_proto.PC_SERVICE_STATUS_API, shop_proto.READ_APIS)
+        self.assertNotIn(shop_proto.PC_SERVICE_STATUS_API, shop_proto.WRITE_APIS)
+
+    def test_pc_service_status_blank_service_code_fails_before_any_platform_call(self):
+        result = shop_service.pc_service_status(ACC, '  ')
+        self.assertFalse(result.get('success'))
+        self.assertEqual(result.get('code'), 'invalid_fields')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_pc_service_status_empty_body_is_null_with_warning(self):
+        """平台没给业务体 -> null + warning，绝不补 false（那会变成「这项服务没开通」）。"""
+        self.fake.payloads[PC_STATUS_API] = {'code': 'success', 'data': {}}
+        data = self._data('/api/shop/%s/pc-service-status' % ACC, '?service_code=YB')
+        self.assertIsNone(data['data'])
+        self.assertTrue(data['warnings'])
+
+    def test_pc_service_status_without_business_envelope_passes_through(self):
+        """有些接口没有 code 业务信封 —— 整段 data 就是载荷，不能再往里挖一层。"""
+        self.fake.payloads[PC_STATUS_API] = {'open': True, 'reason': '未开通'}
+        data = self._data('/api/shop/%s/pc-service-status' % ACC, '?service_code=YB')
+        self.assertEqual(data['data'], {'open': True, 'reason': '未开通'})
+        self.assertEqual(data['warnings'], [])
 
 
 if __name__ == '__main__':

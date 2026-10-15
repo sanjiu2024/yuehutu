@@ -36,6 +36,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from backend.app.api import logistics as lg_api  # noqa: E402
 from backend.app.core import db, security  # noqa: E402
+from backend.app.services import logistics as logistics_service  # noqa: E402
 from backend.app.xianyu import division as div_proto  # noqa: E402
 from backend.app.xianyu import logistics as proto  # noqa: E402
 from backend.tests.testenv import use_temp_app_dir  # noqa: E402
@@ -191,12 +192,47 @@ def seed_account(account_id: str = ACC, cookie: str = 'cookie-ok',
                'VALUES(?,?,?)', (account_id, cookie, login_state))
 
 
+
+# --------------------------------------------------------------------------- 第 61 批只读（未发货凭证 / 发货地）
+#: 未发货凭证详情：单层信封，业务体在 data 里（trade.body_of 认 data.module / data.data / data 三种容器）。
+UNCONSIGN_DETAIL_OK = {
+    'success': True,
+    'data': {'content': '包装完好，已拍照留证',
+             'imageList': ['https://img.alicdn.com/bao/uploaded/a.png'],
+             'orderId': '3317095524016013282'},
+    'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功'],
+}
+#: 平台**没给** content / imageList（这一单本来就没传凭证）⇒ null + warning，不是空串/空数组。
+UNCONSIGN_DETAIL_NO_EVIDENCE = {
+    'success': True, 'data': {'orderId': '3317095524016013282'},
+    'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功'],
+}
+#: 平台**明确**回了空串/空数组 —— 与「没给这个键」是两回事，不许混成同一个 warning。
+UNCONSIGN_DETAIL_EMPTY = {
+    'success': True, 'data': {'content': '', 'imageList': []},
+    'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功'],
+}
+#: 发货地详情：形状未取证 ⇒ 业务体原样透出（不认识的键也要留着）。
+DELIVERY_PLACE_OK = {
+    'success': True,
+    'data': {'placeId': '1', 'placeName': '浙江杭州', 'unknownField': {'a': 1}},
+    'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功'],
+}
+#: 平台没给业务体（形状未取证）⇒ detail 为 null + warning。
+DELIVERY_PLACE_EMPTY = {
+    'success': True, 'data': {},
+    'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功'],
+}
+
+
 def full_client(**overrides: Any) -> FakeLogisticsClient:
     payloads = {
         proto.COMPANIES_API: COMPANIES_OK,
         proto.GUESS_API: GUESS_OK,
         proto.RESEND_API: RESEND_OK,
         div_proto.DIVISIONS_API: DIVISIONS_OK,
+        proto.UNCONSIGN_DETAIL_API: UNCONSIGN_DETAIL_OK,
+        proto.DELIVERY_PLACE_DETAIL_API: DELIVERY_PLACE_OK,
     }
     payloads.update(overrides)
     return FakeLogisticsClient(payloads)
@@ -676,6 +712,78 @@ class LogisticsDivisionTest(LogisticsPageTest):
         resp = self.get(f'{BASE}/{ACC}/divisions')
         self.assertEqual(resp.status_code, 502, resp.text)
         self.assertEqual(self.login_state(), 'active')
+
+
+
+class LogisticsCoverage61Test(LogisticsPageTest):
+    """第 61 批两条只读（未发货凭证详情 / 发货地详情）的 service 层端到端用例。
+
+    第 61 批当时只补了协议层用例与路由登记断言，service 层一条都没跑过。
+    这一组把「服务层 -> 真协议层 -> 假客户端」整条链路走通，并钉住两条只读的
+    「平台没给 != 空」口径（凭证文本/图片、发货地业务体）。
+    """
+
+    def _data(self, path, *args):
+        resp = self.get(path, *args)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        return resp.json()['data']
+
+    def test_unconsign_detail_returns_evidence_and_sends_order_id(self):
+        data = self._data('/api/logistics/%s/orders/3317095524016013282/unconsign-detail' % ACC)
+        self.assertEqual(data['api'], proto.UNCONSIGN_DETAIL_API)
+        self.assertEqual(data['order_id'], '3317095524016013282')
+        self.assertEqual(data['content'], '包装完好，已拍照留证')
+        self.assertEqual(data['image_list'], ['https://img.alicdn.com/bao/uploaded/a.png'])
+        self.assertEqual(data['warnings'], [])
+        self.assertEqual(data['source'], 'platform')
+        self.assertTrue(data['fetched_at'])
+        call = self.fake.call_of(proto.UNCONSIGN_DETAIL_API)
+        self.assertEqual(call['data'], {'orderId': '3317095524016013282'})
+        self.assertEqual(call['v'], proto.DEFAULT_VERSION)
+
+    def test_unconsign_detail_missing_evidence_is_null_with_warning(self):
+        self.fake.payloads[proto.UNCONSIGN_DETAIL_API] = UNCONSIGN_DETAIL_NO_EVIDENCE
+        data = self._data('/api/logistics/%s/orders/3317/unconsign-detail' % ACC)
+        self.assertIsNone(data['content'])
+        self.assertIsNone(data['image_list'])
+        self.assertEqual([w['code'] for w in data['warnings']], ['no_evidence'])
+
+    def test_unconsign_detail_empty_values_are_not_missing(self):
+        self.fake.payloads[proto.UNCONSIGN_DETAIL_API] = UNCONSIGN_DETAIL_EMPTY
+        data = self._data('/api/logistics/%s/orders/3317/unconsign-detail' % ACC)
+        self.assertEqual(data['content'], '')
+        self.assertEqual(data['image_list'], [])
+        self.assertEqual(data['warnings'], [])
+
+    def test_unconsign_detail_blank_order_id_fails_before_any_platform_call(self):
+        """字段校验排在凭据检查之前：空订单号 -> invalid_fields，一个平台请求都不发。"""
+        result = logistics_service.unconsign_detail(ACC, '   ')
+        self.assertFalse(result.get('success'))
+        self.assertEqual(result.get('code'), 'invalid_fields')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_delivery_place_passes_body_through_and_sends_no_data(self):
+        data = self._data('/api/logistics/%s/delivery-place' % ACC)
+        self.assertEqual(data['api'], proto.DELIVERY_PLACE_DETAIL_API)
+        self.assertEqual(data['detail'], DELIVERY_PLACE_OK['data'])
+        self.assertEqual(data['warnings'], [])
+        self.assertEqual(data['source'], 'platform')
+        # 官方调用点原文不带 data（协议层注释里记了 bundle 位置）
+        self.assertIsNone(self.fake.call_of(proto.DELIVERY_PLACE_DETAIL_API)['data'])
+
+    def test_delivery_place_missing_detail_is_null_with_warning(self):
+        self.fake.payloads[proto.DELIVERY_PLACE_DETAIL_API] = DELIVERY_PLACE_EMPTY
+        data = self._data('/api/logistics/%s/delivery-place' % ACC)
+        self.assertIsNone(data['detail'])
+        self.assertEqual([w['code'] for w in data['warnings']], ['no_detail'])
+
+    def test_platform_refusal_is_a_failure_envelope_not_a_fake_detail(self):
+        """平台回 success:false -> 失败信封（protocol_error），不许画成「没有发货地」。"""
+        self.fake.payloads[proto.DELIVERY_PLACE_DETAIL_API] = NO_PERMISSION
+        result = logistics_service.delivery_place_detail(ACC)
+        self.assertFalse(result.get('success'))
+        self.assertEqual(result.get('code'), 'protocol_error')
+        self.assertIn('无权限访问', result.get('message', ''))
 
 
 if __name__ == '__main__':

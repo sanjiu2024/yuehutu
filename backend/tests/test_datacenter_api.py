@@ -1827,5 +1827,106 @@ class FansBreakdownTest(DataCenterApiTest):
         self.assertEqual(data['insights'], FANS_PAYLOAD['insights'])
 
 
+
+class Coverage61ReadTest(unittest.TestCase):
+    """第 61 批两条只读（小铺统计 / 商品状态统计）的 service 层端到端用例。
+
+    走**真协议层**：只把 xianyu.client 换成假客户端（install_fake_client），
+    于是「服务层 -> xianyu.datacenter 真协议函数 -> client.mtop」整条链路都被跑到。
+    （刻意**不继承** DataCenterApiTest：那个基类自带一堆用例，而本组 setUp 要摘掉
+    假协议层，继承会把那些用例一起拉进来跑成假失败。）
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        use_temp_app_dir(cls.tmp.name)
+
+    @classmethod
+    def tearDownClass(cls):
+        remove_fake_protocol()
+        db.reset_connection()
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        db.reset_connection()
+        remove_fake_protocol()
+        for table in ('accounts', 'account_credentials', 'operation_logs', 'risk_state'):
+            db.execute(f'DELETE FROM {table}')
+        datacenter_service.clear_cache()
+        app = FastAPI()
+        app.include_router(datacenter_api.router)
+        self.app_ctx = TestClient(app)
+        self.client = self.app_ctx.__enter__()
+        self.user_id = int(db.execute(
+            "INSERT INTO users(username, password_hash, is_admin) VALUES('dc61','x',1)"))
+        self.headers = {'Authorization': 'Bearer ' + security.issue_token(self.user_id)}
+
+    def tearDown(self):
+        db.execute('DELETE FROM users')
+        self.app_ctx.__exit__(None, None, None)
+
+    def get(self, path, query='', headers=None):
+        return self.client.get(f'{path}{query}',
+                               headers=self.headers if headers is None else headers)
+
+    def _data(self, path, query=''):
+        resp = self.get(path, query)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertTrue(body.get('success'), body)
+        return body['data']
+
+    def test_shop_stats_sends_session_id_and_passes_data_through(self):
+        seed_account()
+        client = install_fake_client(ACC, answers={
+            datacenter_proto.SHOP_STATS_API: {
+                'code': 'success', 'data': {'uv': 12, 'unknownField': {'a': 1}}},
+        })
+        data = self._data('/api/datacenter/%s/shop-stats' % ACC, '?session_id=sess-1')
+        self.assertEqual(len(client.calls), 1)
+        self.assertIn((datacenter_proto.SHOP_STATS_API, {'sessionId': 'sess-1'}), client.calls)
+        self.assertEqual(data['account_id'], ACC)
+        self.assertEqual(data['kind'], 'shop_stats')
+        self.assertEqual(data['data'], {'uv': 12, 'unknownField': {'a': 1}})
+        self.assertEqual(data['source'], 'platform')
+        self.assertTrue(data['fetched_at'])
+
+    def test_shop_stats_blank_session_id_is_invalid_fields_and_no_platform_call(self):
+        seed_account()
+        client = install_fake_client(ACC)
+        for bad in ('', '   ', None):
+            result = datacenter_service.shop_stats(ACC, bad)
+            self.assertFalse(result.get('success'), repr(bad))
+            self.assertEqual(result.get('code'), 'invalid_fields', repr(bad))
+        self.assertEqual(len(client.calls), 0)
+
+    def test_item_status_statistics_sends_empty_data_and_passes_through(self):
+        seed_account()
+        client = install_fake_client(ACC, answers={
+            datacenter_proto.ITEM_STATUS_STATISTICS_API: {
+                'code': 'success', 'data': {'onSale': 3}},
+        })
+        data = self._data('/api/datacenter/%s/item-status-statistics' % ACC)
+        # 官方调用点原文不带 data => 这里发空对象（语义等价）
+        self.assertEqual(len(client.calls), 1)
+        self.assertIn((datacenter_proto.ITEM_STATUS_STATISTICS_API, {}), client.calls)
+        self.assertEqual(data['kind'], 'item_status_statistics')
+        self.assertEqual(data['data'], {'onSale': 3})
+        self.assertEqual(data['source'], 'platform')
+
+    def test_platform_denial_is_a_failure_envelope_not_500(self):
+        seed_account()
+        install_fake_client(ACC, errors={
+            datacenter_proto.ITEM_STATUS_STATISTICS_API: RuntimeError(
+                'MTOP 调用失败 [%s]: FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问'
+                % datacenter_proto.ITEM_STATUS_STATISTICS_API),
+        })
+        resp = self.get('/api/datacenter/%s/item-status-statistics' % ACC)
+        self.assertNotEqual(resp.status_code, 500, resp.text)
+        body = resp.json()
+        self.assertFalse(body.get('success'), body)
+
+
 if __name__ == '__main__':
     unittest.main()
