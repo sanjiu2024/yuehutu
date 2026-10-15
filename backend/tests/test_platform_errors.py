@@ -174,6 +174,42 @@ class DecorateTest(unittest.TestCase):
         twice = pe.decorate(once)
         self.assertEqual(once['message'], twice['message'])
 
+    def test_bare_permission_wording_gets_a_hint_without_a_code(self):
+        """平台只回人话「无权限访问」、没带码的行也要说人话（真机 logs 里有）。
+
+        但**不能**顺手编一个 `platform_code`：原文里没有码，编出来会让按码分支的
+        前端跟着说错话。
+        """
+        out = pe.decorate(self._failure(
+            '协议层调用失败: MTOP 调用失败 '
+            '[mtop.taobao.idlemessage.customer.leave.session]: 无权限访问'))
+        self.assertIn('没有开通', out['message'])
+        self.assertEqual(out['platform_hint'],
+                         pe.hint_for('FAIL_BIZ_IDLE_USER_UNAUTHORIZED'))
+        self.assertNotIn('platform_code', out)
+
+
+class DescribeTest(unittest.TestCase):
+    """`describe()`：通用错误路径的一句人话（比 `explain()` 多退一步到「没权限」）。"""
+
+    def test_known_code_wins(self):
+        self.assertEqual(pe.describe('FAIL_BIZ_IDLE_UNKNOWN_THROWABLE::发布失败，请稍后重试吧~'),
+                         pe.hint_for('FAIL_BIZ_IDLE_UNKNOWN_THROWABLE'))
+
+    def test_bare_permission_wording_falls_back_to_the_shared_sentence(self):
+        self.assertEqual(pe.describe('XianyuError: 无权限访问'),
+                         pe.hint_for('FAIL_BIZ_IDLE_USER_UNAUTHORIZED'))
+
+    def test_unknown_and_other_codes_stay_silent(self):
+        # 没见过的码不许编解释。
+        self.assertEqual(pe.describe('XianyuError: boom'), '')
+        # `FAIL_SYS_NO_PERMISSION` 是另一个码，别套「没开通功能」的解释。
+        self.assertEqual(pe.describe('FAIL_SYS_NO_PERMISSION::无权限操作'), '')
+
+    def test_accepts_several_texts_like_explain(self):
+        self.assertEqual(pe.describe('协议层调用失败', 'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问'),
+                         pe.hint_for('FAIL_BIZ_IDLE_USER_UNAUTHORIZED'))
+
 
 class ItemsIntegrationTest(unittest.TestCase):
     """编辑路径的 `items._platform_error_hint` 用的是同一份判定。"""

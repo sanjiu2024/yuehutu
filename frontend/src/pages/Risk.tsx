@@ -4,7 +4,9 @@
  *  - `GET /api/risk/status`（不带 account_id）→
  *      `{states: [...], blocked: [账号id...], cooldown_steps: [...], auto_slider, refresh_interval_seconds}`
  *    注意 `blocked` 是**账号 id 数组**（带 account_id 查询时它才是 bool）。
- *  - `GET /api/risk/events` → `{events: [...], total}`，事件字段只有 `kind` / `message`。
+ *  - `GET /api/risk/events` → `{events: [...], total}`，事件字段 `kind` / `message`，
+ *    外加后端给的 `hint`（平台码翻成的人话，认不出是空串）—— `message` 是平台原文，
+ *    两个都要显示：原文给审计，`hint` 给用户看懂。
  *  - 设置在 `GET|PUT /api/risk/settings`（**不是** `/api/settings`）。
  *  - 清除冷却 `POST /api/risk/{account_id}/clear`：**不带任何 body 字段**。
  *    后端已加固（api/risk.py:65-76、tests/test_api_hardening.py），
@@ -607,7 +609,10 @@ export function RiskPage() {
                             <span className={`rk-badge ${eventTone(event.kind)}`}>{eventLabel(event)}</span>
                           </td>
                           <td className="rk-nowrap rk-dim mono">{event.kind || '未知'}</td>
-                          <td className="rk-msg">{event.message || '-'}</td>
+                          <td className="rk-msg">
+                            <div>{event.message || '-'}</div>
+                            {event.hint ? <div className="rk-hint-line">{event.hint}</div> : null}
+                          </td>
                         </tr>
                       ))}
                     </tbody>

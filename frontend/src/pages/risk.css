@@ -221,6 +221,15 @@
   word-break: break-word;
 }
 
+/* 平台码翻成的人话（后端 `platform_errors.describe`）。
+   与 `.rk-msg` 同一档颜色：原文给审计，这一行给用户看懂。 */
+.rk-hint-line {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-dim);
+  opacity: 0.9;
+}
+
 /* ---------------------------------------------------------------- 表单 */
 
 .rk-input {

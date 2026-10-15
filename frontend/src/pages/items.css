@@ -1469,3 +1469,11 @@ textarea.it-invalid:focus {
   font-size: var(--fs-11);
 }
 
+/* 操作日志详情下面那行「人话」：后端 `platform_errors.describe()` 翻好的。
+   `detail` 保持平台原文（审计要看），这行只帮用户看懂发生了什么。 */
+.it-log-hint {
+  margin-top: 2px;
+  font-size: var(--fs-11);
+  color: var(--text-dim);
+}
+

@@ -135,6 +135,8 @@ export interface OperationLog {
   action?: string
   success?: boolean
   detail?: string
+  /** 后端把平台码翻成的人话（`platform_errors.describe`）；认不出就是空串。 */
+  hint?: string
   created_at?: string
 }
 
@@ -404,6 +406,8 @@ export interface RiskEvent {
   /** hit | clear_refused | ... */
   kind?: string
   message?: string
+  /** 后端把平台码翻成的人话（`platform_errors.describe`）；认不出就是空串。 */
+  hint?: string
   created_at?: string
 }
 

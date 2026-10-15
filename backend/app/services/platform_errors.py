@@ -224,6 +224,22 @@ def permission_hint(text: Any) -> str:
     return explain(text) or hint_for('FAIL_BIZ_IDLE_USER_UNAUTHORIZED')
 
 
+def describe(*texts: Optional[Any]) -> str:
+    """通用错误路径用的一句人话：先按码解释，认不出再看是不是「无权限」类。
+
+    与 `explain()` 的区别：`explain()` 只认收录过的码（认不出就空串，宁可不说），
+    而这里多退一步 —— 平台只回人话「无权限访问」、没带码时也给统一解释
+    （`permission_hint`）。真机 logs 里确实有这种行：
+    `mtop.taobao.idlemessage.customer.leave.session: 无权限访问`。
+    别把它用在「必须区分码」的地方（风控 / 登录态判定各有 `is_risk` / `is_session_expired`）。
+    """
+    hint = explain(*texts)
+    if hint:
+        return hint
+    joined = ' '.join(str(t) for t in texts if t)
+    return permission_hint(joined) if is_permission(joined) else ''
+
+
 def find_code_in(text: Any, codes: Tuple[str, ...]) -> str:
     """在给定的一组码里找出命中的那个（用于风控/登录态这类子集判断）。"""
     if not text:
@@ -250,7 +266,8 @@ def decorate(problem: Any, exc: Any = None) -> Any:
     - 返回**新字典**，不改传入的对象（调用方可能还留着原信封）。
     - ``message`` 后面追加人话，用户一眼能看到原因；
     - 另外单独给 ``platform_code`` / ``platform_hint`` 两个字段，
-      前端要分开排版时不必再切字符串；
+      前端要分开排版时不必再切字符串。``platform_code`` **只在原文里真有码时**
+      才给（`describe` 对裸「无权限访问」也能给解释，但那种行没有码）；
     - 命中风控时额外给 ``risk=True``，前端据此把红色错误改成「等冷却」的提示。
       **不改 ``code``**：``code`` 决定 HTTP 状态码（见 ``common.FAIL_STATUS``），
       把 ``protocol_error`` 改成别的会连带改状态码，不是这个模块该管的事。
@@ -259,16 +276,20 @@ def decorate(problem: Any, exc: Any = None) -> Any:
     """
     if not isinstance(problem, dict) or problem.get('success') is not False:
         return problem
-    code = find_code(_texts_of(problem, exc))
-    if not code:
+    texts = _texts_of(problem, exc)
+    code = find_code(texts)
+    hint = describe(*texts)
+    if not hint:
         return problem
-    hint = hint_for(code)
     message = str(problem.get('message') or '')
     if hint and hint not in message:
         message = f'{message}。{hint}' if message else hint
     out = dict(problem)
     out['message'] = message
-    out['platform_code'] = code
+    # `platform_code` 只在原文里真有码时给：裸「无权限访问」的行没有码，
+    # 编一个出来会让前端按码分支的地方跟着说错话。
+    if code:
+        out['platform_code'] = code
     out['platform_hint'] = hint
     if code in RISK_ERROR_CODES:
         out['risk'] = True

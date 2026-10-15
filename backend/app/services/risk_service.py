@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional
 
 from ..core import db
 from ..xianyu import risk as protocol_risk
-from . import common
+from . import common, platform_errors
 
 DEFAULT_STEPS = [60, 180, 300, 600, 1200]
 SETTING_AUTO_SLIDER = 'risk.auto_slider'
@@ -105,6 +105,12 @@ def status(account_id: Optional[str] = None) -> Dict[str, Any]:
 
 
 def events(limit: int = 100, account_id: Optional[str] = None) -> Dict[str, Any]:
+    """风控事件列表。每条额外给 ``hint``：平台码翻成一句人话（认不出就是空串）。
+
+    ``message`` 保持平台原文不动（审计要看原文）；``hint`` 只负责让用户看懂
+    「这是设计内的风控冷却」还是「这是平台侧故障」。翻译单点是
+    ``platform_errors.describe()``，这里不自己判。
+    """
     limit = max(1, min(int(limit or 100), 1000))
     if account_id:
         rows = db.query(
@@ -113,7 +119,12 @@ def events(limit: int = 100, account_id: Optional[str] = None) -> Dict[str, Any]
         )
     else:
         rows = db.query('SELECT * FROM risk_events ORDER BY id DESC LIMIT ?', (limit,))
-    return {'events': [dict(r) for r in rows], 'total': len(rows)}
+    events = []
+    for row in rows:
+        event = dict(row)
+        event['hint'] = platform_errors.describe(event.get('message'))
+        events.append(event)
+    return {'events': events, 'total': len(events)}
 
 
 def is_blocked(account_id: str) -> bool:

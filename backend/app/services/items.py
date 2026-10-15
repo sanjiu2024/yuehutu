@@ -365,6 +365,10 @@ def list_operation_logs(account_id: Optional[str] = None, limit: int = 100) -> L
     for row in rows:
         log = dict(row)
         log['success'] = bool(log.get('success'))
+        # 失败行的 detail 往往是平台原文（`MTOP 调用失败 [...]::CODE::人话`）。
+        # 这里只加一句 `hint`，`detail` 原样保留给审计；翻译单点是
+        # `platform_errors.describe()`（认不出就是空串，不编解释）。
+        log['hint'] = '' if log['success'] else platform_errors.describe(log.get('detail'))
         out.append(log)
     return out
 

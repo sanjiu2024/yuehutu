@@ -3987,7 +3987,9 @@ function OperationLogsModal({ accountId, onClose }: { accountId: string; onClose
                     {log.item_id || '-'}
                   </td>
                   <td className="dim" style={{ fontSize: 12, maxWidth: 300 }}>
-                    {truncate(log.detail || '', 90)}
+                    <div>{truncate(log.detail || '', 90)}</div>
+                    {/* `detail` 是平台原文（审计要看）；`hint` 是后端翻的人话，认不出为空串。 */}
+                    {log.hint ? <div className="it-log-hint">{log.hint}</div> : null}
                   </td>
                 </tr>
               ))}
