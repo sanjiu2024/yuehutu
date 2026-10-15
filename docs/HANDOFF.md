@@ -3797,7 +3797,7 @@ first.hand / backend 族 → `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`（官方 seller.p
 
 **真机（打包版 18400，账号 `2217970177348` 月狐兔_，2026-10-16 01:08~01:15）**
 - 第一次（00:23）打真机时平台回 `FAIL_SYS_SESSION_EXPIRED::Session过期`，服务层把账号标了 `need_relogin`；**01:08 复验 `login_state=active`**（那次过期是瞬态，cookie 仍在库）⇒ 本批真机复验**做成了**，证据落 `logs/probe60/`（打包版 HTTP 探针）与 `logs/probe60/round2/`。
-- **19 条新只读路由打了 17 条**（未打 2 条：`ad_bid_estimates` 要 `entityType/entityList` 合法枚举；`ad_message_detail` 要 message id，而该账号 `ad.message.list` 的 `total=0`）。**10 条 200 带真实数据**：
+- **19 条新只读路由打了 17 条**（未打 2 条：`ad_bid_estimates` 要 `entityType/entityList` 合法枚举；`ad_message_detail` 要 message id，而该账号 `ad.message.list` 的 `total=0`）。**10 条 200（其中 5 条有真实数据：account-info / groups / groups/data / categories 99 / brands 68；另 5 条为空或静态目录）**：
   `GET /api/promotion/ad/apis`（目录）、`/{acc}/account-info`（`{cashBalance:3358,totalBalance:3358,usableBalance:3358}`）、
   `/{acc}/groups`（`result[0]` 真数据，键 `adData/adGroupId/campaignId/campaignTitle/cat4Id/entityId/entityType/groupStatus/imgUrl/price/saleCnt/title`）、
   `/{acc}/groups/data?ad_group_id=160084560`、`/{acc}/messages`（`{nextPage,pageNum,pageSize,result,total,totalPage}`）、`/{acc}/messages/unread`（`{unreadCount}`）、

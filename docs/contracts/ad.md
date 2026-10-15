@@ -15,26 +15,29 @@
 >   偏移会随版本变，搜索串不会。
 > * 契约测试：`backend/tests/test_ad_api.py`（HTTP + 服务层 + 端到端 + 幂等）、
 >   `backend/tests/test_xianyu_ad.py`（协议层请求形状）。
-> * **真机证据：未真机验证。** 本批 11 个接口都还没在打包版工作台 + 真实 Cookie 上打过探针
->   （见 §5 的探针清单，Lead 会在打包版上跑）。因此：平台没返回的字段一律 `None`，
->   **不用 0 顶替**；响应 `data` 原样透出，不做「认字段」的猜测。
+> * **真机证据（2026-10-16，打包版 18400 + 真实 Cookie，账号 `2217970177348`）**：11 条只读打了 9 条 ——
+>   **6 条 200**（`apis` 静态目录 / `account-info` / `groups` / `groups/data` / `messages` / `messages/unread`），
+>   **3 条被平台拒**（`package-info`、`campaign.log.query` → `E_AD_BP_COMMON_SYSTEM_EXCEPTION`；`item.searchV2` → `E_AD_BP_COMMON_PARAM_NULL`，**还缺别的必填项，未解**），
+>   **2 条未打**（`bid.estimates` 缺合法 `entityType/entityList`；`message.detail` 该账号 `message.list` 的 `total=0`）。
+>   唯一写接口（消息已读）**未打**（真实副作用，先问用户）。原始响应见 `logs/probe60/`（`logs/` 不入仓）。
+>   因此：平台没返回的字段一律 `None`，**不用 0 顶替**；响应 `data` 原样透出，不做「认字段」的猜测。
 
 ## 0. 一句话结论
 
 | 能力 | 接口（mtop） | 真机结果 | 结论 |
 | --- | --- | --- | --- |
-| 投放账户信息 | `mtop.taobao.idle.ad.account.info` | 未真机验证 | 接了 |
-| 投放包信息 | `mtop.taobao.idle.ad.package.info` | 未真机验证 | 接了 |
-| 商品搜索 V2 | `mtop.taobao.idle.ad.item.searchV2` | 未真机验证 | 接了 |
-| 自定义出价估算 | `mtop.taobao.idle.ad.customize.bid.estimates` | 未真机验证 | 接了 |
-| 投放单元列表 | `mtop.taobao.idle.ad.group.list` | 未真机验证 | 接了 |
-| 投放单元数据 | `mtop.taobao.idle.ad.group.data.query` | 未真机验证 | 接了 |
-| 计划操作日志 | `mtop.taobao.idle.ad.campaign.log.query` | 未真机验证 | 接了 |
-| 推广消息列表 | `mtop.taobao.idle.ad.message.list` | 未真机验证 | 接了 |
-| 推广消息详情 | `mtop.taobao.idle.ad.message.detail` | 未真机验证 | 接了 |
-| 推广消息未读数 | `mtop.taobao.idle.ad.message.unread.info` | 未真机验证 | 接了（**唯一不套 requestJson** 的一条） |
-| 标记推广消息已读（写） | `mtop.taobao.idle.ad.message.read` | 未真机验证 | 接了（confirm 闸门 + 幂等键） |
-| 商品推荐位 | `mtop.taobao.idle.ad.item.recommend` | 未真机验证 | **不接**（无入参、bundle @3300908 `data:{}`；属选品页装饰性推荐位，见 §6） |
+| 投放账户信息 | `mtop.taobao.idle.ad.account.info` | ✅ 200（`{cashBalance:3358,totalBalance:3358,usableBalance:3358}`） | 接了 |
+| 投放包信息 | `mtop.taobao.idle.ad.package.info` | ❌ 502 `E_AD_BP_COMMON_SYSTEM_EXCEPTION` | 接了 |
+| 商品搜索 V2 | `mtop.taobao.idle.ad.item.searchV2` | ❌ 502 `E_AD_BP_COMMON_PARAM_NULL`（缺必填） | 接了 |
+| 自定义出价估算 | `mtop.taobao.idle.ad.customize.bid.estimates` | 未打（缺合法 entityType/entityList） | 接了 |
+| 投放单元列表 | `mtop.taobao.idle.ad.group.list` | ✅ 200（不传 campaignId 也能通） | 接了 |
+| 投放单元数据 | `mtop.taobao.idle.ad.group.data.query` | ✅ 200 | 接了 |
+| 计划操作日志 | `mtop.taobao.idle.ad.campaign.log.query` | ❌ 502 `E_AD_BP_COMMON_SYSTEM_EXCEPTION` | 接了 |
+| 推广消息列表 | `mtop.taobao.idle.ad.message.list` | ✅ 200（该账号 total=0） | 接了 |
+| 推广消息详情 | `mtop.taobao.idle.ad.message.detail` | 未打（该账号 total=0，无 id） | 接了 |
+| 推广消息未读数 | `mtop.taobao.idle.ad.message.unread.info` | ✅ 200（unreadCount） | 接了（**唯一不套 requestJson** 的一条） |
+| 标记推广消息已读（写） | `mtop.taobao.idle.ad.message.read` | 未打（写，先问用户） | 接了（confirm 闸门 + 幂等键） |
+| 商品推荐位 | `mtop.taobao.idle.ad.item.recommend` | 未打（本批不接） | **不接**（无入参、bundle @3300908 `data:{}`；属选品页装饰性推荐位，见 §6） |
 
 **与已有能力的查重（等价就不重复实现）**：`ad_home` / `ad_account_card`（`bp.account.card.query`）/
 `ad_member_data` / `ad_campaigns`（`campaign.search`）/ `ad_campaign_metrics`（`campaign.data.batch.query`）/
@@ -89,7 +92,7 @@ bundle 里 `group.list` / `campaign.log.query` 的包装**没有写 `v`**，但�
 * 查询串：`order_price`、`promotion_mode`、`bid_type`、`scene`，**给哪个带哪个**（空值不带）。
 * 官方调用点 @3488564 / @3672101 传 `{orderPrice, promotionMode, bidType, scene}`，`scene` 取
   `EAccountRequestScene`（如 `CREATION_REAL_TIME` / `CREATION_SUCCESS`）。
-* 响应 `data` 原样透出（未真机验证，不认字段）。
+* 响应 `data` 原样透出（2026-10-16 真机确认账户信息是 `{cashBalance,totalBalance,usableBalance}`；其余仍未验证，不认字段）。
 
 ### 2.2 `package-info`（投放包信息）
 
@@ -179,6 +182,9 @@ bundle 里 `group.list` / `campaign.log.query` 的包装**没有写 `v`**，但�
 前置：账号已完成扫码登录（库里 `account_credentials.cookie` 非空、`login_state='active'`）；
 `{acc}` 换成真实账号 id。**读接口**按下面最小参数逐个打，看 `success` 与 `data` 形状；
 `data` 为空 dict 也算「平台给了答复但没字段」（如实记录，不要当 0）。
+
+**2026-10-16 已按本清单打过一轮**（结果见 §0 的真机证据块与 `logs/probe60/`）：#1 / #5 / #6 / #8 / #9 回 200；
+#2 / #3 / #7 被平台拒（错误码如实透出）；#4 / #10 未打（缺合法枚举 / 该账号无消息）；#11（写）未打。
 
 | # | method + path | 最小参数 | 关注点 |
 | --- | --- | --- | --- |

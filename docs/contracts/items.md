@@ -12,9 +12,12 @@
 > - 复现搜索串：`item.publish.categories` / `item.publish.brands` / `item.publish.models` /
 >   `item.pc.category.property.query` / `item.pc.search.categories`。
 >
-> ⚠️ **没有真机证据**：本批只做 bundle 反查 + 源码实现，没在真机上打过这 5 个接口。
-> 所以协议层**不写任何兜底值**（认不出就是空列表 / `None`，绝不用 0 顶替），
-> 解析对字段名容错，并把平台的 `code` / `msg` 原样带出来给探针看（见 §5 真机清单）。
+> **真机证据（2026-10-16，打包版 18400 + 真实 Cookie，账号 `2217970177348`）**：5 条里 4 条拿到 200 ——
+> `publish/categories` **99 条一级类目**、`publish/brands` **68 条**（元素 **`{value,label}`**）、
+> `publish/models` 0 条、`publish/category-properties` 0 条；`publish/search-categories` 被平台拒
+> `FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问`。原始响应见 `logs/probe60/round2/`（`logs/` 不入仓）。
+> 协议层**不写任何兜底值**（认不出就是空列表 / `None`，绝不用 0 顶替），解析对字段名容错，
+> 并把平台的 `code` / `msg` 原样带出来。
 
 ## 1. HTTP 接口（5 条 GET，全部要求登录）
 
@@ -148,6 +151,6 @@
 
 1. `category.property.query` 的业务体键名（只见到 `data.data.fineness` 这条线索，没有消费侧渲染代码可对照）。
 2. `search.categories` 的响应是否与 `publish.categories` 同形（同名 `selectIdleCategories`，但那是商品列表筛选页的用法）。
-3. `brands` / `models` 真机响应的元素字段名是否就是 `valueId`/`valueName`（bundle 里是这么映射的，但没抓过包）。
+3. ~~`brands` / `models` 的元素字段名~~ —— **已解（2026-10-16 真机）**：`brands` 元素是 **`{value,label}`**（68 条，如 `{value:642468970,label:NIORFNIO}`），不是 `valueId`/`valueName`；`models` 那次 0 条，形状仍未见到。
 4. `publish.categories` 的 `valueType:'string'` 是否真的必要（官方这么发，我们照抄；若真机报参数错，去掉它）。
-5. 型号 `count == 0` 与「这个类目本来就没型号」的区分：平台若回空数组，两者不可分辨 —— 只能靠 `platform_code`。
+5. 型号 `count == 0` 与「这个类目本来就没型号」的区分：真机（2026-10-16）`models` 与 `category-properties` 都回 **200 + 空数组 + `platform_code=success`**，**两者仍不可分辨**，只能靠 `platform_code`。

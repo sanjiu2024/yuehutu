@@ -339,8 +339,10 @@ GET    /api/items/{account_id}/publish/search-categories
        -- 第六十批（task-15）：官方**发布页**的数据源，五条全只读、无 confirm；响应
        --   data={account_id,kind,options,count,platform_code,api?,platform_message?,fetched_at,source:platform}，
        --   options 为空是 200（这一层就是没有可选项），不是失败。契约与不确定项：docs/contracts/items.md。
-       --   这五条**没有真机证据**（形状由 bundle 反查 js_main.js / trade_bundle/main.js 得出），
-       --   拿到真机非空响应后可能要改解析键名。
+       --   真机（2026-10-16）：categories **200 / 99 条一级类目**、brands **200 / 68 条**（元素 `{value,label}`）、
+       --   models 200 / 0 条、category-properties 200 / 0 条；search-categories 被平台拒 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`。
+       --   形状原本由 bundle 反查 js_main.js / trade_bundle/main.js 得出；category-properties 真机回 0 条，
+       --   业务体键名仍未证实（见 docs/contracts/items.md §6）。
 POST   /api/items/{account_id}/publish         {title,price,description,images,category_id,...}
 POST   /api/items/{account_id}/{item_id}/edit  {price?,original_price?,title?,description?,stock?,images?,ai_enabled?}
       -- `images` 是 URL 数组（主图首位），协议层翻成平台 `imageInfoDOList` 提交（见 §2 items 注释）
@@ -673,8 +675,10 @@ GET    /api/promotion/ad/{account_id}/messages/{message_id}
 POST   /api/promotion/ad/{account_id}/messages/read            {message_ids:[...],confirm}
        -- 前缀 /api/promotion/ad，契约 docs/contracts/ad.md。唯一写动作是「投放消息标记已读」：
        --   confirm 只认字面 true，且走 §9 的 Idempotency-Key。
-       --   11 条只读**全是 bundle 反查、无真机证据**（bundle fish-ad-pc/0.0.12/js/main.js，
-       --   偏移与搜索串写在 docs/contracts/ad.md 与 backend/app/xianyu/ad.py 每条 docstring）。
+       --   真机（2026-10-16）：6 条只读 200（apis 静态目录 / account-info / groups / groups/data / messages / messages/unread），
+       --   3 条打到平台被拒（package-info、campaign-log → `E_AD_BP_COMMON_SYSTEM_EXCEPTION`；item-search → `E_AD_BP_COMMON_PARAM_NULL` 缺必填），
+       --   2 条未打（bid-estimates 缺合法枚举、message.detail 该账号 total=0）。形状原本由 bundle fish-ad-pc/0.0.12/js/main.js 反查，
+       --   偏移与搜索串写在 docs/contracts/ad.md 与 backend/app/xianyu/ad.py 每条 docstring。
        --   计划/活动的写族仍由 services/ad_write.py 覆盖，本批没有重复实现。
 GET    /api/promotion/{account_id}/overview?start=YYYYMMDD&end=YYYYMMDD
 GET    /api/promotion/{account_id}/campaigns?start=&end=&page=1&size=20
@@ -937,8 +941,9 @@ POST /api/trade/{account_id}/orders/{order_id}/adjust-price-sku  {skus,confirm}
 POST /api/trade/{account_id}/smart-form/submit                   {callback_code,ext?,confirm}
        -- cancel / close-im 是 IM 侧两个**独立接口名**（不是 merchant.close.by.seller 的别名），
        --   与工作台那条同载荷、按官方开关二选一；days 同 3/5/7/10；skus 键名原样透传给平台。
-       -- 8 条**全部没有真机证据**：3 条只读可以真机打，5 条写会产生真实副作用
-       --   （真取消 / 真关闭 / 真延长收货 / 真改价并通知买家 / 真提交表单），不做真机试打。
+       -- 真机（2026-10-16）：3 条只读打过 —— sku-selector `FAIL_BIZ_ITEM_NOT_MULTI_SKU_ERROR`（该商品不是多 SKU）、
+       --   backfill-report `FAIL_BIZ_IDLE_USER_UNAUTHORIZED`、smart-form/query 无参 400 `invalid_fields`、带 orderId 参数 `UNKNOWN_FAIL_CODE`（参数形状未解）；
+       --   5 条写会产生真实副作用（真取消 / 真关闭 / 真延长收货 / 真改价并通知买家 / 真提交表单），未做真机试打。
 
 【写 · 退货地址】`docs/contracts/trade_write.md` §8
 POST /api/trade/{account_id}/addresses                        {contact_name,mobile_phone,province_name,city_name,district_name,detail_address,area_id?,default_addr?,confirm}
