@@ -1079,15 +1079,44 @@ class ItemPublishDataApiTest(ItemsApiTest):
 
 # --------------------------------------------------------------- 批量发布的失败项形状（第 61 批）
 
-class BatchPublishFailureShapeApiTest(ItemsApiTest):
+class BatchPublishFailureShapeApiTest(unittest.TestCase):
     """批上架失败项必须是 `id` + `code` + `message` 三键（与 delist/relist 等服务层端点同形）。
 
     第 61 批小审查发现：`POST /batch-publish` 只回 `{id, message}`，而 AI 侧 `items_batch_publish`
     自称「口径完全一致」却回三键，前端 `showBatchNotice` 也按 `code` 分流。
+
+    **不继承 `ItemsApiTest`**：这里只验一个端点的信封形状；继承会把基类的几十个用例再跑一遍
+    （用例数虚高，也把一个偶发竞态多跑一轮）。用例里也**不建账号**：批发布端点不查账号存在性，
+    非 dict 行在打平台之前就被挡下，而建了带 Cookie 的账号会喂给后台 stats worker 去拉平台。
     """
 
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        use_temp_app_dir(cls.tmp.name)
+
+    @classmethod
+    def tearDownClass(cls):
+        remove_fake_protocol()
+        db.reset_connection()
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        db.reset_connection()
+        remove_fake_protocol()
+        db.execute('DELETE FROM items')
+        events._recent.clear()
+        self.app_ctx = TestClient(create_app())
+        self.client = self.app_ctx.__enter__()
+        self.user_id = int(db.execute(
+            "INSERT INTO users(username, password_hash, is_admin) VALUES('batchpub','x',1)"))
+        self.headers = {'Authorization': 'Bearer ' + security.issue_token(self.user_id)}
+
+    def tearDown(self):
+        db.execute('DELETE FROM users')
+        self.app_ctx.__exit__(None, None, None)
+
     def test_non_dict_row_carries_invalid_row_code(self):
-        seed_account()
         resp = self.client.post(f'/api/items/{ACC}/batch-publish',
                                 json={'items': ['nope'], 'confirm': True}, headers=self.headers)
         self.assertEqual(resp.status_code, 200, resp.text)
@@ -1100,8 +1129,6 @@ class BatchPublishFailureShapeApiTest(ItemsApiTest):
     def test_platform_failure_keeps_the_service_code(self):
         from unittest import mock
 
-        seed_account()
-
         def spy(account_id, payload, *, confirm=None):
             return {'success': False, 'code': 'platform_error', 'message': '平台拒绝了'}
 
@@ -1113,5 +1140,7 @@ class BatchPublishFailureShapeApiTest(ItemsApiTest):
         failed = resp.json()['data']['failed']
         self.assertEqual([(f['id'], f['code']) for f in failed],
                          [('A1', 'platform_error')], resp.text)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
