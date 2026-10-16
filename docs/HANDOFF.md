@@ -4470,7 +4470,12 @@ coverage57 §3 的 77 条缺口逐条核销成**可复跑口径**：**已实现 
   'CAN_NOT_DELETE_DEFAULT_ADDRESS', …}}`）时我们当成功、还写**成功审计**。已加第二层判据（非 success ⇒
   `common.fail('平台接口失败: …', 'protocol_error', platform_errors={api, code, message})` + `log_operation(..., False, …)`）。
   根因：`backend/app/xianyu/trade.py:213 envelope_error` **只判外层** `raw['success'] is False`（只读层约定「业务码非 success
-  仍 200 + platform_code」）⇒ 写路径不能只靠它。测试：`test_address_write_api.py` 新增 3 例（**审计必须 success=False**），47 例 OK。
+  仍 200 + platform_code」）⇒ 写路径不能只靠它。测试：`test_address_write_api.py` 新增 3 例（**审计必须 success=False**），49 例 OK。
+- **大审查追加（`subagent_deep` 复核小审查结论）**：`backend/app/xianyu/address_write.py::code_of` / `message_of` 原先只读 `body_of`
+  摊平后的业务体，而 `body_of` 在 `data.data` 是 dict 时**会钻进内层**，`{success: true, data: {code: 'FAIL_X', data: {…}}}`
+  这种形状会丢掉外层业务码 ⇒ 仍是假成功通道；已改为**先读外层** `raw['data']`，协议层 + 服务层各补 1 例（49 例）。同轮大审查另指出：
+  `items_of` 的另 4 个调用方（orders / refunds / evaluations / complaints）没有真机回归、小审查「实跑」清单缺独立日志、
+  小审查的同型缺陷口径与它自己那份 `docs/audit/write64_fake_success.md` 不一致 —— 已登记为 `docs/交接文档.md` §10 第 48 条。
 - **BUG ③ IM `sessionId` 是数值字段**：`customer.leave/rejoin/deliver.session` 与 `pc.blacklist.add/remove` 发字符串被平台按
   类型错误拒绝。新增 `backend/app/xianyu/im_actions.py::_numeric_session_id`（非数字**本地**抛错、零平台请求），
   `pc.blacklist.query` 与 `message.card.send` 两种都收、保持字符串；服务层出参 `session_id` 仍回**调用方文本**、
@@ -4486,7 +4491,7 @@ coverage57 §3 的 77 条缺口逐条核销成**可复跑口径**：**已实现 
 
 #### E 验收基线（本批收尾实测）
 
-- 全量：`TOTAL 76  PASS 76  FAIL 0  CASES 3275  SKIPPED 2`（第 63 批是 75 / 3258；+`backend/tests/test_xianyu_address.py`）
+- 全量：`TOTAL 76  PASS 76  FAIL 0  CASES 3277  SKIPPED 2`（第 63 批是 75 / 3258；+`backend/tests/test_xianyu_address.py`；大审查后又 +2 例）
 - `scripts/reconcile_tools.py`：`specs=210 master=209 routes=211 targets=189 handlers=210`、`write_tools=82`、`route_checked=211` → `RECON OK`
 - OpenAPI：**249 路径 / 267 操作**（本批无新路由，与第 63 批一致）
 - 打包版：产物 `dist/闲鱼AI工作台/闲鱼AI工作台.exe` **10,331,073 B / 2026-10-16 08:47:20**（`scripts/build_exe.ps1 -SkipFrontend`，前端未改）；
