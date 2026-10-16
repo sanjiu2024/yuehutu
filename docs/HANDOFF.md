@@ -4430,6 +4430,84 @@ coverage57 §3 的 77 条缺口逐条核销成**可复跑口径**：**已实现 
   `ad_activity_detail` 502 `NO_APPLY_ACTIVITY_PERMISSION`、`items_read_operate_report` 502 `FAIL_SYS_BIZPARAM_MISSED`、`items_read_preget` 502 触发冷却
 - 日志：`.dsh-tmp/{build,gate,assets,smoke,contrast,a11y,read}63.log`、`logs/probe63/summary.txt`、`logs/probe63/summary_pkg.txt`
 
+### 第六十四批：不可逆写族真机验证（零副作用 + 可逆低风险）+ 3 个真 bug（商品写族不碰）
+
+用户 m05059：「2 不要动我的商品」—— 批准方案②（打不可逆写族真机验证），**商品写族一律不调用**。
+本批只打「零副作用路径」与「可逆低风险写」；三个真 bug 全部来自真机取证，不是静态推测。
+
+#### A 零副作用真机探针（40 条，全部假 id）
+
+- **闸门全过**：22 + 17 条写接口缺 `confirm` 时一律本地 `confirmation_required`、**零平台请求**。
+- 形状全部被平台接受（错误都是业务语义）：`close_order` `NOT_SELLER 您不是卖家`、`order_cancel`
+  `FAIL_BIZ_BAD_REQUEST 您不是买家`、`adjust_price` `您无权修改这个订单`、`ship_dummy` `ORDER_STATUS_ERROR`、
+  `logistics_resend_consign` `CONSIGN_CAN_NOT_CONFIRM_OPERATE_ORDER`、投放 `campaign_delete`
+  `E_AD_CAMPAIGN_CAMPAIGN_NOT_FOUND_ERROR::计划不存在`、`appeal_submit_cro` `FAIL_BIZ_PUNISH_NOT_EXIST` 等。
+- 平台回 SUCCESS 但**零副作用**（假 id 被逐单拒绝）：`delay_confirm` `failNum=1 successNum=0`、
+  `ship_offline` `ORDER_NOT_BELONG_TO_USER`、`rate_create` `errorMsg:'登陆用户不是交易双方'`。
+- 假 id 用 **19 位**：20 位会先本地 `OverflowError: Python int too large to convert to SQLite INTEGER`。
+- 证据：`logs/write64/probe_a1.py` / `probe_a2.py` → `a1.json` / `a2.json`；口径与未打清单见 `docs/audit/write64.md`。
+
+#### B 可逆低风险真机写：退货地址全环 + IM 会话族（换来 3 个真 bug）
+
+- **退货地址全环**（`logs/write64/probe_b1g_cycle.py` → `b1g_address_cycle.json`）：基线 `total=0` → add（缺 confirm 拦下）
+  → 建成（平台不回 `contactId`，服务层给 `no_contact_id` warning）→ list `total=1` → update → set-default →
+  delete **回「成功样」信封但地址还在** ⇒ 抓出 BUG ① 与 BUG ②。
+- **IM 会话族**（`logs/write64/probe_b2_im.py` → `b2_im.json`）：三条写接口全回
+  `FAIL_SYS_BIZPARAM_TYPE_ERROR::业务参数类型错误sessionId`；对照实验（`probe_b2b_session_id.py`、`probe_b2c_session_id2.py`）
+  把字符串换成整数立刻变业务语义「会话不存在」⇒ 抓出 BUG ③。
+- **没做的**（用户未勾选或不可逆）：`set_reception`（接待状态真机读回 `status: null`，读不到原值 ⇒ 改了回不去）、
+  通知已读（平台无 REST 列表、没有真 id）、店铺资料（502 `FAIL_BIZ_COMMON_SYSTEM_ERROR3::闲鱼太累了`）、
+  资质提交 / 子账号 / 快捷回复 / 黑名单写（用户未勾选）。
+
+#### C 三个真 bug（本批修复）
+
+- **BUG ① 退货地址列表恒为空**：平台回**双层信封** `{'success': true, 'data': {'code': 'success', 'data': [ {...} ], 'msg': '成功'}}`，
+  `backend/app/xianyu/trade.py::items_of` 只认 `body.items` / 顶层数组 / `data.items` ⇒ 真机有地址也回 `total: 0`。
+  已加内层 `data.data` 数组分支（空时是 `null` 不是 `[]`），`body_of` / `parse_addresses` / `services/trade.py::addresses`
+  的 docstring 同步更正。测试：新建 `backend/tests/test_xianyu_address.py`（10 例）+ `test_trade_api.py` 真机原文 2 例。
+- **BUG ② 退货地址「假成功」**：`backend/app/services/trade_write.py::_address_submit_once` 只用 `contact_id_of` 拼 payload、
+  **从不调同模块已有的 `is_success`** ⇒ 平台把业务失败塞在成功信封里（`{'success': true, 'data': {'code':
+  'CAN_NOT_DELETE_DEFAULT_ADDRESS', …}}`）时我们当成功、还写**成功审计**。已加第二层判据（非 success ⇒
+  `common.fail('平台接口失败: …', 'protocol_error', platform_errors={api, code, message})` + `log_operation(..., False, …)`）。
+  根因：`backend/app/xianyu/trade.py:213 envelope_error` **只判外层** `raw['success'] is False`（只读层约定「业务码非 success
+  仍 200 + platform_code」）⇒ 写路径不能只靠它。测试：`test_address_write_api.py` 新增 3 例（**审计必须 success=False**），47 例 OK。
+- **BUG ③ IM `sessionId` 是数值字段**：`customer.leave/rejoin/deliver.session` 与 `pc.blacklist.add/remove` 发字符串被平台按
+  类型错误拒绝。新增 `backend/app/xianyu/im_actions.py::_numeric_session_id`（非数字**本地**抛错、零平台请求），
+  `pc.blacklist.query` 与 `message.card.send` 两种都收、保持字符串；服务层出参 `session_id` 仍回**调用方文本**、
+  `submitted` 保留真实请求体（数字）。测试：`test_im_actions_api.py` 121 例 OK；契约 `docs/contracts/im_tools.md` §7。
+
+#### D 三份静态审计（同批产出，只登记不动手）
+
+- `docs/audit/write64_params.md`：105 条非商品写路由逐条入表（形状可信 ≈60 / 不适用 ≈33 / 未知 15 / 缺必填 2）。
+- `docs/audit/write64_gates.md`：**闸门零缺口**（没有一条闸门排在平台调用之后），但列 17 条缺口 —— P0 平台写无幂等 7 条、
+  P1 无审计 9 条、P2 文档漂移 2 条（已在 `docs/CONTRACTS.md` §9.3 更正）。
+- `docs/audit/write64_fake_success.md`：20 个服务文件 / 40+ 动作的「假成功」排查，已确认安全 18 条；A 类
+  （`services/qualification.py:289/:309`、`services/logistics.py:195-239`）与 B 类未修部分登记为欠账（见 `docs/交接文档.md` §10 第 46 条）。
+
+#### E 验收基线（本批收尾实测）
+
+- 全量：`TOTAL 76  PASS 76  FAIL 0  CASES 3275  SKIPPED 2`（第 63 批是 75 / 3258；+`backend/tests/test_xianyu_address.py`）
+- `scripts/reconcile_tools.py`：`specs=210 master=209 routes=211 targets=189 handlers=210`、`write_tools=82`、`route_checked=211` → `RECON OK`
+- OpenAPI：**249 路径 / 267 操作**（本批无新路由，与第 63 批一致）
+- 打包版：产物 `dist/闲鱼AI工作台/闲鱼AI工作台.exe` **10,331,073 B / 2026-10-16 08:47:20**（`scripts/build_exe.ps1 -SkipFrontend`，前端未改）；
+  启动必须带 `--port 18400`（`desktop/main.py:189` 的 `args.port or pick_free_port()`：不给参数会随机挑端口，实测挑到 64177）
+- 五件套（真 exe + 真端口 18400）：`GATE FAILURES: 0 / 79`、`ASSETS_MATCH=True`、`PACKAGED UI SMOKE 29/29 页通过`、
+  对比度 `[dark] BAD_PAGES 0/29` + `[light] BAD_PAGES 0/29` + `NON_GET_API_REQUESTS=[]`、a11y 无名字按钮 0 类 / 无标签输入框 0 类 / 焦点不可见 `[]`
+- 打包版探针（`.dsh-tmp/b64_probe.py` → `logs/pkg64/b64_probe.json`）：`/api/health` 200；
+  `GET /api/trade/{acc}/addresses` 200 `total=1` + `address_id=['3947862027']`（**BUG ① 在打包版也修好了**）；
+  `POST /api/im/{acc}/sessions/leave` 非数字 session_id → 400 `invalid_fields`（**BUG ③ 本地拦下、零平台请求**）；
+  缺 confirm 的地址新增 → 400 `confirmation_required`
+- 日志：`.dsh-tmp/{build,gate,assets,smoke,contrast,a11y,probe}64.log`、`logs/write64/`、`logs/pkg64/`
+
+#### F 账号残留（需用户处理，本批造成）
+
+账号 `2217970177348` 现在留着**一条默认退货地址** `contactId 3947862027`（'第64批探针C改' / 13800000004 /
+浙江省杭州市西湖区文一西路 969 号 7 幢 709 室）。平台规则**不允许删默认地址**（`CAN_NOT_DELETE_DEFAULT_ADDRESS`），
+`update` 也**不能把 `defaultAddr` 改回 false**（`logs/write64/b1i_cleanup_retry.json`、`b1j_cleanup_attempts.json`）
+⇒ 我们这边清不掉。清理办法：先 add 一条真实地址 → `POST /api/trade/{acc}/addresses/{cid}/default` 设为默认 →
+再 delete `3947862027`（官方 App 同样可行）。批次开始前该账号没有退货地址。
+
+---
 ## 五、下一步（按优先级）
 
 1. **登录态已经是好的**：真机账号 `2217970177348`（月狐兔_）在 `2026-10-11 23:03:37`

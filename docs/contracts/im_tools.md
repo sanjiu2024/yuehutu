@@ -136,3 +136,31 @@
   切出来的页要么全有要么全无，是假分页。
 - 对照：同族的会话搜索 / 商品搜索（`/api/im/{account_id}/sessions/search`、`/item-search`）
   是真集合，它们的 `page`/`size` 早在第 58 批就实现了。
+
+## 7. `sessionId` 的类型按接口分（第 64 批真机取证）
+
+真机对照实验（`logs/write64/probe_b2b_session_id.py` → `b2b_session_id_type.json`、
+`logs/write64/probe_b2c_session_id2.py` → `b2c_session_id_type2.json`）：
+
+| 接口 | 字符串 `sessionId` | 数字 `sessionId` | 结论 |
+| --- | --- | --- | --- |
+| `customer.leave.session` | `FAIL_SYS_BIZPARAM_TYPE_ERROR::业务参数类型错误sessionId` | `FAIL_BIZ_SESSION_NOT_FOUND_ERROR::会话不存在` | **要数字** |
+| `customer.rejoin.session` | 同上 | 同上 | **要数字** |
+| `customer.deliver.session` | 同上 | 同上（`targetUid` 两种都收） | **要数字** |
+| `pc.blacklist.add`（v2.0） | `FAIL_BIZ_interceptor_unknow_err::闲鱼太累了休息一会吧\|\|doNotDetete` | `FAIL_BIZ_PARAM_INVALID::参数无效` | **要数字** |
+| `pc.blacklist.remove`（v1.0） | 同上 | 同上 | **要数字** |
+| `pc.blacklist.query` | 200 `{isInBlack:false,…}` | 200 同 | 两种都收 |
+| `message.card.send` | `FAIL_BIZ_SESSION_NOT_EXIST::会话不存在` | 同 | 两种都收 |
+
+（「要数字」那五条发字符串时，平台报的是**类型错**；换整数后立刻变成业务语义的「会话不存在」
+—— 说明形状被接受了。字符串那侧不是权限问题，也不是会话不存在。）
+
+- 协议层 `backend/app/xianyu/im_actions.py::_numeric_session_id`（五条用；非数字**本地**抛
+  `ValueError('会话 id 必须是纯数字（平台的 sessionId 是数值字段）…')`，**不发平台**），
+  `_session_id`（`blacklist.query` 与 `card.send` 用，原样透传字符串）。
+- 服务层 `backend/app/services/im_actions.py::_write`：**出参 `session_id` 用调用方文本**、
+  `submitted` 保留**真实请求体**（可能是数字）—— 会话 id 在本工作台其它地方（会话列表、通知频道）
+  都是字符串，出参不能跟着变类型。
+- 服务层真机验收：`logs/write64/probe_b2d_service.py` → `b2d_service_session_id.json`（五条从
+  TYPE_ERROR 变业务语义；非数字输入本地 `invalid_fields` + **零平台请求**）。
+- `@goofish` 后缀仍然不替平台加/去：真机给 `'64FAKE0001@goofish'` 换来的还是同一个 TYPE_ERROR。

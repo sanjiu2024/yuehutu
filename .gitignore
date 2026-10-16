@@ -36,3 +36,6 @@ mcp_token.txt
 .vscode/
 .DS_Store
 Thumbs.db
+
+# 本机临时脚本与日志（不入仓）
+.dsh-tmp/

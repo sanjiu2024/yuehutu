@@ -159,9 +159,25 @@
 
 ### 2.6 退货地址 `addresses[]` ← `mtop.alibaba.idle.seller.platform.merchant.delivery.address.list.query` v1.0
 
-**无真机样本**（真机返回 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问`）。
-请求**不传 data**（bundle 原文 `hO({api:"...",v:"1.0"})`）。bundle 里有**两套读法，这里两套都认**
-（拿不到样本 ⇒ 不判定哪一套是真的）：
+**真机样本已拿到（第 64 批，2026-10-16）** —— 这条**不是**「无权限」：第 61 批的
+`FAIL_BIZ_IDLE_USER_UNAUTHORIZED` 出在**新增**退货地址且 `defaultAddr=true` 那次
+（`logs/write61/05d_address_add_full_raw.json`），**列表查询本身能打**
+（`logs/write64/probe_b1e_list_raw.py` → `b1e_address_list_raw.json`）。请求**不传 data**
+（bundle 原文 `hO({api:"...",v:"1.0"})`）。真机原文是**双层信封**：
+
+```
+{'success': true, 'data': {'code': 'success', 'data': [ {...} ], 'msg': '成功'},
+ 'message': 'SUCCESS::调用成功'}
+```
+
+地址数组在**内层 `data.data`**；账号没有地址时内层是 **`null`（不是 `[]`）**。
+`backend/app/xianyu/trade.py::items_of` 原来只认 `body.items` / 顶层数组 / `data.items`，
+**漏掉内层数组** ⇒ 真机有地址也显示 0 条（BUG ①，第 64 批已修，
+`backend/tests/test_xianyu_address.py` 10 例 + `backend/tests/test_trade_api.py` 真机原文 2 例）。
+真机元素形状：`{areaId, cityName, contactId, contactName, defaultAddr, detailAddress, districtName,
+mobilePhone, provinceName, zipCode}`。
+
+bundle 里那**两套读法这里仍然都认**（「只读页那套」还没有真机样本，所以不判定哪一套是真的）：
 
 - 只读页的 `formatter`：`e.data[]` 元素 `{addressId, name, phoneNum, address, defaultAddr}`
   → `address_id / name / phone / address / is_default`（`is_default` 只在平台给 bool 时才给值，否则 null）；

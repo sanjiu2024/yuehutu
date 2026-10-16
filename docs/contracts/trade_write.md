@@ -289,6 +289,17 @@ POST /api/trade/{account_id}/addresses/{contact_id}/default
   **原样**交服务层，**不做 `bool(...)`** —— `bool('false')` 是 True，会把用户明确的拒绝当同意。
 - **成功判据**：客户端没报错 **且** 平台 `code == 'success'`；平台没给 `code` 时以客户端结论为准
   （这四个接口不读响应体，`set.default` 成功可能是空对象）。
+  **⚠ 第 64 批之前这句话只是契约上的声明、代码里没做**：`services/trade_write.py::_address_submit_once`
+  只调了 `xianyu/address_write.py::contact_id_of`，**从不调同模块的 `is_success`** ⇒ 平台把业务失败
+  塞在成功信封里时（真机 `{'success': true, 'data': {'code': 'CAN_NOT_DELETE_DEFAULT_ADDRESS',
+  'msg': '请不要删除默认的退货地址…'}}`，`logs/write64/probe_b1h_delete.py` → `b1h_delete_probe.json`）
+  我们当成功、还写了**成功审计**（BUG ②）。第 64 批已修：非 `is_success` ⇒
+  `common.fail('平台接口失败: …', 'protocol_error', platform_errors={api, code, message})` +
+  `log_operation(..., False, …)`；钉它的用例
+  `test_address_write_api.py::AddressPlatformFailureTest::test_business_error_inside_a_success_envelope_is_a_failure`
+  （**审计必须 success=False**）与 `::test_business_error_on_add_is_a_failure_too`。
+  根因提醒：`xianyu/trade.py::envelope_error` **只判外层 `raw['success'] is False`**（只读层的约定是
+  「业务码非 success 仍 200 + platform_code」）⇒ 写路径**不能**只靠它。
 - 拿不到 `contact_id` → `null` + warning `no_contact_id`（**不造**假 ID，让用户重拉列表）。
 - **`area_id` / `default_addr` 是平台硬必填（第 61 批真机取证，2026-10-16）**：官方表单里
   `areaId` 是**隐藏字段**（由级联 `division` 选中后带出），声明里看着可选，实际两个都不能少。
@@ -297,7 +308,10 @@ POST /api/trade/{account_id}/addresses/{contact_id}/default
   - 只给名字、不给 `areaId` → 502 `FAIL_SYS_BIZPARAM_MISSED::缺少业务参数areaId`
   - 补 `areaId`、不给 `defaultAddr` → 502 `FAIL_SYS_BIZPARAM_MISSED::缺少业务参数defaultAddr`
   - 两个都给 → 参数校验**过了**，才轮到权限：502 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问`
-    （本机账号没有退货地址权限；**请求未写成任何数据，无需回滚**）
+    （**第 64 批更正：这条只对 `defaultAddr=true` 成立** —— 同一个请求把 `defaultAddr` 改成 `false`
+    就**建成了**（`logs/write64/probe_b1g_cycle.py` → `b1g_address_cycle.json`）；「本机账号没有退货地址
+    权限」这句在 `defaultAddr=false` 上是**错的**。账号里现在留着探针建的一条**默认**地址
+    `contactId 3947862027`，平台规则不允许删默认地址 ⇒ 清理办法见 `docs/audit/write64.md` §2.1）
   ⇒ 服务层把两者当必填**本地预检**（`_address_fields_problem`，`services/trade_write.py`）：
   缺 `area_id`（空串/空白/`None`）或 `default_addr is None` → 400 `invalid_fields`，
   **一个平台请求都不发**。理由：平台原话「缺少业务参数」会让用户以为是我们挂了，而这两个值

@@ -809,8 +809,12 @@ GET /api/trade/{account_id}/refunds?page=&size=
 GET /api/trade/{account_id}/evaluations?page=&size=
 GET /api/trade/{account_id}/complaints?page=&size=
 GET /api/trade/{account_id}/addresses
-       -- 退货地址字段：bundle 里**有两套读法，后端两套都认**（真机这条对我们无权限，
-          拿不到样本，所以不判定哪一套是真的）—— 只读页那套
+       -- 退货地址字段：bundle 里**有两套读法，后端两套都认**（「只读页那套」还没有真机样本，
+          所以不判定哪一套是真的）—— 只读页那套
+       -- ⚠ 第 64 批更正：列表查询**有权限**（真机双层信封 {'success': true, 'data': {'code': 'success',
+          'data': [ {...} ], 'msg': '成功'}}，地址数组在**内层 data.data**，空时是 **null 不是 []**）；
+          第 61 批那句「无权限」只对**新增**且 defaultAddr=true 成立。BUG ① 已修 + 测试
+          （backend/tests/test_xianyu_address.py 10 例、test_trade_api.py 真机原文 2 例）。
           `{addressId,name,phoneNum,address(拼好的整串),defaultAddr}` →
           `address_id/name/phone/address/is_default`；写页编辑弹窗那套
           `{contactId,contactName,mobilePhone,provinceName,cityName,districtName,detailAddress}`
@@ -1714,14 +1718,23 @@ master_chat                       -- 把我的话转给主管 AI
   带键时「查表 → 回放 / 抢锁 → 再查 → 执行 → 记账」，不带键时直接 `call()`。**新写族接闸门就用它**。
 - 首个接入点 `backend/app/services/trade_write.py::_submit`（交易写族唯一漏斗）。
 
-### 9.3 覆盖范围（本批）
+### 9.3 覆盖范围（第 59 批首接，第 63/64 批补铺；**2026-10-16 更正**）
 
-**已覆盖**（交易写族全部走 `_submit`）：发货 / 无需物流发货 / 改价 / 退款同意与拒绝 / 评价 / 投诉拒绝与举证 /
-改地址同意与拒绝 / 关单 / 延期确认 / 提醒确认 / 邮费赔付 / 订单留言。
+**已覆盖**：
+- 交易写族全部走 `_submit`：发货 / 无需物流发货 / 改价 / 退款同意与拒绝 / 评价 / 投诉拒绝与举证 /
+  改地址同意与拒绝 / 关单 / 延期确认 / 提醒确认 / 邮费赔付 / 订单留言；
+- 第 63 批补铺 8 处：`backend/app/services/ad_write.py:92`、`backend/app/services/security_write.py:98`、
+  `backend/app/services/trade_write.py:520`（退货地址）、`backend/app/services/shop.py:411/476/526`、
+  `backend/app/services/orders.py:290/358`（`update_shipment` 与 `deliver` **也接了** —— 本段旧文写「不是平台写漏斗」，
+  那是第 59 批的事实，第 63 批已改）；
+- 第 64 批：退货地址四动作（add / update / delete / set-default）都走
+  `backend/app/services/trade_write.py::_address_submit`（:509）。
 
 **未覆盖**（后续按需在各自漏斗调 `common.idempotent_call`）：商品写族（`services/items.py` 的 `_batch_write` /
-`_push_update` / `publish_item`）、店铺设置、推广计划、地址、安全设置；以及 `services/orders.py::update_shipment`
-（先写本地库、再尽力推平台）与 `::deliver`（纯本地改状态）—— 这两条不是平台写漏斗。
+`_push_update` / `publish_item` / `update_item` / `_set_status` / `quick_edit`）、资质提交、IM 会话写族
+（`services/im_actions.py`）、`chats/{id}/send`、纠纷写、物流重发、店铺资料与子账号、快捷回复、通知已读、
+`uploads/images` —— **逐条清单见 `docs/audit/write64_gates.md`（17 条缺口：P0 平台写无幂等 7 条 + P1 无审计 9 条 +
+P2 文档漂移 2 条）**。
 
 ### 9.4 已知边界
 
