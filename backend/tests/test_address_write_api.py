@@ -372,6 +372,16 @@ class AddressWriteProtocolTest(unittest.TestCase):
                          'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问')
         self.assertEqual(proto.failure_reason(ADD_OK, '兜底'), 'SUCCESS::调用成功')
         self.assertEqual(proto.failure_reason({'success': False, 'message': '', 'ret': []}, '兜底'), '兜底')
+    def test_nested_dict_data_does_not_hide_the_business_code(self):
+        """`data.data` 是 dict 时 `body_of` 会钻进去 ⇒ 业务码与原文只能从外层读（2026-10-16 大审查）。"""
+        nested = {'success': True,
+                  'data': {'code': 'FAIL_BIZ_ADDRESS_ILLEGAL', 'msg': '地址不合法',
+                           'data': {'contactId': '3941114028'}},
+                  'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功']}
+        self.assertFalse(proto.is_success(nested))
+        self.assertEqual(proto.code_of(nested), 'FAIL_BIZ_ADDRESS_ILLEGAL')
+        self.assertEqual(proto.failure_reason(nested, '兜底'), '地址不合法')
+
     def test_real_delete_default_refusal_is_not_success(self):
         # 真机原文：客户端说成功，业务码说不能删默认地址
         self.assertFalse(proto.is_success(REAL_DELETE_DEFAULT_REFUSED))
@@ -605,6 +615,20 @@ class AddressPlatformFailureTest(AddressWritePageTest):
                          'CAN_NOT_DELETE_DEFAULT_ADDRESS')
         # 平台拒绝过就绝不能写成成功审计（旧代码正是这么写的）
         self.assertEqual(len(self.logs()), 1)
+        self.assertFalse(self.logs()[0]['success'])
+
+    def test_business_error_survives_a_nested_dict_data(self):
+        """嵌套容器下的业务失败也必须当失败 —— 否则又是「假成功 + 成功审计」。"""
+        refused = {'success': True,
+                   'data': {'code': 'FAIL_BIZ_ADDRESS_ILLEGAL', 'msg': '地址不合法',
+                            'data': {'contactId': '3941114028'}},
+                   'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功']}
+        self.fake = full_client(**{proto.ADD_API: refused})
+        install_fake_protocol(self.fake)
+        payload = self.fail(self.add_path(), {**FORM, 'confirm': True}, status=502)
+        self.assertEqual(payload.get('code'), 'protocol_error')
+        self.assertIn('地址不合法', payload.get('message', ''))
+        self.assertEqual(payload.get('platform_errors', {}).get('code'), 'FAIL_BIZ_ADDRESS_ILLEGAL')
         self.assertFalse(self.logs()[0]['success'])
 
     def test_business_error_on_add_is_a_failure_too(self):

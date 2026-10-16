@@ -236,15 +236,35 @@ def business(raw: Any) -> Any:
 
 
 def code_of(raw: Any) -> str:
+    """平台业务码。
+
+    业务码在**外层** `raw['data']['code']`，所以先读外层、再看摊平后的业务体：
+    `body_of` 在 `data.data` 是 dict 时会钻进内层（见 `trade.body_of`），
+    `{success: true, data: {code: 'FAIL_X', data: {…}}}` 这种形状会把业务码弄丢、
+    让 `is_success` 误判成功（2026-10-16 大审查指出；单层形状见 `logs/write64/b1h_delete_probe.json`）。
+    """
+    decoded = decode_payload(raw)
+    outer = decoded.get('data') if isinstance(decoded, dict) else None
+    if isinstance(outer, dict):
+        code = _text(outer.get('code'))
+        if code:
+            return code
     return _text(envelope(raw).get('code'))
 
 
 def message_of(raw: Any) -> str:
-    """平台失败原文：`msg` 优先，其次 `message`；客户端自己失败时退回 `ret[0]`。"""
-    env = envelope(raw)
-    text = _text(env.get('msg')) or _text(env.get('message'))
-    if text:
-        return text
+    """平台失败原文：**外层** `msg` 优先，其次 `message`；客户端自己失败时退回 `ret[0]`。
+
+    与 `code_of` 同理：`body_of` 可能钻进 `data.data`，外层原文要单独读一次，
+    否则嵌套容器下的平台原话会丢（只能退回兜底文案）。
+    """
+    decoded = decode_payload(raw)
+    outer = decoded.get('data') if isinstance(decoded, dict) else None
+    for source in (outer, envelope(raw)):
+        if isinstance(source, dict):
+            text = _text(source.get('msg')) or _text(source.get('message'))
+            if text:
+                return text
     decoded = decode_payload(raw)
     if isinstance(decoded, dict) and decoded.get('success') is False:
         ret = decoded.get('ret')
