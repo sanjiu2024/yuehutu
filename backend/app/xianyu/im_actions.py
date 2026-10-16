@@ -33,14 +33,27 @@
 * 关单/延迟确认：本模块不做；`backend/app/xianyu/trade_write.py` 用的是卖家工作台那套
   （`trade.merchant.close.by.seller` v2.0 等），IM bundle 里的同族名字形状不同，**故意不用**。
 
-**`sessionId` 原样透传，不替平台加/去 `@goofish` 后缀**：官方 IM 前端在 6 处把展示用的会话 id
-做了 `replace('@goofish','')`，但从这些静态代码看不出 mtop 入参要的是带后缀还是不带后缀
-（我们库里 `conversations.cid` 存的是**去掉后缀**的那个）。为了不凭空发明，这里只做
-「去掉首尾空白」，不做任何后缀变换；真实形状等一次真机只读调用确认。
+**`sessionId` 要不要数字，按接口分（2026-10-16 真机取证）**：官方 IM 前端在 6 处把展示用的
+会话 id 做了 `replace('@goofish','')`，但静态代码看不出 mtop 入参要的是字符串还是数字 ——
+真机对照实验（`logs/write64/probe_b2b_session_id.py` → `b2b_session_id_type.json`、
+`probe_b2c_session_id2.py` → `b2c_session_id_type2.json`）给的是：
+
+* `customer.leave.session` / `customer.rejoin.session` / `customer.deliver.session`：
+  `sessionId` 传字符串一律 `FAIL_SYS_BIZPARAM_TYPE_ERROR::业务参数类型错误sessionId`；
+  换成数字立刻变成业务语义 `FAIL_BIZ_SESSION_NOT_FOUND_ERROR::会话不存在` ⇒ **要数字**。
+* `pc.blacklist.add` / `pc.blacklist.remove`：字符串被 `FAIL_BIZ_interceptor_unknow_err`
+  吞掉（文案与参数无关），数字才回干净的业务拒绝 `FAIL_BIZ_PARAM_INVALID::参数无效`
+  ⇒ **也要数字**。
+* `pc.blacklist.query` 与 `message.card.send`：字符串与数字**都收**（真机两种都 200 /
+  同一条业务错误）⇒ 这两条保持原样透传字符串。
+
+所以「要数字」的五条走 `_numeric_session_id`，其余两条走 `_session_id`。后缀一律不替平台
+加/去：真机给 `'64FAKE0001@goofish'` 换来的还是同一个 TYPE_ERROR。
 （消息通道那边是另一回事：`backend/app/xianyu/im.py` 的 WS 帧确实用 `_with_goofish` 补后缀。）
 
-**未验证边界**：一次真机请求都没发过（第 40/43 批的验证红线是「零平台写请求」）。
-九条接口的参数形状与成功判据全部来自 bundle 静态证据。
+**未验证边界**：第 64 批打过真机，但只有只读与「必然被拒的假 id」——**没有一次真机写请求真正
+生效过**（转交/结束/重发/拉黑全用假 cid，平台按「会话不存在」拒绝）。参数形状来自 bundle 静态
+证据 + 上面的类型对照实验。
 """
 from __future__ import annotations
 
@@ -225,13 +238,35 @@ def _text(value: Any) -> str:
 
 
 def _session_id(value: Any) -> str:
-    """会话 id：只去首尾空白，**不做 `@goofish` 后缀变换**（见模块 docstring）。"""
+    """会话 id（**字符串形状**的接口用）：只去首尾空白，不做 `@goofish` 后缀变换。
+
+    平台要求数值型 `sessionId` 的那五条接口请用 `_numeric_session_id`（见模块 docstring）。
+    """
     text = _text(value).strip()
     if not text:
         raise ValueError('会话 id 不能为空')
     if len(text) > SESSION_ID_MAX:
         raise ValueError(f'会话 id 太长了（超过 {SESSION_ID_MAX} 个字符）')
     return text
+
+
+def _numeric_session_id(value: Any) -> int:
+    """会话 id（**平台要数值**的那五条接口用）：先按 `_session_id` 校验，再要求纯数字。
+
+    2026-10-16 真机对照实验（见模块 docstring）：`customer.leave/rejoin/deliver.session` 与
+    `pc.blacklist.add/remove` 传字符串 `sessionId` 一律被平台按**类型错误**拒绝
+    （`FAIL_SYS_BIZPARAM_TYPE_ERROR::业务参数类型错误sessionId` / 被拦截器吞成
+    `FAIL_BIZ_interceptor_unknow_err`），传数字才走到业务语义。
+
+    非数字在这里**本地拦下**并说清原因，而不是发出去换一条与参数无关的平台文案 —— 本地报错
+    比平台那句「闲鱼太累了」有用得多。`conversations.cid` 存的就是纯数字（真机 67561675177 等）。
+    """
+    text = _session_id(value)
+    if not text.isdigit():
+        raise ValueError(
+            f'会话 id 必须是纯数字（平台的 sessionId 是数值字段）：{text!r}'
+            '；带 @goofish 后缀的展示 id 请先去掉后缀')
+    return int(text)
 
 
 def _item_id(value: Any) -> str:
@@ -278,17 +313,24 @@ def blacklist_query_request(session_id: Any) -> Tuple[str, Dict[str, Any], str]:
 
 
 def blacklist_add_request(session_id: Any, *, confirm: Any = None) -> Tuple[str, Dict[str, Any], str]:
-    """拉黑买家：`{sessionId}`，**版本 2.0**。"""
+    """拉黑买家：`{sessionId}`，**版本 2.0**。
+
+    `sessionId` 是**数值**字段（真机对照实验：字符串被拦截器吞成
+    `FAIL_BIZ_interceptor_unknow_err`，数字才回 `FAIL_BIZ_PARAM_INVALID::参数无效`）。
+    """
     _need_confirm(confirm)
     api = assert_write(BLACKLIST_ADD_API)
-    return api, {'sessionId': _session_id(session_id)}, WRITE_VERSIONS[api]
+    return api, {'sessionId': _numeric_session_id(session_id)}, WRITE_VERSIONS[api]
 
 
 def blacklist_remove_request(session_id: Any, *, confirm: Any = None) -> Tuple[str, Dict[str, Any], str]:
-    """解除拉黑：`{sessionId}`，版本 1.0。"""
+    """解除拉黑：`{sessionId}`，版本 1.0。
+
+    `sessionId` 是**数值**字段（同 `blacklist.add`，真机对照实验）。
+    """
     _need_confirm(confirm)
     api = assert_write(BLACKLIST_REMOVE_API)
-    return api, {'sessionId': _session_id(session_id)}, WRITE_VERSIONS[api]
+    return api, {'sessionId': _numeric_session_id(session_id)}, WRITE_VERSIONS[api]
 
 
 def card_send_request(session_id: Any, item_id: Any, *,
@@ -301,27 +343,38 @@ def card_send_request(session_id: Any, item_id: Any, *,
 
 def session_deliver_request(session_id: Any, target_uid: Any, *,
                             confirm: Any = None) -> Tuple[str, Dict[str, Any], str]:
-    """把会话转交给指定客服：`{sessionId, targetUid}`，版本 1.0。"""
+    """把会话转交给指定客服：`{sessionId, targetUid}`，版本 1.0。
+
+    `sessionId` 是**数值**字段、`targetUid` 字符串数字都收（2026-10-16 真机对照实验：字符串
+    `sessionId` 回 `FAIL_SYS_BIZPARAM_TYPE_ERROR::业务参数类型错误sessionId`，数字才回
+    `FAIL_BIZ_SESSION_NOT_FOUND_ERROR::会话不存在`）。
+    """
     _need_confirm(confirm)
     api = assert_write(SESSION_DELIVER_API)
-    return api, {'sessionId': _session_id(session_id),
+    return api, {'sessionId': _numeric_session_id(session_id),
                  'targetUid': _target_uid(target_uid)}, WRITE_VERSIONS[api]
 
 
 def session_leave_request(session_id: Any, *,
                           confirm: Any = None) -> Tuple[str, Dict[str, Any], str]:
-    """结束当前会话：`{sessionId}`，版本 1.0。"""
+    """结束当前会话：`{sessionId}`，版本 1.0。
+
+    `sessionId` 是**数值**字段（真机对照实验，见模块 docstring）。
+    """
     _need_confirm(confirm)
     api = assert_write(SESSION_LEAVE_API)
-    return api, {'sessionId': _session_id(session_id)}, WRITE_VERSIONS[api]
+    return api, {'sessionId': _numeric_session_id(session_id)}, WRITE_VERSIONS[api]
 
 
 def session_rejoin_request(session_id: Any, *,
                            confirm: Any = None) -> Tuple[str, Dict[str, Any], str]:
-    """重新发起聊天：`{sessionId}`，版本 1.0。"""
+    """重新发起聊天：`{sessionId}`，版本 1.0。
+
+    `sessionId` 是**数值**字段（真机对照实验，见模块 docstring）。
+    """
     _need_confirm(confirm)
     api = assert_write(SESSION_REJOIN_API)
-    return api, {'sessionId': _session_id(session_id)}, WRITE_VERSIONS[api]
+    return api, {'sessionId': _numeric_session_id(session_id)}, WRITE_VERSIONS[api]
 
 
 def reception_query_request() -> Tuple[str, Dict[str, Any], str]:

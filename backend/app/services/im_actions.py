@@ -286,12 +286,16 @@ def _write(action: str, label: str, account_id: str, audit: str,
     if problem is not None:
         return problem
     call_kwargs = dict(kwargs)
+    #: 调用方给的那个会话 id（文本）—— 出参沿用它，请求体里可能被协议层转成数字
+    #: （平台要数值型 `sessionId` 的五条接口，见 `xianyu/im_actions.py` 模块 docstring）。
+    given_session_id: Any = None
     if require_session:
         resolved, problem = _resolve_session(account_id, call_kwargs.pop('session_id', None),
                                              call_kwargs.pop('conversation_id', None))
         if problem is not None:
             return problem
         call_kwargs['session_id'] = resolved
+        given_session_id = resolved
     else:
         call_kwargs.pop('session_id', None)
         call_kwargs.pop('conversation_id', None)
@@ -314,7 +318,9 @@ def _write(action: str, label: str, account_id: str, audit: str,
         return _platform_failure(value, api, parsed['platform_message'] or f'平台没有接受这次{label}')
 
     detail = {key: item for key, item in data.items() if key != 'sessionId'}
-    session_id: Any = data.get('sessionId')
+    # 出参里的 `session_id` 用**调用方给的文本**（`submitted` 才是真实请求体，那里可能是数字）：
+    # 会话 id 在本工作台其它地方（会话列表、通知频道）都是字符串，别在这里悄悄换类型。
+    session_id: Any = given_session_id if given_session_id is not None else data.get('sessionId')
     if session_id is not None:
         detail['session_id'] = session_id
     # 「平台没给回执」= 不知道有没有生效：不记审计、不发事件、saved 说 false
@@ -332,6 +338,7 @@ def _write(action: str, label: str, account_id: str, audit: str,
         'api': api,
         'session_id': session_id,
         'saved': not no_echo,
+        #: 真实发出的请求体（**原样**，包括平台要求的数值型 `sessionId`）。
         'submitted': dict(data),
         'platform_message': parsed['platform_message'],
         'warnings': [dict(no_echo_warning)] if no_echo else [],

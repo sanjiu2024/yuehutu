@@ -45,7 +45,11 @@ from backend.tests.testenv import use_temp_app_dir  # noqa: E402
 
 ACC = 'im_acc'
 BASE = '/api/im'
-SESSION = 'cid-1'
+#: 会话 id 的**调用方文本**（`conversations.cid` 存的就是这种纯数字串；真机实测：
+#: 平台的 `sessionId` 是**数值**字段，传字符串换来 `FAIL_SYS_BIZPARAM_TYPE_ERROR`）。
+SESSION = '67561675177'
+#: 上面那个 id 的**平台形状** —— 请求体里应该是它，不是字符串。
+SESSION_NUM = 67561675177
 
 #: 拉黑状态：已拉黑（官方读 `data.isInBlack` / `data.showBlackList`）。
 STATUS_IN = {
@@ -299,22 +303,43 @@ class ImActionsProtocolTest(unittest.TestCase):
 
     def test_add_request_payload_and_version(self):
         self.assertEqual(proto.blacklist_add_request(SESSION, confirm=True),
-                         (proto.BLACKLIST_ADD_API, {'sessionId': SESSION}, '2.0'))
+                         (proto.BLACKLIST_ADD_API, {'sessionId': SESSION_NUM}, '2.0'))
 
     def test_remove_request_payload_and_version(self):
         self.assertEqual(proto.blacklist_remove_request(SESSION, confirm=True),
-                         (proto.BLACKLIST_REMOVE_API, {'sessionId': SESSION}, '1.0'))
+                         (proto.BLACKLIST_REMOVE_API, {'sessionId': SESSION_NUM}, '1.0'))
 
     def test_card_request_payload_and_version(self):
         self.assertEqual(proto.card_send_request(SESSION, ' 9001 ', confirm=True),
                          (proto.CARD_SEND_API, {'sessionId': SESSION, 'itemId': '9001'}, '1.0'))
 
-    def test_session_id_is_passed_verbatim(self):
-        """**不替平台加/去 `@goofish` 后缀**（库里存的是去掉后缀的那个）。"""
+    def test_query_and_card_pass_the_session_id_verbatim(self):
+        """字符串形状的两条（query / card）**不替平台加/去 `@goofish` 后缀**。"""
         _, data, _ = proto.blacklist_query_request('cid-1@goofish')
         self.assertEqual(data['sessionId'], 'cid-1@goofish')
-        _, data2, _ = proto.blacklist_add_request('cid-1', confirm=True)
+        _, data2, _ = proto.card_send_request('cid-1', '9001', confirm=True)
         self.assertEqual(data2['sessionId'], 'cid-1')
+
+    def test_numeric_apis_send_a_number(self):
+        """2026-10-16 真机：leave/rejoin/deliver + blacklist add/remove 的 `sessionId` 要数字。"""
+        for builder, args in ((proto.blacklist_add_request, ()),
+                              (proto.blacklist_remove_request, ()),
+                              (proto.session_leave_request, ()),
+                              (proto.session_rejoin_request, ()),
+                              (proto.session_deliver_request, ('8888',))):
+            _api, data, _version = builder(SESSION, *args, confirm=True)
+            self.assertIsInstance(data['sessionId'], int, builder.__name__)
+            self.assertEqual(data['sessionId'], SESSION_NUM, builder.__name__)
+
+    def test_numeric_apis_reject_a_non_numeric_session_id(self):
+        """非数字在本地拦下 —— 平台那句「业务参数类型错误」看不出是参数问题。"""
+        for builder, args in ((proto.blacklist_add_request, ()),
+                              (proto.session_leave_request, ()),
+                              (proto.session_deliver_request, ('8888',))):
+            with self.assertRaises(ValueError, msg=builder.__name__):
+                builder('cid-1', *args, confirm=True)
+            with self.assertRaises(ValueError, msg=builder.__name__):
+                builder('cid-1@goofish', *args, confirm=True)
 
     def test_blank_session_id_is_rejected(self):
         for bad in ('', '   ', None):
@@ -627,9 +652,9 @@ class ImWriteHappyPathTest(ImActionsPageTest):
         self.assertTrue(data['saved'])
         self.assertEqual(data['action'], 'blacklist_add')
         self.assertEqual(data['session_id'], SESSION)
-        self.assertEqual(data['submitted'], {'sessionId': SESSION})
+        self.assertEqual(data['submitted'], {'sessionId': SESSION_NUM})
         call = self.fake.call_of(proto.BLACKLIST_ADD_API)
-        self.assertEqual(call['data'], {'sessionId': SESSION})
+        self.assertEqual(call['data'], {'sessionId': SESSION_NUM})
         self.assertEqual(call['v'], '2.0')
         self.assertEqual([row['action'] for row in self.operations()], ['im_blacklist_add'])
         self.assertIn('chats.changed', self.topics(before))
@@ -777,12 +802,12 @@ class ImConversationIdTest(ImActionsPageTest):
         self.assertEqual(resp.json()['data']['session_id'], 'cid-direct')
 
     def test_write_with_conversation_id_uses_the_cid(self):
-        row_id = self.seed_conversation(cid='cid-write')
+        row_id = self.seed_conversation(cid='67561675001')
         data = self.ok_data(f'{BASE}/{ACC}/blacklist',
                             {'conversation_id': row_id, 'confirm': True})
         self.assertTrue(data['saved'])
         self.assertEqual(self.fake.call_of(proto.BLACKLIST_ADD_API)['data']['sessionId'],
-                         'cid-write')
+                         67561675001)
 
     def test_card_send_with_conversation_id(self):
         row_id = self.seed_conversation(cid='cid-card')
@@ -859,13 +884,13 @@ class ImSessionProtocolTest(unittest.TestCase):
     def test_deliver_payload_is_verbatim(self):
         api, data, version = proto.session_deliver_request(SESSION, '8888', confirm=True)
         self.assertEqual(api, proto.SESSION_DELIVER_API)
-        self.assertEqual(data, {'sessionId': SESSION, 'targetUid': '8888'})
+        self.assertEqual(data, {'sessionId': SESSION_NUM, 'targetUid': '8888'})
         self.assertEqual(version, '1.0')
 
     def test_leave_and_rejoin_carry_only_the_session_id(self):
         for builder in (proto.session_leave_request, proto.session_rejoin_request):
             _api, data, version = builder(SESSION, confirm=True)
-            self.assertEqual(data, {'sessionId': SESSION})
+            self.assertEqual(data, {'sessionId': SESSION_NUM})
             self.assertEqual(version, '1.0')
 
     def test_confirm_is_identity_not_truthiness(self):
@@ -942,10 +967,10 @@ class ImSessionWriteTest(ImActionsPageTest):
         self.assertEqual(data['action'], 'session_deliver')
         self.assertEqual(data['session_id'], SESSION)
         self.assertEqual(data['target_uid'], '8888')
-        self.assertEqual(data['submitted'], {'sessionId': SESSION, 'targetUid': '8888'})
+        self.assertEqual(data['submitted'], {'sessionId': SESSION_NUM, 'targetUid': '8888'})
         self.assertIsNone(data['platform_success'])
         call = self.fake.call_of(proto.SESSION_DELIVER_API)
-        self.assertEqual(call['data'], {'sessionId': SESSION, 'targetUid': '8888'})
+        self.assertEqual(call['data'], {'sessionId': SESSION_NUM, 'targetUid': '8888'})
         self.assertEqual(call['v'], '1.0')
         self.assertEqual([row['action'] for row in self.operations()], ['im_session_deliver'])
         self.assertIn('chats.changed', self.topics(before))
@@ -1029,12 +1054,14 @@ class ImSessionWriteTest(ImActionsPageTest):
             self.assertEqual(self.fake.apis(), [api], route)
 
     def test_conversation_id_also_works_for_sessions(self):
-        row_id = self.seed_conversation(cid='cid-from-db')
+        row_id = self.seed_conversation(cid='67561675002')
         data = self.ok_data(f'{BASE}/{ACC}/sessions/leave',
                             {'conversation_id': row_id, 'confirm': True})
         self.assertTrue(data['saved'])
         self.assertEqual(self.fake.call_of(proto.SESSION_LEAVE_API)['data'],
-                         {'sessionId': 'cid-from-db'})
+                         {'sessionId': 67561675002})
+        # 出参仍是调用方文本（`submitted` 才是真实请求体）
+        self.assertEqual(data['session_id'], '67561675002')
 
     def test_log_detail_carries_the_session_id(self):
         self.ok_data(f'{BASE}/{ACC}/sessions/leave',
