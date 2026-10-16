@@ -4475,7 +4475,7 @@ coverage57 §3 的 77 条缺口逐条核销成**可复跑口径**：**已实现 
   摊平后的业务体，而 `body_of` 在 `data.data` 是 dict 时**会钻进内层**，`{success: true, data: {code: 'FAIL_X', data: {…}}}`
   这种形状会丢掉外层业务码 ⇒ 仍是假成功通道；已改为**先读外层** `raw['data']`，协议层 + 服务层各补 1 例（49 例）。同轮大审查另指出：
   `items_of` 的另 4 个调用方（orders / refunds / evaluations / complaints）没有真机回归、小审查「实跑」清单缺独立日志、
-  小审查的同型缺陷口径与它自己那份 `docs/audit/write64_fake_success.md` 不一致 —— 已登记为 `docs/交接文档.md` §10 第 48 条。
+  小审查的同型缺陷口径与它自己那份 `docs/audit/write64_fake_success.md` 不一致 —— 已登记为 `docs/交接文档.md` §10 第 48 条。修复后**重打包并重跑五件套全过**（产物 10,331,508 B / 09:32:20，日志后缀 `64d`）。
 - **BUG ③ IM `sessionId` 是数值字段**：`customer.leave/rejoin/deliver.session` 与 `pc.blacklist.add/remove` 发字符串被平台按
   类型错误拒绝。新增 `backend/app/xianyu/im_actions.py::_numeric_session_id`（非数字**本地**抛错、零平台请求），
   `pc.blacklist.query` 与 `message.card.send` 两种都收、保持字符串；服务层出参 `session_id` 仍回**调用方文本**、
@@ -4494,7 +4494,7 @@ coverage57 §3 的 77 条缺口逐条核销成**可复跑口径**：**已实现 
 - 全量：`TOTAL 76  PASS 76  FAIL 0  CASES 3277  SKIPPED 2`（第 63 批是 75 / 3258；+`backend/tests/test_xianyu_address.py`；大审查后又 +2 例）
 - `scripts/reconcile_tools.py`：`specs=210 master=209 routes=211 targets=189 handlers=210`、`write_tools=82`、`route_checked=211` → `RECON OK`
 - OpenAPI：**249 路径 / 267 操作**（本批无新路由，与第 63 批一致）
-- 打包版：产物 `dist/闲鱼AI工作台/闲鱼AI工作台.exe` **10,331,073 B / 2026-10-16 08:47:20**（`scripts/build_exe.ps1 -SkipFrontend`，前端未改）；
+- 打包版：产物 `dist/闲鱼AI工作台/闲鱼AI工作台.exe` **10,331,508 B / 2026-10-16 09:32:20**（`scripts/build_exe.ps1 -SkipFrontend`，前端未改；**末次重打包是因为 `address_write.py` 的大审查修复发生在上一版 08:47 打包之后**，旧产物不含该修复）；
   启动必须带 `--port 18400`（`desktop/main.py:189` 的 `args.port or pick_free_port()`：不给参数会随机挑端口，实测挑到 64177）
 - 五件套（真 exe + 真端口 18400）：`GATE FAILURES: 0 / 79`、`ASSETS_MATCH=True`、`PACKAGED UI SMOKE 29/29 页通过`、
   对比度 `[dark] BAD_PAGES 0/29` + `[light] BAD_PAGES 0/29` + `NON_GET_API_REQUESTS=[]`、a11y 无名字按钮 0 类 / 无标签输入框 0 类 / 焦点不可见 `[]`
@@ -4502,7 +4502,7 @@ coverage57 §3 的 77 条缺口逐条核销成**可复跑口径**：**已实现 
   `GET /api/trade/{acc}/addresses` 200 `total=1` + `address_id=['3947862027']`（**BUG ① 在打包版也修好了**）；
   `POST /api/im/{acc}/sessions/leave` 非数字 session_id → 400 `invalid_fields`（**BUG ③ 本地拦下、零平台请求**）；
   缺 confirm 的地址新增 → 400 `confirmation_required`
-- 日志：`.dsh-tmp/{build,gate,assets,smoke,contrast,a11y,probe}64.log`、`logs/write64/`、`logs/pkg64/`
+- 日志：`.dsh-tmp/{build,gate,assets,smoke,contrast,a11y,probe}64d.log`（末次重打包 + 五件套）、`logs/write64/`、`logs/pkg64/`
 
 #### F 账号残留（需用户处理，本批造成）
 
