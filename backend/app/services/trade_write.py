@@ -525,11 +525,35 @@ def _address_submit(account_id: str, action: str, fields: Dict[str, Any],
 
 def _address_submit_once(client: Any, account_id: str, action: str, api: str,
                          data: Dict[str, Any], audit: Any) -> Dict[str, Any]:
-    """真正打平台的那一次（幂等回放时不会走到这里）。"""
+    """真正打平台的那一次（幂等回放时不会走到这里）。
+
+    成功判据是**两层**：客户端层 `success` 之外，还要过协议层的
+    `addr_proto.is_success`（业务码必须 `success`）—— 平台会把业务失败放在
+    `success:true` 的信封里（真机：删默认地址 → `data.code=CAN_NOT_DELETE_DEFAULT_ADDRESS`）。
+    """
     raw, failure = _call_write(client, api, data, addr_proto.DEFAULT_VERSION)
     if failure:
         common.log_operation(account_id, action, '', False, failure.get('message') or '')
         return failure
+
+    # 平台把**业务失败**塞在成功信封里：客户端层 `success:true`，业务码在 `data.code`。
+    # 2026-10-16 真机：删默认退货地址回 `CAN_NOT_DELETE_DEFAULT_ADDRESS` + 中文原话，
+    # 而旧代码只读 `contactId` ⇒ 平台拒绝被当成成功、还写了成功审计（缺陷取证：
+    # `logs/write64/b1h_delete_probe.json`）。协议层早就写好 `is_success`，这里补上调用，
+    # 写法与 `services/drafts.py::_platform_failure` / `services/items.py::_platform_failure` 一致。
+    if not addr_proto.is_success(raw):
+        reason = addr_proto.failure_reason(raw, '平台没有接受这次退货地址写操作')
+        logger.warning(f'[trade_write] 平台拒绝退货地址 {action}: {reason}')
+        common.log_operation(account_id, action, _text(data.get('contactId') or ''), False, reason)
+        return common.fail(
+            f'平台接口失败: {reason}',
+            'protocol_error',
+            platform_errors={
+                'api': api,
+                'code': addr_proto.code_of(raw),
+                'message': addr_proto.message_of(raw),
+            },
+        )
 
     payload: Dict[str, Any] = {
         'action': action,

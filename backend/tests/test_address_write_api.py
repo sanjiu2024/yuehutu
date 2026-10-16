@@ -58,6 +58,15 @@ PLAIN_OK = {'success': True, 'data': {}, 'message': 'SUCCESS::调用成功',
 #: 真机原文：卖家工作台无权限（`address.list.query` 就是这个形状）
 NO_PERMISSION = {'success': False, 'message': 'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问',
                  'ret': ['FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问']}
+#: 2026-10-16 真机原文（`logs/write64/b1h_delete_probe.json`）：**客户端层 success=true**，
+#: 业务码藏在 `data.code` —— 删默认退货地址被平台拒绝，但信封看着像成功（第 64 批真 bug）。
+REAL_DELETE_DEFAULT_REFUSED = {
+    'success': True,
+    'data': {'code': 'CAN_NOT_DELETE_DEFAULT_ADDRESS',
+             'msg': '请不要删除默认的退货地址,请先设置其他的地址为默认退货地址后再删除本地址'},
+    'message': 'SUCCESS::调用成功',
+    'ret': ['SUCCESS::调用成功'],
+}
 
 #: 一份合法的表单（四个接口共用的字段；`area_id` / `default_addr` 是平台硬必填，见文件头）
 FORM = {
@@ -363,6 +372,13 @@ class AddressWriteProtocolTest(unittest.TestCase):
                          'FAIL_BIZ_IDLE_USER_UNAUTHORIZED::无权限访问')
         self.assertEqual(proto.failure_reason(ADD_OK, '兜底'), 'SUCCESS::调用成功')
         self.assertEqual(proto.failure_reason({'success': False, 'message': '', 'ret': []}, '兜底'), '兜底')
+    def test_real_delete_default_refusal_is_not_success(self):
+        # 真机原文：客户端说成功，业务码说不能删默认地址
+        self.assertFalse(proto.is_success(REAL_DELETE_DEFAULT_REFUSED))
+        self.assertEqual(proto.code_of(REAL_DELETE_DEFAULT_REFUSED),
+                         'CAN_NOT_DELETE_DEFAULT_ADDRESS')
+        self.assertEqual(proto.failure_reason(REAL_DELETE_DEFAULT_REFUSED, '兜底'),
+                         '请不要删除默认的退货地址,请先设置其他的地址为默认退货地址后再删除本地址')
 
 
 # --------------------------------------------------------------------------- 确认闸门
@@ -578,6 +594,29 @@ class AddressPlatformFailureTest(AddressWritePageTest):
         install_fake_protocol(self.fake)
         payload = self.fail(self.delete_path('C9'), {'confirm': True}, status=502)
         self.assertEqual(payload.get('code'), 'protocol_error')
+    def test_business_error_inside_a_success_envelope_is_a_failure(self):
+        """客户端层 success=true、业务码在 `data.code` ⇒ 必须当失败（第 64 批真 bug）。"""
+        self.fake = full_client(**{proto.DELETE_API: REAL_DELETE_DEFAULT_REFUSED})
+        install_fake_protocol(self.fake)
+        payload = self.fail(self.delete_path('C9'), {'confirm': True}, status=502)
+        self.assertEqual(payload.get('code'), 'protocol_error')
+        self.assertIn('请不要删除默认的退货地址', payload.get('message', ''))
+        self.assertEqual(payload.get('platform_errors', {}).get('code'),
+                         'CAN_NOT_DELETE_DEFAULT_ADDRESS')
+        # 平台拒绝过就绝不能写成成功审计（旧代码正是这么写的）
+        self.assertEqual(len(self.logs()), 1)
+        self.assertFalse(self.logs()[0]['success'])
+
+    def test_business_error_on_add_is_a_failure_too(self):
+        refused = {'success': True, 'data': {'code': 'FAIL_BIZ_ADDRESS_ILLEGAL',
+                                             'msg': '地址不合法'},
+                   'message': 'SUCCESS::调用成功', 'ret': ['SUCCESS::调用成功']}
+        self.fake = full_client(**{proto.ADD_API: refused})
+        install_fake_protocol(self.fake)
+        payload = self.fail(self.add_path(), {**FORM, 'confirm': True}, status=502)
+        self.assertEqual(payload.get('code'), 'protocol_error')
+        self.assertIn('地址不合法', payload.get('message', ''))
+        self.assertFalse(self.logs()[0]['success'])
 
     def test_session_expired_marks_the_account(self):
         self.fake.errors[proto.ADD_API] = SessionExpiredError('Session过期')
