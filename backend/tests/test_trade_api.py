@@ -630,10 +630,33 @@ class TradePlatformFailureTest(TradePageTest):
         self.assertIsNone(data['paging']['total_count'])
 
 
+#: 真机原文（2026-10-16，账号 2217970177348，logs/write64/b1e_address_list_raw.json）。
+REAL_DOUBLE_ENVELOPE = {
+    'success': True,
+    'data': {
+        'code': 'success',
+        'data': [
+            {'areaId': 330106, 'cityName': '杭州市', 'contactId': 3941114028,
+             'contactName': '第64批探针', 'defaultAddr': False,
+             'detailAddress': '文一西路 969 号 1 幢 101 室', 'districtName': '西湖区',
+             'mobilePhone': '13800000000', 'provinceName': '浙江省', 'zipCode': '000000'},
+            {'areaId': 330106, 'cityName': '杭州市', 'contactId': 3943370028,
+             'contactName': '第64批探针B', 'defaultAddr': False,
+             'detailAddress': '文一西路 969 号 3 幢 303 室', 'districtName': '西湖区',
+             'mobilePhone': '13800000002', 'provinceName': '浙江省', 'zipCode': '000000'},
+        ],
+        'msg': '成功',
+    },
+    'message': 'SUCCESS::调用成功',
+    'ret': ['SUCCESS::调用成功'],
+}
+
+
 class TradeAddressesPagingTest(TradePageTest):
     """退货地址：平台一次给全量 ⇒ 服务端内存切页；非法分页一次平台都不打（第 59 批）。"""
 
-    #: 真机容器三种之一：`data` 直接是数组。三个地址。
+    #: 旧 bundle 读法：`data` 直接是数组。三个地址。真机 2026-10-16 是双层 `data.data`
+    #: （`REAL_DOUBLE_ENVELOPE`），两条都测。
     ADDRESSES = {'success': True, 'data': [
         {'addressId': 1, 'name': '张三', 'phoneNum': '13800000001',
          'address': '浙江省杭州市西湖区某路 1 号', 'defaultAddr': True},
@@ -669,6 +692,21 @@ class TradeAddressesPagingTest(TradePageTest):
         data = self.ok_data(f'{BASE}/{ACC}/addresses?size=2')
         self.assertEqual([a['address_id'] for a in data['items']], ['1', '2'])
         self.assertEqual((data['page'], data['size'], data['pages']), (1, 2, 2))
+
+    def test_real_double_envelope_is_parsed_too(self):
+        """真机 2026-10-16 原文（data.data 数组）—— 旧 items_of 在这里解析出 0 条。"""
+        self.fake.payloads[trade_proto.ADDRESS_LIST_API] = REAL_DOUBLE_ENVELOPE
+        data = self.ok_data(f'{BASE}/{ACC}/addresses')
+        self.assertEqual([a['address_id'] for a in data['items']], ['3941114028', '3943370028'])
+        self.assertEqual(data['total'], 2)
+        self.assertEqual(data['items'][0]['detail_address'], '文一西路 969 号 1 幢 101 室')
+
+    def test_null_inner_data_is_an_empty_list(self):
+        self.fake.payloads[trade_proto.ADDRESS_LIST_API] = {
+            'success': True, 'data': {'code': 'success', 'data': None, 'msg': '成功'}}
+        data = self.ok_data(f'{BASE}/{ACC}/addresses')
+        self.assertEqual(data['addresses'], [])
+        self.assertEqual((data['total'], data['size'], data['pages']), (0, 0, 0))
 
     def test_empty_list_is_zero_size_and_zero_pages(self):
         self.fake.payloads[trade_proto.ADDRESS_LIST_API] = {'success': True, 'data': []}

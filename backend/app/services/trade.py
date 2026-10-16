@@ -281,10 +281,13 @@ def complaints(account_id: str, page: Any = 1, size: Any = 10) -> Dict[str, Any]
 
 
 def addresses(account_id: str, page: Any = '', size: Any = '') -> Dict[str, Any]:
-    """退货地址列表。真机 `FAIL_BIZ_IDLE_USER_UNAUTHORIZED` → 返回 platform_error 信封。
+    """退货地址列表。
 
-    平台**一次性返回全部地址**（`data` 直接是数组，官方调用点不带参数）⇒ 服务端**内存分页**，
+    平台**一次性返回全部地址**（真机是双层 `data.data` 数组，官方调用点不带参数）⇒ 服务端**内存分页**，
     不为分页多打一次平台。`page`/`size` 都不给时保持向后兼容：一次全量。
+
+    平台真拒绝（`FAIL_BIZ_IDLE_USER_UNAUTHORIZED`）时返回 platform_error 信封；2026-10-16 真机该账号
+    **读得通**（第 61 批「无权限」的结论已过时，原文 `logs/write64/b1e_address_list_raw.json`）。
     """
     page_no, page_size, failure = _paging(page, size)
     if failure:

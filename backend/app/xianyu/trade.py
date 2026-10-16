@@ -239,7 +239,9 @@ def body_of(raw: Any) -> Dict[str, Any]:
     """取出业务体。
 
     真机容器有三种：``data.module``（sold.get / rate.list / order.count）、
-    ``data.data``（refund.list，双层）、``data`` 本身（address.list.query 是数组）。
+    ``data.data``（refund.list；**address.list.query 也是双层**，2026-10-16 真机
+    `data.data` 才是地址数组，见 `logs/write64/b1e_address_list_raw.json`）、
+    ``data`` 本身（旧 bundle 证据，真机尚未见到）。
     """
     raw = decode_payload(raw)
     if not isinstance(raw, dict):
@@ -263,10 +265,19 @@ def _outer_data(raw: Any) -> Any:
 
 
 def items_of(raw: Any) -> List[Any]:
-    """列表项：``module.items`` / ``data.items`` / `data` 本身是数组。"""
-    items = body_of(raw).get('items')
+    """列表项：``module.items`` / ``data.items`` / 内层 `data.data` / `data` 本身是数组。
+
+    「内层 `data.data` 是数组」这一支是 2026-10-16 真机补的：`address.list.query` 的信封是
+    `{success, data: {code, data: [地址…], msg}}`（**双层**，与 `refund.list` 同型），旧实现
+    只认「顶层 `data` 是数组」，真机明明有地址却解析出 0 条（`logs/write64/b1e_address_list_raw.json`）。
+    """
+    body = body_of(raw)
+    items = body.get('items')
     if isinstance(items, list):
         return items
+    nested = body.get('data')
+    if isinstance(nested, list):
+        return nested
     data = _outer_data(raw)
     if isinstance(data, list):
         return data
@@ -720,7 +731,15 @@ def parse_complaints(raw: Any) -> Dict[str, Any]:
 
 
 def parse_addresses(raw: Any) -> Dict[str, Any]:
-    """退货地址响应。真机无权限；bundle 证据是 `data` 直接为数组。"""
+    """退货地址响应。
+
+    2026-10-16 真机（账号 2217970177348，原文 `logs/write64/b1e_address_list_raw.json`）：
+    `{success: true, data: {code: 'success', data: [{areaId, cityName, contactId, contactName,
+    defaultAddr, detailAddress, districtName, mobilePhone, provinceName, zipCode}, …], msg: '成功'}}`
+    —— **双层 `data.data`**；账号没有地址时 `data.data` 是 `null`（不是 `[]`）。
+    bundle 里「`data` 直接为数组」的读法真机未见，`items_of` 仍保留兼容。
+    第 61 批记的「退货地址族无权限」只对 `defaultAddr=true` 的**新增**成立。
+    """
     return {'addresses': [normalize_address(item) for item in items_of(raw)]}
 
 
